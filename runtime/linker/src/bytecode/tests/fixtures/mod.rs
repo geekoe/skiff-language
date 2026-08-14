@@ -609,15 +609,19 @@ pub(super) fn schema_type() -> TypeRefIr {
 
 fn normalization_bytecode(program: RootProgram) -> Arc<ValidatedBytecodeArtifact> {
     let mut artifact = artifact::bytecode_artifact(program);
-    artifact
-        .image
-        .pools
-        .types
-        .push(BytecodePoolEntry::TypeRef { ty: schema_type() });
+    artifact.image.pools.types.push(BytecodePoolEntry::TypeRef {
+        ty: schema_type(),
+        plan: skiff_artifact_model::ValueTransferPlan::SnapshotShare {
+            drop: skiff_artifact_model::ValueDropPlan::SnapshotRelease,
+        },
+    });
     artifact.image.pools.types.push(BytecodePoolEntry::TypeRef {
         ty: TypeRefIr::PublicationType {
             module_path: "fixture".to_string(),
             type_index: 0,
+        },
+        plan: skiff_artifact_model::ValueTransferPlan::SnapshotShare {
+            drop: skiff_artifact_model::ValueDropPlan::SnapshotRelease,
         },
     });
     skiff_artifact_identity::assign_bytecode_identity(&mut artifact).unwrap();

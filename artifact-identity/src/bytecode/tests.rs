@@ -36,6 +36,13 @@ fn snapshot_share() -> ValueTransferPlan {
     }
 }
 
+fn type_entry(ty: TypeRefIr) -> BytecodePoolEntry {
+    BytecodePoolEntry::TypeRef {
+        ty,
+        plan: snapshot_share(),
+    }
+}
+
 /// Hand-built structurally valid artifact (passes C1–C8). Not encoder or
 /// emitter produced; `bytecode_identity` starts as a placeholder so tests can
 /// prove the preimage excludes the identity field itself.
@@ -126,12 +133,8 @@ fn fixture() -> BytecodeArtifact {
                     plan: snapshot_share(),
                 }],
                 types: vec![
-                    BytecodePoolEntry::TypeRef {
-                        ty: TypeRefIr::builtin("string"),
-                    },
-                    BytecodePoolEntry::TypeRef {
-                        ty: TypeRefIr::builtin("number"),
-                    },
+                    type_entry(TypeRefIr::builtin("string")),
+                    type_entry(TypeRefIr::builtin("number")),
                 ],
                 shapes: (0..2)
                     .map(|_| BytecodePoolEntry::ShapeRef {
@@ -341,9 +344,7 @@ fn every_image_mutation_changes_the_identity() {
     assert_ne!(bytecode_identity(&word_changed).unwrap(), base_identity);
 
     let mut pool_changed = base.clone();
-    pool_changed.image.pools.types[0] = BytecodePoolEntry::TypeRef {
-        ty: TypeRefIr::builtin("number"),
-    };
+    pool_changed.image.pools.types[0] = type_entry(TypeRefIr::builtin("number"));
     assert_ne!(bytecode_identity(&pool_changed).unwrap(), base_identity);
 
     let mut slot_type_changed = base.clone();
@@ -558,12 +559,14 @@ fn authority_fixture() -> BytecodeArtifact {
         .push(BytecodeRelocation::IntrinsicRef { intrinsic });
 
     let stream_index = artifact.image.pools.types.len() as u32;
-    artifact.image.pools.types.push(BytecodePoolEntry::TypeRef {
-        ty: TypeRefIr::Builtin {
+    artifact
+        .image
+        .pools
+        .types
+        .push(type_entry(TypeRefIr::Builtin {
             name: "Stream".to_string(),
             args: vec![TypeRefIr::builtin("string")],
-        },
-    });
+        }));
     artifact
         .image
         .pools
@@ -723,12 +726,14 @@ fn derived_execution_authorities_participate_in_the_preimage() {
 
     let mut mutated = artifact;
     let number_stream_index = mutated.image.pools.types.len() as u32;
-    mutated.image.pools.types.push(BytecodePoolEntry::TypeRef {
-        ty: TypeRefIr::Builtin {
+    mutated
+        .image
+        .pools
+        .types
+        .push(type_entry(TypeRefIr::Builtin {
             name: "Stream".to_string(),
             args: vec![TypeRefIr::builtin("number")],
-        },
-    });
+        }));
     mutated
         .image
         .functions

@@ -172,7 +172,7 @@ fn corpus_rejects_wrong_relocation_and_pool_entry_kinds() {
     assert!(error.to_string().contains("not allowed"));
 
     let mut pool = canonical_artifact();
-    pool.image.pools.constants[0] = BytecodePoolEntry::TypeRef { ty: string_type() };
+    pool.image.pools.constants[0] = type_entry(string_type());
     let error = assert_rejected(&pool);
     assert!(matches!(error, StructuralValidationError::Header { .. }));
     assert!(error.to_string().contains("incompatible entry kind"));

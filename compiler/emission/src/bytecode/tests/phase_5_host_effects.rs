@@ -223,6 +223,14 @@ function stream(input: std.http.HttpClientRequest) -> void {
         ) {
             return Ok(ValueTransferPlan::FromType { ty: ty.clone() });
         }
+        if matches!(
+            ty,
+            skiff_artifact_model::TypeRefIr::Builtin { name, .. } if name == "Stream"
+        ) {
+            return Ok(ValueTransferPlan::AffineResource {
+                drop: ResourceDropPlan::ResourceTableRelease,
+            });
+        }
         Ok(ValueTransferPlan::SnapshotShare {
             drop: if trivial {
                 ValueDropPlan::Trivial
@@ -344,12 +352,12 @@ function stream(input: std.http.HttpClientRequest) -> void {
         panic!("dense result materialization must reference a shape row")
     };
     let result_type = request_resume.result_type_refs[0];
-    let BytecodePoolEntry::TypeRef { ty: result_ty } =
+    let BytecodePoolEntry::TypeRef { ty: result_ty, .. } =
         &artifact.image.pools.types[result_type as usize]
     else {
         panic!("resume result must reference a type row")
     };
-    let BytecodePoolEntry::TypeRef { ty: nominal_ty } =
+    let BytecodePoolEntry::TypeRef { ty: nominal_ty, .. } =
         &artifact.image.pools.types[shape.type_ref as usize]
     else {
         panic!("materialization shape must reference a nominal type row")
@@ -365,6 +373,139 @@ function stream(input: std.http.HttpClientRequest) -> void {
     );
     assert_eq!(shape.plan, request_resume.result_plans[0]);
     assert!(shape.privileged_affine_composite.is_none());
+
+    let stream_function = artifact
+        .image
+        .functions
+        .get("main::stream")
+        .expect("ignored stream handle still emits one request function");
+    let decoded_stream = BoundedDecoder::new()
+        .decode_function(&stream_function.words)
+        .expect("ignored stream function remains decodable");
+    assert!(decoded_stream
+        .instructions
+        .iter()
+        .any(|instruction| instruction.descriptor.kind == Opcode::Pop));
+    assert!(decoded_stream
+        .instructions
+        .iter()
+        .all(|instruction| instruction.descriptor.kind != Opcode::GetDenseField));
+    let stream_resume = artifact
+        .image
+        .pools
+        .resume
+        .iter()
+        .find_map(|entry| match entry {
+            BytecodePoolEntry::ResumeDescriptor(descriptor)
+                if descriptor.function_key == "main::stream" =>
+            {
+                Some(descriptor)
+            }
+            _ => None,
+        })
+        .expect("ignored stream call owns one exact resume descriptor");
+    let [stream_type_ref] = stream_resume.result_type_refs.as_slice() else {
+        panic!("ignored stream call must publish one exact result type")
+    };
+    let BytecodePoolEntry::TypeRef {
+        plan: type_plan, ..
+    } = &artifact.image.pools.types[*stream_type_ref as usize]
+    else {
+        panic!("ignored stream result must reference a type row")
+    };
+    let ValueTransferPlan::MoveOnly {
+        drop: ValueDropPlan::RecursiveShape { shape_ref },
+    } = &stream_resume.result_plans[0]
+    else {
+        panic!("ignored stream result must publish its exact recursive drop plan")
+    };
+    assert_eq!(type_plan, &stream_resume.result_plans[0]);
+    let BytecodePoolEntry::ShapeRef { shape } = &artifact.image.pools.shapes[*shape_ref as usize]
+    else {
+        panic!("ignored stream recursive plan must reference a shape row")
+    };
+    assert_eq!(
+        shape.privileged_affine_composite,
+        Some(PrivilegedAffineCompositeIdentity::HttpClientStreamHandle)
+    );
+    assert_eq!(shape.plan, stream_resume.result_plans[0]);
+    let body = shape
+        .fields
+        .iter()
+        .find(|field| field.name == "body")
+        .expect("ignored handle shape retains the exact body field");
+    let BytecodePoolEntry::TypeRef {
+        ty: body_ty,
+        plan: body_type_plan,
+    } = &artifact.image.pools.types[body.type_ref as usize]
+    else {
+        panic!("ignored handle body must reference a type row")
+    };
+    assert!(matches!(
+        body_ty,
+        skiff_artifact_model::TypeRefIr::Builtin { name, args }
+            if name == "Stream"
+                && matches!(args.as_slice(), [skiff_artifact_model::TypeRefIr::Builtin { name, args }] if name == "bytes" && args.is_empty())
+    ));
+    assert_eq!(body_type_plan, &body.plan);
+    assert!(matches!(
+        body.plan,
+        ValueTransferPlan::AffineResource {
+            drop: ResourceDropPlan::ResourceTableRelease
+        }
+    ));
+    let stream_effect = effects
+        .iter()
+        .find(|effect| effect.target.binding_key.as_deref() == Some("std.http.client.stream"))
+        .expect("ignored stream call retains its exact host signature");
+    assert_eq!(
+        stream_effect.signature.result_plans,
+        stream_resume.result_plans
+    );
+}
+
+#[test]
+fn ignored_stream_handle_requires_an_exact_compiler_body_plan() {
+    let lowered = lower(
+        r#"
+import std
+
+function stream(input: std.http.HttpClientRequest) -> void {
+  std.http.stream(input)
+}
+"#,
+    );
+    let admitted = admit_phase_1_bytecode_mir(lowered.mir_units())
+        .expect("the ignored stream handle source is structurally admitted");
+    let error = derive_bytecode_value_transfer_plans(&admitted, |_module_path, ty| {
+        if matches!(
+            ty,
+            skiff_artifact_model::TypeRefIr::Builtin { name, args }
+                if name == "Stream"
+                    && matches!(args.as_slice(), [skiff_artifact_model::TypeRefIr::Builtin { name, args }] if name == "bytes" && args.is_empty())
+        ) {
+            return Err("missing exact Stream<bytes> field plan".to_string());
+        }
+        if matches!(
+            ty,
+            skiff_artifact_model::TypeRefIr::PackageSymbol { symbol }
+                if symbol.symbol_path == "std.http.HttpClientStreamHandle"
+        ) {
+            return Ok(ValueTransferPlan::FromType { ty: ty.clone() });
+        }
+        Ok(ValueTransferPlan::SnapshotShare {
+            drop: ValueDropPlan::SnapshotRelease,
+        })
+    })
+    .expect_err("a missing privileged field plan must fail before emission");
+    assert!(matches!(
+        error,
+        BytecodeEmissionError::UnsupportedConstruct {
+            construct: "exact source value-transfer plan",
+            location,
+            ..
+        } if location.contains("missing exact Stream<bytes> field plan")
+    ));
 }
 
 #[test]

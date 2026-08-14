@@ -17,7 +17,8 @@ fn package_type(symbol_path: &str) -> TypeRefIr {
 fn affine_take_artifact() -> BytecodeArtifact {
     let mut artifact = canonical_artifact();
     let handle_type_ref = artifact.image.pools.types.len() as u32;
-    for ty in [
+    let shape_ref = artifact.image.pools.shapes.len() as u32;
+    for (ordinal, ty) in [
         package_type("std.http.HttpClientStreamHandle"),
         TypeRefIr::Builtin {
             name: "Stream".to_string(),
@@ -28,14 +29,28 @@ fn affine_take_artifact() -> BytecodeArtifact {
             args: vec![package_type("std.http.HttpHeader")],
         },
         TypeRefIr::builtin("integer"),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let plan = match ordinal {
+            0 => ValueTransferPlan::MoveOnly {
+                drop: ValueDropPlan::RecursiveShape { shape_ref },
+            },
+            1 => ValueTransferPlan::AffineResource {
+                drop: ResourceDropPlan::ResourceTableRelease,
+            },
+            2 => ValueTransferPlan::SnapshotShare {
+                drop: ValueDropPlan::SnapshotRelease,
+            },
+            _ => snapshot_share(),
+        };
         artifact
             .image
             .pools
             .types
-            .push(BytecodePoolEntry::TypeRef { ty });
+            .push(BytecodePoolEntry::TypeRef { ty, plan });
     }
-    let shape_ref = artifact.image.pools.shapes.len() as u32;
     artifact
         .image
         .pools
@@ -182,7 +197,113 @@ fn shape_roots_require_exact_compiler_owned_lifecycle_plans() {
     shape.plan = ValueTransferPlan::SnapshotShare {
         drop: ValueDropPlan::SnapshotRelease,
     };
-    assert!(assert_rejected(&privileged)
+    let error = assert_rejected(&privileged);
+    assert!(
+        error
+            .to_string()
+            .contains("plan must exactly match its referenced privileged shape root"),
+        "{error}"
+    );
+}
+
+#[test]
+fn privileged_type_plan_must_match_its_exact_shape_root() {
+    let mut wrong_plan = affine_take_artifact();
+    let BytecodePoolEntry::ShapeRef { shape } = wrong_plan
+        .image
+        .pools
+        .shapes
+        .last()
+        .expect("privileged shape row")
+    else {
+        unreachable!("shape pool is homogeneous")
+    };
+    let type_ref = shape.type_ref as usize;
+    let BytecodePoolEntry::TypeRef { plan, .. } = &mut wrong_plan.image.pools.types[type_ref]
+    else {
+        unreachable!("type pool is homogeneous")
+    };
+    *plan = ValueTransferPlan::SnapshotShare {
+        drop: ValueDropPlan::SnapshotRelease,
+    };
+    assert!(assert_rejected(&wrong_plan)
         .to_string()
-        .contains("plan must be an explicit self-recursive MoveOnly plan"));
+        .contains("plan must exactly match its owning TypeRef plan"));
+
+    let mut wrong_shape = affine_take_artifact();
+    let BytecodePoolEntry::ShapeRef { shape } = wrong_shape
+        .image
+        .pools
+        .shapes
+        .last()
+        .expect("privileged shape row")
+    else {
+        unreachable!("shape pool is homogeneous")
+    };
+    let type_ref = shape.type_ref as usize;
+    let BytecodePoolEntry::TypeRef { plan, .. } = &mut wrong_shape.image.pools.types[type_ref]
+    else {
+        unreachable!("type pool is homogeneous")
+    };
+    *plan = ValueTransferPlan::MoveOnly {
+        drop: ValueDropPlan::RecursiveShape { shape_ref: 0 },
+    };
+    assert!(assert_rejected(&wrong_shape)
+        .to_string()
+        .contains("recursive MoveOnly shape lacks privileged affine composite authority"));
+
+    let mut out_of_bounds = affine_take_artifact();
+    let BytecodePoolEntry::ShapeRef { shape } = out_of_bounds
+        .image
+        .pools
+        .shapes
+        .last()
+        .expect("privileged shape row")
+    else {
+        unreachable!("shape pool is homogeneous")
+    };
+    let type_ref = shape.type_ref as usize;
+    let BytecodePoolEntry::TypeRef { plan, .. } = &mut out_of_bounds.image.pools.types[type_ref]
+    else {
+        unreachable!("type pool is homogeneous")
+    };
+    *plan = ValueTransferPlan::MoveOnly {
+        drop: ValueDropPlan::RecursiveShape {
+            shape_ref: u32::MAX,
+        },
+    };
+    let error = assert_rejected(&out_of_bounds);
+    assert!(
+        error.to_string().contains("out of bounds of shapes pool"),
+        "{error}"
+    );
+}
+
+#[test]
+fn one_type_row_cannot_claim_two_privileged_shape_roots() {
+    let mut artifact = affine_take_artifact();
+    let BytecodePoolEntry::ShapeRef { shape } = artifact
+        .image
+        .pools
+        .shapes
+        .last()
+        .expect("privileged shape row")
+    else {
+        unreachable!("shape pool is homogeneous")
+    };
+    let mut duplicate = shape.clone();
+    let duplicate_ref = artifact.image.pools.shapes.len() as u32;
+    duplicate.plan = ValueTransferPlan::MoveOnly {
+        drop: ValueDropPlan::RecursiveShape {
+            shape_ref: duplicate_ref,
+        },
+    };
+    artifact
+        .image
+        .pools
+        .shapes
+        .push(BytecodePoolEntry::ShapeRef { shape: duplicate });
+    assert!(assert_rejected(&artifact)
+        .to_string()
+        .contains("plan must exactly match its owning TypeRef plan"));
 }

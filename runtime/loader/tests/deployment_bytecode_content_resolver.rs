@@ -75,6 +75,9 @@ fn bytecode(seed: &str) -> BytecodeArtifact {
                 }],
                 types: vec![BytecodePoolEntry::TypeRef {
                     ty: TypeRefIr::builtin("string"),
+                    plan: ValueTransferPlan::SnapshotShare {
+                        drop: ValueDropPlan::Trivial,
+                    },
                 }],
                 shapes: Vec::new(),
                 effects: Vec::new(),

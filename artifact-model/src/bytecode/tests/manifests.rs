@@ -417,7 +417,7 @@ fn parameter_dense_record_shape_ref_is_nullable_but_bounded_and_kind_checked() {
         .contains("denseRecordShapeRef"));
 
     let mut wrong_kind = present;
-    wrong_kind.image.pools.shapes[0] = BytecodePoolEntry::TypeRef { ty: string_type() };
+    wrong_kind.image.pools.shapes[0] = type_entry(string_type());
     assert!(assert_rejected(&wrong_kind)
         .to_string()
         .contains("incompatible entry kind"));
@@ -496,6 +496,9 @@ fn call_local_inout_checks_table_and_selector_count_without_guessing_values() {
         ty: TypeRefIr::Builtin {
             name: "Array".to_string(),
             args: vec![string_type()],
+        },
+        plan: ValueTransferPlan::SnapshotShare {
+            drop: ValueDropPlan::SnapshotRelease,
         },
     });
     let BytecodePoolEntry::WritablePath(path) = &mut artifact.image.pools.writable_paths[0] else {

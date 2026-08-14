@@ -202,7 +202,25 @@ pub(super) fn populate_bytecode(artifact: &mut BytecodeArtifact, program: Consta
         ),
     };
 
-    artifact.image.pools.types = vec![BytecodePoolEntry::TypeRef { ty }];
+    let type_plan = match &ty {
+        TypeRefIr::Builtin { name, .. }
+            if matches!(
+                name.as_str(),
+                "null" | "bool" | "number" | "integer" | "Date"
+            ) =>
+        {
+            ValueTransferPlan::SnapshotShare {
+                drop: ValueDropPlan::Trivial,
+            }
+        }
+        _ => ValueTransferPlan::SnapshotShare {
+            drop: ValueDropPlan::SnapshotRelease,
+        },
+    };
+    artifact.image.pools.types = vec![BytecodePoolEntry::TypeRef {
+        ty,
+        plan: type_plan,
+    }];
     artifact.image.pools.shapes = if matches!(
         program,
         ConstantProgram::Record | ConstantProgram::Implementation
@@ -327,7 +345,7 @@ pub(super) fn implementation_links(
             };
             let type_position =
                 usize::try_from(*type_ref).expect("validated type pool index must fit usize");
-            let BytecodePoolEntry::TypeRef { ty } = bytecode
+            let BytecodePoolEntry::TypeRef { ty, .. } = bytecode
                 .view()
                 .pools()
                 .types

@@ -1,11 +1,11 @@
-//! Frozen v12 wire-shape snapshot and fail-closed serde tests.
+//! Frozen v13 wire-shape snapshot and fail-closed serde tests.
 
 use super::*;
 
-/// Compact golden projection: it freezes every v12 seam that downstream
+/// Compact golden projection: it freezes every v13 seam that downstream
 /// emission/linking consumes without duplicating the canonical fixture's
 /// large literal payload.
-const GOLDEN_V12_SHAPE: &str = r#"{
+const GOLDEN_V13_SHAPE: &str = r#"{
   "artifact":["bytecodeIdentity","hostEffectRegistry","image","intrinsicRegistry","isaVersion","magic","nativeValueLifecycleRegistry","opcodeTableFingerprint","platformErrorProjectionRegistry","schemaVersion","valueLifecyclePolicy"],
   "image":["constantRoots","debugTable","frozenConstantGraph","functions","pools"],
   "function":["activeRegions","callLoanLayouts","effectSummaryRef","exceptionRegions","frameLayout","functionKey","maxOperandDepth","origin","relocations","selfTypeRef","sourceMap","statementEntries","switchTables","words"],
@@ -18,6 +18,7 @@ const GOLDEN_V12_SHAPE: &str = r#"{
   "statementEntry":["attributionId","pc","sequenceOrdinal","site"],
   "statementAttributionId":["expressionIndex","kind","occurrenceOrdinal"],
   "constantEntry":["kind","plan","reference","typeRef"],
+  "typeEntry":["kind","plan","ty"],
   "shape":["fields","plan","typeRef"],
   "resume":["emitStreamItemShapeRef","endResumePc","errorMode","expectedStackHeightBeforeResult","functionKey","kind","resultMaterializations","resultPlans","resultTypeRefs","resumePc","sitePc"]
 }"#;
@@ -34,7 +35,7 @@ fn sorted_keys(value: &serde_json::Value) -> Vec<String> {
 }
 
 #[test]
-fn canonical_fixture_matches_v12_wire_shape_snapshot() {
+fn canonical_fixture_matches_v13_wire_shape_snapshot() {
     let value = serde_json::to_value(canonical_artifact()).expect("fixture JSON");
     let main = &value["image"]["functions"]["module::main"];
     let projection = serde_json::json!({
@@ -50,13 +51,14 @@ fn canonical_fixture_matches_v12_wire_shape_snapshot() {
         "statementEntry": sorted_keys(&main["statementEntries"][1]),
         "statementAttributionId": sorted_keys(&main["statementEntries"][1]["attributionId"]),
         "constantEntry": sorted_keys(&value["image"]["pools"]["constants"][0]),
+        "typeEntry": sorted_keys(&value["image"]["pools"]["types"][0]),
         "shape": sorted_keys(&value["image"]["pools"]["shapes"][0]["shape"]),
         "resume": sorted_keys(&value["image"]["pools"]["resume"][0]),
     });
-    let golden: serde_json::Value = serde_json::from_str(GOLDEN_V12_SHAPE).expect("golden JSON");
+    let golden: serde_json::Value = serde_json::from_str(GOLDEN_V13_SHAPE).expect("golden JSON");
     assert_eq!(projection, golden);
 
-    assert_eq!(value["schemaVersion"], "skiff-bytecode-v12");
+    assert_eq!(value["schemaVersion"], "skiff-bytecode-v13");
     assert_eq!(value["isaVersion"], "skiff-bytecode-isa-v5");
     assert_eq!(
         value["nativeValueLifecycleRegistry"]["fingerprint"],
@@ -196,6 +198,16 @@ fn schema_rejects_missing_required_header_image_and_frame_fields() {
         .remove("plan");
     let error = serde_json::from_value::<BytecodeArtifact>(missing_shape_plan)
         .expect_err("shape plan must be required on the wire")
+        .to_string();
+    assert!(error.contains("missing field"), "{error}");
+
+    let mut missing_type_plan = value.clone();
+    missing_type_plan["image"]["pools"]["types"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("plan");
+    let error = serde_json::from_value::<BytecodeArtifact>(missing_type_plan)
+        .expect_err("type plan must be required on the wire")
         .to_string();
     assert!(error.contains("missing field"), "{error}");
 
@@ -363,9 +375,9 @@ fn dense_resume_result_materialization_round_trips_as_an_exact_shape_ref() {
 }
 
 #[test]
-fn version_constants_freeze_schema_v12_and_isa_v5() {
+fn version_constants_freeze_schema_v13_and_isa_v5() {
     assert_eq!(BYTECODE_MAGIC, "skiff-bytecode");
-    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v12");
+    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v13");
     assert_eq!(BYTECODE_ISA_VERSION, "skiff-bytecode-isa-v5");
 }
 

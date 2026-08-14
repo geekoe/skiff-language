@@ -36,8 +36,9 @@ use crate::bytecode::dto::limits;
 use crate::bytecode::dto::{
     BytecodeArtifact, BytecodeConstantRef, BytecodePoolEntry, BytecodePools, CallbackCaptureLayout,
     DebugBinding, DebugTable, ExceptionRegion, FrameLayout, FrozenConstantGraph,
-    HostEffectReference, RelocatableBytecodeFunction, SwitchTable, WritablePathSegment,
-    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    HostEffectReference, RelocatableBytecodeFunction, SwitchTable, ValueDropPlan,
+    ValueTransferPlan, WritablePathSegment, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
+    BYTECODE_SCHEMA_VERSION,
 };
 use crate::bytecode::opcodes::{opcode_table_fingerprint, PoolCategory};
 use crate::types::TypeRefIr;
@@ -530,7 +531,7 @@ fn validate_type_pool_nesting(
     artifact: &BytecodeArtifact,
 ) -> Result<(), StructuralValidationError> {
     for (index, entry) in artifact.image.pools.types.iter().enumerate() {
-        let BytecodePoolEntry::TypeRef { ty } = entry else {
+        let BytecodePoolEntry::TypeRef { ty, .. } = entry else {
             continue;
         };
         let depth = type_ref_nesting_depth(ty);
@@ -571,6 +572,36 @@ fn validate_pool_entry_references(
                 return Err(header_error(format!(
                     "image.pools.{}[{index}] has incompatible entry kind",
                     category.name()
+                )));
+            }
+        }
+    }
+
+    for (index, entry) in pools.types.iter().enumerate() {
+        let BytecodePoolEntry::TypeRef { plan, .. } = entry else {
+            continue;
+        };
+        validate_transfer_plan(
+            plan,
+            pools,
+            None,
+            &format!("image.pools.types[{index}].plan"),
+        )?;
+        if let ValueTransferPlan::MoveOnly {
+            drop: ValueDropPlan::RecursiveShape { shape_ref },
+        } = plan
+        {
+            let Some(BytecodePoolEntry::ShapeRef { shape }) = pools.shapes.get(*shape_ref as usize)
+            else {
+                return Err(index_out_of_bounds(
+                    "shapes pool",
+                    *shape_ref,
+                    &format!("image.pools.types[{index}].plan.drop.shapeRef"),
+                ));
+            };
+            if shape.type_ref as usize != index || shape.plan != *plan {
+                return Err(header_error(format!(
+                    "image.pools.types[{index}].plan must exactly match its referenced privileged shape root"
                 )));
             }
         }
@@ -628,6 +659,18 @@ fn validate_pool_entry_references(
             previous_name = Some(field.name.as_str());
         }
         validate_privileged_shape_declaration(index, shape, pools)?;
+        if shape.privileged_affine_composite.is_some() {
+            let Some(BytecodePoolEntry::TypeRef { plan, .. }) =
+                pools.types.get(shape.type_ref as usize)
+            else {
+                unreachable!("shape.typeRef was checked above")
+            };
+            if plan != &shape.plan {
+                return Err(header_error(format!(
+                    "image.pools.shapes[{index}].plan must exactly match its owning TypeRef plan"
+                )));
+            }
+        }
     }
 
     for (index, entry) in pools.effects.iter().enumerate() {
@@ -941,7 +984,7 @@ fn type_pool_value<'a>(
     type_ref: u32,
     location: &str,
 ) -> Result<&'a TypeRefIr, StructuralValidationError> {
-    let Some(BytecodePoolEntry::TypeRef { ty }) = pools.types.get(type_ref as usize) else {
+    let Some(BytecodePoolEntry::TypeRef { ty, .. }) = pools.types.get(type_ref as usize) else {
         return Err(index_out_of_bounds("types pool", type_ref, location));
     };
     Ok(ty)
@@ -1346,7 +1389,8 @@ fn derive_function_stream_item(
     let Some(stream_result_type_ref) = frame.stream_result_type_ref else {
         return Ok(None);
     };
-    let Some(BytecodePoolEntry::TypeRef { ty }) = pools.types.get(stream_result_type_ref as usize)
+    let Some(BytecodePoolEntry::TypeRef { ty, .. }) =
+        pools.types.get(stream_result_type_ref as usize)
     else {
         return Err(table_error(
             key,
@@ -2031,6 +2075,7 @@ fn validate_frame_type_refs(
                     entry,
                     BytecodePoolEntry::TypeRef {
                         ty: TypeRefIr::Builtin { name, .. },
+                        ..
                     } if name == "Stream"
                 )
             {

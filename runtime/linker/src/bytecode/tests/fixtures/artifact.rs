@@ -535,75 +535,71 @@ fn pools(program: RootProgram) -> BytecodePools {
     BytecodePools {
         constants: Vec::new(),
         types: match program {
-            RootProgram::Host => vec![BytecodePoolEntry::TypeRef {
-                ty: TypeRefIr::builtin("Date"),
-            }],
+            RootProgram::Host => vec![type_entry(TypeRefIr::builtin("Date"), snapshot_plan())],
             RootProgram::Intrinsic => vec![
-                BytecodePoolEntry::TypeRef {
-                    ty: TypeRefIr::Builtin {
+                type_entry(
+                    TypeRefIr::Builtin {
                         name: "Array".to_string(),
                         args: vec![TypeRefIr::builtin("string")],
                     },
-                },
-                BytecodePoolEntry::TypeRef {
-                    ty: TypeRefIr::builtin("string"),
-                },
+                    ValueTransferPlan::SnapshotShare {
+                        drop: ValueDropPlan::SnapshotRelease,
+                    },
+                ),
+                type_entry(TypeRefIr::builtin("string"), stream_item_plan()),
             ],
             RootProgram::Interface
             | RootProgram::UnreachableInterface
             | RootProgram::ReorderedInterfaceResumePool => vec![
-                BytecodePoolEntry::TypeRef {
-                    ty: TypeRefIr::builtin("string"),
-                },
-                BytecodePoolEntry::TypeRef {
-                    ty: TypeRefIr::AnyInterface {
+                type_entry(TypeRefIr::builtin("string"), stream_item_plan()),
+                type_entry(
+                    TypeRefIr::AnyInterface {
                         interface: skiff_artifact_model::InterfaceInstantiationRef {
                             interface_abi_id: interface_identity(),
                             canonical_type_args: Vec::new(),
                         },
                     },
-                },
+                    stream_item_plan(),
+                ),
             ],
-            RootProgram::FromType => vec![BytecodePoolEntry::TypeRef {
-                ty: TypeRefIr::builtin("string"),
-            }],
+            RootProgram::FromType => {
+                vec![type_entry(TypeRefIr::builtin("string"), stream_item_plan())]
+            }
             RootProgram::RecordShape => vec![
-                BytecodePoolEntry::TypeRef {
-                    ty: TypeRefIr::builtin("string"),
-                },
-                BytecodePoolEntry::TypeRef {
-                    ty: TypeRefIr::Record {
+                type_entry(TypeRefIr::builtin("string"), stream_item_plan()),
+                type_entry(
+                    TypeRefIr::Record {
                         fields: BTreeMap::from([(
                             "name".to_string(),
                             TypeRefIr::builtin("string"),
                         )]),
                     },
-                },
+                    ValueTransferPlan::SnapshotShare {
+                        drop: ValueDropPlan::SnapshotRelease,
+                    },
+                ),
             ],
             RootProgram::ArraysMaps => vec![
-                BytecodePoolEntry::TypeRef {
-                    ty: TypeRefIr::Builtin {
+                type_entry(
+                    TypeRefIr::Builtin {
                         name: "Array".to_string(),
                         args: vec![TypeRefIr::builtin("string")],
                     },
-                },
-                BytecodePoolEntry::TypeRef {
-                    ty: TypeRefIr::builtin("string"),
-                },
+                    ValueTransferPlan::SnapshotShare {
+                        drop: ValueDropPlan::SnapshotRelease,
+                    },
+                ),
+                type_entry(TypeRefIr::builtin("string"), stream_item_plan()),
             ],
             RootProgram::StreamNext
             | RootProgram::StreamProducer
             | RootProgram::ReorderedStreamResumePool => vec![
-                BytecodePoolEntry::TypeRef { ty: stream_type() },
-                BytecodePoolEntry::TypeRef { ty: item_type() },
+                type_entry(stream_type(), stream_plan()),
+                type_entry(item_type(), stream_item_plan()),
             ],
             RootProgram::StreamNextLoop => vec![
-                BytecodePoolEntry::TypeRef {
-                    ty: number_stream_type(),
-                },
-                BytecodePoolEntry::TypeRef {
-                    ty: TypeRefIr::builtin("number"),
-                },
+                type_entry(number_stream_type(), stream_plan()),
+                type_entry(TypeRefIr::builtin("number"), snapshot_plan()),
             ],
             _ => Vec::new(),
         },
@@ -917,6 +913,10 @@ fn snapshot_plan() -> ValueTransferPlan {
     ValueTransferPlan::SnapshotShare {
         drop: ValueDropPlan::Trivial,
     }
+}
+
+fn type_entry(ty: TypeRefIr, plan: ValueTransferPlan) -> BytecodePoolEntry {
+    BytecodePoolEntry::TypeRef { ty, plan }
 }
 
 fn coordinate(executable_index: u32) -> PackageExecutableCoordinate {

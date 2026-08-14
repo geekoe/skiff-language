@@ -7,7 +7,7 @@ mod tests {
         emitter::emit_bytecode_artifact_unchecked as emit_bytecode_artifact,
         plans::derive_test_bytecode_value_transfer_plans,
     };
-    use crate::{BytecodeEmissionError, BytecodeValueTransferPlans, FunctionValueTransferPlans};
+    use crate::{BytecodeEmissionError, BytecodeValueTransferPlans};
     use skiff_artifact_identity::validate_bytecode_identity;
     use skiff_artifact_model::{
         BlockIr, BytecodeConstantRef, BytecodePoolEntry, CallableEffectSummary, ConstIr,
@@ -450,16 +450,7 @@ mod tests {
         let (mut mir, bundle) = mir_and_bundle(&file_ir);
         mir.functions
             .push(empty_function(&file_ir.file_ir_identity, "gated", "run"));
-        let transfer_plans = BytecodeValueTransferPlans::new(
-            BTreeMap::from([(
-                "gated::run".to_string(),
-                FunctionValueTransferPlans {
-                    slot_plans: Vec::new(),
-                    result_plans: Vec::new(),
-                },
-            )]),
-            BTreeMap::new(),
-        );
+        let transfer_plans = explicit_constant_plans(std::slice::from_ref(&mir));
 
         let artifact = emit_bytecode_artifact(&[mir], &[bundle], &transfer_plans)
             .expect("empty function emits an empty body");

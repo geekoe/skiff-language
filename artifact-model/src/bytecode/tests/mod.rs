@@ -68,6 +68,13 @@ pub(crate) fn number_type() -> TypeRefIr {
     TypeRefIr::builtin("number")
 }
 
+pub(crate) fn type_entry(ty: TypeRefIr) -> BytecodePoolEntry {
+    BytecodePoolEntry::TypeRef {
+        ty,
+        plan: snapshot_share(),
+    }
+}
+
 pub(crate) fn executable_coordinate(executable_index: u32) -> crate::PackageExecutableCoordinate {
     crate::PackageExecutableCoordinate {
         file_ir_identity: "file-ir:module".to_string(),
@@ -411,10 +418,7 @@ pub(crate) fn canonical_pools() -> BytecodePools {
                 plan: snapshot_share(),
             },
         ],
-        types: vec![
-            BytecodePoolEntry::TypeRef { ty: string_type() },
-            BytecodePoolEntry::TypeRef { ty: number_type() },
-        ],
+        types: vec![type_entry(string_type()), type_entry(number_type())],
         shapes: vec![BytecodePoolEntry::ShapeRef {
             shape: ShapeDeclaration {
                 type_ref: 0,

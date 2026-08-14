@@ -166,7 +166,7 @@ pub(super) fn source_type(
         .types
         .get(position)
     {
-        Some(BytecodePoolEntry::TypeRef { ty }) => Ok(ty),
+        Some(BytecodePoolEntry::TypeRef { ty, .. }) => Ok(ty),
         Some(_) => Err(constant_error(
             location,
             format!("constant type row {type_ref} has the wrong entry kind"),

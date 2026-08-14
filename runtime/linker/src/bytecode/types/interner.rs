@@ -338,7 +338,7 @@ impl<'a> TypeLinker<'a> {
                     format!("validated type pool row {artifact_index} is absent"),
                 )
             })?;
-        let BytecodePoolEntry::TypeRef { ty } = entry else {
+        let BytecodePoolEntry::TypeRef { ty, .. } = entry else {
             return Err(obligation_error(
                 location,
                 format!("validated type pool row {artifact_index} has the wrong entry kind"),
@@ -1196,7 +1196,7 @@ fn find_pool_type(package: &HydratedBytecodePackage, expected: &TypeRefIr) -> Op
         .pools()
         .types
         .iter()
-        .position(|entry| matches!(entry, BytecodePoolEntry::TypeRef { ty } if ty == expected))
+        .position(|entry| matches!(entry, BytecodePoolEntry::TypeRef { ty, .. } if ty == expected))
         .and_then(|index| u32::try_from(index).ok())
 }
 
@@ -1280,7 +1280,7 @@ fn find_pool_type_after_substitution(
         )
     })?;
     for (index, entry) in bytecode.view().pools().types.iter().enumerate() {
-        let BytecodePoolEntry::TypeRef { ty } = entry else {
+        let BytecodePoolEntry::TypeRef { ty, .. } = entry else {
             continue;
         };
         let expected = normalize_type(deployment, package, expected, &location)?;

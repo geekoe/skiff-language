@@ -38,7 +38,7 @@ fn type_linker_interns_only_the_owner_complete_type() {
         .pools()
         .types
         .iter()
-        .position(|entry| matches!(entry, BytecodePoolEntry::TypeRef { ty } if *ty == source))
+        .position(|entry| matches!(entry, BytecodePoolEntry::TypeRef { ty, .. } if *ty == source))
         .and_then(|index| u32::try_from(index).ok())
         .unwrap();
     let specialization = SpecializationKey::new(

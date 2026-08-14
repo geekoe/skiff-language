@@ -60,8 +60,10 @@ impl ConstantImage {
             return Ok(index);
         }
         let index = checked_index(self.pools.types.len(), "indexing canonical types")?;
+        let plan = self.exact_type_plan(module_path, ty, context)?;
         self.pools.types.push(BytecodePoolEntry::TypeRef {
             ty: qualified.clone(),
+            plan,
         });
         self.type_indices.insert(key, index);
         for child in nested_types(&qualified) {
@@ -168,6 +170,7 @@ impl ConstantImage {
             }
             (None, plan) => plan,
         };
+        let privileged_type_plan = identity.map(|_| plan.clone());
         let shape = ShapeDeclaration {
             type_ref,
             plan,
@@ -177,6 +180,21 @@ impl ConstantImage {
         self.pools
             .shapes
             .push(BytecodePoolEntry::ShapeRef { shape });
+        if let Some(privileged_type_plan) = privileged_type_plan {
+            let type_plan = self
+                .pools
+                .types
+                .get_mut(type_ref as usize)
+                .and_then(|entry| match entry {
+                    BytecodePoolEntry::TypeRef { plan, .. } => Some(plan),
+                    _ => None,
+                })
+                .ok_or_else(|| BytecodeEmissionError::CanonicalSerialization {
+                    context: context.to_string(),
+                    message: "privileged shape owner is absent from the type pool".to_string(),
+                })?;
+            *type_plan = privileged_type_plan;
+        }
         check_limit(
             "MAX_POOL_ENTRIES",
             "image.pools.shapes",
@@ -418,11 +436,19 @@ pub(crate) fn build_constant_image(
             ))
         })
         .collect::<Result<BTreeMap<_, _>, BytecodeEmissionError>>()?;
+    let types = canonical_types
+        .into_values()
+        .map(|ty| {
+            let plan = exact_qualified_type_plan(
+                inputs.transfer_plans.type_plans(),
+                &ty,
+                "canonical type pool",
+            )?;
+            Ok(BytecodePoolEntry::TypeRef { ty, plan })
+        })
+        .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
     let pools = BytecodePools {
-        types: canonical_types
-            .into_values()
-            .map(|ty| BytecodePoolEntry::TypeRef { ty })
-            .collect(),
+        types,
         ..BytecodePools::default()
     };
 
@@ -741,9 +767,13 @@ fn relocate_constant_shape(
                 .to_string(),
         });
     }
-    let qualified_owner = qualify_local_types(validated.module_path, &owner);
-    let owner_ref =
-        intern_merged_type(validated.module_path, &qualified_owner, pools, type_indices)?;
+    let owner_ref = intern_merged_type(
+        validated.module_path,
+        &owner,
+        pools,
+        type_indices,
+        type_plans,
+    )?;
     let mut fields = Vec::with_capacity(shape.fields().len());
     for field in shape.fields() {
         let ty = validated
@@ -768,9 +798,8 @@ fn relocate_constant_shape(
                 field.name()
             ),
         )?;
-        let qualified = qualify_local_types(validated.module_path, &ty);
         let field_type_ref =
-            intern_merged_type(validated.module_path, &qualified, pools, type_indices)?;
+            intern_merged_type(validated.module_path, &ty, pools, type_indices, type_plans)?;
         fields.push(ShapeFieldDeclaration {
             name: field.name().to_string(),
             type_ref: field_type_ref,
@@ -824,20 +853,60 @@ fn exact_type_plan(
         })
 }
 
+fn exact_qualified_type_plan(
+    type_plans: &[TypeValueTransferPlan],
+    qualified_ty: &TypeRefIr,
+    context: &str,
+) -> Result<ValueTransferPlan, BytecodeEmissionError> {
+    let mut matches = type_plans.iter().filter_map(|row| {
+        (qualify_local_types(&row.module_path, &row.ty) == *qualified_ty)
+            .then(|| qualify_transfer_plan(&row.module_path, &row.plan))
+    });
+    let plan = matches
+        .next()
+        .ok_or_else(|| BytecodeEmissionError::CanonicalSerialization {
+            context: context.to_string(),
+            message: format!(
+                "missing exact compiler-owned value-transfer plan for qualified type {qualified_ty:?}"
+            ),
+        })?;
+    if matches.any(|candidate| candidate != plan) {
+        return Err(BytecodeEmissionError::CanonicalSerialization {
+            context: context.to_string(),
+            message: format!(
+                "conflicting compiler-owned value-transfer plans for qualified type {qualified_ty:?}"
+            ),
+        });
+    }
+    Ok(plan)
+}
+
 fn intern_merged_type(
     module_path: &str,
     ty: &TypeRefIr,
     pools: &mut BytecodePools,
     type_indices: &mut BTreeMap<String, u32>,
+    type_plans: &[TypeValueTransferPlan],
 ) -> Result<u32, BytecodeEmissionError> {
-    let key = type_key(ty, &format!("constant shape type in `{module_path}`"))?;
+    let qualified = qualify_local_types(module_path, ty);
+    let key = type_key(
+        &qualified,
+        &format!("constant shape type in `{module_path}`"),
+    )?;
     if let Some(index) = type_indices.get(&key) {
         return Ok(*index);
     }
     let index = checked_index(pools.types.len(), "indexing canonical constant shape types")?;
-    pools
-        .types
-        .push(BytecodePoolEntry::TypeRef { ty: ty.clone() });
+    let plan = exact_type_plan(
+        type_plans,
+        module_path,
+        ty,
+        &format!("constant shape type in `{module_path}`"),
+    )?;
+    pools.types.push(BytecodePoolEntry::TypeRef {
+        ty: qualified,
+        plan,
+    });
     type_indices.insert(key, index);
     Ok(index)
 }

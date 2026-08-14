@@ -611,7 +611,7 @@ fn validate_callable_self_type(
             format!("function {:?} has no selfTypeRef", function.function_key),
         );
     };
-    let Some(BytecodePoolEntry::TypeRef { ty }) =
+    let Some(BytecodePoolEntry::TypeRef { ty, .. }) =
         bytecode.view().pools().types.get(self_type_ref as usize)
     else {
         return manifest_error(
@@ -1311,7 +1311,7 @@ fn validate_package_bytecode_refs(
     };
     let view = bytecode.view();
     for entry in &view.pools().types {
-        if let BytecodePoolEntry::TypeRef { ty } = entry {
+        if let BytecodePoolEntry::TypeRef { ty, .. } = entry {
             validate_type_ref(package, ty, deployment, packages)?;
         }
     }

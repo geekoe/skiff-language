@@ -47,6 +47,9 @@ fn admitted_bytecode(seed: &str) -> Arc<ValidatedBytecodeArtifact> {
                 }],
                 types: vec![BytecodePoolEntry::TypeRef {
                     ty: TypeRefIr::builtin("string"),
+                    plan: ValueTransferPlan::SnapshotShare {
+                        drop: ValueDropPlan::Trivial,
+                    },
                 }],
                 shapes: Vec::new(),
                 effects: Vec::new(),
@@ -101,11 +104,12 @@ fn assert_header_pin_drift_rejected(seed: &str, field: &str, mutate: fn(&mut Byt
 
 fn bytecode_with_type_root(seed: &str, ty: TypeRefIr) -> Arc<ValidatedBytecodeArtifact> {
     let mut artifact = admitted_bytecode(seed).artifact().clone();
-    artifact
-        .image
-        .pools
-        .types
-        .push(BytecodePoolEntry::TypeRef { ty });
+    artifact.image.pools.types.push(BytecodePoolEntry::TypeRef {
+        ty,
+        plan: ValueTransferPlan::SnapshotShare {
+            drop: ValueDropPlan::Trivial,
+        },
+    });
     skiff_artifact_identity::assign_bytecode_identity(&mut artifact).unwrap();
     Arc::new(ValidatedBytecodeArtifact::admit(artifact).unwrap())
 }
@@ -322,6 +326,9 @@ fn callable_bytecode(
     if self_bound {
         artifact.image.pools.types.push(BytecodePoolEntry::TypeRef {
             ty: TypeRefIr::builtin("string"),
+            plan: ValueTransferPlan::SnapshotShare {
+                drop: ValueDropPlan::Trivial,
+            },
         });
     }
     let plan = ValueTransferPlan::SnapshotShare {

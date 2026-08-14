@@ -182,7 +182,7 @@ fn type_for_ref<'a>(
     type_ref: u32,
     location: &str,
 ) -> Result<&'a TypeRefIr, StructuralValidationError> {
-    let Some(BytecodePoolEntry::TypeRef { ty }) = pools.types.get(type_ref as usize) else {
+    let Some(BytecodePoolEntry::TypeRef { ty, .. }) = pools.types.get(type_ref as usize) else {
         return Err(header_error(format!(
             "{location} does not reference a TypeRef entry"
         )));

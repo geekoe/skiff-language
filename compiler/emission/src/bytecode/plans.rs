@@ -109,12 +109,10 @@ fn collect_exact_type_plans(
                 &TypeRefIr::builtin("number"),
                 &format!("function `{function_key}` generated attribution carrier"),
             )?;
-            if function.stream_result.is_none() {
-                register(
-                    &function.return_type,
-                    &format!("function `{function_key}` return"),
-                )?;
-            }
+            register(
+                &function.return_type,
+                &format!("function `{function_key}` return"),
+            )?;
             for parameter in &function.params {
                 register(
                     &parameter.ty,
@@ -299,11 +297,7 @@ fn register_type_tree(
                     }
                     _ => None,
                 }),
-            TypeRefIr::PackageSymbol { symbol }
-                if skiff_artifact_model::native_value_lifecycle_registry()
-                    .privileged_affine_composite_for_symbol(symbol)
-                    .is_none() =>
-            {
+            TypeRefIr::PackageSymbol { symbol } => {
                 let PackageRefIr::PackageId { package_id } = &symbol.package else {
                     continue;
                 };

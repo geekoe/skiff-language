@@ -173,7 +173,7 @@ fn enabled_lane_attaches_exact_handoff_ref_and_manifest_to_a_new_projection() {
         .reference()
         .bytecode_identity
         .starts_with("skiff-bytecode-image-v5:sha256:"));
-    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v12");
+    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v13");
     assert_eq!(
         BYTECODE_IDENTITY_SCHEMA_MARKER,
         "skiff-bytecode-artifact-v5"
@@ -474,7 +474,8 @@ fn production_authoring_publishes_direct_throw_and_rethrow_catch_discriminators(
         !matches!(
             entry,
             BytecodePoolEntry::TypeRef {
-                ty: skiff_artifact_model::TypeRefIr::Builtin { name, args }
+                ty: skiff_artifact_model::TypeRefIr::Builtin { name, args },
+                ..
             } if name == "unknown" && args.is_empty()
         )
     }));

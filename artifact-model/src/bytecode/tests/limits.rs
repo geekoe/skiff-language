@@ -28,9 +28,7 @@ fn minimal_artifact(functions: BTreeMap<String, RelocatableBytecodeFunction>) ->
     });
     let mut pools = BytecodePools::default();
     if needs_type_entry {
-        pools
-            .types
-            .push(BytecodePoolEntry::TypeRef { ty: string_type() });
+        pools.types.push(type_entry(string_type()));
     }
     BytecodeArtifact {
         magic: BYTECODE_MAGIC.to_string(),
@@ -307,7 +305,7 @@ fn max_nesting_depth_constant_graph_boundary() {
 
     let (mut at_limit, _) = single_function_artifact(1, 0);
     at_limit.image.frozen_constant_graph = graph_at(64);
-    at_limit.image.pools.types = vec![BytecodePoolEntry::TypeRef { ty: string_type() }];
+    at_limit.image.pools.types = vec![type_entry(string_type())];
     at_limit.image.pools.constants = vec![BytecodePoolEntry::ConstantRef {
         reference: BytecodeConstantRef::LocalNode { node_index: 63 },
         type_ref: 0,
@@ -317,7 +315,7 @@ fn max_nesting_depth_constant_graph_boundary() {
 
     let (mut above, _) = single_function_artifact(1, 0);
     above.image.frozen_constant_graph = graph_at(65);
-    above.image.pools.types = vec![BytecodePoolEntry::TypeRef { ty: string_type() }];
+    above.image.pools.types = vec![type_entry(string_type())];
     above.image.pools.constants = vec![BytecodePoolEntry::ConstantRef {
         reference: BytecodeConstantRef::LocalNode { node_index: 64 },
         type_ref: 0,
@@ -343,11 +341,11 @@ fn max_nesting_depth_type_pool_boundary() {
     };
 
     let (mut at_limit, _) = single_function_artifact(1, 0);
-    at_limit.image.pools.types = vec![BytecodePoolEntry::TypeRef { ty: nested(64) }];
+    at_limit.image.pools.types = vec![type_entry(nested(64))];
     assert_validates(&at_limit);
 
     let (mut above, _) = single_function_artifact(1, 0);
-    above.image.pools.types = vec![BytecodePoolEntry::TypeRef { ty: nested(65) }];
+    above.image.pools.types = vec![type_entry(nested(65))];
     let error = assert_rejected(&above);
     assert!(matches!(error, StructuralValidationError::Limits { .. }));
     assert!(error.to_string().contains("MAX_NESTING_DEPTH"), "{error}");
@@ -360,7 +358,7 @@ fn max_switch_table_targets_boundary() {
     let with_targets = |target_count: usize| -> BytecodeArtifact {
         let (mut artifact, _) = single_function_artifact(target_count + 1, 0);
         artifact.image.pools.types = (0..target_count.max(1))
-            .map(|_| BytecodePoolEntry::TypeRef { ty: string_type() })
+            .map(|_| type_entry(string_type()))
             .collect();
         artifact
             .image
@@ -520,7 +518,7 @@ fn max_debug_table_bytes_boundary() {
 fn max_constant_graph_bytes_boundary() {
     let with_literal_len = |len: usize| -> BytecodeArtifact {
         let (mut artifact, _) = single_function_artifact(1, 0);
-        artifact.image.pools.types = vec![BytecodePoolEntry::TypeRef { ty: string_type() }];
+        artifact.image.pools.types = vec![type_entry(string_type())];
         artifact.image.pools.constants = vec![BytecodePoolEntry::ConstantRef {
             reference: BytecodeConstantRef::LocalNode { node_index: 0 },
             type_ref: 0,
@@ -552,9 +550,7 @@ fn max_constant_graph_bytes_boundary() {
 fn max_pool_entries_boundary() {
     let with_pool_len = |len: usize| -> BytecodeArtifact {
         let (mut artifact, _) = single_function_artifact(1, 0);
-        artifact.image.pools.types = (0..len)
-            .map(|_| BytecodePoolEntry::TypeRef { ty: string_type() })
-            .collect();
+        artifact.image.pools.types = (0..len).map(|_| type_entry(string_type())).collect();
         artifact
     };
 
@@ -583,7 +579,7 @@ fn max_constant_graph_nodes_boundary() {
         }
         artifact.image.frozen_constant_graph = FrozenConstantGraph { nodes };
         if count > 0 {
-            artifact.image.pools.types = vec![BytecodePoolEntry::TypeRef { ty: string_type() }];
+            artifact.image.pools.types = vec![type_entry(string_type())];
             artifact.image.pools.constants = vec![BytecodePoolEntry::ConstantRef {
                 reference: BytecodeConstantRef::LocalNode {
                     node_index: (count - 1) as u32,

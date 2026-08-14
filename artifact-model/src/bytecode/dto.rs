@@ -62,7 +62,7 @@ pub mod limits {
 /// defined here so the Phase 1 bytecode module owns its version surface.
 /// The artifact record is still canonical JSON (D8).
 pub const BYTECODE_MAGIC: &str = "skiff-bytecode";
-pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v12";
+pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v13";
 pub const BYTECODE_ISA_VERSION: &str = "skiff-bytecode-isa-v5";
 
 /// Root bytecode artifact record (D11: one image per package).
@@ -154,6 +154,10 @@ pub enum BytecodePoolEntry {
     /// Type reference (reuses the File IR type vocabulary).
     TypeRef {
         ty: TypeRefIr,
+        /// Exact compiler-owned lifecycle plan for values of this type.
+        /// The linker may resolve pool-local references but must never derive
+        /// a replacement from the type shape or a lifecycle registry.
+        plan: ValueTransferPlan,
     },
     /// Dense record shape declaration.
     ShapeRef {

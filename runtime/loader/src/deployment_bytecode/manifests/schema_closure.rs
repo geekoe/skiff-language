@@ -90,7 +90,7 @@ fn collect_package_roots(
     };
     let view = bytecode.view();
     for entry in &view.pools().types {
-        if let BytecodePoolEntry::TypeRef { ty } = entry {
+        if let BytecodePoolEntry::TypeRef { ty, .. } = entry {
             collect_type_ref(package, ty, roots)?;
         }
     }

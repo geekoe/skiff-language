@@ -111,6 +111,7 @@ struct PendingPcBranch {
     target_instruction: usize,
 }
 
+#[derive(Clone)]
 struct PendingResume {
     instruction: usize,
     operand: usize,
@@ -1650,7 +1651,7 @@ impl<'a> FunctionEmitter<'a> {
     }
 
     fn call_signature(
-        &self,
+        &mut self,
         call: &skiff_artifact_model::CallIr,
         expression: &MirExpression,
         effects: skiff_artifact_model::CallableMayEffects,
@@ -1666,18 +1667,16 @@ impl<'a> FunctionEmitter<'a> {
                 ))
             })
             .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
-        let parameter_plans = parameter_types
-            .iter()
-            .zip(&call.args)
-            .map(|(_, argument)| {
-                let ty = &self.function.expression(*argument)?.ty;
-                self.image.exact_type_plan(
-                    self.unit.module_path.as_str(),
-                    ty,
-                    &format!("host call parameter plan in `{}`", self.key),
-                )
-            })
-            .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
+        let mut parameter_plans = Vec::with_capacity(call.args.len());
+        for argument in &call.args {
+            let ty = self.function.expression(*argument)?.ty.clone();
+            let source_plan = self.image.exact_type_plan(
+                self.unit.module_path.as_str(),
+                &ty,
+                &format!("host call parameter plan in `{}`", self.key),
+            )?;
+            parameter_plans.push(self.bind_privileged_plan(&ty, &source_plan)?);
+        }
         let result_types = if is_void(&expression.ty) {
             Vec::new()
         } else {
@@ -1686,16 +1685,16 @@ impl<'a> FunctionEmitter<'a> {
                 &self.normalize_host_signature_type(&expression.ty),
             )]
         };
-        let result_plans = result_types
-            .iter()
-            .map(|_| {
-                self.image.exact_type_plan(
-                    self.unit.module_path.as_str(),
-                    &expression.ty,
-                    &format!("host call result plan in `{}`", self.key),
-                )
-            })
-            .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
+        let result_plans = if result_types.is_empty() {
+            Vec::new()
+        } else {
+            let source_plan = self.image.exact_type_plan(
+                self.unit.module_path.as_str(),
+                &expression.ty,
+                &format!("host call result plan in `{}`", self.key),
+            )?;
+            vec![self.bind_privileged_plan(&expression.ty, &source_plan)?]
+        };
         let parameter_count = parameter_types.len();
         Ok(HostEffectSignature {
             parameter_types,
@@ -3830,7 +3829,8 @@ impl<'a> FunctionEmitter<'a> {
     }
 
     fn patch_resumes(&mut self, pcs: &[u32]) -> Result<(), BytecodeEmissionError> {
-        for pending in &self.pending_resumes {
+        let pending_resumes = self.pending_resumes.clone();
+        for pending in &pending_resumes {
             let site_pc = *pcs.get(pending.instruction).ok_or_else(|| {
                 unsupported(&self.key, "resume descriptor", "site instruction is absent")
             })?;
@@ -3849,17 +3849,15 @@ impl<'a> FunctionEmitter<'a> {
                     )
                 })
                 .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
-            let result_plans = pending
-                .result_ty
-                .iter()
-                .map(|ty| {
-                    self.image.exact_type_plan(
-                        self.unit.module_path.as_str(),
-                        ty,
-                        &format!("resume result plan in `{}`", self.key),
-                    )
-                })
-                .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
+            let mut result_plans = Vec::with_capacity(usize::from(pending.result_ty.is_some()));
+            if let Some(ty) = &pending.result_ty {
+                let source_plan = self.image.exact_type_plan(
+                    self.unit.module_path.as_str(),
+                    ty,
+                    &format!("resume result plan in `{}`", self.key),
+                )?;
+                result_plans.push(self.bind_privileged_plan(ty, &source_plan)?);
+            }
             let result_materializations = match &pending.result_ty {
                 Some(_) => vec![pending.result_materialization],
                 None => {
@@ -4221,7 +4219,7 @@ impl<'a> FunctionEmitter<'a> {
             .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
         let mut slot_plans = Vec::with_capacity(slot_count);
         for (ty, plan) in source_slot_plans {
-            slot_plans.push(self.bind_privileged_slot_plan(&ty, &plan)?);
+            slot_plans.push(self.bind_privileged_plan(&ty, &plan)?);
         }
         let generated = self
             .generated_slots
@@ -4249,7 +4247,7 @@ impl<'a> FunctionEmitter<'a> {
                 ),
             )?);
             let plan = self.generated_slot_plan(&ty)?;
-            slot_plans.push(self.bind_privileged_slot_plan(&ty, &plan)?);
+            slot_plans.push(self.bind_privileged_plan(&ty, &plan)?);
         }
         let mut parameter_slots = Vec::new();
         for parameter in &self.function.params {
@@ -4346,7 +4344,13 @@ impl<'a> FunctionEmitter<'a> {
         let result_plans = if is_stream_producer {
             Vec::new()
         } else {
-            self.plans.result_plans.clone()
+            let source_plans = self.plans.result_plans.clone();
+            let return_type = self.function.return_type.clone();
+            let mut result_plans = Vec::with_capacity(source_plans.len());
+            for plan in source_plans {
+                result_plans.push(self.bind_privileged_plan(&return_type, &plan)?);
+            }
+            result_plans
         };
         let writable_local_slots = self
             .function
@@ -4370,7 +4374,7 @@ impl<'a> FunctionEmitter<'a> {
         })
     }
 
-    fn bind_privileged_slot_plan(
+    fn bind_privileged_plan(
         &mut self,
         ty: &TypeRefIr,
         source_plan: &ValueTransferPlan,
@@ -5379,6 +5383,9 @@ mod tests {
                 ty: TypeRefIr::PublicationType {
                     module_path: "main".to_string(),
                     type_index: 0,
+                },
+                plan: ValueTransferPlan::SnapshotShare {
+                    drop: ValueDropPlan::SnapshotRelease,
                 },
             },
             "the runtime tag must be the nominal leaf, not the union context"
