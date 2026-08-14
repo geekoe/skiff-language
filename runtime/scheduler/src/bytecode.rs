@@ -6,15 +6,16 @@ use skiff_runtime_model::vm_heap::{VmHeap, VmHeapError};
 use skiff_runtime_model::vm_root::{VmRootSource, VmRootVisitor};
 use skiff_runtime_vm::{
     AdapterInvocation as VmAdapterInvocation, ChildInvocation as VmChildInvocation, ChildTarget,
-    PendingOperation as VmPendingOperation, ResumeOutcome, StreamItem as VmStreamItem, VmBudget,
-    VmCompletion, VmControl, VmError, VmFiber, VmResumeFailure, VmResumeToken,
+    PendingOperation as VmPendingOperation, ResumeOutcome, StreamItem as VmStreamItem,
+    StreamItemReleaseError, VmBudget, VmCompletion, VmControl, VmError, VmFiber, VmResumeToken,
+    VmTerminalEscrow,
 };
 
 use crate::{
     owner_inventory::{ChildOwnerRegistration, OwnerCreationError},
     pending::{MappedPendingWakeGuard, PendingResumeFailure},
     ClaimedPendingWakeGuard, EnterChildError, FlatTrampoline, PendingOwnerDraft, PendingWake,
-    RequestResourceRootPin, SuspendedTrampoline, TrampolineCompletion,
+    RequestResourceRootPin, SuspendedTrampoline,
 };
 
 /// Failure modes owned by the bytecode scheduler.
@@ -26,10 +27,6 @@ pub enum BytecodeSchedulerError {
     UnsupportedPark,
     ChildCapacityExceeded,
     ChildOwnerCreation(OwnerCreationError),
-    /// The scheduler rejected an emitted VM item, but its exact release
-    /// failed. This variant retains the unique item carrier until the request
-    /// terminal path can transfer its values into cleanup escrow.
-    StreamItemRelease(StreamItemReleaseError),
     Vm(VmError),
     Port(String),
 }
@@ -49,9 +46,6 @@ impl fmt::Display for BytecodeSchedulerError {
                 formatter.write_str("bytecode blocked child capacity is exhausted")
             }
             Self::ChildOwnerCreation(error) => error.fmt(formatter),
-            Self::StreamItemRelease(error) => {
-                write!(formatter, "bytecode stream item release failed: {error}")
-            }
             Self::Vm(error) => write!(formatter, "bytecode VM unit failed: {error}"),
             Self::Port(message) => write!(formatter, "bytecode scheduler port failed: {message}"),
         }
@@ -62,7 +56,6 @@ impl std::error::Error for BytecodeSchedulerError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Vm(error) => Some(error),
-            Self::StreamItemRelease(error) => Some(error),
             Self::ChildOwnerCreation(error) => Some(error),
             _ => None,
         }
@@ -70,11 +63,8 @@ impl std::error::Error for BytecodeSchedulerError {
 }
 
 impl VmRootSource for BytecodeSchedulerError {
-    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
-        match self {
-            Self::StreamItemRelease(error) => error.visit_roots(visitor),
-            _ => Ok(()),
-        }
+    fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        Ok(())
     }
 }
 
@@ -99,6 +89,82 @@ impl From<EnterChildError> for BytecodeSchedulerError {
     }
 }
 
+/// Sealed exact owner for an unrecoverable terminal scheduler handoff.
+///
+/// The only constructor consumes a VM-owned failure carrier and converts it
+/// into terminal escrow. Callers cannot manufacture an ownerless terminal
+/// port failure from an ordinary diagnostic.
+pub struct BytecodeTerminalOwner {
+    escrow: VmTerminalEscrow,
+}
+
+impl BytecodeTerminalOwner {
+    fn from_stream_item_release(failure: StreamItemReleaseError) -> (BytecodeSchedulerError, Self) {
+        let (escrow, error) = failure.into_terminal_escrow();
+        (BytecodeSchedulerError::Vm(error), Self { escrow })
+    }
+
+    fn into_escrow(self) -> VmTerminalEscrow {
+        self.escrow
+    }
+}
+
+impl fmt::Debug for BytecodeTerminalOwner {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BytecodeTerminalOwner")
+            .field("root_count", &self.escrow.root_count())
+            .finish_non_exhaustive()
+    }
+}
+
+impl VmRootSource for BytecodeTerminalOwner {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        self.escrow.visit_roots(visitor)
+    }
+}
+
+/// Owner-bearing terminalization failure returned by a [`BytecodeUnit`].
+#[must_use = "a terminal failure must be routed with its exact escrow owner"]
+pub struct BytecodeTerminalFailure {
+    reason: BytecodeSchedulerError,
+    owner: BytecodeTerminalOwner,
+}
+
+impl BytecodeTerminalFailure {
+    /// Converts the still-unique failed stream item directly into exact
+    /// terminal escrow; no raw item, tag or cleanup-kind projection escapes.
+    pub fn stream_item_release(failure: StreamItemReleaseError) -> Self {
+        let (reason, owner) = BytecodeTerminalOwner::from_stream_item_release(failure);
+        Self { reason, owner }
+    }
+
+    pub const fn reason(&self) -> &BytecodeSchedulerError {
+        &self.reason
+    }
+
+    fn into_parts(self) -> (BytecodeSchedulerError, BytecodeTerminalOwner) {
+        (self.reason, self.owner)
+    }
+}
+
+impl fmt::Debug for BytecodeTerminalFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BytecodeTerminalFailure")
+            .field("reason", &self.reason)
+            .field("owner", &self.owner)
+            .finish()
+    }
+}
+
+impl VmRootSource for BytecodeTerminalFailure {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        self.reason.visit_roots(visitor)?;
+        self.owner.visit_roots(visitor)
+    }
+}
+
 /// Owner returned when a scheduler port rejects a handoff.
 ///
 /// A port either did not accept its original input or consumed that input and
@@ -108,6 +174,7 @@ impl From<EnterChildError> for BytecodeSchedulerError {
 pub enum BytecodePortFailureOwner<I, R> {
     Input(I),
     Continuation(R),
+    Terminal(BytecodeTerminalOwner),
 }
 
 /// Owner-returning failure from an adapter, stream-consumer or stream-emitter
@@ -130,6 +197,16 @@ impl<I, R> BytecodePortFailure<I, R> {
         Self {
             reason,
             owner: BytecodePortFailureOwner::Continuation(continuation),
+        }
+    }
+
+    /// Constructs the sole terminal port failure by consuming the sealed VM
+    /// carrier that still owns the rejected item and continuation.
+    pub fn terminal_stream_release(failure: StreamItemReleaseError) -> Self {
+        let (reason, owner) = BytecodeTerminalOwner::from_stream_item_release(failure);
+        Self {
+            reason,
+            owner: BytecodePortFailureOwner::Terminal(owner),
         }
     }
 
@@ -218,7 +295,18 @@ pub trait BytecodeUnit: VmRootSource {
         outcome: Self::ResumeOutcome,
     ) -> Result<(), BytecodeResumeFailure<Self::ResumeToken, Self::ResumeOutcome>>;
 
-    fn child_completion_to_resume_outcome(completed: Self::RootResult) -> Self::ResumeOutcome;
+    /// Terminalizes an emitted item when no supervisor can accept it.
+    ///
+    /// The VM implementation performs the item's exact linked release. If
+    /// that release fails, the returned owner-bearing error is converted into
+    /// scheduler terminal escrow before this synchronous drive returns.
+    fn release_rejected_stream_item(
+        item: Self::StreamItem,
+        heap: &mut dyn VmHeap,
+    ) -> Result<(), BytecodeTerminalFailure> {
+        let _ = (item, heap);
+        Ok(())
+    }
 
     /// Reports whether a child invocation is a `StreamNext` consumer poll.
     ///
@@ -561,13 +649,98 @@ enum BytecodeSchedulerFailureOwnerKind<U: BytecodeUnit> {
 pub struct BytecodeSchedulerFailureOwner<U: BytecodeUnit> {
     #[allow(dead_code)] // The carrier intentionally exposes no owner projection.
     kind: BytecodeSchedulerFailureOwnerKind<U>,
+    terminal_escrow: Option<VmTerminalEscrow>,
+}
+
+impl<U: BytecodeUnit> BytecodeSchedulerFailureOwner<U> {
+    /// Exact terminal owners captured while normalizing a VM handoff failure.
+    pub const fn terminal_escrow(&self) -> Option<&VmTerminalEscrow> {
+        self.terminal_escrow.as_ref()
+    }
+
+    /// Releases the exact terminal owner suffix monotonically.
+    ///
+    /// A failed release leaves the same escrow in this carrier so request
+    /// retention can keep it ahead of heap teardown and retry safely.
+    pub fn release_terminal_escrow(&mut self, heap: &mut dyn VmHeap) -> Result<(), VmError> {
+        let Some(escrow) = self.terminal_escrow.as_mut() else {
+            return Ok(());
+        };
+        escrow.release_all(heap)?;
+        self.terminal_escrow = None;
+        Ok(())
+    }
 }
 
 impl<U: BytecodeUnit> fmt::Debug for BytecodeSchedulerFailureOwner<U> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("BytecodeSchedulerFailureOwner")
+            .field(
+                "terminal_roots",
+                &self
+                    .terminal_escrow
+                    .as_ref()
+                    .map_or(0, VmTerminalEscrow::root_count),
+            )
             .finish_non_exhaustive()
+    }
+}
+
+impl VmRootSource for BytecodeSchedulerFailureOwner<VmFiber> {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        match &self.kind {
+            BytecodeSchedulerFailureOwnerKind::Scheduler {
+                scheduler,
+                retained,
+            } => {
+                scheduler.visit_roots(visitor)?;
+                match retained {
+                    BytecodeSchedulerRetainedOwner::None
+                    | BytecodeSchedulerRetainedOwner::PortContinuation(_) => {}
+                    BytecodeSchedulerRetainedOwner::Complete(completion) => {
+                        completion.visit_roots(visitor)?;
+                    }
+                    BytecodeSchedulerRetainedOwner::ChildInput(invocation) => {
+                        invocation.visit_roots(visitor)?;
+                    }
+                    BytecodeSchedulerRetainedOwner::AdapterInput(invocation) => {
+                        invocation.visit_roots(visitor)?;
+                    }
+                    BytecodeSchedulerRetainedOwner::StreamInput(item) => {
+                        item.visit_roots(visitor)?;
+                    }
+                    BytecodeSchedulerRetainedOwner::ResumeRejected { outcome, .. } => {
+                        outcome.visit_roots(visitor)?;
+                    }
+                }
+            }
+            BytecodeSchedulerFailureOwnerKind::Park {
+                owner,
+                resource_roots,
+                ..
+            } => {
+                match owner {
+                    BytecodeParkFailureOwner::Unaccepted(request) => {
+                        request.operation.visit_roots(visitor)?;
+                        request.suspended.visit_roots(visitor)?;
+                    }
+                    BytecodeParkFailureOwner::PendingDraft(draft) => {
+                        draft.visit_roots(visitor)?;
+                    }
+                }
+                if let Some(resource_roots) = resource_roots {
+                    resource_roots.visit_roots(visitor)?;
+                }
+            }
+            BytecodeSchedulerFailureOwnerKind::MappedWake { guard, .. } => {
+                guard.visit_roots(visitor)?;
+            }
+        }
+        if let Some(escrow) = &self.terminal_escrow {
+            escrow.visit_roots(visitor)?;
+        }
+        Ok(())
     }
 }
 
@@ -582,7 +755,24 @@ pub struct BytecodeSchedulerFailure<U: BytecodeUnit> {
 impl<U: BytecodeUnit> BytecodeSchedulerFailure<U> {
     fn new(reason: BytecodeSchedulerError, kind: BytecodeSchedulerFailureOwnerKind<U>) -> Self {
         Self {
-            owner: BytecodeSchedulerFailureOwner { kind },
+            owner: BytecodeSchedulerFailureOwner {
+                kind,
+                terminal_escrow: None,
+            },
+            reason,
+        }
+    }
+
+    fn with_terminal_owner(
+        reason: BytecodeSchedulerError,
+        kind: BytecodeSchedulerFailureOwnerKind<U>,
+        owner: BytecodeTerminalOwner,
+    ) -> Self {
+        Self {
+            owner: BytecodeSchedulerFailureOwner {
+                kind,
+                terminal_escrow: Some(owner.into_escrow()),
+            },
             reason,
         }
     }
@@ -611,6 +801,21 @@ impl<U: BytecodeUnit> BytecodeSchedulerFailure<U> {
                 scheduler,
                 retained,
             },
+        )
+    }
+
+    fn scheduler_with_terminal(
+        reason: BytecodeSchedulerError,
+        scheduler: BytecodeScheduler<U>,
+        owner: BytecodeTerminalOwner,
+    ) -> Self {
+        Self::with_terminal_owner(
+            reason,
+            BytecodeSchedulerFailureOwnerKind::Scheduler {
+                scheduler,
+                retained: BytecodeSchedulerRetainedOwner::None,
+            },
+            owner,
         )
     }
 
@@ -670,6 +875,13 @@ impl<U: BytecodeUnit> fmt::Display for BytecodeSchedulerFailure<U> {
 }
 
 impl<U: BytecodeUnit> std::error::Error for BytecodeSchedulerFailure<U> {}
+
+impl VmRootSource for BytecodeSchedulerFailure<VmFiber> {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        self.reason.visit_roots(visitor)?;
+        self.owner.visit_roots(visitor)
+    }
+}
 
 /// Flat bytecode scheduler over a `FlatTrampoline` of execution units.
 pub struct BytecodeScheduler<U: BytecodeUnit> {
@@ -770,15 +982,17 @@ where
         failure: BytecodePortFailure<U::ChildInvocation, U::ResumeToken>,
     ) -> BytecodeSchedulerFailure<U> {
         let (reason, owner) = failure.into_parts();
-        let retained = match owner {
-            BytecodePortFailureOwner::Input(input) => {
-                BytecodeSchedulerRetainedOwner::ChildInput(input)
+        match owner {
+            BytecodePortFailureOwner::Input(input) => self
+                .with_retained_failure(reason, BytecodeSchedulerRetainedOwner::ChildInput(input)),
+            BytecodePortFailureOwner::Continuation(resume) => self.with_retained_failure(
+                reason,
+                BytecodeSchedulerRetainedOwner::PortContinuation(resume),
+            ),
+            BytecodePortFailureOwner::Terminal(owner) => {
+                BytecodeSchedulerFailure::scheduler_with_terminal(reason, self, owner)
             }
-            BytecodePortFailureOwner::Continuation(resume) => {
-                BytecodeSchedulerRetainedOwner::PortContinuation(resume)
-            }
-        };
-        self.with_retained_failure(reason, retained)
+        }
     }
 
     fn with_adapter_port_failure(
@@ -786,15 +1000,17 @@ where
         failure: BytecodePortFailure<U::AdapterInvocation, U::ResumeToken>,
     ) -> BytecodeSchedulerFailure<U> {
         let (reason, owner) = failure.into_parts();
-        let retained = match owner {
-            BytecodePortFailureOwner::Input(input) => {
-                BytecodeSchedulerRetainedOwner::AdapterInput(input)
+        match owner {
+            BytecodePortFailureOwner::Input(input) => self
+                .with_retained_failure(reason, BytecodeSchedulerRetainedOwner::AdapterInput(input)),
+            BytecodePortFailureOwner::Continuation(resume) => self.with_retained_failure(
+                reason,
+                BytecodeSchedulerRetainedOwner::PortContinuation(resume),
+            ),
+            BytecodePortFailureOwner::Terminal(owner) => {
+                BytecodeSchedulerFailure::scheduler_with_terminal(reason, self, owner)
             }
-            BytecodePortFailureOwner::Continuation(resume) => {
-                BytecodeSchedulerRetainedOwner::PortContinuation(resume)
-            }
-        };
-        self.with_retained_failure(reason, retained)
+        }
     }
 
     fn with_stream_port_failure(
@@ -802,15 +1018,17 @@ where
         failure: BytecodePortFailure<U::StreamItem, U::ResumeToken>,
     ) -> BytecodeSchedulerFailure<U> {
         let (reason, owner) = failure.into_parts();
-        let retained = match owner {
-            BytecodePortFailureOwner::Input(input) => {
-                BytecodeSchedulerRetainedOwner::StreamInput(input)
+        match owner {
+            BytecodePortFailureOwner::Input(input) => self
+                .with_retained_failure(reason, BytecodeSchedulerRetainedOwner::StreamInput(input)),
+            BytecodePortFailureOwner::Continuation(resume) => self.with_retained_failure(
+                reason,
+                BytecodeSchedulerRetainedOwner::PortContinuation(resume),
+            ),
+            BytecodePortFailureOwner::Terminal(owner) => {
+                BytecodeSchedulerFailure::scheduler_with_terminal(reason, self, owner)
             }
-            BytecodePortFailureOwner::Continuation(resume) => {
-                BytecodeSchedulerRetainedOwner::PortContinuation(resume)
-            }
-        };
-        self.with_retained_failure(reason, retained)
+        }
     }
 
     fn into_park_parts(
@@ -857,6 +1075,12 @@ where
                 BytecodeControl::Continue => {}
                 BytecodeControl::Complete(result) => {
                     let depth = self.trampoline.blocked_depth();
+                    if depth != 0 {
+                        return Err(self.with_retained_failure(
+                            BytecodeSchedulerError::UnsupportedChild,
+                            BytecodeSchedulerRetainedOwner::Complete(result),
+                        ));
+                    }
                     if let Some(supervisor) = self.ports.stream_supervisor.clone() {
                         if let Err(reason) = supervisor.finish_stream(depth, &result) {
                             return Err(self.with_retained_failure(
@@ -865,19 +1089,7 @@ where
                             ));
                         }
                     }
-                    if self.trampoline.blocked_depth() == 0 {
-                        return Ok(BytecodeSchedulerOutcome::Complete(result));
-                    }
-                    let outcome = U::child_completion_to_resume_outcome(result);
-                    let completion = self.trampoline.complete_active(outcome);
-                    let TrampolineCompletion::ResumeParent(parent) = completion else {
-                        unreachable!("depth check guarantees a parent unit exists");
-                    };
-                    let (trampoline, resume, outcome) = parent.into_parts();
-                    self.trampoline = trampoline;
-                    if let Err(failure) = self.trampoline.active_mut().resume(resume, outcome) {
-                        return Err(self.with_resume_failure(failure));
-                    }
+                    return Ok(BytecodeSchedulerOutcome::Complete(result));
                 }
                 BytecodeControl::EnterChild(invocation) => {
                     if !U::is_stream_next_child(&invocation) {
@@ -947,10 +1159,18 @@ where
                 }
                 BytecodeControl::EmitStream(item) => {
                     let Some(supervisor) = self.ports.stream_supervisor.clone() else {
-                        return Err(self.with_retained_failure(
-                            BytecodeSchedulerError::UnsupportedStream,
-                            BytecodeSchedulerRetainedOwner::StreamInput(item),
-                        ));
+                        return match U::release_rejected_stream_item(item, heap) {
+                            Ok(()) => Err(BytecodeSchedulerFailure::scheduler(
+                                BytecodeSchedulerError::UnsupportedStream,
+                                self,
+                            )),
+                            Err(failure) => {
+                                let (reason, owner) = failure.into_parts();
+                                Err(BytecodeSchedulerFailure::scheduler_with_terminal(
+                                    reason, self, owner,
+                                ))
+                            }
+                        };
                     };
                     let depth = self.trampoline.blocked_depth();
                     let handoff = match supervisor.emit_stream_handoff(item, depth, heap, budget) {
@@ -1100,7 +1320,7 @@ where
 impl BytecodeUnit for VmFiber {
     type ResumeToken = VmResumeToken;
     type ResumeOutcome = ResumeOutcome;
-    type RootResult = VmResult;
+    type RootResult = VmCompletion;
     type ChildInvocation = VmChildInvocation;
     type AdapterInvocation = VmAdapterInvocation;
     type StreamItem = VmStreamItem;
@@ -1126,31 +1346,26 @@ impl BytecodeUnit for VmFiber {
         token: VmResumeToken,
         outcome: ResumeOutcome,
     ) -> Result<(), BytecodeResumeFailure<VmResumeToken, ResumeOutcome>> {
-        VmFiber::resume(self, token, outcome).map_err(|failure| match failure {
-            VmResumeFailure::Terminal(error) => {
-                BytecodeResumeFailure::Terminal(BytecodeSchedulerError::Vm(error))
+        VmFiber::resume(self, token, outcome).map_err(|failure| {
+            let (error, returned) = failure.into_parts();
+            match returned {
+                None => BytecodeResumeFailure::Terminal(BytecodeSchedulerError::Vm(error)),
+                Some((resume, outcome)) => BytecodeResumeFailure::Rejected {
+                    reason: BytecodeSchedulerError::Vm(error),
+                    resume,
+                    outcome,
+                },
             }
-            VmResumeFailure::Rejected {
-                error,
-                resume,
-                outcome,
-            } => BytecodeResumeFailure::Rejected {
-                reason: BytecodeSchedulerError::Vm(error),
-                resume,
-                outcome,
-            },
         })
     }
 
-    fn child_completion_to_resume_outcome(completed: VmResult) -> ResumeOutcome {
-        match completed {
-            Ok(values) => ResumeOutcome::Values(values),
-            // A child's ordinary throw is not a terminal failure: the exact
-            // opaque envelope crosses the child boundary so the parent can
-            // resume its own unwind with the unchanged identity.
-            Err(VmError::Thrown(envelope)) => ResumeOutcome::Throw(envelope),
-            Err(error) => ResumeOutcome::Failure(error),
-        }
+    fn release_rejected_stream_item(
+        item: VmStreamItem,
+        heap: &mut dyn VmHeap,
+    ) -> Result<(), BytecodeTerminalFailure> {
+        item.release(heap)
+            .map(|_resume| ())
+            .map_err(BytecodeTerminalFailure::stream_item_release)
     }
 
     fn is_stream_next_child(invocation: &VmChildInvocation) -> bool {
@@ -1233,6 +1448,55 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct LinearCompletionProbe(Arc<AtomicUsize>);
+
+    impl Drop for LinearCompletionProbe {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    struct LinearCompletionUnit {
+        completion: Option<LinearCompletionProbe>,
+    }
+
+    impl VmRootSource for LinearCompletionUnit {
+        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    impl BytecodeUnit for LinearCompletionUnit {
+        type ResumeToken = ();
+        type ResumeOutcome = ();
+        type RootResult = LinearCompletionProbe;
+        type ChildInvocation = ();
+        type AdapterInvocation = ();
+        type StreamItem = ();
+        type PendingOperation = ();
+
+        fn run_segment(
+            &mut self,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> BytecodeUnitControl<Self> {
+            BytecodeControl::Complete(
+                self.completion
+                    .take()
+                    .expect("linear completion is produced exactly once"),
+            )
+        }
+
+        fn resume(
+            &mut self,
+            _token: Self::ResumeToken,
+            _outcome: Self::ResumeOutcome,
+        ) -> Result<(), BytecodeResumeFailure<Self::ResumeToken, Self::ResumeOutcome>> {
+            Ok(())
+        }
+    }
+
     type TestControl = BytecodeControl<usize, usize, usize, usize, usize>;
     type TestSuspended = SuspendedTrampoline<TestUnit, usize>;
     type TestWake = PendingWake<usize, TestSuspended, TestResumeOutcome>;
@@ -1286,10 +1550,6 @@ mod tests {
         ) -> Result<(), BytecodeResumeFailure<Self::ResumeToken, Self::ResumeOutcome>> {
             Ok(())
         }
-
-        fn child_completion_to_resume_outcome(completed: Self::RootResult) -> Self::ResumeOutcome {
-            TestResumeOutcome(completed)
-        }
     }
 
     struct RejectedStreamProbe {
@@ -1333,8 +1593,12 @@ mod tests {
             Ok(())
         }
 
-        fn child_completion_to_resume_outcome(completed: Self::RootResult) -> Self::ResumeOutcome {
-            TestResumeOutcome(completed)
+        fn release_rejected_stream_item(
+            item: Self::StreamItem,
+            _heap: &mut dyn VmHeap,
+        ) -> Result<(), BytecodeTerminalFailure> {
+            item.fetch_add(1, Ordering::SeqCst);
+            Ok(())
         }
     }
 
@@ -1399,10 +1663,6 @@ mod tests {
         ) -> Result<(), BytecodeResumeFailure<usize, TestResumeOutcome>> {
             self.resumed = Some((token, outcome));
             Ok(())
-        }
-
-        fn child_completion_to_resume_outcome(completed: usize) -> TestResumeOutcome {
-            TestResumeOutcome(completed)
         }
     }
 
@@ -1507,10 +1767,6 @@ mod tests {
         ) -> Result<(), BytecodeResumeFailure<Self::ResumeToken, Self::ResumeOutcome>> {
             self.state = ResumeThenChildState::EnterChild;
             Ok(())
-        }
-
-        fn child_completion_to_resume_outcome(completed: usize) -> TestResumeOutcome {
-            TestResumeOutcome(completed)
         }
     }
 
@@ -1628,12 +1884,6 @@ mod tests {
             Ok(())
         }
 
-        fn child_completion_to_resume_outcome(
-            completed: PendingStreamOutcome,
-        ) -> PendingStreamOutcome {
-            completed
-        }
-
         fn is_stream_next_child(_invocation: &()) -> bool {
             true
         }
@@ -1742,10 +1992,6 @@ mod tests {
                 resume: token,
                 outcome,
             })
-        }
-
-        fn child_completion_to_resume_outcome(completed: Self::RootResult) -> Self::ResumeOutcome {
-            RejectResumeOutcome(completed)
         }
     }
 
@@ -1957,7 +2203,7 @@ mod tests {
     }
 
     #[test]
-    fn phase_5_missing_stream_supervisor_retains_input_until_failure_owner_drops() {
+    fn phase_5_missing_stream_supervisor_releases_emitted_item_once() {
         let release_count = Arc::new(AtomicUsize::new(0));
         let scheduler = BytecodeScheduler::new(
             RejectedStreamProbe {
@@ -1973,10 +2219,68 @@ mod tests {
             failure.reason(),
             BytecodeSchedulerError::UnsupportedStream
         ));
-        assert_eq!(Arc::strong_count(&release_count), 3);
+        assert_eq!(release_count.load(Ordering::SeqCst), 1);
+        assert_eq!(Arc::strong_count(&release_count), 2);
         let (_, owner) = failure.into_parts();
         drop(owner);
         assert_eq!(Arc::strong_count(&release_count), 1);
+        assert_eq!(release_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn vm_fiber_root_result_is_the_sealed_vm_completion_carrier() {
+        fn preserve(completion: <VmFiber as BytecodeUnit>::RootResult) -> VmCompletion {
+            completion
+        }
+
+        let _type_proof: fn(VmCompletion) -> VmCompletion = preserve;
+    }
+
+    #[test]
+    fn depth_one_completion_fails_closed_and_retains_owner_and_child_lease() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let inventory = RequestExecutionOwnerInventory::open();
+        let (registrations, freeze) = inventory.into_parts();
+        let mut trampoline = FlatTrampoline::new(
+            LinearCompletionUnit { completion: None },
+            registrations.child(),
+        );
+        trampoline
+            .enter_child(
+                LinearCompletionUnit {
+                    completion: Some(LinearCompletionProbe(Arc::clone(&drops))),
+                },
+                (),
+            )
+            .unwrap();
+        let scheduler = BytecodeScheduler {
+            trampoline,
+            ports: BytecodeSchedulerPorts::default(),
+            resource_roots: None,
+        };
+
+        let failure = scheduler.run(&mut NoopHeap, &mut NoopBudget).unwrap_err();
+        assert!(matches!(
+            failure.reason(),
+            BytecodeSchedulerError::UnsupportedChild
+        ));
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        let (_, owner) = failure.into_parts();
+        let BytecodeSchedulerFailureOwnerKind::Scheduler {
+            scheduler,
+            retained: BytecodeSchedulerRetainedOwner::Complete(_),
+        } = &owner.kind
+        else {
+            panic!("depth-one completion must remain in the typed failure owner")
+        };
+        assert_eq!(scheduler.blocked_depth(), 1);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        drop(owner);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+
+        let snapshot = freeze.freeze();
+        assert_eq!(snapshot.child.current, 0);
+        assert!(snapshot.child.ever_created);
     }
 
     #[test]

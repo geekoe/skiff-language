@@ -109,10 +109,6 @@ impl BytecodeUnit for ChainUnit {
         self.resumes.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
-
-    fn child_completion_to_resume_outcome(completed: usize) -> usize {
-        completed
-    }
 }
 
 struct ChainExecutor {
@@ -244,10 +240,6 @@ mod tests {
             self.mode = StreamMode::Complete(outcome);
             let _ = token;
             Ok(())
-        }
-
-        fn child_completion_to_resume_outcome(completed: StreamResult) -> StreamResult {
-            completed
         }
     }
 
@@ -476,10 +468,6 @@ mod tests {
             Ok(())
         }
 
-        fn child_completion_to_resume_outcome(completed: DropProbe) -> DropProbe {
-            completed
-        }
-
         fn is_stream_next_child(_invocation: &DropProbe) -> bool {
             true
         }
@@ -704,6 +692,24 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_root_success_moves_the_completion_owner_once() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut context = RequestExecutionContext::create(BytecodeSchedulerPorts::default());
+        context.install_root(OwnerProbeUnit::new(ProbeAction::Complete, &drops));
+        let (result, snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
+        assert_eq!(snapshot.child.current, 0);
+        assert!(!snapshot.child.ever_created);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+
+        let BytecodeSchedulerOutcome::Complete(completion) = result.unwrap() else {
+            panic!("ordinary root success must return the exact completion owner")
+        };
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        drop(completion);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn park_failure_retains_registry_transformed_pending_draft() {
         let drops = Arc::new(AtomicUsize::new(0));
         let ports = BytecodeSchedulerPorts {
@@ -805,10 +811,6 @@ mod tests {
         ) -> Result<(), BytecodeResumeFailure<NextResume, NextOutcome>> {
             self.resumed = Some((token, outcome));
             Ok(())
-        }
-
-        fn child_completion_to_resume_outcome(completed: NextOutcome) -> NextOutcome {
-            completed
         }
 
         fn is_stream_next_child(invocation: &NextInvocation) -> bool {

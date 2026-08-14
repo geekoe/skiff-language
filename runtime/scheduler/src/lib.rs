@@ -33,7 +33,8 @@ pub use bytecode::{
     BytecodePortFailure, BytecodePortFailureOwner, BytecodeResumeFailure, BytecodeScheduler,
     BytecodeSchedulerError, BytecodeSchedulerFailure, BytecodeSchedulerFailureOwner,
     BytecodeSchedulerOutcome, BytecodeSchedulerPorts, BytecodeStreamHandoff,
-    BytecodeStreamSupervisor, BytecodeUnit, BytecodeUnitControl,
+    BytecodeStreamSupervisor, BytecodeTerminalFailure, BytecodeTerminalOwner, BytecodeUnit,
+    BytecodeUnitControl,
 };
 pub use owner_inventory::{
     OwnerCreationError, OwnerCreationErrorKind, OwnerDomain, PendingOwnerRegistration,
