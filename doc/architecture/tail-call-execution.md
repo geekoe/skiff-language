@@ -27,7 +27,7 @@ projection或fallback。该变化不增加语言关键字、annotation、manifes
 ## Tree-evaluator baseline facts
 
 以下是迁移前tree evaluator已经保留的识别事实，用于解释为什么该阶段不新增tail marker；bytecode target
-由上一节的emitter/verifier facts取代：
+由上一节的compiler/emitter facts与atomic image resolution取代：
 
 - `StmtIr::Return { value: Option<ExprRefIr> }`精确引用其返回表达式；
 - `ExprIr::Call { call: CallIr }`保存target、source site、ordered args和generic type args；
@@ -51,8 +51,10 @@ Target bytecode组合只有四部分：
 1. Source/lowering按reference识别eligible direct-return call，并保留exact relocation与return plan facts。
 2. Canonical artifact ISA新增semantic opcode `tail_call_local`，bytecode emitter为eligible edge发射该
    instruction与exact target relocation；它不是可漂移的boolean marker。
-3. Pre-link validator验证opcode/relocation结构；deployment linker先解析exact concrete specialization，post-link
-   verifier再证明exact-local target、return plan、concrete self、`NoPending`/`InOut`和cleanup-region eligibility。
+3. Compiler确定`NoPending`/`InOut`、return plan与cleanup-region eligibility，发出Package-local relocatable
+   target、Self/type substitution及其它typed call facts；pre-link validator验证opcode/relocation结构，deployment
+   linker在atomic image construction中把这些facts解析为当前build的exact concrete specialization，并只检查
+   call/stack/slot/region引用一致性。
 4. VM在同一dispatch loop中以单一commit替换当前frame/value segment。
 
 树遍历evaluator阶段不新增File IR `tail`字段、metadata convention或SCC annotation，继续从
@@ -174,18 +176,21 @@ tail replacement不能重新推断receiver，也不能丢失self carrier的heap/
 
 ### Bytecode frame replacement safety
 
-`tail_call_local`是已验证artifact的semantic instruction，不是runtime探测后可回退的optimization。
-Post-link verifier必须在VM执行前证明：
+`tail_call_local`是compiler-admitted artifact的semantic instruction，不是runtime探测后可回退的optimization。
+三个owner的边界固定为：
 
-- target在同exact deployment `buildId` image内，arity、parameter/return plan、concrete Self specialization与
-  Package Local ABI精确匹配，且caller/callee plan均无残留`TypeParam`；
-- opcode处在可直接退出callable的region depth，没有未完成cleanup/catch/timeout/transaction/
-  scheduler owner，也不在unwind path中；
-- frame中没有必须由被删除slot继续拥有的callback capture、resource guard、transient root或
-  pending/resume state；VM只能在fiber为`Runnable`、`PendingOperation = None`、
-  `UnwindState = None`时commit replacement；
-- 普通aggregate argument按value semantics做move/share snapshot。Physical backing可共享，但callee不能
-  因frame replacement获得可观察mutable alias或指向已删除slot的raw reference。
+- compiler证明direct-return edge的return plan、`NoPending`/`InOut`、loan/lifecycle与cleanup-region eligibility，
+  并发出Package-local target relocation、parameter/result plan及Self/type substitution facts；无法证明就只发射
+  `call_local` + `return`；
+- atomic image construction把relocatable target解析为同一exact deployment `buildId`内的concrete
+  specialization，拒绝残留`TypeParam`，并检查arity、Package Local ABI、parameter/result plan与
+  call/stack/slot/region引用精确一致；它不重新判断tail eligibility；
+- VM在每次实际commit前checked确认fiber为`Runnable`、`PendingOperation = None`、`UnwindState = None`，
+  frame没有仍依赖将删除segment的live callback capture、resource guard、transient root或resume state；不满足时
+  返回bounded execution failure并正常清理，不能panic、越界或暴露half-replaced state。
+
+普通aggregate argument按value semantics做move/share snapshot。Physical backing可共享，但callee不能因frame
+replacement获得可观察mutable alias或指向已删除slot的raw reference。
 
 VM必须在caller frame仍完整存活时，按源码顺序对每个argument求值一次，并把结果放入
 不会被source/destination overlap覆盖的rooted prepared segment。求值、分配、target/arity/type检查或budget
@@ -197,8 +202,9 @@ VM必须在caller frame仍完整存活时，按源码顺序对每个argument求�
 3. 截断旧slot/operand/region segment，安装callee frame与prepared arguments；
 4. 把pc切到callee entry，中间不暴露可调度或可观察的half-replaced state。
 
-Commit后任何live slot、loan、handle或resource都不得指向已删除frame segment。这一不变量无法证明时，
-emitter必须发射`call_local` + `return`，或verifier fail closed；runtime不能把已验证的
+Commit后任何live slot、loan、handle或resource都不得指向已删除frame segment。这一不变量无法由compiler
+facts建立时，emitter必须发射`call_local` + `return`；fact缺失/矛盾或artifact结构损坏则在pre-link validation/
+atomic image construction fail closed。runtime不能把image-owned的
 `tail_call_local`临时降级成普通call。
 
 ### `NoPending` and `InOut`
@@ -206,20 +212,21 @@ emitter必须发射`call_local` + `return`，或verifier fail closed；runtime�
 `InOut`是Package Local ABI的exclusive write-through loan，不是普通value。Tail replacement必须保持其
 loan lifetime而不保留caller frame：
 
-- 任何拥有`InOut`形参的callable都必须通过transitive `NoPending`验证。该callable可达的
+- compiler必须为任何拥有`InOut`形参的callable证明transitive `NoPending`。该callable可达的
   `tail_call_local`、argument evaluation与target body都不得到达pending-capable instruction；不能用
   runtime“这次恰好Ready”替代proof。
-- target含`InOut`形参时，verifier必须同时证明target是当前image内的exact local executable、其
-  Local ABI为`NoPending`、actual是exclusive writable `var` path，且loan不逃逸到callback/resource/
-  concurrent sibling。
+- target含`InOut`形参时，compiler必须证明relocatable target是Package-local callable、其Local ABI为
+  `NoPending`、actual是exclusive writable `var` path，且loan不逃逸到callback/resource/concurrent sibling；
+  atomic image construction再把该target解析为当前image内的exact concrete executable并闭合ABI引用。
 - caller已有的incoming loan只能在tail edge上结束，或将同一writable-path descriptor与loan
   token线性转移给callee；不允许copy loan或同时保留两个writer。
 - 以将被截断的caller local slot为base的新`InOut`实参不能在首版直接进入
   `tail_call_local`；emitter必须保留普通call。未来若支持，必须在ISA中定义可验证的
   typed rehome/transfer，不能让runtime保留raw caller-slot pointer。
 
-任何`NoPending`、loan exclusivity、base lifetime或linear transfer无法证明的edge都不得发射
-`tail_call_local`；已损坏artifact在post-link verification阶段拒绝。
+任何`NoPending`、loan exclusivity、base lifetime或linear transfer无法由compiler证明的edge都不得发射
+`tail_call_local`；已损坏artifact必须在pre-link validation/atomic image construction拒绝，或在明确延迟的
+checked runtime访问中安全失败并正常清理，不能process crash或泄漏。
 
 ## Instruction, depth and scheduler boundaries
 
@@ -288,26 +295,29 @@ telemetry sampling；不能恢复unbounded exception stack。
 test-only识别。Bytecode production cutover后：
 
 - PackageArtifact保存relocatable `tail_call_local`及exact target relocation；
-- exact deployment buildId loader/linker/verifier产生唯一可执行image，不生成
+- exact deployment buildId loader/atomic image linker产生唯一可执行image，不生成
   `RuntimeAssembly`或assembly/activation generation；
-- malformed target或不满足eligibility的opcode fail closed，不能在runtime降级成另一projection；
+- compiler对不满足eligibility的edge不得发射该opcode；malformed/dangling/contradictory target facts在pre-link
+  validation或atomic image construction fail closed，不能在runtime降级成另一projection；
 - old `RuntimeExecutionProjection`/`EvalProgramProjection`与tree trampoline一起删除；
 - 语义改变的aggregate value/top-level `const`/`InOut` case不以旧evaluator作为等价oracle。
 
-## Verification and completion
+## Validation and completion
 
 ### Structural and focused tests
 
 - compiler lowering：direct self、same-file mutual、cross-module publication、generic function及impl self的
   `Return` ExprRef必须直接指向exact Call；wrapped/non-tail forms不得满足该结构。
-- emitter/linker/verifier：eligible edge发射`tail_call_local`并解析为同exact-build image target；不新增
-  独立tail boolean metadata/SCC convention；非法return plan/region/target、live pending/unwind state、
-  `NoPending`/`InOut`或removed-slot lifetime拒绝。
+- compiler/emitter：eligible edge发射`tail_call_local`及relocatable typed facts；非法return plan/region、
+  `NoPending`/`InOut`或removed-slot lifetime只保留普通调用；不新增独立tail boolean metadata/SCC convention。
+- atomic image constructor：把target解析为同exact-build concrete specialization，拒绝dangling index、残留
+  `TypeParam`、ABI/plan/call/stack/slot/region reference不一致；不重做semantic eligibility。
 - runtime positive：deployment bytecode真实路径覆盖direct self深递归、same-file和cross-module mutual；
   generic/impl self的concrete specialization；branch return；ordered/single argument evaluation。
 - runtime negative：binary/wrapper/call-argument/catch/timeout/concurrent/DB/stream defer/service/Actor/native
-  不误转移；plan不等价、caller-local `InOut` base或不可证明loan transfer由emitter保留
-  普通调用，损坏的opcode由verifier拒绝。
+  不误转移；plan不等价、caller-local `InOut` base或不可证明loan transfer由emitter保留普通调用；损坏的
+  opcode/reference由pre-link validator或atomic image construction拒绝，明确延迟的实际状态冲突以checked
+  failure终止并证明零root/resource leak。
 - safety：non-tail depth 128可进入、下一层以`programCallDepth`失败且runtime继续健康；现有tail-recursion
   guard fixture改成真正non-tail recursion。
 - budget：无限tail recursion由小instruction limit终止，不返回depth error；有限tail loop的instruction
@@ -316,14 +326,14 @@ test-only识别。Bytecode production cutover后：
   identity与correlation保持；tail stack长度不随100,000 hop增长。
 - frame/loan：argument failure留住完caller frame可unwind；commit后无live reference指向removed
   slots；incoming `InOut`结束/线性转移、caller-local loan负例与transitive `NoPending`都有
-  focused verifier/runtime test。
+  focused compiler/image/runtime test。
 - scheduler：所有独立callable task从fresh depth开始；stream terminal独立测试不计作TCO证据。
 
 ### Pressure and real path
 
 至少一个runtime test在1 MiB Tokio worker stack上完成100,000次tail hop并验证结果，不能只依赖production
 64 MiB stack。至少一个canonical Skiff source fixture必须经过真实
-source -> compiler -> bytecode artifact -> deployment load/link/verify -> runtime路径，覆盖大于32层的self或
+source -> compiler -> bytecode artifact -> deployment load/atomic image construction -> runtime路径，覆盖大于32层的self或
 mutual recursion。
 
 聚焦owner先运行：
@@ -348,7 +358,7 @@ node scripts/verify.mjs --only skiff-tests
 - deployment bytecode只有一个`tail_call_local`执行owner，无第二eligibility/trampoline或fallback projection；
 - 执行owner是request钉住的exact deployment `buildId`，无`RuntimeAssembly`或generation identity；
 - frame replacement为全准备后的单一commit，`PendingOperation`/`UnwindState`、removed-slot lifetime与
-  `NoPending`/`InOut` loan安全均由verifier fail closed；
+  `NoPending`/`InOut` loan安全由compiler facts授权、atomic image structural closure与checked runtime fail closed；
 - compiler、runtime、Skiff source真实路径及1 MiB stack压力证据齐全；
 - canonical文档与实现一致，没有语言关键字、用户配置、test-only production bypass或stream terminal混入。
 

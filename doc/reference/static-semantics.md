@@ -214,8 +214,8 @@ API `map.get(key)` 保持 `V?` 结果且 missing 返回 `null`，它不等价于
 Bracket read 先求值 receiver，再求值 selector，两者各恰好一次。Array 越界与 Map/JsonObject
 missing 都是进入当前 request 后的 ordinary catchable exception；精确错误类型、payload 和 source
 attribution 见 `std-surface.md` §3 与 `runtime.md` §5。Ordinary read 按结果类型的 linked lifecycle
-产生 logical snapshot，不产生 writable alias；结果类型无法合法 snapshot 时必须在 source/verifier
-边界拒绝。
+产生 logical snapshot，不产生 writable alias；结果类型无法合法 snapshot 时必须由compiler拒绝，不能发出
+可执行access plan。
 
 Indexed assignment 仍先要满足 writable-place root 规则。所有 selector 按路径从外到内、各一次求值，
 随后 RHS 恰好求值一次；只有在整条路径与 RHS 都成功后才执行一次原子 logical store。所有
@@ -425,15 +425,15 @@ function appendedValues() -> Array<number> {
   runtime 才原子取得整组 loan；任一路径失败时不留下部分 loan，callee 不进入。
 - Compiler 必须证明整个调用期间 loan exclusive；两个重叠 path 不能同时作为 argument，loan
   不能被 callback capture、保存到 resource 或让 concurrent sibling 观察。
-- Callee 必须有 verified `NoPending`；即§12.1定义的 sound `maySuspend=false`，loan 不能跨越
+- Callee 必须有compiler-proven `NoPending`；即§12.1定义的 sound `maySuspend=false`，loan 不能跨越
   child/host `Pending`。
 - `inout` 可进入 Package public API 与 Package Local ABI，但不得进入 service operation /
   `ServiceContract`、gateway entry/handler、interface requirement、callback、Actor external method、host effect
   ABI 或 durable/recoverable payload；这些边界始终执行 value materialization。
 - 写入执行时立即对 caller place 生效；ordinary throw 不回滚已执行写入，caller 捕获错误后
   仍能观察它们。
-- Verifier 必须重新验证 exact target、parameter mode、exclusive loan 与 `NoPending`，不信任未验证
-  summary。
+- Compiler必须从exact target、parameter mode、exclusive loan与sound `NoPending`产生完整typed facts；缺失或
+  矛盾fact不得形成可执行artifact。
 
 ### 12.3 Concurrent Writable-Place Rules
 

@@ -272,7 +272,7 @@ receiver的collection mutation。
 Map、Array或其它aggregate就获得caller-writable reference。ServiceContract与gateway boundary还会把值
 materialize到接收方heap，同样不能传递writable origin或`InOut` loan。只有静态解析到exact
 Package-local/package-direct concrete callable的显式`inout`参数是短期exclusive write-through loan；callee
-target必须经verifier证明`NoPending`（`maySuspend = false`）。`inout`只进入Package Local ABI，不得进入
+target必须由compiler证明并发出`NoPending`（`maySuspend = false`）fact。`inout`只进入Package Local ABI，不得进入
 service/gateway/interface/callback/Actor external/host effect/recoverable boundary；ordinary throw不回滚已执行
 写入。
 
@@ -293,7 +293,8 @@ Postfix `object[index]` 是 strict collection access。Ordinary read 始终先�
 Read result 按 linked image 中该精确结果类型的 lifecycle / `ValueTransferPlan` 产生 logical
 snapshot，不返回 container 内部的 writable alias。Snapshot-capable aggregate 可做 O(1) share transition
 并在首次写入时 COW；move-only/affine 结果或缺失 linked lifecycle proof 的 access 必须由
-source checker/verifier 拒绝，VM 不得用 raw handle copy 充当 read。
+compiler拒绝。Atomic image construction只闭合exact lifecycle plan引用；VM的实际读取必须checked，且不得用
+raw handle copy充当缺失plan的fallback。
 
 Indexed assignment 的顺序固定为：
 

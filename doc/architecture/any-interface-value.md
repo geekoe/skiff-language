@@ -172,13 +172,15 @@ wrapper 赋值/传参/入容器不会创建 caller-writable payload alias。
 - call site 传入从 `var` 派生的精确、exclusive place，并在实参处重复 `inout`；
 - target 是已解析的 exact Package-local / package-direct concrete callable，`inout` mode 与读写
   path 进入 Package Local ABI；
-- compiler 与 artifact verifier 都证明 target 是 `NoPending`（`maySuspend=false`），不信任未验证 summary。
+- compiler证明target是`NoPending`（`maySuspend=false`）并发出exact callable/loan facts；下游不得重建或替换该
+  source-semantic结论。
 
 `inout` 不得出现在 interface requirement（含 receiver）、interface method table、callback
 signature、ServiceContract、gateway/external ingress、Actor external method、host effect 或 recoverable
 payload/boundary。通过 `any I` 的 `InterfaceMethod` call 既没有静态 exact concrete target，又必须
-保守为 `maySuspend=true`，因此绝不能作为 `inout` loan 的 callee。verifier 必须拒绝任何尝试借
-same-process 部署、callback adapter 或 remote operation projection 绕过该限制的 artifact。
+保守为 `maySuspend=true`，因此绝不能作为 `inout` loan 的 callee。compiler不得为任何借same-process部署、
+callback adapter或remote operation projection绕过该限制的调用发出可执行plan；malformed artifact中的缺失或
+矛盾reference在pre-link validation/atomic image construction fail closed。
 
 ## Boxing
 
@@ -260,25 +262,26 @@ dependency 调用路径（语法新、机制旧）。`final x = remoteLlm/manage
   - **根因点 = callee ServiceContract projection**：含`any I`方法的interface无法生成service operation，
     因而没有对应`ContractOperationId`。
   - **派生点 = consumer装箱期**：consumer的`as I`在callee ServiceContract的
-    `ContractOperationId`集合里找不到该方法时立即拒绝，不留到runtime verifier。consumer看到“选定
-    interface的方法无可绑定operation”，根因仍是callee没有将它投影为service operation。
+    `ContractOperationId`集合里找不到该方法时立即拒绝，不留到runtime或image construction补推。consumer看到
+    “选定interface的方法无可绑定operation”，根因仍是callee没有将它投影为service operation。
   - 实测佐证：agent 包现状三个 capability interface 的方法签名闭包都不含 `any I`（见 §Capability As
     Parameter 核对表），故第一版这条约束不咬任何主要场景。
 - 装箱点必须把 callee 的 exact protocol identity 锁进 dependency lock，见 §Remote Fail-Closed。
 
-Typed IR / artifact verifier 必须在 runtime execution 前保证：
+runtime execution前的owner拆分固定为：
 
-- 本地装箱：`InterfaceBox.value` 的静态类型可验证，且 canonical concrete nominal type 等于 boxing plan
-  `BoxSource::Local.concrete_type`；plan 的 `interface`、`concrete_type` 和 `method_table_plan` 严格对应
-  同一个 `(interface instantiation, concrete receiver instantiation)` pair；`method_table_plan` 每个 slot
-  target 来自该 pair 的 explicit conformance checker 结果。
-- 远程装箱：`BoxSource::Remote` 的 `(dependency_ref, public_instance_key)` 必须解析到已声明 dependency 的
-  callee public instance metadata；选定interface的每个方法都必须在callee ServiceContract的
-  `ContractOperationId`集合中有匹配canonical signature的operation；`callee_protocol_identity`必须等于
-  dependency lock 中锁定的 callee exact protocol identity。
+- compiler/conformance checker对本地装箱证明`InterfaceBox.value`的canonical concrete nominal type等于
+  `BoxSource::Local.concrete_type`，并为同一个`(interface instantiation, concrete receiver instantiation)`
+  pair发出`interface`、`concrete_type`、`method_table_plan`及其explicit-conformance slot facts；
+- compiler与ServiceContract projector对远程装箱证明`(dependency_ref, public_instance_key)`、选定interface的
+  exact `ContractOperationId`集合、canonical signatures及`callee_protocol_identity`，并把它们锁进dependency
+  facts；
+- atomic image constructor只把上述symbolic facts解析为exact image-local target/signature/table indexes，检查
+  identity与reference一致性；它不得按method name、payload shape或runtime carrier重建conformance。
 
-runtime 不从 erased payload 反推 concrete type；runtime 只信任已经验证并 linked 的 plan。任何 malformed
-artifact 破坏上述不变量都必须在 verifier/linker 阶段 fail closed。
+runtime 不从 erased payload 反推 concrete type；runtime 只消费complete image-owned plan。任何 malformed
+artifact 破坏上述不变量都必须在pre-link validation或atomic image construction fail closed；明确延迟的实际
+carrier/slot访问必须checked失败并正常清理，不能panic、越界或字符串fallback。
 
 ## Runtime Value
 
@@ -296,7 +299,7 @@ struct InterfaceValue {
 
 // 三个 carrier 是互斥整体：source identity、dispatch、payload/owner 的一致性
 // 由 enum 分支天然保证，不存在 source=Local 配 dispatch=Remote、或 Local 分支缺 payload
-// 这类非法组合。verifier 不需要再单独对账三个轴的配对。
+// 这类非法组合；image constructor只闭合各variant内部的exact references。
 enum InterfaceCarrier {
     Local {
         concrete_type: ConcreteRuntimeTypeId,    // 装箱源 concrete nominal instantiation identity
@@ -458,9 +461,9 @@ struct RemoteOperationSlot {
 - slot 顺序以 interface declaration method requirement 顺序为**唯一来源**，与本地 method table 完全一致；
   `method_abi_id` 用于校验 slot 身份和 artifact identity，不用于排序。同一个 `(interface, slot)` 在本地表和
   远程表里指向同一个 method requirement。
-- 每个slot的`signature`是requirement完成substitution后的canonical调用形状，不含suspension summary；
-  verifier用它对账callee ServiceContract中`ContractOperationId`对应的canonical调用形状
-  （见§Boxing远程装箱verifier要求）。
+- 每个slot的`signature`是compiler/projector完成substitution后的canonical调用形状，不含suspension summary；
+  atomic image constructor只把它与callee ServiceContract中`ContractOperationId`所引用的同一canonical调用形状
+  exact join（见§Boxing的remote fact要求）。
 - `contract_operation_id`字段取自callee `ServiceContract`中该方法对应的operation；一个public instance expose
   多 interface 时，只填 `as I` 选定 interface 方法集对应的 operation 子集（见 §Boxing `as I` 顺带选投影）。
 - 远程表同样是 linked runtime plan / overlay（`RemoteOperationTableId`），不写回 ordinary artifact DTO；
@@ -495,7 +498,9 @@ enum CallTargetIr {
 执行规则：
 
 1. runtime 先求值 receiver，结果必须是 `InterfaceValue`。
-2. receiver 的 `interface` 与 call target interface 一致这一不变量由 linker 静态保证；runtime 不承担生产校验，至多在 debug build 做 assert。runtime 只信任已经验证并 linked 的 plan，不退回字符串比较的兜底路径。
+2. receiver 的`interface`与call target interface一致这一不变量由atomic image construction闭合；runtime仍对
+   实际carrier tag、interface/table/slot index做checked lookup，不一致时返回bounded execution failure并正常清理。
+   production不能只依赖debug assert，也不能退回字符串比较的兜底路径。
 3. 按 `carrier` 分支分流：
    - `Local`：从 `carrier.method_table.slots[slot]` 取 linked target，以 `carrier.payload` 作为 explicit
      `self`，再追加用户参数的逻辑 snapshot，调用 concrete receiver executable（本进程）。
@@ -517,8 +522,9 @@ enum CallTargetIr {
 静态suspension分析不能从`any I` requirement取得concrete summary，因此所有`InterfaceMethod`调用都保守为
 `maySuspend=true`。`Remote`/`CallbackCapability`分支还因boundary call而属于caller-side suspension；三种分支都
 不会仅因保守summary在runtime自动插入`yield`。
-任何 `InterfaceMethod` call 携带 `inout` argument mode，或任何 method table / remote operation slot 声称
-接受 `inout`，都是 verifier 必须拒绝的 malformed artifact。
+Compiler不得为携带`inout` argument mode的`InterfaceMethod` call，或声称接受`inout`的method table / remote
+operation slot发出可执行facts；malformed artifact的contradictory mode/signature/table references在pre-link
+validation或atomic image construction拒绝，runtime实际访问仍保持checked failure。
 
 禁止路径：
 

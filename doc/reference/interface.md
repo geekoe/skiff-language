@@ -109,7 +109,7 @@ method 实现。
 
 这也是 `inout` 不能进入 interface requirement 的硬边界：`inout` 是 caller-writable exclusive
 loan，只允许调用已精确解析到 Package-local / package-direct concrete callable 的 Package
-Local ABI，且 compiler 与 verifier 都必须证明该 target 是 `NoPending`（`maySuspend=false`）。
+Local ABI，且 compiler 必须证明并发出该 target 的 `NoPending`（`maySuspend=false`）fact。
 interface dispatch 既擦除 exact concrete target，又必须保守当作 `maySuspend=true`，因此不能借
 method table、callback adapter 或边界 projection 绕过该限制。
 

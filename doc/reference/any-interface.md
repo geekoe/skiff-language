@@ -145,7 +145,7 @@ deeply frozen 的常量，不是第三种局部 mutable binding。普通参数�
 immutable value binding；callee 需要可写副本时必须先放入局部 `var`。
 
 显式 `inout` 是唯一的 caller-writable loan，只允许 exact Package Local ABI 中的
-Package-local / package-direct concrete callable，且 compiler 与 verifier 都必须证明 `NoPending`。
+Package-local / package-direct concrete callable，且 compiler 必须证明并发出 `NoPending` fact。
 interface requirement 不得声明 `inout`；因此通过 `any I` 的间接调用也不可发起或传播
 `inout` loan。`inout` 同样不得进入 callback、service/gateway/Actor external contract、host
 effect 或 recoverable boundary。

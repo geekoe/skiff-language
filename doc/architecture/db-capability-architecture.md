@@ -197,8 +197,8 @@ Skiff runtime above the store talks in service DB commands and business JSON, no
 ### Transaction Boundary
 
 `db transaction`在一次execution中只允许一个active DB transaction；nested transaction不支持。
-Compiler与artifact verifier拒绝静态可见的嵌套，Runtime在helper等动态路径重入时必须先拒绝，
-不能开启第二个session transaction，也不能把内层`db transaction`静默折叠进外层边界。
+Compiler拒绝静态可见的嵌套并发出唯一transaction boundary facts；Runtime在helper等动态路径重入时必须做
+checked拒绝，不能开启第二个session transaction，也不能把内层`db transaction`静默折叠进外层边界。
 
 Actor method（含`create`）中的transaction是DB-only：commit/abort只作用于DB，不为Actor arena建立
 snapshot overlay。Transaction body禁止直接或经callee写Actor field；直接赋值和以Actor field为

@@ -190,7 +190,8 @@ atomic store 与 `inout` loan 规则见 `runtime.md` §5。
 > **Contract status（2026-08-10）**：上述 bracket/index 语义已冻结，end-to-end implementation
 > pending。当前 prelude 的 `Array.set` selector 仍是 `number`，实现必须改为 `integer`；
 > `Map.set(key: K, value: V)` 命名与 `Map.get(key: K) -> V?` 已与本 surface 对齐，但不代表
-> parser/source/lowering/OpcodeContract/verifier/runtime 的 strict bracket、错误和原子 path 已完成。
+> parser/source/lowering/OpcodeContract/pre-link structural validation/atomic image construction/runtime 的 strict
+> bracket、错误和原子 path 已完成。
 
 `Map<K,V>.keys() -> Array<K>` 返回 key 的 request-local 快照值。调用后修改原 map 不改变该数组的元素集合；
 返回值放入`var`后可独立修改，不影响原 map。

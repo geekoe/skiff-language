@@ -48,16 +48,17 @@ user-visible reference / canonical architecture
 当前主要风险不是“某些能力尚未实现”，而是：
 
 - 已可达路径中的 value lifecycle、writable path、exception、HTTP/Pending、stream/resource 等语义错误；
-- compiler、artifact、linker、verifier、request adapter 之间存在多重 authority 和宽松 fallback；
+- compiler、artifact、linker、残留独立verifier与request adapter之间存在需要hard cut的多重authority和宽松
+  fallback；
 - scheduler / heap / request API 无法表达跨 owner、完整 root 和 session lifetime；
 - 性能、fuel 和 memory budget 不能界定真实工作量；
 - 第一次实施的 phase gate 没有约束 production admission 和 deletion。
 
-当前 verifier 处在错误位置：它经常替上游恢复缺失的 type、effect、target 和 lifecycle fact，同时又给
-下游一个“已经验证”的 seal。Phase 0 必须关闭 semantic verifier 的去留决定；本计划的工作方向是删除
-当前 broad semantic verifier / seal authority，只保留 bounded structural validation、exact linking 和
-执行层必要的 runtime invariant checks。若要保留一个薄 verifier，必须证明它拥有不可被更早边界替代的
-具体安全职责，且不重新推导 source- 或 registry-owned facts。
+残留 verifier 处在错误位置：它经常替上游恢复缺失的 type、effect、target 和 lifecycle fact，同时又给
+下游一个“已经验证”的 seal。Phase 0 曾要求关闭其去留决定；Phase 5 的 DEC1/Contract Amendment r2 已最终
+裁定删除独立 production verifier crate/stage及其facts/seal。保留的只有pre-link bounded structural validation、
+single atomic image construction内的private finite structural closure、exact linking与执行层必要的checked runtime
+invariants；不存在可独立调用、配对、缓存或兼容转发的“薄verifier”，也不得重推source-或registry-owned facts。
 
 ### 2.1 Git 历史显示的失败机制
 

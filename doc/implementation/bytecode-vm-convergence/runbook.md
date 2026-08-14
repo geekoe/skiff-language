@@ -4,8 +4,9 @@
 
 1. **契约**：`phases/phase-N-*.md` 写三件事——本 Phase 支持面（含 fail-closed 面）、VCP、acceptance
    checklist。没有就写；写完语义不再改，只允许 Amendments。VCP = 一条 full-chain closure + **stage-sentinel
-   矩阵**：同一组真实 fixture 在 source→admission、admission→emission、emission→link、link→verify、
-   verify→scheduler、scheduler→request→response 每个阶段边界各挂一个独立 test case；哨兵输入必须是上一阶段
+   矩阵**：同一组真实 fixture 在 source→admission、admission→emission、emission→atomic-link input、
+   atomic-link→image、image→scheduler、scheduler→request→response 每个阶段边界各挂一个独立 test case；
+   atomic-link input与image是同一constructor的输入/完成态sentinel，不是两个production API；哨兵输入必须是上一阶段
    真实生产边界的产出，不能 hand-build；首日全部 expected-red（真实断言，非 skip），一次 `--no-fail-fast`
    并行暴露所有已到达层的红。
 2. **执行地图**：`tasks/phase-N-execution-map.md` 一张表：lane / worktree / 写集 / join 顺序 / Gate 矩阵。

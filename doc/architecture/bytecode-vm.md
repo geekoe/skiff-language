@@ -157,9 +157,9 @@ ISA（Instruction Set Architecture）是持久化 bytecode 的语义契约，包
 ISA 不包括 runtime 内存地址、decoded Rust enum 大小、dispatch optimization、superinstruction 或 JIT machine
 code。
 
-M3 hard-cut后的持久化 envelope 是 bytecode schema `skiff-bytecode-v7`、ISA
-`skiff-bytecode-isa-v4` 与 bytecode identity generation v5（schema marker
-`skiff-bytecode-artifact-v5`，identity prefix `skiff-bytecode-image-v5:sha256`）。v7 header 除
+当前Phase 5 hard-cut后的持久化 envelope 是 bytecode schema `skiff-bytecode-v8`、ISA
+`skiff-bytecode-isa-v5` 与 bytecode identity generation v5（schema marker
+`skiff-bytecode-artifact-v5`，identity prefix `skiff-bytecode-image-v5:sha256`）。v8 header 除
 magic/schema/ISA/declared identity 外，必须携带并精确钉住以下六个 semantic authority：
 
 - opcode contract：`opcodeTableFingerprint`，覆盖 numeric/semantic opcode identity、operand role、stack
@@ -195,10 +195,13 @@ Registry内每个generated projection key逐字等于canonical public symbol、�
 builder；schema/codec/policy变化保持key并更换entry/whole-registry fingerprint，通过本节既有
 artifact/runtime hard cut传播，不能让VM按key或payload shape猜另一fingerprint的codec。
 
-v7 在 v6 的五个required authority基础上增加该第六pin。它没有改变opcode number、operand layout或
-operand-stack semantics，因此ISA保持v4；required header、identity preimage与完整image改变，所以bytecode
-identity升级到generation v5。同一wordcode若带不同authority pin、source-event placement或statement charge
-contract，不是同一个executable artifact，并必须产生不同bytecode identity与上层build identity。
+v7 在 v6 的五个required authority基础上增加该第六pin，并把identity升级到generation v5。Phase 5 的v8/v5
+hard cut新增`take_dense_field` opcode，以及shape row上的显式`privilegedAffineComposite` identity；它只允许
+fingerprinted registry命名的affine composite做whole-value consume后的exact field take，普通shape不能按名称或
+字段布局获得该能力。schema/ISA marker与opcode fingerprint已进入generation-v5 preimage，所以即使identity prefix
+不再递增，v7/v4与v8/v5也不可能得到同一bytecode identity。同一wordcode若带不同authority pin、shape privilege、
+source-event placement或statement charge contract，同样不是一个executable artifact，并必须产生不同bytecode
+identity与上层build identity。
 
 承载bytecode ref的PackageArtifact hard cut到`skiff-package-artifact-v15`，其root
 `platformErrorProjectionRegistry`为必填字段。Package build identity projection同时加入该exact descriptor，

@@ -533,9 +533,10 @@ Router到Runtime的dispatch必须携带精确`ServiceDeploymentRef`、buildId、
 `platformErrorProjectionRegistry`；mixed-fingerprint closure在strict routing view构造时fail closed。该view向
 Router提供等价于`{ buildId, registryDescriptor }`的typed authority，Router不因此解析Package executable。
 Router只选择已注册该buildId或具备对应lazy-load能力、且session registry descriptor与该authority
-exact-match的session；Runtime按frame中的exact build执行load/verify，并最终复验PackageArtifact、bytecode与
-binary registry三方一致。二者都禁止用同service的另一revision、同path的另一service或ambient registration
-替换。WebSocket upgrade先执行同一deployment选择，再把exact build与registry descriptor固定到connection；
+exact-match的session；Runtime按frame中的exact build执行load/atomic image construction，并在该constructor内
+exact-check PackageArtifact、bytecode与binary registry三方引用一致。二者都禁止用同service的另一revision、
+同path的另一service或ambient registration替换。WebSocket upgrade先执行同一deployment选择，再把exact
+build与registry descriptor固定到connection；
 连接内JSON-RPC method只在该pin内解析。同一规则适用于Actor和task等其它Runtime execution route。
 
 Artifact模型允许多个selector绑定同一个key，但第一版`http.yml`和`websocket.yml.jsonRpc`不暴露独立
@@ -1256,7 +1257,8 @@ direct/transitive菱形不能生成第二份ConfigView、数据库或metadata ow
 
 该身份覆盖所有DB operation target、`DbQuery`、lease claim、lease state read和claim write guard。
 Transaction本身只是当前service DB上的执行边界，没有独立target；内部operation各自携带目标。缺失link/type/
-DB declaration、ABI或build不匹配、cross-artifact substitution都必须在load/link/verify阶段fail closed。
+DB declaration、ABI或build不匹配、cross-artifact substitution都必须在pre-link validation或atomic image
+construction阶段fail closed。
 
 这是当前未发布artifact模型内的同代hard cut，不改变File IR v9、PackageArtifact v9、Package local ABI v7
 或ServiceContract v5代际；不增加兼容reader、fallback或旧target双读。
@@ -1381,10 +1383,12 @@ DeploymentExecutionImage
   deployment-owned capability/config plans
 ```
 
-Loader必须先做pre-link structural validation，再link，最后做post-link semantic verification；完整契约见
-[`bytecode-vm.md`](bytecode-vm.md)。Image只对应一个exact buildId，不得因load时provider pointer不同而生成
-不同内容。Package requirement在image内绑定immutable PackageArtifact；package升级必须重新build/link相应
-deployment。
+Loader必须先做bounded pre-link structural validation，再由同一个atomic constructor消费compiler-emitted typed
+facts、解析relocation/constant并闭合有限CFG/index/stack/slot/call/resume/schedule结构；只发布完整
+`DeploymentExecutionImage`。Compiler是source semantics唯一authority，constructor不得从opcode、name、context、
+registry membership或type/shape重建缺失语义；完整契约见[`bytecode-vm.md`](bytecode-vm.md)。Image只对应一个
+exact buildId，不得因load时provider pointer不同而生成不同内容。Package requirement在image内绑定immutable
+PackageArtifact；package升级必须重新build/link相应deployment。
 
 Service requirement只绑定`serviceId + exact version + expectedProtocolIdentity`。每次service boundary
 invocation开始时解析release pointer并pin provider build；因此provider实现可在protocol兼容时更新而无需
@@ -1456,7 +1460,7 @@ workflow或bundle都不能改变其原子性边界。
 
 ## 14. Fail-closed 条件
 
-以下情况必须在其最早可信边界（compile、deployment projection、pre-link validation、image link/verify、
+以下情况必须在其最早可信边界（compile、deployment projection、pre-link validation、atomic image construction、
 release resolution）失败，不能靠名字或fallback猜测：
 
 - service API schema不闭合或operation identity冲突；

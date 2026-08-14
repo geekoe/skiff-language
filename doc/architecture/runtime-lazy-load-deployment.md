@@ -64,11 +64,14 @@ release pointer，不反向调用registry业务service。
 
 runtime 收到一个待执行的 buildId：
 
-1. 内存中已有该 buildId 的已验证 `DeploymentExecutionImage` → 直接执行。
+1. 内存中已有该 buildId 的完整 immutable `DeploymentExecutionImage` → 直接执行。
 2. 没有 → 进入该 buildId 的临界区（per-buildId 锁）：同 buildId 的并发请求在锁外等待；
    持锁者按内容寻址从配置的 artifact 目录读取 deployment 记录、package 闭包与 file-ir，先做
-   pre-link structural validation，再 link relocation/constant heap，最后做 post-link semantic verification
-   并构建 image。PackageArtifact closure中的`platformErrorProjectionRegistry`必须唯一一致，每个
+   bounded pre-link structural validation，再由同一个atomic `DeploymentExecutionImage` constructor解析
+   relocation、constant与compiler-emitted typed facts，闭合有限CFG/index/stack/slot/call/resume/schedule结构并只发布
+   完整image。Compiler-emitted facts是唯一source-semantic authority；constructor不得从opcode、name、context、
+   registry membership或type/shape重建缺失语义。PackageArtifact closure中的
+   `platformErrorProjectionRegistry`必须唯一一致，每个
    PackageArtifact又必须与自己的bytecode header以及Runtime binary的generated singleton exact-match；任一
    缺失、mixed fingerprint或mismatch都fail closed。完整 VM 契约见
    [`bytecode-vm.md`](bytecode-vm.md)。
@@ -171,7 +174,8 @@ watch 只是 deploy 的自动触发器，不拥有流程。
   ServiceContract和service/package boundary。
 - [`managed-dev-watch.md`](managed-dev-watch.md)只拥有本地registry、fingerprint、重试与由watch管理的pointer
   ledger；它不得为多个service pointer增加共同事务。
-- [`bytecode-vm.md`](bytecode-vm.md)拥有deployment image的decode/link/verify/execute内部契约。
+- [`bytecode-vm.md`](bytecode-vm.md)拥有deployment image的decode、pre-link validation、atomic construction与
+  checked execution内部契约。
 
 ## 开放问题
 
