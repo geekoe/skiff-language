@@ -3,7 +3,9 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::{
-    package_project::{compile_service_package_project, PublishedPackageProject},
+    package_project::{
+        compile_service_package_project, PackageProjectCompileError, PublishedPackageProject,
+    },
     TestDir,
 };
 use skiff_artifact_model::{
@@ -13,7 +15,7 @@ use skiff_artifact_model::{
 };
 use skiff_compiler::{
     generate_service_deployment, GeneratedServiceDeploymentError, GeneratedServiceDeploymentInput,
-    ServiceApiProjection,
+    ServiceApiProjection, ServicePackageCompileError,
 };
 use skiff_compiler_input::read_service_package_root;
 
@@ -554,20 +556,54 @@ function unprojectable(body: Input) -> Stream<Map<string, string>> {
 
     #[test]
     fn compiler_owned_websocket_key_is_reserved_from_http_entries() {
-        let fixture = compile_fixture(
-            "reserved-websocket-key",
-            "health: main.health\n",
+        let root = TestDir::new("skiff-compiler-http-gateway", "reserved-websocket-key");
+        root.write("package.yml", format!("id: {PACKAGE_ID}\nversion: 1.0.0\n"));
+        root.write("api.yml", "health: main.health\n");
+        root.write("service.yml", format!("id: {SERVICE_ID}\n"));
+        root.write(
+            "main.skiff",
             r#"function health() -> string { return "ok" }
 type Input { value: string }
 type Output { accepted: boolean }
 function typed(body: Input) -> Output { return { accepted: true } }
 "#,
+        );
+        root.write(
+            "http.yml",
             typed_http("main.typed", "body").replacen("typed:", "websocket:", 1),
         );
-        let error = fixture
-            .generate()
-            .expect_err("HTTP must not occupy the compiler-owned WebSocket key");
-        assert!(error.to_string().contains("reserved"), "{error}");
+
+        let error = compile_service_package_project(root.path())
+            .expect_err("source compilation must reject the compiler-owned WebSocket key");
+        let PackageProjectCompileError::ServiceCompile(ServicePackageCompileError::HttpGateway(
+            source,
+        )) = &error
+        else {
+            panic!("reserved WebSocket key must retain its typed gateway error: {error:?}");
+        };
+        assert_eq!(
+            source.to_string(),
+            "HTTP gateway entry websocket field key is invalid: entry key is reserved for the compiler-owned WebSocket connection entry"
+        );
+
+        let store = skiff_deployment::storage::CanonicalArtifactStore::open(
+            root.path().join(".skiff-compiler-test-artifacts"),
+        )
+        .expect("compiler fixture artifact store");
+        assert!(
+            store
+                .read_package_artifact_pointer(PACKAGE_ID, "1.0.0")
+                .expect("read rejected package pointer")
+                .is_none(),
+            "rejected authoring must not publish a package artifact"
+        );
+        assert!(
+            store
+                .read_service_deployment_pointer(SERVICE_ID, "1.0.0")
+                .expect("read rejected deployment pointer")
+                .is_none(),
+            "rejected authoring must not publish a service deployment"
+        );
     }
 
     #[test]
