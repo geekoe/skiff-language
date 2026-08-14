@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_model::{BytecodePoolEntry, PackageBuildId, TypeRefIr};
+use skiff_artifact_model::{BytecodePoolEntry, PackageBuildId, PoolCategory, TypeRefIr};
 use skiff_runtime_linked_bytecode::{
     ArtifactCallbackCaptureIndex, ArtifactShapeIndex, ArtifactTypeIndex, ArtifactWritablePathIndex,
     CallbackCaptureLayoutIndex, FunctionIndex, InstructionIndex, LinkedArtifactPoolOrigin,
@@ -24,6 +24,21 @@ type TypeOriginKey = (PackageBuildId, u32, Option<SpecializationKey>);
 type ShapeOriginKey = (PackageBuildId, u32, Option<SpecializationKey>);
 type WritablePathOriginKey = (PackageBuildId, u32, Option<SpecializationKey>);
 type CallbackOriginKey = (PackageBuildId, u32, Option<SpecializationKey>);
+
+#[cfg(test)]
+std::thread_local! {
+    static RESUME_DESCRIPTOR_INDEX_LOOKUPS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(in crate::bytecode) fn reset_resume_descriptor_index_lookups() {
+    RESUME_DESCRIPTOR_INDEX_LOOKUPS.set(0);
+}
+
+#[cfg(test)]
+pub(in crate::bytecode) fn resume_descriptor_index_lookups() -> u64 {
+    RESUME_DESCRIPTOR_INDEX_LOOKUPS.get()
+}
 
 pub(in crate::bytecode) struct LinkedPoolTables {
     pub(in crate::bytecode) types: Vec<LinkedTypeEntry>,
@@ -817,25 +832,21 @@ impl<'a> TypeLinker<'a> {
         function: FunctionIndex,
         location: BytecodeLinkLocation,
     ) -> Result<ResumeSiteIndex, BytecodeLinkError> {
-        let descriptor = validated_resume_site(package, artifact_index, location.clone())?;
-        let descriptor = skiff_artifact_model::ResumeDescriptor {
-            function_key: descriptor.function_key.clone(),
-            site_pc: descriptor.site_pc,
-            resume_pc: descriptor.resume_pc,
-            end_resume_pc: descriptor.end_resume_pc,
-            expected_stack_height_before_result: descriptor.expected_stack_height_before_result,
-            result_type_refs: descriptor.result_type_refs.clone(),
-            result_plans: descriptor.result_plans.clone(),
-            result_materializations: descriptor.result_materializations.clone(),
-            emit_stream_item_shape_ref: descriptor.emit_stream_item_shape_ref,
-            error_mode: descriptor.error_mode,
-        };
-        self.link_resume_site(package, &descriptor, specialization, function, location)
+        let descriptor = resume_descriptor(package, artifact_index, location.clone())?;
+        self.link_resume_site(
+            package,
+            artifact_index,
+            descriptor,
+            specialization,
+            function,
+            location,
+        )
     }
 
     pub(in crate::bytecode) fn link_resume_site(
         &mut self,
         package: &HydratedBytecodePackage,
+        artifact_index: u32,
         descriptor: &skiff_artifact_model::ResumeDescriptor,
         specialization: &SpecializationKey,
         function: skiff_runtime_linked_bytecode::FunctionIndex,
@@ -948,7 +959,7 @@ impl<'a> TypeLinker<'a> {
             .transpose()?;
         let origin_key = (
             package.reference().package_build_id.clone(),
-            descriptor_index(package, descriptor, location.clone())?,
+            artifact_index,
             specialization.clone(),
         );
         if let Some(index) = self.resume_origins.get(&origin_key) {
@@ -1298,16 +1309,23 @@ fn instruction_index_for_pc(
     pc: u32,
     location: BytecodeLinkLocation,
 ) -> Result<InstructionIndex, BytecodeLinkError> {
-    let index = source
+    let index = source.header_pcs.binary_search(&pc).map_err(|_| {
+        obligation_error(
+            location.clone(),
+            format!("resume descriptor references missing instruction pc {pc}"),
+        )
+    })?;
+    if source
         .instructions
-        .iter()
-        .position(|instruction| instruction.pc == pc)
-        .ok_or_else(|| {
-            obligation_error(
-                location.clone(),
-                format!("resume descriptor references missing instruction pc {pc}"),
-            )
-        })?;
+        .get(index)
+        .map(|instruction| instruction.pc)
+        != Some(pc)
+    {
+        return Err(obligation_error(
+            location,
+            format!("admitted instruction headers do not align at resume descriptor pc {pc}"),
+        ));
+    }
     let raw = u32::try_from(index).map_err(|_| {
         obligation_error(
             location,
@@ -1317,72 +1335,32 @@ fn instruction_index_for_pc(
     Ok(InstructionIndex::new(raw))
 }
 
-fn descriptor_index(
-    package: &HydratedBytecodePackage,
-    descriptor: &skiff_artifact_model::ResumeDescriptor,
-    location: BytecodeLinkLocation,
-) -> Result<u32, BytecodeLinkError> {
-    let bytecode = package.bytecode().ok_or_else(|| {
-        obligation_error(
-            location.clone(),
-            "type-only package has no bytecode resume pool".to_string(),
-        )
-    })?;
-    let mut matching = bytecode.view().resume_sites().iter().filter(|site| {
-        site.function_key == descriptor.function_key
-            && site.site_pc == descriptor.site_pc
-            && site.resume_pc == descriptor.resume_pc
-            && site.end_resume_pc == descriptor.end_resume_pc
-            && site.expected_stack_height_before_result
-                == descriptor.expected_stack_height_before_result
-            && site.result_type_refs == descriptor.result_type_refs
-            && site.result_plans == descriptor.result_plans
-            && site.result_materializations == descriptor.result_materializations
-            && site.emit_stream_item_shape_ref == descriptor.emit_stream_item_shape_ref
-            && site.error_mode == descriptor.error_mode
-    });
-    let site = matching.next().ok_or_else(|| {
-        obligation_error(
-            location.clone(),
-            "resume descriptor is absent from the admitted resume pool".to_string(),
-        )
-    })?;
-    if matching.next().is_some() {
-        return Err(obligation_error(
-            location,
-            "resume descriptor matches multiple admitted resume pool rows".to_string(),
-        ));
-    }
-    Ok(site.descriptor_index)
-}
-
-fn validated_resume_site(
+fn resume_descriptor(
     package: &HydratedBytecodePackage,
     artifact_index: u32,
     location: BytecodeLinkLocation,
-) -> Result<&skiff_artifact_model::ValidatedResumeSite, BytecodeLinkError> {
+) -> Result<&skiff_artifact_model::ResumeDescriptor, BytecodeLinkError> {
     let bytecode = package.bytecode().ok_or_else(|| {
         obligation_error(
             location.clone(),
             "type-only package has no bytecode resume pool".to_string(),
         )
     })?;
-    let mut matching = bytecode
+    #[cfg(test)]
+    RESUME_DESCRIPTOR_INDEX_LOOKUPS.with(|lookups| lookups.set(lookups.get().saturating_add(1)));
+    match bytecode
         .view()
-        .resume_sites()
-        .iter()
-        .filter(|site| site.descriptor_index == artifact_index);
-    let site = matching.next().ok_or_else(|| {
-        obligation_error(
-            location.clone(),
-            format!("validated resume pool row {artifact_index} is absent"),
-        )
-    })?;
-    if matching.next().is_some() {
-        return Err(obligation_error(
+        .pools()
+        .entry(PoolCategory::Resume, artifact_index)
+    {
+        Some(BytecodePoolEntry::ResumeDescriptor(descriptor)) => Ok(descriptor),
+        Some(_) => Err(obligation_error(
             location,
-            format!("validated resume pool row {artifact_index} is duplicated"),
-        ));
+            format!("admitted resume pool row {artifact_index} has the wrong entry kind"),
+        )),
+        None => Err(obligation_error(
+            location,
+            format!("admitted resume pool row {artifact_index} is absent"),
+        )),
     }
-    Ok(site)
 }

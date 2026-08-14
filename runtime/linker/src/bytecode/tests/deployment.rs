@@ -34,6 +34,9 @@ use skiff_runtime_loader::{
     HydratedDeploymentBytecode,
 };
 
+use crate::bytecode::types::{
+    reset_resume_descriptor_index_lookups, resume_descriptor_index_lookups,
+};
 use crate::bytecode::{
     execution_image::{build_resume_sites, build_statement_schedule},
     link_deployment, link_deployment_execution_image, BytecodeLinkError, BytecodeLinkLocation,
@@ -588,9 +591,16 @@ fn reordered_emit_stream_resume_pool_preserves_exact_site_shape_facts() {
         [(1, Some(0)), (0, Some(1))],
         "validated sites retain instruction traversal order and exact artifact pool indices"
     );
+    let expected_resume_lookups = validated.len() as u64;
 
+    reset_resume_descriptor_index_lookups();
     let image = link_deployment_execution_image(hydrated, &super::generous_execution_limits())
         .expect("reordered descriptor rows remain an atomic image");
+    assert_eq!(
+        resume_descriptor_index_lookups(),
+        expected_resume_lookups,
+        "each pending site performs exactly one direct artifact resume-pool lookup"
+    );
     let root = image
         .functions()
         .iter()
@@ -663,8 +673,14 @@ fn reordered_ordinary_result_resume_pool_preserves_exact_site_facts() {
         "ordinary result sites also retain traversal order independently of pool order"
     );
 
+    reset_resume_descriptor_index_lookups();
     let candidate = link_deployment(&hydrated, &generous_limits())
         .expect("reordered ordinary result rows remain a linked candidate");
+    assert_eq!(
+        resume_descriptor_index_lookups(),
+        validated.len() as u64,
+        "ordinary pending sites also perform one direct pool lookup each"
+    );
     let root = function(&candidate, ROOT_FUNCTION);
     let pending = root
         .instructions()
