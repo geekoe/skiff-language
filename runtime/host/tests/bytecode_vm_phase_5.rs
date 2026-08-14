@@ -9,7 +9,10 @@ mod stages;
 #[path = "bytecode_vm_phase_5/tcp_server.rs"]
 mod tcp_server;
 
-use fixture::{BuildOutcome, FixtureSpec};
+use skiff_artifact_model::BoundaryUnavailableReason;
+use skiff_compiler::Phase1UnsupportedCapability;
+
+use fixture::{BuildOutcome, FixtureSpec, TypedRejection};
 
 #[test]
 fn phase_5_stage_sentinel_source_to_admission() {
@@ -20,24 +23,21 @@ fn phase_5_stage_sentinel_source_to_admission() {
     let positive = FixtureSpec::positive().build("s1-positive");
     let mut failures = Vec::new();
 
-    assert_exact_rejection(
+    assert_phase1_rejection(
         unsupported,
         "std.http.client.sse",
-        &["std.http.client.sse", "std.http.sse"],
+        Phase1UnsupportedCapability::HostTarget,
+        "main::run",
         &mut failures,
     );
-    assert_exact_rejection(
+    assert_phase1_rejection(
         unsupported_date,
         "core.date.now",
-        &["core.date.now", "Date.now"],
+        Phase1UnsupportedCapability::HostTarget,
+        "main::run",
         &mut failures,
     );
-    assert_exact_rejection(
-        illegal_stream,
-        "illegal public Stream placement",
-        &["Stream", "stream"],
-        &mut failures,
-    );
+    assert_public_stream_rejection(illegal_stream, "leak", &mut failures);
 
     if let BuildOutcome::Rejected { error_chain, .. } = positive {
         failures.push(format!(
@@ -91,10 +91,11 @@ async fn phase_5_structural_no_bypass() {
     host_chain::structural_no_bypass().await;
 }
 
-fn assert_exact_rejection(
+fn assert_phase1_rejection(
     outcome: BuildOutcome,
     label: &str,
-    exact_names: &[&str],
+    expected_capability: Phase1UnsupportedCapability,
+    expected_function: &str,
     failures: &mut Vec<String>,
 ) {
     match outcome {
@@ -104,13 +105,58 @@ fn assert_exact_rejection(
         BuildOutcome::Rejected {
             error_chain,
             release_pointer_absent,
+            rejection,
         } => {
             if !release_pointer_absent {
                 failures.push(format!("rejected {label} published a release pointer"));
             }
-            if !exact_names.iter().any(|name| error_chain.contains(name)) {
+            if !matches!(
+                &rejection,
+                Some(TypedRejection::Phase1Capability {
+                    capability,
+                    module_path,
+                    function_key: Some(function_key),
+                }) if *capability == expected_capability
+                    && module_path == "main"
+                    && function_key == expected_function
+            ) {
                 failures.push(format!(
-                    "the fail-closed owner did not name {label} exactly: {error_chain}"
+                    "the exact {label} fixture did not reach its typed {expected_capability:?} owner: {rejection:?}; diagnostic={error_chain}"
+                ));
+            }
+        }
+    }
+}
+
+fn assert_public_stream_rejection(
+    outcome: BuildOutcome,
+    public_path: &str,
+    failures: &mut Vec<String>,
+) {
+    match outcome {
+        BuildOutcome::Published(_) => failures.push(format!(
+            "illegal public Stream path {public_path} published despite remaining outside Phase 5"
+        )),
+        BuildOutcome::Rejected {
+            error_chain,
+            release_pointer_absent,
+            rejection,
+        } => {
+            if !release_pointer_absent {
+                failures.push(format!(
+                    "rejected public Stream path {public_path} published a release pointer"
+                ));
+            }
+            let exact = matches!(
+                &rejection,
+                Some(TypedRejection::UnavailableServiceCalls { unavailable })
+                    if unavailable.get(public_path).is_some_and(|reasons| {
+                        reasons.contains(&BoundaryUnavailableReason::UnsupportedStream)
+                    })
+            );
+            if !exact {
+                failures.push(format!(
+                    "public Stream path {public_path} did not fail at the typed boundary owner: {rejection:?}; diagnostic={error_chain}"
                 ));
             }
         }

@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -7,12 +8,13 @@ use std::{
 use serde_json::Value;
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
-    GatewayEntryIdentity, IngressProtocol, IngressSelector, PackageArtifact, PackageArtifactRef,
-    ServiceDeployment, ServiceDeploymentRef,
+    BoundaryUnavailableReason, GatewayEntryIdentity, IngressProtocol, IngressSelector,
+    PackageArtifact, PackageArtifactRef, ServiceDeployment, ServiceDeploymentRef,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, seed_official_std_package, AuthoringObject},
-    CompilerPlatformSources,
+    BytecodeEmissionError, CompilerPlatformSources, ContractDefinitionError,
+    Phase1UnsupportedCapability,
 };
 use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_runtime_bytecode_verifier::VerificationLimits;
@@ -33,6 +35,19 @@ pub enum BuildOutcome {
     Rejected {
         error_chain: String,
         release_pointer_absent: bool,
+        rejection: Option<TypedRejection>,
+    },
+}
+
+#[derive(Debug)]
+pub enum TypedRejection {
+    Phase1Capability {
+        capability: Phase1UnsupportedCapability,
+        module_path: String,
+        function_key: Option<String>,
+    },
+    UnavailableServiceCalls {
+        unavailable: BTreeMap<String, Vec<BoundaryUnavailableReason>>,
     },
 }
 
@@ -117,6 +132,7 @@ impl FixtureSpec {
         ) {
             Ok(receipt) => receipt,
             Err(error) => {
+                let rejection = typed_rejection(error.as_ref());
                 let store =
                     CanonicalArtifactStore::open(root.path()).expect("open rejected carrier store");
                 let release_pointer_absent = store
@@ -126,6 +142,7 @@ impl FixtureSpec {
                 return BuildOutcome::Rejected {
                     error_chain: error_chain(error.as_ref()),
                     release_pointer_absent,
+                    rejection,
                 };
             }
         };
@@ -303,6 +320,32 @@ fn error_chain(mut error: &(dyn std::error::Error + 'static)) -> String {
         error = source;
     }
     parts.join(" :: ")
+}
+
+fn typed_rejection(mut error: &(dyn std::error::Error + 'static)) -> Option<TypedRejection> {
+    loop {
+        if let Some(BytecodeEmissionError::UnsupportedPhase1Capability {
+            capability,
+            module_path,
+            function_key,
+            ..
+        }) = error.downcast_ref::<BytecodeEmissionError>()
+        {
+            return Some(TypedRejection::Phase1Capability {
+                capability: *capability,
+                module_path: module_path.clone(),
+                function_key: function_key.clone(),
+            });
+        }
+        if let Some(ContractDefinitionError::UnavailableServiceCalls { unavailable }) =
+            error.downcast_ref::<ContractDefinitionError>()
+        {
+            return Some(TypedRejection::UnavailableServiceCalls {
+                unavailable: unavailable.clone(),
+            });
+        }
+        error = error.source()?;
+    }
 }
 
 fn production_execution_limits() -> DeploymentExecutionLimits {
