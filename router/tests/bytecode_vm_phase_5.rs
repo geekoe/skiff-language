@@ -97,16 +97,20 @@ fn phase_5_router_full_chain_vcp() {
         output.status.success(),
         "Phase 5 production Router harness failed at a real process boundary\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
-    let evidence = stdout
+    let evidence_lines = stdout
         .lines()
-        .filter_map(|line| serde_json::from_str::<RouterProofEvidence>(line).ok())
+        .filter(|line| line.trim_start().starts_with('{'))
         .collect::<Vec<_>>();
     assert_eq!(
-        evidence.len(),
+        evidence_lines.len(),
         1,
-        "Phase 5 Router harness must emit one exact typed evidence object:\n{stdout}"
+        "Phase 5 Router harness must emit exactly one JSON evidence line:\n{stdout}"
     );
-    assert_exact_evidence(&evidence[0]);
+    let evidence =
+        serde_json::from_str::<RouterProofEvidence>(evidence_lines[0]).unwrap_or_else(|error| {
+            panic!("Phase 5 Router evidence is not the exact typed DTO: {error}")
+        });
+    assert_exact_evidence(&evidence);
 }
 
 fn assert_exact_evidence(evidence: &RouterProofEvidence) {
