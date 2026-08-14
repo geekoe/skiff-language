@@ -12,7 +12,7 @@ use super::{
     response::{build_response_headers, chunk_event, response_event},
     response_parts::HttpResponseHead,
     sse::SseDecoder,
-    transport::{map_reqwest_error_for, send_request},
+    transport::{map_reqwest_error_for, send_request, send_request_without_input_timeout},
 };
 use crate::{
     capability_context::{HttpRuntimeOptions, TARGET_STD_HTTP_STREAM},
@@ -124,6 +124,45 @@ pub(crate) async fn open_body_stream_with_cancellation_and_options(
         TARGET_STD_HTTP_STREAM,
     );
     let response = send_request(&context).await?;
+    let head = HttpResponseHead::from_response(&response);
+    let target = context.target();
+    let max_response_bytes = context.service_max_response_bytes();
+    let cancellation = context.into_cancel_signals();
+    Ok(HttpBodyStream {
+        head,
+        events: HttpEventStream {
+            response: Some(response),
+            target,
+            mode: HttpStreamMode::Raw,
+            success_status: true,
+            pending_events: VecDeque::new(),
+            sse_decoder: SseDecoder::default(),
+            bytes_read: 0,
+            max_response_bytes,
+            cancellation,
+            finished: false,
+        },
+    })
+}
+
+/// Current-scope bytecode stream-open lower using the production transport
+/// with primitive timeout ownership retained by the caller's typed scope
+/// race.
+pub(crate) async fn open_body_stream_without_input_timeout_with_cancellation_and_options(
+    input: &Value,
+    cancellation: CancellationSignals<'static>,
+    service_max_response_bytes: usize,
+    options: HttpRuntimeOptions,
+) -> Result<HttpBodyStream<'static>> {
+    let context = HttpCallContext::owned(
+        input,
+        None,
+        service_max_response_bytes,
+        cancellation,
+        options,
+        TARGET_STD_HTTP_STREAM,
+    );
+    let response = send_request_without_input_timeout(&context).await?;
     let head = HttpResponseHead::from_response(&response);
     let target = context.target();
     let max_response_bytes = context.service_max_response_bytes();

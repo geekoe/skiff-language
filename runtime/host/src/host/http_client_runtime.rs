@@ -5,7 +5,8 @@ use std::{future::Future, pin::Pin, time::Duration};
 use serde_json::Value;
 use skiff_runtime_capability_context::{
     CancellationSignals, CancellationToken, ExecutionScope, ExecutionScopeLeaseTerminal,
-    OwnedExecutionControl, StreamPullSource, StreamRuntimeError, StreamRuntimeResult,
+    ExecutionScopeTerminal, OwnedExecutionControl, StreamPullSource, StreamRuntimeError,
+    StreamRuntimeResult,
 };
 
 use crate::{
@@ -16,13 +17,78 @@ use crate::{
     config_view::{from_wire_json_plan, materialize_internal_json, materialize_json},
     error::{OrdinaryRuntimeError, Result, RuntimeError},
     host::http_runtime::{
-        open_body_stream_with_cancellation_and_options, open_sse_with_cancellation_and_options,
-        request_with_cancellation_and_options, HttpBodyStream, HttpEventStream,
+        open_body_stream_with_cancellation_and_options,
+        open_body_stream_without_input_timeout_with_cancellation_and_options,
+        open_sse_with_cancellation_and_options, request_with_cancellation_and_options,
+        request_without_input_timeout_with_cancellation_and_options, HttpBodyStream,
+        HttpEventStream, HttpRequestLowerFailure,
     },
 };
 use skiff_runtime_model::{
     request_heap::RequestHeap, runtime_value::RuntimeValue, type_plan::RuntimeTypePlan,
 };
+
+/// Typed terminal preserved by the current-scope production HTTP lower.
+///
+/// The bytecode provider consumes this classification directly. Legacy native
+/// callers can still project it back into [`RuntimeError`], but a request
+/// deadline is never inferred from an ordinary diagnostic string at the K5
+/// provider boundary.
+#[derive(Debug)]
+pub(crate) enum CurrentScopeHttpFailure {
+    Cancelled,
+    ScopeDeadlineExceeded,
+    PrimitiveTimeout,
+    ResponseLimitExceeded {
+        limit_bytes: usize,
+        received_bytes: usize,
+    },
+    Runtime(RuntimeError),
+}
+
+pub(crate) type CurrentScopeHttpResult<T> = std::result::Result<T, CurrentScopeHttpFailure>;
+
+impl CurrentScopeHttpFailure {
+    fn into_runtime_error(self) -> RuntimeError {
+        match self {
+            Self::Cancelled => RuntimeError::cancelled(),
+            // Preserve the legacy native current-scope projection while the
+            // typed bytecode adapter consumes the exact deadline variant.
+            Self::ScopeDeadlineExceeded => RuntimeError::cancelled(),
+            Self::PrimitiveTimeout => http_primitive_timeout_error(),
+            Self::ResponseLimitExceeded { limit_bytes, .. } => RuntimeError::Protocol {
+                target: TARGET_STD_HTTP_REQUEST.to_string(),
+                message: format!("response body exceeds max size of {limit_bytes} bytes"),
+            },
+            Self::Runtime(error) => error,
+        }
+    }
+}
+
+impl From<HttpRequestLowerFailure> for CurrentScopeHttpFailure {
+    fn from(error: HttpRequestLowerFailure) -> Self {
+        match error {
+            HttpRequestLowerFailure::Runtime(error) => Self::from(error),
+            HttpRequestLowerFailure::ResponseLimitExceeded {
+                limit_bytes,
+                received_bytes,
+            } => Self::ResponseLimitExceeded {
+                limit_bytes,
+                received_bytes,
+            },
+        }
+    }
+}
+
+impl From<RuntimeError> for CurrentScopeHttpFailure {
+    fn from(error: RuntimeError) -> Self {
+        if error.is_cancellation_terminal() {
+            Self::Cancelled
+        } else {
+            Self::Runtime(error)
+        }
+    }
+}
 
 pub(crate) struct HttpEffectRequest<'a> {
     target: &'a str,
@@ -68,12 +134,21 @@ impl HttpClientCapabilityContext {
         return_plan: Option<&RuntimeTypePlan>,
         heap: &mut RequestHeap,
     ) -> Option<Result<RuntimeValue>> {
-        self.test_effect_double_context()
-            .dispatch_test_http_effect_invocation_double(target, input, arg_plan, return_plan, heap)
+        self.test_effect_double_context().and_then(|context| {
+            context.dispatch_test_http_effect_invocation_double(
+                target,
+                input,
+                arg_plan,
+                return_plan,
+                heap,
+            )
+        })
     }
 
     pub(crate) async fn dispatch_http_request(&self, input: &Value) -> Result<Value> {
-        self.dispatch_http_request_inner(input, None).await
+        self.dispatch_http_request_inner(input, None)
+            .await
+            .map_err(CurrentScopeHttpFailure::into_runtime_error)
     }
 
     #[allow(dead_code)]
@@ -85,36 +160,50 @@ impl HttpClientCapabilityContext {
         let current_scope = current_http_scope(&execution_control, TARGET_STD_HTTP_REQUEST)?;
         self.dispatch_http_request_inner(input, Some(current_scope))
             .await
+            .map_err(CurrentScopeHttpFailure::into_runtime_error)
+    }
+
+    /// Runs the production request lower under the caller's already-created
+    /// request scope. The bytecode provider passes the exact scope retained by
+    /// its K5 `OwnedExecutionControl`; this boundary never derives or creates a
+    /// second deadline/cancellation authority.
+    pub(crate) async fn dispatch_http_request_with_execution_scope(
+        &self,
+        input: &Value,
+        current_scope: ExecutionScope,
+    ) -> CurrentScopeHttpResult<Value> {
+        self.dispatch_http_request_inner(input, Some(current_scope))
+            .await
     }
 
     async fn dispatch_http_request_inner(
         &self,
         input: &Value,
         current_scope: Option<ExecutionScope>,
-    ) -> Result<Value> {
+    ) -> CurrentScopeHttpResult<Value> {
         let request = HttpEffectRequest::new(
             TARGET_STD_HTTP_REQUEST,
             self.http(),
             input,
             self.http_options(),
         )?;
-        let test_effect_doubles = self.test_effect_double_context();
-        if let Some(value) =
-            test_effect_doubles.dispatch_test_effect_double(request.target(), Some(request.input()))
-        {
-            return value;
+        if let Some(test_effect_doubles) = self.test_effect_double_context() {
+            if let Some(value) = test_effect_doubles
+                .dispatch_test_effect_double(request.target(), Some(request.input()))
+            {
+                return value.map_err(CurrentScopeHttpFailure::from);
+            }
+            test_effect_doubles.require_non_test_mode(request.target())?;
         }
-        test_effect_doubles.require_non_test_mode(request.target())?;
         let output = match current_scope {
             Some(current_scope) => {
                 let primitive_timeout_ms = http_primitive_timeout_ms(request.input());
-                await_http_request_lower_with_current_scope(
+                await_http_lower_with_current_scope_classified(
                     current_scope,
                     primitive_timeout_ms,
                     || async {
-                        request_with_cancellation_and_options(
+                        request_without_input_timeout_with_cancellation_and_options(
                             request.input(),
-                            None,
                             request.response_max_bytes,
                             CancellationSignals::none(),
                             request.http_options.clone(),
@@ -124,18 +213,17 @@ impl HttpClientCapabilityContext {
                 )
                 .await
             }
-            None => {
-                request_with_cancellation_and_options(
-                    request.input(),
-                    request.deadline_ms,
-                    request.response_max_bytes,
-                    CancellationSignals::from_tokens([request.cancellation.clone()]),
-                    request.http_options.clone(),
-                )
-                .await
-            }
+            None => request_with_cancellation_and_options(
+                request.input(),
+                request.deadline_ms,
+                request.response_max_bytes,
+                CancellationSignals::from_tokens([request.cancellation.clone()]),
+                request.http_options.clone(),
+            )
+            .await
+            .map_err(CurrentScopeHttpFailure::from),
         };
-        output.and_then(materialize_internal_json)
+        output.and_then(|value| materialize_internal_json(value).map_err(Into::into))
     }
 
     pub(crate) async fn dispatch_http_stream(
@@ -145,6 +233,7 @@ impl HttpClientCapabilityContext {
     ) -> Result<Value> {
         self.dispatch_http_stream_inner(input, expected_body_item_type, None)
             .await
+            .map_err(CurrentScopeHttpFailure::into_runtime_error)
     }
 
     #[allow(dead_code)]
@@ -157,6 +246,20 @@ impl HttpClientCapabilityContext {
         let current_scope = current_http_scope(&execution_control, TARGET_STD_HTTP_STREAM)?;
         self.dispatch_http_stream_inner(input, expected_body_item_type, Some(current_scope))
             .await
+            .map_err(CurrentScopeHttpFailure::into_runtime_error)
+    }
+
+    /// Runs the production stream-open lower under the caller's exact K5
+    /// request scope. The ResourceTable-backed stream runtime must already be
+    /// installed on this context.
+    pub(crate) async fn dispatch_http_stream_with_execution_scope(
+        &self,
+        input: &Value,
+        expected_body_item_type: Option<&RuntimeTypePlan>,
+        current_scope: ExecutionScope,
+    ) -> CurrentScopeHttpResult<Value> {
+        self.dispatch_http_stream_inner(input, expected_body_item_type, Some(current_scope))
+            .await
     }
 
     async fn dispatch_http_stream_inner(
@@ -164,7 +267,7 @@ impl HttpClientCapabilityContext {
         input: &Value,
         expected_body_item_type: Option<&RuntimeTypePlan>,
         current_scope: Option<ExecutionScope>,
-    ) -> Result<Value> {
+    ) -> CurrentScopeHttpResult<Value> {
         let expected_body_item_type = expected_body_item_type.cloned().ok_or_else(|| {
             RuntimeError::invalid_artifact(
                 "std.http.stream boundary is missing expected body stream item type plan"
@@ -177,25 +280,25 @@ impl HttpClientCapabilityContext {
             input,
             self.http_options(),
         )?;
-        let test_effect_doubles = self.test_effect_double_context();
-        if let Some(value) =
-            test_effect_doubles.dispatch_test_effect_double(request.target(), Some(request.input()))
-        {
-            return value;
+        if let Some(test_effect_doubles) = self.test_effect_double_context() {
+            if let Some(value) = test_effect_doubles
+                .dispatch_test_effect_double(request.target(), Some(request.input()))
+            {
+                return value.map_err(CurrentScopeHttpFailure::from);
+            }
+            test_effect_doubles.require_non_test_mode(request.target())?;
         }
-        test_effect_doubles.require_non_test_mode(request.target())?;
 
         let stream_cancellation = CancellationToken::new();
         let http_stream = match current_scope {
             Some(current_scope) => {
                 let primitive_timeout_ms = http_primitive_timeout_ms(request.input());
-                await_http_body_open_lower_with_current_scope(
+                await_http_lower_with_current_scope_classified(
                     current_scope,
                     primitive_timeout_ms,
                     || async {
-                        open_body_stream_with_cancellation_and_options(
+                        open_body_stream_without_input_timeout_with_cancellation_and_options(
                             request.input(),
-                            None,
                             CancellationSignals::from_tokens([stream_cancellation.clone()]),
                             request.response_max_bytes,
                             request.http_options.clone(),
@@ -205,22 +308,26 @@ impl HttpClientCapabilityContext {
                 )
                 .await?
             }
-            None => {
-                open_body_stream_with_cancellation_and_options(
-                    request.input(),
-                    request.deadline_ms,
-                    CancellationSignals::from_tokens([
-                        request.cancellation.clone(),
-                        stream_cancellation.clone(),
-                    ]),
-                    request.response_max_bytes,
-                    request.http_options.clone(),
-                )
-                .await?
-            }
+            None => open_body_stream_with_cancellation_and_options(
+                request.input(),
+                request.deadline_ms,
+                CancellationSignals::from_tokens([
+                    request.cancellation.clone(),
+                    stream_cancellation.clone(),
+                ]),
+                request.response_max_bytes,
+                request.http_options.clone(),
+            )
+            .await
+            .map_err(CurrentScopeHttpFailure::from)?,
         };
         let (status, headers) = http_stream.handle_metadata();
-        let stream = self.stream_runtime().pull_stream_with_cancellation(
+        let stream_runtime = self.stream_runtime().ok_or_else(|| {
+            RuntimeError::invalid_artifact(
+                "std.http.stream has no injected stream runtime".to_string(),
+            )
+        })?;
+        let stream = stream_runtime.pull_stream_with_cancellation(
             HttpBodyPullSource::new(http_stream, expected_body_item_type),
             stream_cancellation,
         );
@@ -261,13 +368,14 @@ impl HttpClientCapabilityContext {
         })?;
         let request =
             HttpEffectRequest::new(TARGET_STD_HTTP_SSE, self.http(), input, self.http_options())?;
-        let test_effect_doubles = self.test_effect_double_context();
-        if let Some(value) =
-            test_effect_doubles.dispatch_test_effect_double(request.target(), Some(request.input()))
-        {
-            return value;
+        if let Some(test_effect_doubles) = self.test_effect_double_context() {
+            if let Some(value) = test_effect_doubles
+                .dispatch_test_effect_double(request.target(), Some(request.input()))
+            {
+                return value;
+            }
+            test_effect_doubles.require_non_test_mode(request.target())?;
         }
-        test_effect_doubles.require_non_test_mode(request.target())?;
 
         let stream_cancellation = CancellationToken::new();
         let http_stream = match current_scope {
@@ -303,7 +411,12 @@ impl HttpClientCapabilityContext {
                 .await?
             }
         };
-        let stream = self.stream_runtime().pull_stream_with_cancellation(
+        let stream_runtime = self.stream_runtime().ok_or_else(|| {
+            RuntimeError::invalid_artifact(
+                "std.http.sse has no injected stream runtime".to_string(),
+            )
+        })?;
+        let stream = stream_runtime.pull_stream_with_cancellation(
             HttpEventPullSource::new(http_stream, expected_item_type),
             stream_cancellation,
         );
@@ -336,6 +449,21 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<T>>,
 {
+    await_http_lower_with_current_scope_classified(current_scope, primitive_timeout_ms, lower)
+        .await
+        .map_err(CurrentScopeHttpFailure::into_runtime_error)
+}
+
+async fn await_http_lower_with_current_scope_classified<T, F, Fut, E>(
+    current_scope: ExecutionScope,
+    primitive_timeout_ms: Option<u64>,
+    lower: F,
+) -> CurrentScopeHttpResult<T>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = std::result::Result<T, E>>,
+    E: Into<CurrentScopeHttpFailure>,
+{
     let (lease, _completion) = current_scope.acquire_lease();
     let lower = lower();
     let primitive_timeout = async move {
@@ -349,14 +477,20 @@ where
 
     tokio::select! {
         biased;
-        output = &mut lower => output,
+        output = &mut lower => output.map_err(Into::into),
         terminal = lease.wait() => match terminal {
-            ExecutionScopeLeaseTerminal::Control(_) => Err(RuntimeError::cancelled()),
+            ExecutionScopeLeaseTerminal::Control(ExecutionScopeTerminal::AncestorCancelled) => {
+                Err(CurrentScopeHttpFailure::Cancelled)
+            }
+            ExecutionScopeLeaseTerminal::Control(
+                ExecutionScopeTerminal::LocalDeadlineExceeded(_)
+                | ExecutionScopeTerminal::InheritedDeadlineExceeded(_),
+            ) => Err(CurrentScopeHttpFailure::ScopeDeadlineExceeded),
             ExecutionScopeLeaseTerminal::Completed => {
                 unreachable!("HTTP lower completion is committed by the lower branch")
             }
         },
-        _ = &mut primitive_timeout => Err(http_primitive_timeout_error()),
+        _ = &mut primitive_timeout => Err(CurrentScopeHttpFailure::PrimitiveTimeout),
     }
 }
 

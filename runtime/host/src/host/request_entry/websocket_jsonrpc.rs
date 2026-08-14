@@ -49,7 +49,7 @@ impl RuntimeHost {
         &self,
         reservation: RequestReservation,
         request: AdmittedBytecodeWebSocketJsonRpcRequest,
-        _http_response_max_bytes: usize,
+        http_response_max_bytes: usize,
         sender: mpsc::UnboundedSender<RouterWriterMessage>,
     ) {
         let AdmittedBytecodeWebSocketJsonRpcRequest {
@@ -79,6 +79,8 @@ impl RuntimeHost {
             };
         route.publish_admission_observations();
         let cancellation = supervised_request.cancellation_token();
+        let http_client =
+            Some(self.bytecode_http_client_port(cancellation.clone(), http_response_max_bytes));
         let execution_budget = supervised_request.execution_budget();
         let handles = BytecodeRequestExecutionHandles {
             request_heap_limits: self.request_heap_limits(),
@@ -98,6 +100,7 @@ impl RuntimeHost {
                     cancellation,
                     execution_budget: Arc::clone(&execution_budget),
                     handles,
+                    http_client,
                     heap: None,
                 },
             )

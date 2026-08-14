@@ -15,13 +15,30 @@ pub const HTTP_REQUEST_TIMEOUT_REASON: &str = "request timeout";
 
 #[allow(unused_imports)]
 pub use request::request;
-pub(crate) use request::request_with_cancellation_and_options;
+pub(crate) use request::{
+    request_with_cancellation_and_options,
+    request_without_input_timeout_with_cancellation_and_options, HttpRequestLowerFailure,
+};
 pub(crate) use sse::open_sse_with_cancellation_and_options;
 #[allow(unused_imports)]
 pub use sse::{open_sse_with_cancel_flags, sse};
-pub(crate) use stream::open_body_stream_with_cancellation_and_options;
+pub(crate) use stream::{
+    open_body_stream_with_cancellation_and_options,
+    open_body_stream_without_input_timeout_with_cancellation_and_options,
+};
 #[allow(unused_imports)]
 pub use stream::{open_stream_with_cancel_flags, stream, HttpBodyStream, HttpEventStream};
+
+/// Runs the production request parser without starting DNS or transport I/O.
+///
+/// The bytecode provider uses this exact parser for its mandatory first poll:
+/// malformed typed input is a synchronous `Ready(InvalidInput)` result, while
+/// the real lower remains the sole HTTP policy/transport implementation.
+pub(crate) fn validate_bytecode_request_input(
+    input: &serde_json::Value,
+) -> crate::error::Result<()> {
+    input::parse_input(input).map(drop)
+}
 
 #[cfg(test)]
 mod tests;

@@ -1,8 +1,12 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use skiff_artifact_model::bytecode::{structurally_validate, Opcode};
+use skiff_artifact_model::{
+    bytecode::{structurally_validate, Opcode},
+    HostEffectExecutorIdentity,
+};
 use skiff_runtime_bytecode_verifier::VerifiedResumeKind;
+use skiff_runtime_linked_bytecode::LinkedInstructionTarget;
 use skiff_runtime_model::{
     bytecode_execution_observation::{
         BytecodeRequestTerminal, RequestExecutionOwnerInventorySnapshot,
@@ -178,8 +182,8 @@ fn phase_4_stage_sentinel_admission_to_emission() {
 
 /// Stage sentinel emission -> link. The input is the real emitted artifact
 /// hydrated from the canonical store; the assertion is on the real linked
-/// image: exactly one typed host-effect adapter entry with the pinned
-/// canonical binding id (no std bypass, no string dispatch).
+/// image: exactly one typed host-effect adapter entry with the pinned opaque
+/// executor identity and linked signature (no std bypass or string dispatch).
 #[tokio::test(flavor = "current_thread")]
 async fn phase_4_stage_sentinel_emission_to_link() {
     let fixture = publish_or_panic(
@@ -193,16 +197,38 @@ async fn phase_4_stage_sentinel_emission_to_link() {
         .await
         .expect("production deployment load must succeed once V4 joins")
         .expect("production deployment has a bytecode image");
-    let adapters = image.host_effect_adapters();
+    let adapter_indices = image
+        .functions()
+        .iter()
+        .flat_map(|function| function.instructions())
+        .flat_map(|instruction| instruction.resolved_operands())
+        .filter_map(|operand| match operand.target() {
+            LinkedInstructionTarget::HostEffectAdapter(index) => Some(index),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
-        adapters.len(),
+        adapter_indices.len(),
         1,
-        "the linked image must carry exactly one typed host-effect adapter; observed: {adapters:?}"
+        "the linked image must carry exactly one typed host-effect adapter index; \
+         observed: {adapter_indices:?}"
+    );
+    let target = image
+        .host_effect_target(adapter_indices[0])
+        .expect("the exact typed host-effect index must resolve through the opaque view");
+    assert_eq!(
+        target.executor_identity(),
+        HostEffectExecutorIdentity::Sleep,
+        "the typed entry must retain the pinned Sleep executor identity"
     );
     assert_eq!(
-        adapters[0].binding_key().as_str(),
-        "std.time.sleep",
-        "the typed entry must come from the pinned registry binding id, not a std bypass"
+        target.signature().parameter_types().len(),
+        1,
+        "the pinned Sleep target must retain its exact one-parameter linked signature"
+    );
+    assert!(
+        target.signature().result_types().is_empty(),
+        "the pinned Sleep target must retain its exact void linked signature"
     );
 }
 

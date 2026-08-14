@@ -91,6 +91,7 @@ pub(in crate::host::request_entry) async fn drive_phase_2_vcp_request(
         handles: BytecodeRequestExecutionHandles {
             request_heap_limits: RequestHeapLimits::default(),
         },
+        http_client: None,
         heap: Some(heap),
     });
     let owner_inventory = driven.owner_inventory.into_snapshot();

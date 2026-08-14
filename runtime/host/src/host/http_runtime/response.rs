@@ -9,10 +9,39 @@ use super::{
 use crate::error::{Result, RuntimeError};
 use skiff_runtime_boundary::value::bytes_value;
 
+pub(super) enum ResponseBodyReadFailure {
+    Runtime(RuntimeError),
+    LimitExceeded {
+        limit_bytes: usize,
+        received_bytes: usize,
+    },
+}
+
+impl From<RuntimeError> for ResponseBodyReadFailure {
+    fn from(error: RuntimeError) -> Self {
+        Self::Runtime(error)
+    }
+}
+
 pub(super) async fn read_response_body(
-    mut response: reqwest::Response,
+    response: reqwest::Response,
     context: &HttpCallContext<'_, '_>,
 ) -> Result<Vec<u8>> {
+    read_response_body_classified(response, context)
+        .await
+        .map_err(|failure| match failure {
+            ResponseBodyReadFailure::Runtime(error) => error,
+            ResponseBodyReadFailure::LimitExceeded { limit_bytes, .. } => RuntimeError::Protocol {
+                target: context.target().to_string(),
+                message: format!("response body exceeds max size of {limit_bytes} bytes"),
+            },
+        })
+}
+
+pub(super) async fn read_response_body_classified(
+    mut response: reqwest::Response,
+    context: &HttpCallContext<'_, '_>,
+) -> std::result::Result<Vec<u8>, ResponseBodyReadFailure> {
     let max_bytes = context.service_max_response_bytes();
     let mut body = Vec::new();
     let body_loop = || async {
@@ -21,10 +50,11 @@ pub(super) async fn read_response_body(
             .await
             .map_err(|error| map_reqwest_error_for(context.target(), error))?
         {
-            if body.len().saturating_add(chunk.len()) > max_bytes {
-                return Err(RuntimeError::Protocol {
-                    target: context.target().to_string(),
-                    message: format!("response body exceeds max size of {max_bytes} bytes"),
+            let received_bytes = body.len().saturating_add(chunk.len());
+            if received_bytes > max_bytes {
+                return Err(ResponseBodyReadFailure::LimitExceeded {
+                    limit_bytes: max_bytes,
+                    received_bytes,
                 });
             }
             body.extend_from_slice(&chunk);
@@ -35,7 +65,9 @@ pub(super) async fn read_response_body(
     if !context.cancel_signals().is_empty() {
         tokio::select! {
             body = body_loop() => body,
-            _ = wait_for_cancel_signals(context.cancel_signals()) => Err(RuntimeError::cancelled()),
+            _ = wait_for_cancel_signals(context.cancel_signals()) => {
+                Err(ResponseBodyReadFailure::Runtime(RuntimeError::cancelled()))
+            },
         }
     } else {
         body_loop().await

@@ -189,6 +189,7 @@ async fn drive_phase_4_seam(
         handles: BytecodeRequestExecutionHandles {
             request_heap_limits: RequestHeapLimits::default(),
         },
+        http_client: None,
         heap: Some(heap),
     })
 }

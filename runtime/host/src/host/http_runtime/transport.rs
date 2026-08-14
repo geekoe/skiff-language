@@ -74,13 +74,30 @@ impl HttpClientCache {
 }
 
 pub(super) async fn send_request(context: &HttpCallContext<'_, '_>) -> Result<reqwest::Response> {
+    send_request_inner(context, true).await
+}
+
+/// Sends through the same parser, egress guard, cache and transport while
+/// leaving the typed primitive timeout to the caller's current-scope race.
+pub(super) async fn send_request_without_input_timeout(
+    context: &HttpCallContext<'_, '_>,
+) -> Result<reqwest::Response> {
+    send_request_inner(context, false).await
+}
+
+async fn send_request_inner(
+    context: &HttpCallContext<'_, '_>,
+    honor_input_timeout: bool,
+) -> Result<reqwest::Response> {
     check_cancel_signals(context.cancel_signals())?;
     let parsed = parse_input(context.input())?;
     let options = context.options();
     let proxy_url = options.egress_proxy().map(str::to_owned);
     let guarded_target = enforce_http_egress_guard(&parsed.url, options.clone(), "url").await?;
 
-    let timeout_ms = effective_timeout_ms(parsed.timeout_ms, context.frame_deadline_ms());
+    let timeout_ms = honor_input_timeout
+        .then(|| effective_timeout_ms(parsed.timeout_ms, context.frame_deadline_ms()))
+        .flatten();
     if timeout_ms == Some(0) {
         return Err(http_primitive_timeout_error(context.target()));
     }
