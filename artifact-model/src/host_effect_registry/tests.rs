@@ -92,17 +92,21 @@ fn built_in_registry_is_sorted_sparse_and_frozen() {
     assert_eq!(registry.identity().version, HOST_EFFECT_REGISTRY_VERSION);
     assert_eq!(
         HOST_EFFECT_REGISTRY_FINGERPRINT,
-        "de54a2f6b9c1413d4004574ec8ef264a7c4f35853daf457a8b6ee6c63dc2a166"
+        "50a4a5fb71b5cd47eac78942be6db46f44544d00529d495e1587319125809c97"
     );
     assert_eq!(
         registry.identity().fingerprint,
         HOST_EFFECT_REGISTRY_FINGERPRINT
     );
-    assert_eq!(registry.entries().len(), 54);
+    assert_eq!(registry.entries().len(), 53);
     assert!(registry
         .entries()
         .windows(2)
         .all(|pair| pair[0].target < pair[1].target));
+    assert!(registry
+        .entries()
+        .iter()
+        .all(|entry| entry.binding_key != "core.bytes.fromUtf8"));
 }
 
 #[test]

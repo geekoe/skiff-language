@@ -11,7 +11,6 @@ mod stages;
 #[path = "bytecode_vm_phase_5/tcp_server.rs"]
 mod tcp_server;
 
-use skiff_artifact_model::BoundaryUnavailableReason;
 use skiff_compiler::Phase1UnsupportedCapability;
 
 use fixture::{BuildOutcome, FixtureSpec, TypedRejection};
@@ -163,14 +162,16 @@ fn assert_public_stream_rejection(
             }
             let exact = matches!(
                 &rejection,
-                Some(TypedRejection::UnavailableServiceCalls { unavailable })
-                    if unavailable.get(public_path).is_some_and(|reasons| {
-                        reasons.contains(&BoundaryUnavailableReason::UnsupportedStream)
-                    })
+                Some(TypedRejection::Phase1Capability {
+                    capability: Phase1UnsupportedCapability::Stream,
+                    module_path,
+                    function_key: Some(function_key),
+                }) if module_path == "main"
+                    && function_key.strip_prefix("main::") == Some(public_path)
             );
             if !exact {
                 failures.push(format!(
-                    "public Stream path {public_path} did not fail at the typed boundary owner: {rejection:?}; diagnostic={error_chain}"
+                    "public Stream path {public_path} did not fail at the typed compiler owner: {rejection:?}; diagnostic={error_chain}"
                 ));
             }
         }

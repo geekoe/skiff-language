@@ -265,7 +265,7 @@ fn admit_function(
                 "server-stream result lacks exact canonical gateway authority",
             ));
         }
-    } else {
+    } else if !server_stream.admits_closure_carrier(&function.return_type) {
         admit_type(
             units,
             unit,
@@ -285,7 +285,10 @@ fn admit_function(
                 &format!("parameter {parameter_index}"),
             ));
         }
-        if !server_stream.admits_slot(parameter.slot, &parameter.ty) {
+        if !server_stream.admits_slot(parameter.slot, &parameter.ty)
+            && !server_stream.admits_scalar_carrier(&parameter.ty)
+            && !server_stream.admits_closure_carrier(&parameter.ty)
+        {
             admit_type_with_registry_authority(
                 units,
                 unit,
@@ -342,7 +345,10 @@ fn admit_function(
                 &format!("slot {} without an exact type", slot.slot),
             ));
         };
-        if !server_stream.admits_slot(slot.slot, ty) {
+        if !server_stream.admits_slot(slot.slot, ty)
+            && !server_stream.admits_scalar_carrier(ty)
+            && !server_stream.admits_closure_carrier(ty)
+        {
             admit_type_with_registry_authority(
                 units,
                 unit,
@@ -777,6 +783,12 @@ fn admit_statement_with_authority(
         {
             None
         }
+        MirStmtKind::Break
+            if server_stream.has_exact_authority()
+                && host_effects.admits_stream_break(statement.statement_index) =>
+        {
+            None
+        }
         MirStmtKind::Dispatch { .. }
         | MirStmtKind::ForIn { .. }
         | MirStmtKind::While { .. }
@@ -1027,7 +1039,9 @@ fn admit_expression_with_host_effects(
         }
     }
     if let ExprIr::Construct { type_ref, .. } = &expression.expression {
-        if !server_stream.admits_construct(expression.index, type_ref) {
+        if !server_stream.admits_construct(expression.index, type_ref)
+            && !server_stream.admits_closure_carrier(type_ref)
+        {
             admit_type_with_registry_authority(
                 units,
                 unit,
@@ -1047,6 +1061,8 @@ fn admit_expression_with_host_effects(
             },
         )?;
     if !server_stream.admits_expression(expression.index, &expression.ty)
+        && !server_stream.admits_scalar_carrier(&expression.ty)
+        && !server_stream.admits_closure_carrier(&expression.ty)
         && !registry_authorities
             .iter()
             .any(|authority| authority.admits(&expression.ty))
@@ -1107,18 +1123,23 @@ fn admit_expression_with_host_effects(
             {
                 None
             }
+            LiteralIr::String { .. } if server_stream.admits_scalar_carrier(&expression.ty) => None,
             LiteralIr::String { .. } => Some(Phase1UnsupportedCapability::ValueShape),
         },
         ExprIr::LoadSlot { slot } => {
             let slot_type = function.slot_type(*slot)?;
             if slot_type != &expression.ty
                 && !is_catch_result_narrowed_load(slot_type, &expression.ty)
+                && !server_stream.admits_writable_string_slot_load(function, *slot, &expression.ty)
             {
                 return Err(fact_mismatch(
                     unit,
                     function_key,
                     Phase1MirFactMismatch::LoadSlotType,
-                    &format!("expression {} load slot {slot}", expression.index),
+                    &format!(
+                        "expression {} load slot {slot}: slot type {slot_type:?}, load type {:?}",
+                        expression.index, expression.ty
+                    ),
                 ));
             }
             None
@@ -1298,6 +1319,8 @@ fn admit_call(
                     call,
                     target,
                 )?;
+            } else if server_stream.admits_intrinsic_call(function, expression.index) {
+                return Ok(());
             } else if host_effects.executor_for_call(expression.index).is_none() {
                 return Err(rejected_function(
                     unit,
@@ -1312,7 +1335,8 @@ fn admit_call(
             return Ok(());
         }
         CallTargetIr::ReceiverBuiltin { .. }
-            if server_stream.admits_receiver_call(expression.index) =>
+            if server_stream.admits_receiver_call(expression.index)
+                || server_stream.admits_intrinsic_call(function, expression.index) =>
         {
             return Ok(());
         }

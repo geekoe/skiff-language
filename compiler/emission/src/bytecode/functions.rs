@@ -20,11 +20,11 @@ use skiff_compiler_lowering::mir::{
     MirWritablePlace, MirWritableRoot,
 };
 
-use super::inputs::is_void;
 use super::{
     constants::ConstantImage, inputs::ValidatedEmissionInputs, BytecodeEmissionError,
     FunctionValueTransferPlans,
 };
+use super::{inputs::is_void, intrinsics::static_intrinsic_canonical_key};
 
 pub(super) fn emit_functions(
     inputs: &ValidatedEmissionInputs<'_>,
@@ -4169,14 +4169,6 @@ fn is_duration_milliseconds_target(call: &skiff_artifact_model::CallIr) -> bool 
         CallTargetIr::Native { target }
             if target.binding_key.as_deref() == Some("core.duration.milliseconds")
     )
-}
-
-fn static_intrinsic_canonical_key(target: &str) -> Option<&'static str> {
-    match target {
-        "Array.empty" | "core.array.empty" => Some("core.array.empty"),
-        "Map.empty" | "core.map.empty" => Some("core.map.empty"),
-        _ => None,
-    }
 }
 
 fn binary_opcode(op: skiff_artifact_model::BinaryOpIr) -> Result<Opcode, BytecodeEmissionError> {

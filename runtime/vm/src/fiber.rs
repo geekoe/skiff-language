@@ -2865,6 +2865,18 @@ impl VmFiber {
                     )
                     .map_err(VmError::Heap)?
                 }
+                "core.bytes.fromUtf8" => {
+                    if values.len() != 1 {
+                        return Err(VmError::FullValueLifecyclePlanUnavailable {
+                            function,
+                            instruction,
+                            opcode: Opcode::InvokeIntrinsic,
+                        });
+                    }
+                    let value = self.string_slot_value(heap, &values[0])?;
+                    heap.alloc_bytes(value.into_bytes())
+                        .map_err(VmError::Heap)?
+                }
                 _ => {
                     return Err(VmError::FullValueLifecyclePlanUnavailable {
                         function,

@@ -8,6 +8,8 @@ use skiff_artifact_model::{
 };
 use skiff_compiler_lowering::mir::{MirForInBinding, MirForInItemKind, MirFunction, MirStmtKind};
 
+use crate::bytecode::intrinsics::static_intrinsic_canonical_key;
+
 #[derive(Debug)]
 pub(super) struct HostEffectAdmissionError {
     pub expression_index: u32,
@@ -125,6 +127,7 @@ pub(super) struct HostEffectAdmissions {
     expressions: BTreeMap<u32, Vec<RegistryValueAuthority>>,
     slots: BTreeMap<u32, Vec<RegistryValueAuthority>>,
     stream_for_in_statements: BTreeSet<u32>,
+    stream_break_statements: BTreeSet<u32>,
     stream_next_statements: BTreeSet<u32>,
 }
 
@@ -143,7 +146,12 @@ impl HostEffectAdmissions {
             let skiff_artifact_model::CallTargetIr::Native { target } = &call.target else {
                 continue;
             };
-            if target.binding_key.as_deref() == Some(duration_constructor_binding) {
+            let binding_key = target.binding_key.as_deref();
+            if binding_key == Some(duration_constructor_binding)
+                || binding_key
+                    .and_then(static_intrinsic_canonical_key)
+                    .is_some()
+            {
                 continue;
             }
             let (entry, executor_identity) =
@@ -379,7 +387,10 @@ impl HostEffectAdmissions {
             for statement in &block.statements {
                 match &statement.kind {
                     MirStmtKind::ForIn {
-                        iterable, facts, ..
+                        iterable,
+                        facts,
+                        body,
+                        continuation,
                     } => {
                         let iterable_expression =
                             function.expression(*iterable).map_err(|error| {
@@ -468,6 +479,13 @@ impl HostEffectAdmissions {
                         admissions
                             .stream_for_in_statements
                             .insert(statement.statement_index);
+                        admissions.stream_break_statements.extend(
+                            exact_stream_loop_breaks(function, block.id, *body, *continuation)
+                                .map_err(|detail| HostEffectAdmissionError {
+                                    expression_index: iterable.expression,
+                                    detail,
+                                })?,
+                        );
                     }
                     MirStmtKind::StreamNext {
                         endpoint_slot,
@@ -570,6 +588,10 @@ impl HostEffectAdmissions {
         self.stream_next_statements.contains(&statement_index)
     }
 
+    pub(super) fn admits_stream_break(&self, statement_index: u32) -> bool {
+        self.stream_break_statements.contains(&statement_index)
+    }
+
     pub(super) fn has_stream_pending(&self) -> bool {
         !self.stream_for_in_statements.is_empty() || !self.stream_next_statements.is_empty()
     }
@@ -609,6 +631,41 @@ impl HostEffectAdmissions {
         }
         Ok(())
     }
+}
+
+fn exact_stream_loop_breaks(
+    function: &MirFunction,
+    header: u32,
+    body: u32,
+    continuation: u32,
+) -> Result<BTreeSet<u32>, String> {
+    let mut breaks = BTreeSet::new();
+    let mut visited = BTreeSet::new();
+    let mut pending = vec![body];
+    while let Some(block_id) = pending.pop() {
+        if block_id == header || block_id == continuation || !visited.insert(block_id) {
+            continue;
+        }
+        let block = function
+            .block(block_id)
+            .map_err(|error| format!("stream loop block is absent: {error}"))?;
+        if let Some(statement) = block.statements.last() {
+            if matches!(statement.kind, MirStmtKind::Break)
+                && block.successors.as_slice() == [continuation]
+            {
+                breaks.insert(statement.statement_index);
+                continue;
+            }
+        }
+        pending.extend(
+            block
+                .successors
+                .iter()
+                .copied()
+                .filter(|successor| *successor != header && *successor != continuation),
+        );
+    }
+    Ok(breaks)
 }
 
 fn match_executable_call(

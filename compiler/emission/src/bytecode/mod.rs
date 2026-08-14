@@ -18,6 +18,7 @@ mod emitter;
 mod error;
 mod functions;
 mod inputs;
+mod intrinsics;
 mod plans;
 
 pub use admission::{

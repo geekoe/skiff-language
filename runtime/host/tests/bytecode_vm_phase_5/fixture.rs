@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -7,18 +6,15 @@ use std::{
 
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
-    BoundaryUnavailableReason, GatewayEntryIdentity, IngressProtocol, IngressSelector,
-    PackageArtifact, PackageArtifactRef, ServiceDeployment, ServiceDeploymentRef,
+    GatewayEntryIdentity, IngressProtocol, IngressSelector, PackageArtifact, PackageArtifactRef,
+    ServiceDeployment, ServiceDeploymentRef,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, seed_official_std_package, AuthoringObject},
-    BytecodeEmissionError, CompilerPlatformSources, ContractDefinitionError,
-    Phase1UnsupportedCapability,
+    BytecodeEmissionError, CompilerPlatformSources, Phase1UnsupportedCapability,
 };
 use skiff_deployment::storage::CanonicalArtifactStore;
-use skiff_runtime_linker::{
-    link_deployment_execution_image, DeploymentExecutionImage, LinkLimits,
-};
+use skiff_runtime_linker::{link_deployment_execution_image, DeploymentExecutionImage, LinkLimits};
 use skiff_runtime_loader::load_deployment_bytecode_from_store;
 use std::sync::Arc;
 
@@ -43,9 +39,6 @@ pub enum TypedRejection {
         capability: Phase1UnsupportedCapability,
         module_path: String,
         function_key: Option<String>,
-    },
-    UnavailableServiceCalls {
-        unavailable: BTreeMap<String, Vec<BoundaryUnavailableReason>>,
     },
 }
 
@@ -335,13 +328,6 @@ fn typed_rejection(mut error: &(dyn std::error::Error + 'static)) -> Option<Type
                 capability: *capability,
                 module_path: module_path.clone(),
                 function_key: function_key.clone(),
-            });
-        }
-        if let Some(ContractDefinitionError::UnavailableServiceCalls { unavailable }) =
-            error.downcast_ref::<ContractDefinitionError>()
-        {
-            return Some(TypedRejection::UnavailableServiceCalls {
-                unavailable: unavailable.clone(),
             });
         }
         error = error.source()?;

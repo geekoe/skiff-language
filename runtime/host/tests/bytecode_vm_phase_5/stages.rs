@@ -55,25 +55,36 @@ fn phase_5_stage_sentinel_admission_to_emission() {
             "{handler} response.start headers freeze the typed empty array"
         );
     }
+    let static_intrinsics = bytecode
+        .view()
+        .functions()
+        .iter()
+        .flat_map(|function| function.relocations.iter())
+        .filter_map(|relocation| {
+            let BytecodeRelocation::IntrinsicRef { intrinsic } = relocation else {
+                return None;
+            };
+            let skiff_artifact_model::BytecodeIntrinsicRef::Static { canonical_key, .. } =
+                &intrinsic.target
+            else {
+                return None;
+            };
+            Some(canonical_key.as_str())
+        })
+        .collect::<Vec<_>>();
     assert_eq!(
-        bytecode
-            .view()
-            .functions()
+        static_intrinsics
             .iter()
-            .flat_map(|function| function.relocations.iter())
-            .filter(|relocation| {
-                matches!(
-                    relocation,
-                    BytecodeRelocation::IntrinsicRef { intrinsic }
-                        if matches!(
-                            &intrinsic.target,
-                            skiff_artifact_model::BytecodeIntrinsicRef::Static { .. }
-                        )
-                )
-            })
+            .filter(|key| **key == "core.bytes.fromUtf8")
             .count(),
-        0,
-        "the Phase 5 carrier must not regain Array.empty through a static intrinsic relocation"
+        7,
+        "each source bytes.fromUtf8 call retains the compiler-owned static intrinsic"
+    );
+    assert!(
+        static_intrinsics
+            .iter()
+            .all(|key| !matches!(*key, "core.array.empty" | "core.map.empty")),
+        "the Phase 5 response carrier must not mint collection intrinsic authority"
     );
 
     let host_bindings = function

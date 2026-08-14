@@ -15,9 +15,9 @@ use crate::{
 use super::contract::*;
 
 pub const HOST_EFFECT_REGISTRY_ID: &str = "skiff-host-effect-registry";
-pub const HOST_EFFECT_REGISTRY_VERSION: &str = "skiff-host-effect-registry-v3";
+pub const HOST_EFFECT_REGISTRY_VERSION: &str = "skiff-host-effect-registry-v4";
 pub const HOST_EFFECT_REGISTRY_FINGERPRINT: &str =
-    "de54a2f6b9c1413d4004574ec8ef264a7c4f35853daf457a8b6ee6c63dc2a166";
+    "50a4a5fb71b5cd47eac78942be6db46f44544d00529d495e1587319125809c97";
 
 #[derive(Debug)]
 pub struct HostEffectRegistry {
@@ -125,6 +125,7 @@ impl HostEffectRegistry {
 fn is_intrinsic(binding_key: &str) -> bool {
     binding_key == "core.array.empty"
         || binding_key == "core.map.empty"
+        || binding_key == "core.bytes.fromUtf8"
         || is_runtime_receiver_native_binding_key(binding_key)
 }
 

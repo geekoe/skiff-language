@@ -13,9 +13,9 @@ use crate::{
 use super::contract::*;
 
 pub const INTRINSIC_REGISTRY_ID: &str = "skiff-intrinsic-registry";
-pub const INTRINSIC_REGISTRY_VERSION: &str = "skiff-intrinsic-registry-v2";
+pub const INTRINSIC_REGISTRY_VERSION: &str = "skiff-intrinsic-registry-v3";
 pub const INTRINSIC_REGISTRY_FINGERPRINT: &str =
-    "37e64340e3bece762de90d2c9f51ea5dcdf32cec5a8964ea2b831a52abc70b7f";
+    "4f70618e6032922d827afaf8799f4ba0b89c9df727c193883e149bd8404accee";
 pub const UNSUPPORTED_INTRINSIC_RECEIVER_KEYS: &[&str] = &[
     "receiver:Array.clone@1",
     "receiver:Array.length@1",
@@ -114,6 +114,11 @@ fn static_entries() -> Vec<IntrinsicRegistryEntry> {
     [
         ("Array.empty", "core.array.empty", "core.array.empty"),
         ("Map.empty", "core.map.empty", "core.map.empty"),
+        (
+            "std.bytes.fromUtf8",
+            "core.bytes.fromUtf8",
+            "core.bytes.fromUtf8",
+        ),
     ]
     .into_iter()
     .map(|(target, binding_key, canonical_key)| {

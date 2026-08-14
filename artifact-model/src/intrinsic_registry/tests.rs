@@ -150,18 +150,25 @@ fn static_receiver_and_explicit_unsupported_authority_are_frozen() {
     assert_eq!(registry.identity().version, INTRINSIC_REGISTRY_VERSION);
     assert_eq!(
         INTRINSIC_REGISTRY_FINGERPRINT,
-        "37e64340e3bece762de90d2c9f51ea5dcdf32cec5a8964ea2b831a52abc70b7f"
+        "4f70618e6032922d827afaf8799f4ba0b89c9df727c193883e149bd8404accee"
     );
     assert_eq!(
         registry.identity().fingerprint,
         INTRINSIC_REGISTRY_FINGERPRINT
     );
-    assert_eq!(registry.entries().len(), 11);
+    assert_eq!(registry.entries().len(), 12);
     assert_eq!(UNSUPPORTED_INTRINSIC_RECEIVER_KEYS.len(), 31);
     assert!(registry
         .entries()
         .iter()
         .all(|entry| !entry.signature.effects.may_pending()));
+    assert!(registry.entries().iter().any(|entry| {
+        matches!(
+            &entry.target,
+            crate::BytecodeIntrinsicRef::Static { canonical_key, .. }
+                if canonical_key == "core.bytes.fromUtf8"
+        )
+    }));
 }
 
 #[test]

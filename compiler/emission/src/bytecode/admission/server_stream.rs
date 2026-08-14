@@ -5,12 +5,16 @@ use skiff_artifact_model::{
     http_boundary::{HTTP_BOUNDARY_PACKAGE_ID, HTTP_REQUEST_TYPE, HTTP_RESPONSE_STREAM_EVENT_TYPE},
     BuiltinReceiverMethod, BuiltinReceiverRoot, CallTargetIr, DeploymentGatewayEntry, ExprIr,
     GatewayAdapterKind, GatewayAdapterSource, GatewayDispatchMode, GatewayExternalErrorProjection,
-    GatewayExternalSchema, GatewayProtocolSurface, LiteralIr, PackageCallableId, PackageRefIr,
-    TypeRefIr,
+    GatewayExternalSchema, GatewayProtocolSurface, LiteralIr, NominalTypeRefBaseIr,
+    PackageCallableId, PackageRefIr, TypeRefIr,
 };
-use skiff_compiler_lowering::mir::{MirFunction, MirStmtKind, MirUnit};
+use skiff_compiler_lowering::mir::{MirFunction, MirSlotKind, MirStmtKind, MirUnit};
+
+use crate::bytecode::intrinsics::static_intrinsic_canonical_key;
 
 const HTTP_HEADER_TYPE: &str = "std.http.HttpHeader";
+const HTTP_CLIENT_REQUEST_TYPE: &str = "std.http.HttpClientRequest";
+const HTTP_CLIENT_RESPONSE_TYPE: &str = "std.http.HttpClientResponse";
 const HTTP_QUERY_PARAM_TYPE: &str = "std.http.HttpQueryParam";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -103,6 +107,8 @@ struct ServerStreamValueAuthority {
 #[derive(Debug, Default)]
 pub(super) struct ServerStreamAdmissions {
     result_type: Option<TypeRefIr>,
+    closure_abi: Option<String>,
+    closure_carriers: Vec<TypeRefIr>,
     slots: BTreeMap<u32, TypeRefIr>,
     expressions: BTreeMap<u32, Vec<ServerStreamValueAuthority>>,
     construct_types: BTreeMap<u32, TypeRefIr>,
@@ -120,7 +126,7 @@ impl ServerStreamAdmissions {
             .iter()
             .filter(|authority| authority.handler() == Some(&function.effect_summary_ref));
         let Some(authority) = matches.next() else {
-            return Ok(Self::default());
+            return Self::analyze_local_helper(unit, function, transported);
         };
         if matches.next().is_some() {
             return Err("multiple gateway authorities name the same callable".to_string());
@@ -162,6 +168,7 @@ impl ServerStreamAdmissions {
             return Err("gateway request and stream item use different std ABIs".to_string());
         }
         let request_fields = exact_http_request_fields(unit, &abi)?;
+        let closure_carriers = exact_local_closure_carriers(unit, function, &abi)?;
 
         let actual_emits = function
             .blocks
@@ -189,6 +196,8 @@ impl ServerStreamAdmissions {
 
         let mut admissions = Self {
             result_type: Some(authority.stream_item_type.clone()),
+            closure_abi: Some(abi.clone()),
+            closure_carriers,
             ..Self::default()
         };
         admissions
@@ -243,8 +252,55 @@ impl ServerStreamAdmissions {
         Ok(admissions)
     }
 
+    fn analyze_local_helper(
+        unit: &MirUnit,
+        function: &MirFunction,
+        transported: &[ServerStreamGatewayAuthority],
+    ) -> Result<Self, String> {
+        let mut closure_abi = None;
+        let mut closure_carriers = Vec::new();
+        for authority in transported {
+            let handler = authority
+                .handler()
+                .ok_or_else(|| "gateway authority lacks an exact handler".to_string())?;
+            let root = unit
+                .functions
+                .iter()
+                .find(|candidate| &candidate.effect_summary_ref == handler)
+                .ok_or_else(|| format!("gateway handler {handler} is absent from its MIR unit"))?;
+            if !local_call_closure(unit, root)?.contains(&function.executable_index) {
+                continue;
+            }
+            let root_admissions = Self::analyze(unit, root, std::slice::from_ref(authority))?;
+            if let Some(existing) = &closure_abi {
+                if Some(existing) != root_admissions.closure_abi.as_ref() {
+                    return Err(
+                        "local helper is reached by server-stream handlers with different carrier ABIs"
+                            .to_string(),
+                    );
+                }
+            } else {
+                closure_abi = root_admissions.closure_abi;
+            }
+            for carrier in root_admissions.closure_carriers {
+                if !closure_carriers.contains(&carrier) {
+                    closure_carriers.push(carrier);
+                }
+            }
+        }
+        Ok(Self {
+            closure_abi,
+            closure_carriers,
+            ..Self::default()
+        })
+    }
+
     pub(super) fn admits_result(&self, ty: &TypeRefIr) -> bool {
         self.result_type.as_ref() == Some(ty)
+    }
+
+    pub(super) fn has_exact_authority(&self) -> bool {
+        self.result_type.is_some()
     }
 
     pub(super) fn admits_slot(&self, slot: u32, ty: &TypeRefIr) -> bool {
@@ -263,6 +319,106 @@ impl ServerStreamAdmissions {
 
     pub(super) fn admits_receiver_call(&self, expression: u32) -> bool {
         self.receiver_calls.contains(&expression)
+    }
+
+    pub(super) fn admits_scalar_carrier(&self, ty: &TypeRefIr) -> bool {
+        self.closure_abi.is_some()
+            && (matches!(
+                ty,
+                TypeRefIr::Builtin { name, args }
+                    if matches!(name.as_str(), "string" | "bytes") && args.is_empty()
+            ) || matches!(
+                ty,
+                TypeRefIr::Literal {
+                    value: LiteralIr::String { .. }
+                }
+            ))
+    }
+
+    pub(super) fn admits_closure_carrier(&self, ty: &TypeRefIr) -> bool {
+        self.closure_carriers.iter().any(|carrier| carrier == ty)
+    }
+
+    pub(super) fn admits_writable_string_slot_load(
+        &self,
+        function: &MirFunction,
+        slot: u32,
+        load_type: &TypeRefIr,
+    ) -> bool {
+        if self.result_type.is_none() || load_type != &TypeRefIr::builtin("string") {
+            return false;
+        }
+        function.slot(slot).is_ok_and(|slot| {
+            slot.kind == MirSlotKind::Local
+                && slot.writable_local
+                && matches!(
+                    &slot.ty,
+                    Some(TypeRefIr::Literal {
+                        value: LiteralIr::String { .. }
+                    })
+                )
+        })
+    }
+
+    pub(super) fn admits_intrinsic_call(
+        &self,
+        function: &MirFunction,
+        expression_index: u32,
+    ) -> bool {
+        if self.closure_abi.is_none() {
+            return false;
+        }
+        let Ok(expression) = function.expression(skiff_artifact_model::ExprRefIr {
+            expression: expression_index,
+        }) else {
+            return false;
+        };
+        let ExprIr::Call { call } = &expression.expression else {
+            return false;
+        };
+        if !call.inout_args.is_empty()
+            || !call.type_args.is_empty()
+            || call.concrete_receiver.is_some()
+            || !call.metadata.is_empty()
+        {
+            return false;
+        }
+        let argument_types = call
+            .args
+            .iter()
+            .map(|argument| function.expression(*argument).map(|value| &value.ty))
+            .collect::<Result<Vec<_>, _>>();
+        let Ok(argument_types) = argument_types else {
+            return false;
+        };
+        match &call.target {
+            CallTargetIr::Native { target }
+                if target
+                    .binding_key
+                    .as_deref()
+                    .and_then(static_intrinsic_canonical_key)
+                    == Some("core.bytes.fromUtf8") =>
+            {
+                argument_types.len() == 1
+                    && is_string_carrier(argument_types[0])
+                    && expression.ty == TypeRefIr::builtin("bytes")
+            }
+            CallTargetIr::ReceiverBuiltin { op }
+                if op.canonical_key == "receiver:string.concat@1" =>
+            {
+                argument_types.len() == 2
+                    && argument_types.iter().all(|ty| is_string_carrier(ty))
+                    && expression.ty == TypeRefIr::builtin("string")
+            }
+            CallTargetIr::ReceiverBuiltin { op }
+                if op.canonical_key == "receiver:bytes.toUtf8String@1" =>
+            {
+                argument_types.len() == 1
+                    && argument_types[0] == &TypeRefIr::builtin("bytes")
+                    && expression.ty == TypeRefIr::builtin("string")
+            }
+            _ => false,
+        }
     }
 
     pub(super) fn admits_tag_literal(&self, expression: u32, value: &str) -> bool {
@@ -411,6 +567,232 @@ impl ServerStreamAdmissions {
             .get(&expression)
             .is_some_and(|authorities| authorities.iter().any(|authority| &authority.role == role))
     }
+}
+
+fn is_string_carrier(ty: &TypeRefIr) -> bool {
+    ty == &TypeRefIr::builtin("string")
+        || matches!(
+            ty,
+            TypeRefIr::Literal {
+                value: LiteralIr::String { .. }
+            }
+        )
+}
+
+fn local_call_closure(unit: &MirUnit, root: &MirFunction) -> Result<BTreeSet<u32>, String> {
+    let mut closure = BTreeSet::new();
+    let mut pending = vec![root.executable_index];
+    while let Some(executable_index) = pending.pop() {
+        if !closure.insert(executable_index) {
+            continue;
+        }
+        let function = unit
+            .function_by_executable_index(executable_index)
+            .map_err(|error| format!("local server-stream helper is absent: {error}"))?;
+        for expression in &function.expressions {
+            let ExprIr::Call { call } = &expression.expression else {
+                continue;
+            };
+            if let CallTargetIr::LocalExecutable { executable_index } = &call.target {
+                unit.function_by_executable_index(*executable_index)
+                    .map_err(|error| {
+                        format!("local server-stream call target is absent: {error}")
+                    })?;
+                pending.push(*executable_index);
+            }
+        }
+    }
+    Ok(closure)
+}
+
+fn exact_local_closure_carriers(
+    unit: &MirUnit,
+    root: &MirFunction,
+    abi: &str,
+) -> Result<Vec<TypeRefIr>, String> {
+    let closure = local_call_closure(unit, root)?;
+    let mut used_paths = BTreeSet::new();
+    for executable_index in closure {
+        let function = unit
+            .function_by_executable_index(executable_index)
+            .map_err(|error| format!("local server-stream helper is absent: {error}"))?;
+        collect_package_paths(&function.return_type, &mut used_paths);
+        for parameter in &function.params {
+            collect_package_paths(&parameter.ty, &mut used_paths);
+        }
+        for slot in &function.slots {
+            if let Some(ty) = &slot.ty {
+                collect_package_paths(ty, &mut used_paths);
+            }
+        }
+        for expression in &function.expressions {
+            collect_package_paths(&expression.ty, &mut used_paths);
+        }
+    }
+
+    let mut carriers = vec![TypeRefIr::builtin("string"), TypeRefIr::builtin("bytes")];
+    let needs_header = used_paths.contains(HTTP_HEADER_TYPE)
+        || used_paths.contains(HTTP_CLIENT_REQUEST_TYPE)
+        || used_paths.contains(HTTP_CLIENT_RESPONSE_TYPE);
+    let header = needs_header
+        .then(|| exact_named_record(unit, HTTP_HEADER_TYPE, abi))
+        .transpose()?;
+    if used_paths.contains(HTTP_HEADER_TYPE) {
+        let header = header
+            .as_ref()
+            .ok_or_else(|| "used HTTP header path lacks its exact carrier".to_string())?
+            .clone();
+        carriers.push(header.clone());
+        carriers.push(TypeRefIr::Builtin {
+            name: "Array".to_string(),
+            args: vec![header],
+        });
+    }
+    if used_paths.contains(HTTP_CLIENT_REQUEST_TYPE) {
+        carriers.push(exact_http_client_request(
+            unit,
+            header
+                .as_ref()
+                .ok_or_else(|| "HTTP client request lacks its exact header carrier".to_string())?,
+            abi,
+        )?);
+    }
+    if used_paths.contains(HTTP_CLIENT_RESPONSE_TYPE) {
+        carriers.push(exact_http_client_response(
+            unit,
+            header
+                .as_ref()
+                .ok_or_else(|| "HTTP client response lacks its exact header carrier".to_string())?,
+            abi,
+        )?);
+    }
+    Ok(carriers)
+}
+
+fn collect_package_paths(ty: &TypeRefIr, paths: &mut BTreeSet<String>) {
+    match ty {
+        TypeRefIr::PackageSymbol { symbol } => {
+            paths.insert(symbol.symbol_path.clone());
+        }
+        TypeRefIr::AppliedNominal { base, arguments } => {
+            if let NominalTypeRefBaseIr::PackageSymbol { symbol } = base {
+                paths.insert(symbol.symbol_path.clone());
+            }
+            for argument in arguments {
+                collect_package_paths(argument, paths);
+            }
+        }
+        TypeRefIr::Builtin { args, .. } | TypeRefIr::Union { items: args } => {
+            for argument in args {
+                collect_package_paths(argument, paths);
+            }
+        }
+        TypeRefIr::Record { fields } => {
+            for field in fields.values() {
+                collect_package_paths(field, paths);
+            }
+        }
+        TypeRefIr::Nullable { inner } => collect_package_paths(inner, paths),
+        TypeRefIr::Function {
+            params,
+            return_type,
+        } => {
+            for parameter in params {
+                collect_package_paths(&parameter.ty, paths);
+            }
+            collect_package_paths(return_type, paths);
+        }
+        TypeRefIr::AnyInterface { interface } => {
+            for argument in &interface.canonical_type_args {
+                collect_package_paths(argument, paths);
+            }
+        }
+        TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
+        | TypeRefIr::ServiceSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
+        | TypeRefIr::DbObjectSymbol { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. } => {}
+    }
+}
+
+fn exact_http_client_request(
+    unit: &MirUnit,
+    header: &TypeRefIr,
+    abi: &str,
+) -> Result<TypeRefIr, String> {
+    let fields = exact_record(unit, HTTP_CLIENT_REQUEST_TYPE)?;
+    let expected = BTreeMap::from([
+        ("method".to_string(), TypeRefIr::builtin("string")),
+        ("url".to_string(), TypeRefIr::builtin("string")),
+        (
+            "headers".to_string(),
+            TypeRefIr::Builtin {
+                name: "Array".to_string(),
+                args: vec![header.clone()],
+            },
+        ),
+        (
+            "body".to_string(),
+            TypeRefIr::Nullable {
+                inner: Box::new(TypeRefIr::builtin("bytes")),
+            },
+        ),
+        (
+            "timeoutMs".to_string(),
+            TypeRefIr::Nullable {
+                inner: Box::new(TypeRefIr::builtin("integer")),
+            },
+        ),
+    ]);
+    if fields != &expected {
+        return Err("HttpClientRequest package record differs from canonical fields".to_string());
+    }
+    let ty = TypeRefIr::PackageSymbol {
+        symbol: skiff_artifact_model::PackageSymbolRef {
+            package: PackageRefIr::PackageId {
+                package_id: HTTP_BOUNDARY_PACKAGE_ID.to_string(),
+            },
+            symbol_path: HTTP_CLIENT_REQUEST_TYPE.to_string(),
+            abi_expectation: Some(abi.to_string()),
+        },
+    };
+    exact_std_symbol_abi(unit, &ty, HTTP_CLIENT_REQUEST_TYPE)?;
+    Ok(ty)
+}
+
+fn exact_http_client_response(
+    unit: &MirUnit,
+    header: &TypeRefIr,
+    abi: &str,
+) -> Result<TypeRefIr, String> {
+    let fields = exact_record(unit, HTTP_CLIENT_RESPONSE_TYPE)?;
+    let expected = BTreeMap::from([
+        ("status".to_string(), TypeRefIr::builtin("integer")),
+        (
+            "headers".to_string(),
+            TypeRefIr::Builtin {
+                name: "Array".to_string(),
+                args: vec![header.clone()],
+            },
+        ),
+        ("body".to_string(), TypeRefIr::builtin("bytes")),
+    ]);
+    if fields != &expected {
+        return Err("HttpClientResponse package record differs from canonical fields".to_string());
+    }
+    let ty = TypeRefIr::PackageSymbol {
+        symbol: skiff_artifact_model::PackageSymbolRef {
+            package: PackageRefIr::PackageId {
+                package_id: HTTP_BOUNDARY_PACKAGE_ID.to_string(),
+            },
+            symbol_path: HTTP_CLIENT_RESPONSE_TYPE.to_string(),
+            abi_expectation: Some(abi.to_string()),
+        },
+    };
+    exact_std_symbol_abi(unit, &ty, HTTP_CLIENT_RESPONSE_TYPE)?;
+    Ok(ty)
 }
 
 fn validate_gateway_entry(entry: &DeploymentGatewayEntry) -> Result<(), String> {
@@ -671,8 +1053,8 @@ mod tests {
     };
 
     use super::{
-        canonical_response_stream_schema, ServerStreamEmitFact, ServerStreamGatewayAuthority,
-        HTTP_BOUNDARY_PACKAGE_ID, HTTP_RESPONSE_STREAM_EVENT_TYPE,
+        canonical_response_stream_schema, ServerStreamAdmissions, ServerStreamEmitFact,
+        ServerStreamGatewayAuthority, HTTP_BOUNDARY_PACKAGE_ID, HTTP_RESPONSE_STREAM_EVENT_TYPE,
     };
 
     const SOURCE: &str = r#"
@@ -698,6 +1080,52 @@ function consume(
 }
 "#;
 
+    const MUTABLE_STRING_SOURCE: &str = r#"
+import std
+
+function consume(
+  request: std.http.HttpRequest
+) -> Stream<std.http.HttpResponseStreamEvent> {
+  var body = ""
+  body = request.body.toUtf8String()
+  emit({ tag: "start", status: 207, headers: [] })
+  emit({ tag: "chunk", value: bytes.fromUtf8(body) })
+  emit({ tag: "end" })
+  return null
+}
+"#;
+
+    const LOCAL_HELPER_SOURCE: &str = r#"
+import std
+
+function consume(
+  request: std.http.HttpRequest
+) -> Stream<std.http.HttpResponseStreamEvent> {
+  final outbound = outbound(request.body.toUtf8String())
+  final response = std.http.stream(outbound)
+  emit({ tag: "start", status: 207, headers: headers() })
+  for chunk in response.body {
+    emit({ tag: "chunk", value: chunk })
+  }
+  emit({ tag: "end" })
+  return null
+}
+
+function headers() -> Array<std.http.HttpHeader> {
+  return []
+}
+
+function outbound(url: string) -> std.http.HttpClientRequest {
+  return std.http.HttpClientRequest {
+    method: "GET",
+    url: url,
+    headers: headers(),
+    body: null,
+    timeoutMs: null,
+  }
+}
+"#;
+
     #[test]
     fn exact_projected_gateway_authority_admits_real_server_stream_source() {
         let (mut units, authority) = fixture();
@@ -717,6 +1145,110 @@ function consume(
             &[authority],
         )
         .expect("exact canonical gateway authority admits the real source carrier");
+    }
+
+    #[test]
+    fn exact_server_stream_admits_writable_literal_string_slot_widening() {
+        let (units, authority) = fixture_for_source(MUTABLE_STRING_SOURCE);
+        super::super::admit_phase_1_bytecode_mir_with_server_stream_authorities(
+            &units,
+            &[authority],
+        )
+        .expect("exact server-stream authority admits its writable string carrier");
+    }
+
+    #[test]
+    fn string_slot_widening_requires_authority_writable_slot_and_builtin_string() {
+        let (units, authority) = fixture_for_source(MUTABLE_STRING_SOURCE);
+        let function = &units[0].functions[0];
+        let slot = function
+            .slots
+            .iter()
+            .find(|slot| slot.name == "body")
+            .expect("fixture has body slot");
+        let admissions = ServerStreamAdmissions::analyze(&units[0], function, &[authority])
+            .expect("exact authority analyzes");
+
+        assert!(admissions.admits_writable_string_slot_load(
+            function,
+            slot.slot,
+            &TypeRefIr::builtin("string")
+        ));
+        assert!(
+            !ServerStreamAdmissions::default().admits_writable_string_slot_load(
+                function,
+                slot.slot,
+                &TypeRefIr::builtin("string")
+            )
+        );
+        assert!(!admissions.admits_writable_string_slot_load(
+            function,
+            slot.slot,
+            &TypeRefIr::builtin("bytes")
+        ));
+
+        let mut non_writable = function.clone();
+        non_writable.slots[slot.slot as usize].writable_local = false;
+        assert!(!admissions.admits_writable_string_slot_load(
+            &non_writable,
+            slot.slot,
+            &TypeRefIr::builtin("string")
+        ));
+    }
+
+    #[test]
+    fn exact_gateway_authority_admits_only_its_local_helper_closure() {
+        let (units, authority) = fixture_for_source(LOCAL_HELPER_SOURCE);
+        super::super::admit_phase_1_bytecode_mir_with_server_stream_authorities(
+            &units,
+            &[authority],
+        )
+        .expect("exact gateway handler admits its local HTTP carrier helpers");
+
+        let source = format!(
+            "{LOCAL_HELPER_SOURCE}\nfunction uncalled(value: string) -> string {{\n  return value\n}}\n"
+        );
+        let (units, authority) = fixture_for_source(&source);
+        let error = super::super::admit_phase_1_bytecode_mir_with_server_stream_authorities(
+            &units,
+            &[authority],
+        )
+        .expect_err("an uncalled function must not inherit gateway carrier authority");
+        assert!(
+            error.to_string().contains("main::uncalled"),
+            "uncalled rejection must name its actual owner: {error}"
+        );
+    }
+
+    #[test]
+    fn local_helper_closure_does_not_authorize_host_targets_or_named_types() {
+        let host_source =
+            LOCAL_HELPER_SOURCE.replace("  final outbound =", "  Date.now()\n  final outbound =");
+        let (units, authority) = fixture_for_source(&host_source);
+        let error = super::super::admit_phase_1_bytecode_mir_with_server_stream_authorities(
+            &units,
+            &[authority],
+        )
+        .expect_err("local reachability must not authorize an unsupported host target");
+        assert!(
+            error.to_string().contains("HostTarget"),
+            "host target rejection must stay typed: {error}"
+        );
+
+        let named_source = LOCAL_HELPER_SOURCE.replace(
+            "  final outbound =",
+            "  secret(request.body.toUtf8String())\n  final outbound =",
+        ) + "\ntype Secret { value: string }\nfunction secret(value: string) -> Secret {\n  return Secret { value: value }\n}\n";
+        let (units, authority) = fixture_for_source(&named_source);
+        let error = super::super::admit_phase_1_bytecode_mir_with_server_stream_authorities(
+            &units,
+            &[authority],
+        )
+        .expect_err("local reachability must not authorize an arbitrary named carrier");
+        assert!(
+            error.to_string().contains("ValueShape"),
+            "named carrier rejection must stay typed: {error}"
+        );
     }
 
     #[test]
@@ -846,6 +1378,8 @@ function consume(
         )
         .expect("real source package authority normalizes");
         stamp_exact_std_abi(&mut units);
+        units = super::super::package_type_authority::normalize_package_type_authorities(&units)
+            .expect("stamped source package authority normalizes");
         let function = &units[0].functions[0];
         let stream_item_type = function
             .stream_result
