@@ -31,6 +31,20 @@ pub enum HostEffectRequiredContext {
     Resource,
 }
 
+/// Closed, registry-owned identity of a bytecode host-effect executor.
+///
+/// This is an optional fact on a pinned registry row because most native
+/// bindings are not executable by the bytecode VM.  Consumers must dispatch
+/// exhaustively on this identity after linking; context, target text and value
+/// shape are descriptive facts and are not substitutes for this authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HostEffectExecutorIdentity {
+    Sleep,
+    HttpClientRequest,
+    HttpClientStream,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -111,6 +125,7 @@ pub struct HostEffectRegistryEntry {
     pub aliases: Vec<String>,
     pub binding_key: String,
     pub abi_version: u32,
+    pub executor_identity: Option<HostEffectExecutorIdentity>,
     pub required_context: HostEffectRequiredContext,
     pub metadata: HostEffectMetadataMatcher,
     pub receiver: HostEffectReceiverSemantics,

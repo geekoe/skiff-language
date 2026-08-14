@@ -155,12 +155,12 @@ pub use gateway::{
     WEBSOCKET_JSON_RPC_TEXT_PROFILE,
 };
 pub use host_effect_registry::{
-    host_effect_registry, host_effect_registry_identity, HostEffectMetadataMatcher,
-    HostEffectMetadataShape, HostEffectReceiverSemantics, HostEffectRegistry,
-    HostEffectRegistryBuildError, HostEffectRegistryEntry, HostEffectRegistryIdentity,
-    HostEffectRegistryMatch, HostEffectRegistryMatchError, HostEffectRequiredContext,
-    HOST_EFFECT_REGISTRY, HOST_EFFECT_REGISTRY_FINGERPRINT, HOST_EFFECT_REGISTRY_ID,
-    HOST_EFFECT_REGISTRY_VERSION,
+    host_effect_registry, host_effect_registry_identity, HostEffectExecutorIdentity,
+    HostEffectMetadataMatcher, HostEffectMetadataShape, HostEffectReceiverSemantics,
+    HostEffectRegistry, HostEffectRegistryBuildError, HostEffectRegistryEntry,
+    HostEffectRegistryIdentity, HostEffectRegistryMatch, HostEffectRegistryMatchError,
+    HostEffectRequiredContext, HOST_EFFECT_REGISTRY, HOST_EFFECT_REGISTRY_FINGERPRINT,
+    HOST_EFFECT_REGISTRY_ID, HOST_EFFECT_REGISTRY_VERSION,
 };
 pub use intrinsic_registry::{
     intrinsic_registry, intrinsic_registry_identity, IntrinsicPublicReturnType,

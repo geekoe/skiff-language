@@ -92,7 +92,7 @@ fn built_in_registry_is_sorted_sparse_and_frozen() {
     assert_eq!(registry.identity().version, HOST_EFFECT_REGISTRY_VERSION);
     assert_eq!(
         HOST_EFFECT_REGISTRY_FINGERPRINT,
-        "720859be58de0dc417ba4e0627f8fd1d0d2e63ef6983656a4036d0a68e7625d9"
+        "de54a2f6b9c1413d4004574ec8ef264a7c4f35853daf457a8b6ee6c63dc2a166"
     );
     assert_eq!(
         registry.identity().fingerprint,
@@ -103,6 +103,60 @@ fn built_in_registry_is_sorted_sparse_and_frozen() {
         .entries()
         .windows(2)
         .all(|pair| pair[0].target < pair[1].target));
+}
+
+#[test]
+fn bytecode_executor_identity_is_closed_exact_and_registry_owned() {
+    use HostEffectExecutorIdentity as Executor;
+
+    let executable = host_effect_registry()
+        .entries()
+        .iter()
+        .filter_map(|entry| {
+            entry
+                .executor_identity
+                .map(|identity| (entry.binding_key.as_str(), identity))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        executable,
+        vec![
+            ("std.http.client.request", Executor::HttpClientRequest),
+            ("std.http.client.stream", Executor::HttpClientStream),
+            ("std.time.sleep", Executor::Sleep),
+        ]
+    );
+
+    for rejected in ["std.http.client.sse", "core.date.now"] {
+        let entry = host_effect_registry()
+            .entries()
+            .iter()
+            .find(|entry| entry.binding_key == rejected)
+            .unwrap_or_else(|| panic!("{rejected} must remain a non-bytecode registry row"));
+        assert_eq!(entry.executor_identity, None, "{rejected} must fail closed");
+    }
+}
+
+#[test]
+fn executor_identity_is_part_of_the_registry_fingerprint() {
+    let entries = host_effect_registry().entries();
+    let sleep_index = entries
+        .iter()
+        .position(|entry| entry.binding_key == "std.time.sleep")
+        .expect("sleep registry row");
+    let mut changed = entries.to_vec();
+    changed[sleep_index].executor_identity = Some(HostEffectExecutorIdentity::HttpClientRequest);
+
+    let registry = HostEffectRegistry::new(
+        HOST_EFFECT_REGISTRY_ID,
+        HOST_EFFECT_REGISTRY_VERSION,
+        changed,
+    )
+    .expect("executor identity remains serializable registry input");
+    assert_ne!(
+        registry.identity().fingerprint,
+        HOST_EFFECT_REGISTRY_FINGERPRINT
+    );
 }
 
 #[test]

@@ -15,9 +15,9 @@ use crate::{
 use super::contract::*;
 
 pub const HOST_EFFECT_REGISTRY_ID: &str = "skiff-host-effect-registry";
-pub const HOST_EFFECT_REGISTRY_VERSION: &str = "skiff-host-effect-registry-v2";
+pub const HOST_EFFECT_REGISTRY_VERSION: &str = "skiff-host-effect-registry-v3";
 pub const HOST_EFFECT_REGISTRY_FINGERPRINT: &str =
-    "720859be58de0dc417ba4e0627f8fd1d0d2e63ef6983656a4036d0a68e7625d9";
+    "de54a2f6b9c1413d4004574ec8ef264a7c4f35853daf457a8b6ee6c63dc2a166";
 
 #[derive(Debug)]
 pub struct HostEffectRegistry {
@@ -44,6 +44,7 @@ impl HostEffectRegistry {
                     aliases: signature.aliases.iter().map(ToString::to_string).collect(),
                     binding_key: signature.binding_key.to_string(),
                     abi_version: 1,
+                    executor_identity: executor_identity(signature.binding_key),
                     required_context,
                     metadata: HostEffectMetadataMatcher {
                         fields: BTreeMap::new(),
@@ -125,6 +126,15 @@ fn is_intrinsic(binding_key: &str) -> bool {
     binding_key == "core.array.empty"
         || binding_key == "core.map.empty"
         || is_runtime_receiver_native_binding_key(binding_key)
+}
+
+fn executor_identity(binding_key: &str) -> Option<HostEffectExecutorIdentity> {
+    Some(match binding_key {
+        "std.time.sleep" => HostEffectExecutorIdentity::Sleep,
+        "std.http.client.request" => HostEffectExecutorIdentity::HttpClientRequest,
+        "std.http.client.stream" => HostEffectExecutorIdentity::HttpClientStream,
+        _ => return None,
+    })
 }
 
 fn validate_entries(

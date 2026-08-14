@@ -2,9 +2,10 @@ mod contract;
 mod registry;
 
 pub use contract::{
-    HostEffectMetadataMatcher, HostEffectMetadataShape, HostEffectReceiverSemantics,
-    HostEffectRegistryBuildError, HostEffectRegistryEntry, HostEffectRegistryIdentity,
-    HostEffectRegistryMatch, HostEffectRegistryMatchError, HostEffectRequiredContext,
+    HostEffectExecutorIdentity, HostEffectMetadataMatcher, HostEffectMetadataShape,
+    HostEffectReceiverSemantics, HostEffectRegistryBuildError, HostEffectRegistryEntry,
+    HostEffectRegistryIdentity, HostEffectRegistryMatch, HostEffectRegistryMatchError,
+    HostEffectRequiredContext,
 };
 pub use registry::{
     host_effect_registry, host_effect_registry_identity, HostEffectRegistry, HOST_EFFECT_REGISTRY,
