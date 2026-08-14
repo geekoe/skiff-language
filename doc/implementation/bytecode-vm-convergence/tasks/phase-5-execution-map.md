@@ -1,6 +1,6 @@
 # MAP5：Phase 5 rolling execution map
 
-> Status: active; revision 19; recovery epoch `r1`; canonical cross-document convergence in progress after fresh Design FAIL; no implementation/proof lane complete
+> Status: active; revision 20; recovery epoch `r1`; canonical cross-document convergence in progress after fresh Design FAIL; no implementation/proof lane complete
 >
 > Phase Contract: [`phase-5-typed-host-effects-resources-streams.md`](../phases/phase-5-typed-host-effects-resources-streams.md), Amendment r2
 >
@@ -226,6 +226,22 @@ Hard-cut inventory发现active convergence `README.md`仍把薄verifier列为未
 migration不可分割的nested test companion。D5/V5R exact write set按下表扩展；历史Phase 0–4 receipts/reviews仍不
 做全局改写。
 
+### 2.20 Observability, DB and current-version canonical closure
+
+对 clean exact HEAD `01fdc6f801875070da8115b6ab053addb91f0195` / tree
+`48b724bd21d4209b6f5de34d5bea8719df3b6dd9` 的下一次 independent Design review 仍为 **FAIL**：active
+observability architecture/reference仍把 deployment image分解为 `load / link / verify` 并保留 semantic-verification
+rejection类别，DB reference仍写 image-local `link/verification`；runtime-error canonical checkpoint仍把当前 bytecode
+描述为 schema v7 / ISA v4 与尚未落地的 production cutover，和本 epoch 已落地的 schema v8 / ISA v5不一致；active
+README 的 Phase 5状态也仍指向已被 r2 supersede 的 Contract Amendment r1。
+
+D5 因此继续扩展到下表新增的 observability、DB 与 runtime-error canonical 文件。修订必须把 image telemetry
+收敛为 load / single atomic construction / cache / rejection，把 rejection分类限定为 decode、bounded structural
+validation、exact reference closure、resource limit与 timeout；DB binding只能消费 compiler-emitted schema facts并在
+同一 atomic constructor做 exact referential closure；runtime-error 文档必须明确 v7/v4 projection-registry cut之后
+已由 Phase 5 v8/v5 hard cut增加 `TakeDenseField` 与 privileged affine-composite carrier，不能再声明 production cut
+尚未发生。完成后仍须由全新 independent Design owner审查 clean exact HEAD；PASS前不创建 V5R，也不恢复K5/H5。
+
 ## 3. Lanes、唯一 write sets 与 rolling join
 
 表内 write set 是本 Phase 唯一文件清单权威；lane 内 focused unit test 可放在所列 module 的现有/新 test
@@ -233,7 +249,7 @@ migration不可分割的nested test companion。D5/V5R exact write set按下表�
 
 | Lane / status | Branch / worktree | 唯一 write set | Depends / join |
 | --- | --- | --- | --- |
-| D5 canonical architecture + cross-document closure / fresh review FAIL, revision active | `codex/bcvm-p5-integration-r1` / `skiff-bcvm-p5-integration-r1` | `doc/architecture/{bytecode-vm.md,tail-call-execution.md,runtime-lazy-load-deployment.md,package-service-contract-deployment.md,db-capability-architecture.md,any-interface-value.md}`；`doc/reference/{interface.md,any-interface.md,static-semantics.md,runtime.md,std-surface.md}`；`doc/implementation/bytecode-vm-convergence/{README.md,runbook.md}`；`doc/implementation/bytecode-vm-convergence/decisions/dec1-executable-image-authority.md`；`doc/implementation/bytecode-vm-convergence/phases/phase-5-typed-host-effects-resources-streams.md`；`doc/implementation/bytecode-vm-convergence/tasks/phase-5-execution-map.md` | user architecture ruling；docs-only checkpoint；new clean-HEAD independent Design PASS before V5R |
+| D5 canonical architecture + cross-document closure / fresh review FAIL, revision active | `codex/bcvm-p5-integration-r1` / `skiff-bcvm-p5-integration-r1` | `doc/architecture/{bytecode-vm.md,tail-call-execution.md,runtime-lazy-load-deployment.md,package-service-contract-deployment.md,db-capability-architecture.md,any-interface-value.md,observability-requirements.md,runtime-error-to-skiff.md}`；`doc/reference/{interface.md,any-interface.md,static-semantics.md,runtime.md,std-surface.md,observability.md,db.md}`；`doc/implementation/bytecode-vm-convergence/{README.md,runbook.md}`；`doc/implementation/bytecode-vm-convergence/decisions/dec1-executable-image-authority.md`；`doc/implementation/bytecode-vm-convergence/phases/phase-5-typed-host-effects-resources-streams.md`；`doc/implementation/bytecode-vm-convergence/tasks/phase-5-execution-map.md` | user architecture ruling；docs-only checkpoint；new clean-HEAD independent Design PASS before V5R |
 | A5 authority + affine schema / ready | `codex/bcvm-p5-authority-r1` / `skiff-bcvm-p5-authority-r1` | `artifact-model/src/host_effect_registry/{contract.rs,registry.rs,tests.rs,mod.rs}`；`artifact-model/src/native_value_lifecycle/{contract.rs,registry.rs,tests.rs,mod.rs}`；`artifact-model/src/value_lifecycle_policy/**`；`artifact-model/src/bytecode/{dto.rs,opcodes/**,validate/{instructions.rs,plans.rs},tests/**}`；`artifact-model/src/lib.rs`；`artifact-identity/src/tests/mod.rs`（mechanical schema identity pin）；`runtime/native-contract/src/http_targets.rs`（仅复用/集中 canonical constants，不得成为第二 bytecode authority） | docs; join 1，首个非文档 commit |
 | C5 compiler / ready after A5 API | `codex/bcvm-p5-compiler-r1` / `skiff-bcvm-p5-compiler-r1` | `compiler/source/src/{value_transfer/**,callable_effects/**}`；`compiler/source/src/expression_type_model.rs`；`compiler/source/src/expression_type_model/{assignability.rs,expression_assignability.rs,materialization.rs,object_materialization/tests.rs}`；`compiler/lowering/src/mir/**`；`compiler/lowering/src/function_lowering.rs`；`compiler/lowering/src/function_lowering/{object_literal.rs,object_literal/fact_validation.rs}`；`compiler/lowering/src/source_file_lowering/tests/object_materialization.rs`；`compiler/emission/src/bytecode/{admission.rs,admission/**,constants.rs,emitter.rs,functions.rs,plans.rs,mod.rs,tests/**}`；`compiler/compiled/src/bytecode_handoff/tests.rs`（schema pin/full publication regression only）；`compiler/driver/authoring.rs`；`compiler/driver/authoring/tests.rs`（only if canonical resolver focused regression is required）；`compiler/driver/pipeline/mod.rs`；`compiler/driver/pipeline/bytecode_lane.rs`；`compiler/driver/pipeline/bytecode_lane/tests.rs`（schema pin/full publication regression only） | A5; join 2a；Phase 5 admission放新子模块，避免继续膨胀单文件 |
 | V5R atomic image + verifier retirement / redispatch after Design PASS | `codex/bcvm-p5-image-r1` / `skiff-bcvm-p5-image-r1`（从本 docs commit后的 clean integration HEAD新建） | typed transport：`runtime/linked-bytecode/src/{authority.rs,targets.rs,targets/**,plan.rs,candidate/**,tests/**,lib.rs}`（`authority.rs` 仍仅 mechanical schema-comment pin）；hard cut：`Cargo.toml`、`Cargo.lock`、`runtime/bytecode-verifier/**`（delete）、`runtime/linker/Cargo.toml`、`runtime/linker/src/{lib.rs,bytecode/**}`、`runtime/linker/tests/phase_1_contract/**`；consumer/dependency migration：`runtime/host/Cargo.toml`、`runtime/host/src/loader/bytecode_admission.rs`、`runtime/host/src/host/request_entry/phase_4_vcp_tests.rs`、`runtime/request/Cargo.toml`、`runtime/request/tests/bytecode_request.rs`、`runtime/vm/Cargo.toml`、`runtime/vm/src/{fiber.rs,statement.rs}`、`runtime/vm/src/fiber/{projection_tests.rs,tests.rs}`、`runtime/vm/tests/vertical.rs`、`runtime/vm/tests/vertical/k2_scalar_core.rs`、`runtime/package-test/{Cargo.toml,src/lib.rs}`、`test-runner/{Cargo.toml,src/runtime_execution.rs}`；structural registry：`scripts/check-runtime-crate-dag.mjs`、`scripts/lib/verify-rust-subjects.mjs` | A5+C5 facts + new independent Design PASS；atomic join 2b with P5G selector companion；old V5 dirty tree audit-only |
