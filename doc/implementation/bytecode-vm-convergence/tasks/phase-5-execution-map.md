@@ -1,6 +1,6 @@
 # MAP5：Phase 5 rolling execution map
 
-> Status: active; revision 2; recovery epoch `r1`; no implementation/proof lane complete
+> Status: active; revision 3; recovery epoch `r1`; no implementation/proof lane complete
 >
 > Phase Contract: [`phase-5-typed-host-effects-resources-streams.md`](../phases/phase-5-typed-host-effects-resources-streams.md), Amendment r1
 >
@@ -52,6 +52,13 @@ take 前对源 slot 执行 `TakeSlot`，并把该 slot 的 source fact 置为 `M
 但不成为第二 lifecycle authority。slot 已整体 moved，所以 verifier 沿现有 stack/control-flow owner状态证明，
 无需新增 partial-state merge或 stack-map事实。
 
+### 2.2 Schema epoch pin
+
+A5 的 artifact schema v8 / linked candidate schema v5 把 privileged field facts 变为 mandatory；所有 producer、
+canonical constructor、identity pin 与 full-publication assertion 必须在同一 r1 epoch 更新。语言尚未发布，因此
+不保留旧 schema compatibility；新增的 compiled/driver 测试文件只负责 schema pin 与完整 publication regression，
+不扩大 C5 semantics。
+
 ## 3. Lanes、唯一 write sets 与 rolling join
 
 表内 write set 是本 Phase 唯一文件清单权威；lane 内 focused unit test 可放在所列 module 的现有/新 test
@@ -59,8 +66,8 @@ take 前对源 slot 执行 `TakeSlot`，并把该 slot 的 source fact 置为 `M
 
 | Lane / status | Branch / worktree | 唯一 write set | Depends / join |
 | --- | --- | --- | --- |
-| A5 authority + affine schema / ready | `codex/bcvm-p5-authority-r1` / `skiff-bcvm-p5-authority-r1` | `artifact-model/src/host_effect_registry/{contract.rs,registry.rs,tests.rs,mod.rs}`；`artifact-model/src/native_value_lifecycle/{contract.rs,registry.rs,tests.rs,mod.rs}`；`artifact-model/src/value_lifecycle_policy/**`；`artifact-model/src/bytecode/{dto.rs,opcodes/**,validate/{instructions.rs,plans.rs},tests/**}`；`artifact-model/src/lib.rs`；`runtime/native-contract/src/http_targets.rs`（仅复用/集中 canonical constants，不得成为第二 bytecode authority） | docs; join 1，首个非文档 commit |
-| C5 compiler / ready after A5 API | `codex/bcvm-p5-compiler-r1` / `skiff-bcvm-p5-compiler-r1` | `compiler/source/src/{value_transfer/**,callable_effects/**}`；`compiler/lowering/src/mir/**`；`compiler/emission/src/bytecode/{admission.rs,admission/**,functions.rs,plans.rs,mod.rs,tests/**}` | A5; join 2a；Phase 5 admission放新子模块，避免继续膨胀单文件 |
+| A5 authority + affine schema / ready | `codex/bcvm-p5-authority-r1` / `skiff-bcvm-p5-authority-r1` | `artifact-model/src/host_effect_registry/{contract.rs,registry.rs,tests.rs,mod.rs}`；`artifact-model/src/native_value_lifecycle/{contract.rs,registry.rs,tests.rs,mod.rs}`；`artifact-model/src/value_lifecycle_policy/**`；`artifact-model/src/bytecode/{dto.rs,opcodes/**,validate/{instructions.rs,plans.rs},tests/**}`；`artifact-model/src/lib.rs`；`artifact-identity/src/tests/mod.rs`（mechanical schema identity pin）；`runtime/native-contract/src/http_targets.rs`（仅复用/集中 canonical constants，不得成为第二 bytecode authority） | docs; join 1，首个非文档 commit |
+| C5 compiler / ready after A5 API | `codex/bcvm-p5-compiler-r1` / `skiff-bcvm-p5-compiler-r1` | `compiler/source/src/{value_transfer/**,callable_effects/**}`；`compiler/lowering/src/mir/**`；`compiler/emission/src/bytecode/{admission.rs,admission/**,constants.rs,emitter.rs,functions.rs,plans.rs,mod.rs,tests/**}`；`compiler/compiled/src/bytecode_handoff/tests.rs`（schema pin/full publication regression only）；`compiler/driver/pipeline/bytecode_lane/tests.rs`（schema pin/full publication regression only） | A5; join 2a；Phase 5 admission放新子模块，避免继续膨胀单文件 |
 | V5 link + verify / ready after A5 API | `codex/bcvm-p5-verify-r1` / `skiff-bcvm-p5-verify-r1` | `runtime/linked-bytecode/src/{targets.rs,targets/**,plan.rs,candidate/**,tests/**,lib.rs}`；`runtime/linker/src/bytecode/{link/**,execution_image.rs,types/**,tests/**}`；`runtime/bytecode-verifier/src/**` | A5; join 2b；与 C5 可并行 |
 | K5 Resource/Pending/VM kernel / ready after V5 typed view | `codex/bcvm-p5-kernel-r1` / `skiff-bcvm-p5-kernel-r1` | `runtime/scheduler/src/{owner_inventory.rs,pending.rs,resource.rs,root_escrow.rs,stream.rs,stream_driver.rs,bytecode.rs,lib.rs}`；`runtime/model/src/{vm_heap.rs,vm_value.rs,lib.rs}`；`runtime/request/Cargo.toml`；`runtime/request/src/{bytecode_ingress.rs,bytecode_host_effects.rs,vm_heap.rs,execution_budget.rs,response_event.rs,outbound.rs,lib.rs}`；`runtime/request/tests/bytecode_request.rs`；`runtime/vm/src/{control.rs,fiber.rs,lifecycle.rs,lib.rs,fiber/tests.rs}`；`runtime/vm/tests/vertical/**` | A5+V5 API; join 3；ResourceTable只在 scheduler，禁止写 `runtime/model/src/resource.rs` |
 | H5 production host/session composition / ready after K5 port | `codex/bcvm-p5-host-r1` / `skiff-bcvm-p5-host-r1` | `runtime/capability-context/src/{http.rs,outbound_control.rs}`；`runtime/transport/src/response_mapper.rs`；`runtime/transport/src/response_mapper/tests.rs`；`runtime/host/Cargo.toml`；`runtime/host/src/capability_context/http.rs`；`runtime/host/src/host/{mod.rs,runtime_host.rs,http_client_runtime.rs,http_runtime/**,http_response_ceiling.rs,request_supervisor.rs,router_session.rs,router_session/**,bytecode_capability_adapter.rs}`；`runtime/host/src/host/request_entry.rs`；`runtime/host/src/host/request_entry/{assembly.rs,assembly_wire.rs,websocket_jsonrpc.rs,bytecode_host_effects.rs,server_stream.rs}` | K5 public port; join 4；复用 existing lower，HTTP/SSE之外不恢复 tree evaluator adapter |
