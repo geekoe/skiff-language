@@ -23,7 +23,8 @@
 4. **验证**：focused 每轮跑；三包/全量只在 join 点跑；跨 worker cargo 用目录租约串行；>30s 重定向轮询；
    结果只跑一次。
 5. **收敛**：逐 gate 转绿；每扇门转绿时同一 join 收进 Gate 矩阵（含 fmt/clippy 自检命令）。**本 Phase 的
-   新矩阵**（本 Phase 场景 + 上一 Phase 的 Gate 作为回归子集）写完后、producer 未 join 时先完整跑一遍，
+   新矩阵**（本 Phase 场景 + 上一 Phase 导出的 canonical workload specs 作为回归子集；不 child-run 旧 Gate、
+   不复用旧 PASS receipt）写完后、producer 未 join 时先完整跑一遍，
    留 expected-red baseline（非 zero/skip/ignore），证明矩阵可执行且覆盖契约全部 required scenario；这不是
    重跑上一 Phase 的 Gate，后续用它区分新旧红。
    唯一例外是 Phase Contract 明确声明 **closure-only 且没有 production producer join**：不得为了满足流程故意
@@ -31,14 +32,24 @@
    nonzero FAIL、证据检查 fail closed，且早期红不截断所有后续可达命令。真实 whole-system baseline 可以直接 green；
    一旦新增 production observability 或 enforcement producer，与该 producer关联的真实场景仍必须在 join 前留下
    nonzero/non-skip expected-red。
-6. **Gate**：merged preflight 全绿 → freeze（exact commit/tree）→ 新建 detached acceptance worktree。
-7. **Frozen candidate semantic review**（全新只读 agent）：只判实际代码/测试——核心契约落实、已接受 Phase
-   不变式、假绿/第二权威/fallback、fail-closed。不审查 architecture 文档完备性，不因外围文档措辞漂移 FAIL；
-   簿记和格式由 integrator 在 join 时机械检查。
-8. **独立 Acceptance**（全新只读 agent）：完整 Gate + checklist + raw evidence 核对。PASS → 写
-   `results/phase-N.md` → 合入 main → push → 清理 worktree。机械-only 的 FAIL 修复后，新 agent 的验收信封
-   可以只复核变更面 + 完整 Gate，不整份重读。
+6. **Gate / freeze**：merged preflight 全绿 → freeze（exact commit/tree/status + evidence epoch）。失败或中断的
+   evidence directory只读保留；不得原地补 receipt/resume，重跑必须使用新的 absent directory。此时不提前创建
+   Acceptance worktree。
+7. **同 HEAD 并行 review 与批量修复**：同时启动多名全新只读 agent，至少分 semantic implementation 与
+   proof/Gate/evidence 两面，全部读取同一 frozen commit/tree；发现 blocker 仍完成本 scope，不得报一个就修一个。
+   Integrator 等全部返回后合并、去重并封存唯一 blocker ledger。若非空，先 unfreeze、按原 semantic/proof owner
+   和 exact write set 一次并行修完整批次，再跑 affected focused checks + full merged preflight、re-freeze 新 epoch；
+   严格落在 sealed fix scope 内的变更可并行 targeted recheck，authority/support/write-set 逃逸必须重跑完整 fresh
+   cohort。Review 只判实际代码/测试、核心契约、已接受不变式、假绿/第二权威/fallback/fail-closed；不做
+   architecture 文档完备性 review，不因外围措辞漂移 FAIL。
+8. **独立 Acceptance 与 closeout**：blocker ledger 在 exact frozen HEAD 上为零后，另一名全新只读 agent 在新建
+   detached clean worktree运行完整 Gate + checklist + raw evidence核对；它不能是 writer或本轮 reviewer。
+   FAIL 回到第 7 步并产生新 freeze/evidence epoch；PASS 后才写 `results/phase-N.md` 与 status-only closeout，确认
+   main checkout clean/on `main` 且可安全合流，合入 main → push → 把 raw evidence 留在可删除 worktree之外并记录
+   hash → 按 exact inventory归档/删除本 Phase worktree、stash、active branch/ref。dirty/unmerged 状态不得强删；
+   先提交、取得明确丢弃授权，或固定到已验证的 archive ref。禁止 wildcard 清理和触碰其它 Phase。Terminal Phase
+   最后置为 `closed/accepted`、停止所有 agent且不自动启动下一 Phase。
 9. **上报格式**（所有 lane）：`{完成了什么, 意外点, 尝试过什么, 需要什么}`。
 
-强制隔离只有三条：frozen candidate semantic reviewer / Acceptance 必须是没写本 Phase 候选的全新 agent；proof 不修改生产制造 PASS；
-kernel 状态机只有一个 write owner。
+强制隔离只有三条：frozen candidate reviewer cohort / Acceptance 必须是没写本 Phase 候选的全新 agent，且
+Acceptance 与 cohort 不复用 owner；proof 不修改生产制造 PASS；kernel 状态机只有一个 write owner。

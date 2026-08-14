@@ -1,116 +1,284 @@
 # Phase 7：whole-system closure, budget and final acceptance
 
-> Status: planning ready; production/proof implementation blocked on Phase 6 accepted
+> Status: implementation-ready planning package; execution is blocked on Phase 6 accepted
 >
 > Planning baseline: `3f2e5ae3c6e62cba3e513c3941d31e5bd9cef4a0`
 >
-> Execution baseline: the exact clean Phase 6 accepted commit/tree and its canonical Gate assets, recorded before dispatch
+> Execution baseline: the exact clean Phase 6 accepted commit/tree and its canonical handoff, recorded by the activation amendment
 >
-> Semantic Closure: one exact candidate proves the accepted bytecode-only support surface, executable limits and whole-system composition
+> Semantic Closure: one exact candidate proves the accepted bytecode-only support surface, executable bounds and whole-system composition
 
-## 1. Activation condition
+This is the terminal convergence Phase. It owns closure proof, evidence and final acceptance; it does not own new language,
+boundary or execution semantics. Execution write sets and rolling state are controlled by
+[`MAP7`](../tasks/phase-7-execution-map.md), and the process remains controlled by the
+[`runbook`](../runbook.md).
 
-Phase 7 may start implementation only after Phase 6 is accepted and its result records the exact commit/tree, accepted
-capability ledger and canonical workload specs. Read-only preparation may happen earlier, but no Phase 7 production, proof or
-Gate lane may use this planning commit as a substitute for the Phase 6 receipt.
+## 1. Activation contract and Phase 6 handoff
 
-On activation, the integrator amends only the baseline fields and concrete write sets that cannot be known before Phase 6.
-That mechanical activation does not reopen architecture review and does not authorize a wider support surface.
+Phase 7 implementation starts only after Phase 6 is independently accepted, merged and clean. Read-only preparation may
+happen earlier, but this planning commit is never an execution baseline or PASS input. Before dispatch, the activation
+amendment must resolve the following fields from the accepted Phase 6 result and candidate, not from this document:
 
-## 2. Inherited authority and failure envelope
+| Required handoff | Phase 7 use | Missing or ambiguous disposition |
+| --- | --- | --- |
+| exact accepted commit and tree; result and Gate receipt identity | parent of the Phase 7 integration line and first evidence epoch | activation blocked |
+| one cumulative `phase6WorkloadSpecs(root)` export and its selector/contract tests | the sole inherited workload input; it must transitively cover Phase 1–6 without duplicate execution | Phase 6 proof/Gate owner reopens |
+| capability ledger with every service/task/interface/callback/Actor/DB/recoverable surface `accepted` or `disabled` | chooses positive versus fail-closed rows in the matrix below | Phase 6 owner reopens; Phase 7 cannot choose |
+| owner/root/resource/pending/buffer inventory contract | terminal balance checks for every applicable row | owning Phase reopens |
+| memory ledger and executable limit; GC/compaction `accepted`, `disabled` or `planned` with root receipt | mandatory memory row and conditional GC row | Phase 6 memory owner reopens if the mandatory limit is absent |
+| bounded-work ledger mapping each accepted Phase 1–6 loop/queue/buffer to a canonical limit workload | mandatory deterministic hot-path aggregation | the first missing feature owner reopens; Phase 7 cannot invent the bound |
+| compiler/artifact/image identity sources, observation schema identity and actual schema/ISA constants | dynamically bound Gate evidence | activation blocked; no literal is copied from an older plan |
+| canonical compiler/runtime/router entry points used by accepted workloads | production-shaped composition, not a test-only seam | affected original owner reopens |
+
+The activation amendment records the exact identifiers, exported symbol paths and exact Phase 7 write sets that cannot be
+known now. This mechanical amendment does not reopen an architecture-document review and does not authorize a wider support
+surface.
+
+## 2. Inherited authority and verifier hard cut
 
 Phase 7 inherits the
 [`Phase 5 verifier hard cut`](./phase-5-typed-host-effects-resources-streams.md) and every later accepted tightening:
 
-1. compiler source analysis/lowering is the sole authority for source type, effect, lifecycle, loan, placement and
-   capability facts;
+1. source analysis/compiler is the sole authority for source type, effect, lifecycle, loan, placement, boundary,
+   materialization, transfer/drop and capability facts;
 2. the artifact model owns the persistent schema/ISA and bounded structural validation;
 3. the linker consumes exact compiler/artifact/registry facts, resolves exact references and returns one atomically
    constructed immutable `DeploymentExecutionImage`;
 4. decode/index/CFG/stack/slot/call/resume consistency and statement mapping may be private bounded steps inside that
    constructor, but cannot form a separately callable verifier stage, facts bundle, seal or cache value;
-5. linker, scheduler, request adapters and VM cannot infer missing source semantics from strings, context, nominal names,
-   type shape, opcode shape or defaults;
-6. malformed artifacts must produce a typed construction error or a checked safe request failure, with no panic/abort,
-   out-of-bounds access, partial image publication, or pending/root/resource leak.
+5. linker, scheduler, request adapters, Router and VM cannot infer missing source semantics from strings, context, nominal
+   names, type shape, opcode shape or defaults;
+6. malformed artifacts produce a typed construction error or checked safe request failure, with no panic/abort,
+   out-of-bounds access, partial image publication or pending/root/resource/heap leak.
 
 There is no production `bytecode-verifier` crate/stage/API, `VerificationSeal`, verifier-owned `Verified*` transport,
-compatibility alias, selector or dual path. Phase 7 must reuse the Phase 5 structural reverse-search obligation rather than
+compatibility alias, selector or dual path. Phase 7 reuses the Phase 5 structural reverse-search obligation and must not
 recreate verifier-shaped proof infrastructure.
 
-## 3. Scope and non-goals
+## 3. Owned scope, non-goals and old open items
 
-Phase 7 closes:
+Phase 7 owns only:
 
-- unified memory, fuel and hot-path limit gates over the mechanisms accepted by their owner Phases;
-- only the bounded read-only observations needed to prove those gates;
-- an exact supported/disabled capability inventory;
-- whole-system execution of the HTTP, service, stream, task, interface, callback and Actor scenarios actually accepted by
-  Phase 1 through Phase 6;
-- final candidate/evidence integrity and independent acceptance.
+- proof carriers that compose already accepted production paths into whole-system scenarios;
+- one canonical Phase 7 Gate, its selector, runner, receipts, checker and fail-closed self-tests;
+- a candidate-derived supported/disabled capability inventory;
+- only a bounded read-only observation when an otherwise executable obligation cannot be observed through an accepted port;
+- parallel frozen-candidate review coordination, independent Acceptance evidence and terminal project closeout.
 
-Phase 7 does not first implement a language feature, boundary protocol, owner state machine, heap rule, lifecycle rule,
-scheduler transition or Router execution behavior. If a whole-system or budget scenario exposes such a gap, the integrator
-reopens the original owner Phase with an exact write set and keeps running every unaffected Phase 7 scenario. The Phase 7
-proof/Gate owner and integrator must not patch production semantics to obtain PASS.
+It does not first implement an opcode, source fact, artifact field, linker rule, scheduler transition, boundary codec,
+owner/root state machine, HTTP/Router behavior, heap rule, GC policy or execution limit. In particular, the old open items
+are decided before execution as follows:
 
-## 4. VCP-7 and Gate matrix
+| Item | Phase 7 disposition | Semantic owner if the inherited fact is absent or wrong |
+| --- | --- | --- |
+| raw fuel and frame/dispatch bound | mandatory inherited Gate; rerun the accepted Phase 1 exact-boundary, overflow and deep-call workloads | Phase 1 budget/VM owner |
+| unified per-request memory limit | mandatory inherited Gate across every accepted Phase 6 owner/heap lane; Phase 7 only composes and observes | Phase 6 memory/owner kernel |
+| request GC/compaction | conditional: rerun only if the Phase 6 ledger says `accepted`; otherwise prove it remains disabled/planned and do not enable it | Phase 6 memory/root owner |
+| hot-path bounded work | mandatory deterministic work-bound aggregation: VM dispatch/fuel (P1), lifecycle cleanup (P2/3), wake/claim (P4), bounded stream pump/buffer (P5), materialization/root walk (P6) | the first Phase whose canonical workload exposes the unbounded transition |
+| wall-clock performance, throughput and optimization | optional non-blocking observation only when an accepted owner already defines a stable threshold; not a Phase 7 release benchmark | original subsystem owner in a separately authorized task |
+| observability | reuse the candidate observation schema; P7O may add one read-only, non-decision-changing port after a concrete proof gap | original fact owner plus P7O observation owner |
+| DB/recoverable | positive rerun only when the Phase 6 ledger says `accepted`; otherwise mandatory compile/admission/runtime fail-closed proof | Phase 6 DB/recoverable owner |
+| VM-14 umbrella claim | closed only by the mandatory fuel, memory and deterministic bounded-work rows above; it creates no new Phase 7 enforcement authority | row-specific Phase 1–6 owner |
+
+“Hot path” here means deterministic bounded work and bounded queues/buffers, not a flaky elapsed-time assertion. Phase 7 may
+report measurements, but it cannot turn an unowned number into a release criterion during execution.
+
+The activation amendment must also resolve named residuals from earlier result handoffs instead of rediscovering them during
+Acceptance:
+
+| Earlier residual | Required pre-Phase-7 disposition |
+| --- | --- |
+| effectful `SetWritablePath` RHS | an accepted owner workload proves the required staging, or the source/admission route remains disabled; semantic repair returns to the Phase 2 lifecycle and Phase 5 effect owners |
+| COW partial-allocation/OOM orphan chain | an accepted failure workload proves cleanup and Phase 6 memory charging, or Phase 2/6 reopens before activation |
+| root uncaught-exception payload teardown | a canonical Phase 4 request/root receipt proves it; a generic Pending regression label is insufficient |
+| literal-branch catch identity and generated slot/map/representation handlers | each is either accepted by the Phase that enabled it or structurally/runtime unreachable with a fail-closed proof |
+| historical Actor/durable/DB/compaction intentions | they first belong to the matching Phase 6 lane; old synthetic live projection cannot satisfy Phase 7 |
+
+## 4. Whole-system VCP and coverage matrix
 
 ### 4.1 Exact-candidate regression composition
 
-The Phase 7 Gate reruns the canonical Phase 1 through Phase 6 workload specs against the same exact Phase 7 candidate. It
-imports/composes workload specifications at the runner level; it does not trust an earlier PASS receipt and does not invoke
-nested Phase Gate processes. Nested Gates would create stale or split evidence epochs and can deadlock or bypass the single
-Cargo lease.
+The Phase 7 Gate imports exactly one cumulative `phase6WorkloadSpecs(root)` from the Phase 6 candidate and adds only Phase 7
+scenario and control specs. It does not import each cumulative Phase list separately, invoke Phase 1–6 Gate processes, or
+reuse their PASS receipts. Earlier receipts establish provenance; every canonical workload executes again against the same
+Phase 7 candidate and evidence epoch.
 
-Inherited stage sentinels remain the producer-to-consumer proof. Phase 7 does not duplicate them under new names or hand-build
-artifact, linked facts, image, entry, fiber, owner token, response frame or execution result.
+The composer must preserve command, args, cwd, environment identity, test format, declared `expectedTests`, semantic lanes and
+original Phase provenance. It rejects duplicate IDs/executions, an empty owner group, missing provenance, a test-formatted
+spec without a positive exact test count, and an inherited `cargo test` spec without effective `--no-fail-fast`. An explicit
+Phase 7 adapter catalog may add a missing historical `expectedTests` or normalize an inherited `cargo test` argument, but it
+must be a reviewed `(spec id -> exact value/change)` table covered by contract tests; it cannot invent a default or mutate
+`cargo build`, `cargo fmt` or `cargo clippy` arguments.
 
-### 4.2 New closure obligations
+Inherited stage sentinels remain the producer-to-consumer proofs. Phase 7 does not duplicate them under new names or
+hand-build artifacts, linked facts, images, entries, fibers, owner tokens, response frames or execution results.
 
-| Gate | Required evidence |
+### 4.2 Executable matrix
+
+Each row is required. “Ledger-selected” means the Gate derives positive versus fail-closed expectation from the exact Phase 6
+handoff, records that choice and rejects an unrecognized/omitted state.
+
+| ID / surface | Semantic / proof owner | Production entry | Required expectation | Machine evidence |
+| --- | --- | --- | --- | --- |
+| C01 inherited Phase 1–6 closure | P1–P6 / P7G | candidate `phase6WorkloadSpecs(root)` | every unique inherited workload executes once; no nested Gate, historical PASS substitution, zero/skip/stale result or missing Phase provenance | spec-catalog digest, per-Phase/lane coverage report, command receipts and exact counts |
+| C02 compiler/artifact/image identity | compiler + artifact + atomic linker / P7P | real `.skiff` source → compiler publication → RuntimeHost admission | candidate schema/ISA/artifact/deployment/image identities agree; missing/swapped/damaged facts fail closed; no verifier or semantic reconstruction | dynamic identity record, S1–S4 inherited receipts, malformed companion, reverse-search receipt |
+| C03 HTTP unary | P1 and P5 / P7P | real HTTP client → Router gateway/dispatcher → Runtime session → request/VM → final response | exact service/version route, deterministic status/headers/body, one terminal, balanced owners | raw client response, Router/runtime route identity, terminal and inventory receipt |
+| C04 HTTP server-stream | P5 / P7P | real HTTP client → Router WS→HTTP writer → Runtime host stream → provider | headers precede ordered bounded chunks and one end; cancel/disconnect/error releases handle, buffer and pending owner | chunk timeline, backpressure/cancel companion, resource/buffer/pending zero receipt |
+| C05 service child | P6 / P7P | compiled caller → exact provider build → flat child trampoline → caller response | ledger-selected; accepted means distinct owner/heap success + ordinary throw + actual Pending; disabled means unique boundary rejects | Phase 6 service spec receipts plus whole-system response and owner/root chain |
+| C06 task and durable task | P6 / P7P | canonical task ingress → scheduler/host → completion or restart seam | ledger-selected; accepted task preserves exact build, payload/materialization and terminal; durable retry/restart subcases run only when recoverable is also accepted, otherwise that ingress fails closed | task receipts, build/payload identity, conditional restart/terminal evidence and disabled negative |
+| C07 interface dispatch | P6 / P7P | compiled Local/Remote interface call → exact table/target/carrier → result/error | ledger-selected; accepted Local/Remote variants run only those stated in ledger, with exact method/materialization facts; all other variants reject | dispatch identity, return/error receipt, disabled-carrier negative |
+| C08 callback | P6 / P7P | provider callback request → same-Runtime callback owner → caller resume/cancel | ledger-selected; accepted callback preserves lifetime/owner and terminal once; cross-Runtime remains disabled unless explicitly accepted | callback owner/resume receipt, cancel/late negative, disabled-route evidence |
+| C09 Actor | P6 / P7P | exact Actor id/build → Router/runtime Actor arena and lease/fence path → result/Pending/destroy | ledger-selected; accepted matrix covers exact build coexistence, lease/fence/session ownership, Pending and stale/late/destroy outcomes; otherwise fail closed | Actor route/build/lease/fence receipts and arena/root/resource terminal inventory |
+| C10 DB and recoverable value | P6 / P7P | canonical DB transaction and recoverable codec boundaries selected independently by ledger | each state is ledger-selected; accepted path proves schema/materialization/transaction or codec cleanup, while a disabled surface has compiler/admission/runtime rejection as its only outcome | DB/codec identity, transaction/roundtrip receipt or per-surface disabled negative; no generic live selector substitute |
+| C11 cancel/deadline/error mapping | P3–P6 / P7P | throw/VmFailure, due deadline, client/session disconnect and losing completion through real request path | one winner and one external mapping; late/duplicate losers cannot publish; unwind/partial values/pending/resources clean exactly once | outcome identity, HTTP/error result, race timeline and terminal inventory |
+| C12 lifecycle and resource inventory | P2–P6 / P7P | aggregate/exception/Pending/HTTP/stream/cross-owner terminals | copy/move/drop/unwind/materialization balances every owner/root/resource/buffer/heap counter; no double release or orphan | before/after inventory, owner-specific cleanup sequence and failure receipts |
+| C13 fuel/frame bound | P1 / P7G | request-owned execution budget → VM dispatch/local-call loop | limit N permits N attempts and rejects N+1; overflow/deep call bounded; terminal and settlement exact | inherited raw-fuel/deep-call receipts with exact test counts |
+| C14 memory and conditional GC | P6 / P7P | accepted per-request memory ledger under aggregate, Pending, stream and cross-owner pressure | hard memory limit covers heaps, frames, sidecars, pending owners, resources, host buffers and accepted child/Actor owners; failure balances all owners; if GC accepted, compaction only at legal quiescence with complete roots; otherwise no GC route | ledger charge/limit/peak/terminal receipt, pressure companion and accepted-GC root receipt or disabled/planned proof |
+| C15 deterministic hot-path bounds | P1–P6 / P7G | dispatch, lifecycle cleanup, unwind, wake/claim, stream pump and materialization/root-walk workloads | every accepted loop/queue/buffer has an inherited finite counter/limit; an exceeded bound terminates or rejects without leak | owner workload receipts and summarized limit inventory; wall-clock timing is informational only |
+| C16 capability and observation ledger | P6 / P7G | candidate handoff + actual manifest observations | every capability has exactly one accepted/disabled state consistent with rows C03–C10; observation schema identity is candidate-derived and contains no verdict authority | ledger/schema digests, row-to-capability reconciliation, unexpected/missing-state negative |
+| C17 hard-cut and damaged-artifact closure | P5 / P7G | workspace/production graph plus real admission boundary | zero verifier crate/API/seal/selector/alias/dual path; damaged artifacts cause typed construction/safe request failure, never panic/OOB/partial image/leak | reverse search, dependency/selector graph checks and behavioral damaged-artifact receipts |
+| C18 Gate/evidence controls | P7G | Phase 7 runner/checker self-test fixture | early ordinary red does not truncate later reachable commands; missing/unexpected/zero/skip/stale/tampered/reordered/cross-epoch evidence fails | runner sequence receipts and independent checker negatives |
+
+The activation amendment maps every row to exact candidate spec IDs and fails if any accepted capability has no positive row
+or any disabled capability has no fail-closed row. A row may cite multiple command receipts, but no command may silently
+stand in for a different semantic surface.
+
+## 5. Gate runner and evidence contract
+
+### 5.1 Candidate and command execution
+
+The Gate accepts caller-supplied `--candidate`, `--tree` and an absolute canonical absent `--output-dir` outside the candidate
+repository. It never selects its own HEAD or reuses an evidence directory. Preflight records HEAD/tree/status before any
+workload; an identity mismatch or dirty tree is a safety stop and produces a complete FAIL assessment with all unexecuted
+specs marked missing. Ordinary command failure is not a safety stop: the outer runner continues through every later reachable
+spec, postflight/closure/fresh probes and evidence finalization. Signal interruption is recorded and missing work remains FAIL.
+
+Before the workload epoch, the owner verifies there is no Cargo/rustc process or active earlier-Phase lease and pauses every
+other Cargo-capable agent until release. All Cargo commands then execute serially while the runner holds exactly one
+`/tmp/skiff-bcvm-p7-r1-cargo.lockdir` lease for the complete workload epoch and sets
+`CARGO_TARGET_DIR=/Users/geek/workspace/.skiff-cargo-target`; it never runs `cargo clean`. Every `cargo test` command has
+effective `--no-fail-fast`. Other Cargo subcommands retain valid native arguments. The Phase-specific directory prevents a
+second Phase 7 runner; it is not claimed to lock legacy Phase runners, so the exclusive-agent precondition is mandatory.
+Commands expected to exceed 30 seconds run once with captured durable stdout/stderr; an external operator polls the same
+process/log rather than restarting it.
+
+### 5.2 Spec and receipt schema
+
+Every spec has a unique ID/execution, owner Phase, coverage rows, semantic lanes, exact command/args/cwd, normalized allowlisted
+environment identity, `testFormat`, and for test-formatted commands a positive `expectedTests`. It also declares dependencies
+and produced/required binary or artifact identities where applicable. Candidate probes are specs too. The receipt schema
+records those fields plus sequence number, start/finish time, normalized PASS/FAIL/BLOCKED/INTERRUPTED outcome,
+`blockedBy`, stdout/stderr path/bytes/SHA-256 and prior-receipt digest. A failed producer creates a BLOCKED receipt for its
+dependent consumer rather than allowing that consumer to use a stale shared-target binary; unrelated later commands run.
+
+The Gate uses a deterministic SHA-256 receipt chain rather than an undeployed signing key:
+
+1. receipts are written exclusively in canonical spec order;
+2. receipt `0` binds a fixed genesis string, candidate commit/tree, Gate schema and spec-catalog digest;
+3. receipt `n` records the SHA-256 of the exact previous receipt bytes and its own stream digests;
+4. the manifest records the ordered receipt path/digest list and final chain head;
+5. the checker reconstructs the chain and a sorted allowed-path closure of every non-manifest evidence file as
+   `(path, bytes, sha256)`; it rejects every unexpected regular file.
+
+Missing or unexpected receipts/files, duplicate or reordered receipts, command/environment drift, a non-PASS outcome, invalid
+TAP/Rust summary, exact-count mismatch, skip/todo/cancel/ignore, stale/dirty candidate, changed ledger/schema/ISA/fixture or
+cross-epoch composition all make the verdict FAIL. The manifest is a derived assessment, never authority; the checker
+re-derives candidate, coverage, commands, counts, failures, chain and file closure without trusting stored verdict fields.
+The CLI prints the SHA-256 of the final manifest bytes as the bundle's external anchor; the Acceptance result records it, so
+the manifest does not attempt to contain its own digest.
+
+### 5.3 Dynamic production identities
+
+The manifest records compiler/runtime/router binary identities, artifact identity, schema, ISA, deployment/image identity,
+observation schema, capability-ledger digest and workload-spec catalog digest obtained from the exact candidate production
+path. It checks exact equality across compiler publication, admission and image construction. No Phase 7 source pins a schema
+or ISA literal copied from an earlier Phase. A candidate, schema, ISA, fixture, assertion, checker, observation or ledger
+change begins a new evidence epoch.
+
+Failed or interrupted evidence is immutable. The checker may re-read it, but command execution never resumes or fills files
+in that directory; every rerun uses a new canonical absent output directory. A stale lease is removed only after verifying
+that no owning Gate/Cargo/rustc process remains and recording the interrupted evidence path.
+
+## 6. Expected-red and proof sensitivity
+
+Phase 7 is closure-only by default. When it adds no production producer, it must not break a valid production baseline merely
+to obtain expected-red. P7G instead uses controlled fixture command failure, missing receipt, reordered/hash-tampered receipt,
+zero/skip summary and stale-candidate cases to prove nonzero FAIL, fail-closed checking and no ordinary-failure truncation.
+
+If P7O or a reopened original owner adds a real production observation or enforcement producer, the affected real row must
+first run before that producer joins and retain a nonzero/non-skip expected-red receipt. That red proves the genuine missing
+boundary, while inherited unaffected rows continue and are receipted. Test-only verdict fields, fake images, fake Router
+frames or hand-built owner state are forbidden.
+
+## 7. Reopen, batch-fix and evidence-epoch state machine
+
+A failing row is classified before any production edit:
+
+- source fact/emission/admission or fuel: Phase 1/2/3/5/6 owner named by the row;
+- lifecycle/unwind: Phase 2 or Phase 3 owner;
+- scheduler/Pending/cancel/deadline: Phase 4 owner;
+- HTTP/resource/stream: Phase 5 owner;
+- cross-owner/capability/memory/GC/DB/recoverable: Phase 6 lane named by the handoff;
+- false-green, coverage, runner, receipt or checker: P7P or P7G;
+- one missing read-only observation: conditional P7O.
+
+The state transition is always:
+
+```text
+frozen candidate Fn
+  -> same-HEAD parallel review / Gate finding
+  -> seal one deduplicated blocker ledger
+  -> unfreeze
+  -> MAP amendment and exact original-owner write sets
+  -> fix all independent blockers as one parallel batch
+  -> join + targeted checks + full merged preflight
+  -> freeze Fn+1 (new commit/tree and evidence epoch)
+  -> same-HEAD targeted/full recheck as classified
+  -> only then detached Acceptance
+```
+
+All reviewers finish before the blocker ledger is sealed; an early finding does not turn review into serial
+find-one/fix-one work. The integrator and P7G never patch production. A fix outside the sealed scope, a support-surface or
+authority change, or an unexpected Gate/checker change requires a full fresh review cohort on the new freeze; a strictly
+bounded fix receives parallel targeted rechecks for every affected finding/domain. Acceptance always reruns the complete
+canonical Gate.
+
+## 8. Risks, recovery and non-authorities
+
+| Risk | Prevention / recovery |
 | --- | --- |
-| G1 inherited regression | every canonical Phase 1–6 workload executes on the exact candidate; no zero/skip/stale receipt |
-| G2 schema/ISA identity | a real compiler-produced artifact records its candidate-owned schema/ISA and identity; structural validation and atomic image construction consume that same identity |
-| G3 executable limits | accepted memory/fuel/hot-path limits terminate or reject bounded negative workloads and leave owner/resource counters balanced |
-| G4 whole-system VCP | real supported HTTP/service/stream/task/Actor paths, plus interface/callback only if Phase 6 accepted them, traverse production compiler, artifact store, atomic image, Router/Runtime and final consumer |
-| G5 structural fail-closed | no verifier residue, semantic reconstruction, fallback, second authority, hand-built proof seam or unsupported capability admission |
-| G6 evidence integrity | exact commit/tree, clean worktree, command environment, all command receipts, tamper/zero/skip/stale checks, fmt/clippy and final fresh-status checks |
+| cumulative specs execute prior Phases repeatedly | import only Phase 6 cumulative export; assert unique IDs/executions and per-Phase provenance |
+| one early red exposes only one issue per run | outer no-fail-fast runner, per-command receipts and a self-test that observes a later command/fresh probe |
+| incompatible `--no-fail-fast` added to build/fmt/clippy | normalize/audit only `cargo test`; contract-test exact effective args |
+| stale or mixed evidence falsely passes | caller-pinned candidate/tree, absent directory, receipt hash chain, dynamic identities and independent re-derivation |
+| unsupported capability gets promoted by a live smoke | exact Phase 6 ledger selects positive/negative expectation; generic selectors never grant acceptance |
+| flaky performance blocks closure | deterministic work/queue/buffer limits are mandatory; elapsed-time measurements remain non-authoritative |
+| proof adds a second authority | proof consumes production facts only; semantic mismatch returns to original owner |
+| reviewer reports arrive serially and trigger serial fixes | same-HEAD cohort completes first; integrator seals one blocker ledger and dispatches a batch |
+| dirty worktree/stash is lost at closeout | exact Phase 7 inventory; commit or archive recoverable objects before exact-name removal; never wildcard-clean other Phases |
 
-The schema and ISA are dynamic candidate identities, not literals copied from an earlier Phase document. G2 obtains them from
-the canonical candidate constants and real artifact/image path, records them in evidence and checks exact equality. A schema
-change opens a new evidence epoch; it does not add backward compatibility. An artifact fact change does not by itself require
-an ISA bump when the opcode contract is unchanged.
+Architecture/reference prose completeness, historical wording and unrelated documentation drift are not Phase 7 blockers.
+A real second authority, unsafe failure, false-green Gate, broken accepted invariant, missing mandatory limit or unavailable
+exact production composition seam is a blocker and reopens the exact owner above.
 
-### 4.3 Expected-red and no-fail-fast
+## 9. Acceptance and terminal deliverables
 
-If G2–G4 requires a new production observability or enforcement producer, the Proof Line first runs the affected real
-scenario before that producer joins and records a nonzero, non-skip expected-red result. If Phase 6 already supplies every
-required production fact and Phase 7 is closure-only, the proof instead uses controlled command failure, missing-receipt and
-tamper self-tests to prove that the Gate becomes red and still executes every later reachable command; the real whole-system
-baseline may be green.
+Acceptance requires all of the following on one frozen candidate:
 
-The outer runner never stops on an ordinary workload failure. Every Cargo command uses `--no-fail-fast`, Cargo commands remain
-serial under one exclusive lease, and all later reachable non-Cargo/Cargo commands receive receipts. Cargo serialization is
-not permission to expose only one semantic failure per run.
-
-## 5. Acceptance checklist
-
-- [ ] Phase 6 is accepted; Phase 7 exact baseline/candidate commit and tree are recorded and clean.
-- [ ] Phase 1–6 canonical workload specs rerun on this candidate; no historical PASS substitutes for execution.
+- [ ] Phase 6 exact accepted handoff is recorded and every capability has an accepted/disabled disposition.
+- [ ] the cumulative spec catalog has complete Phase 1–6 provenance, unique execution and exact positive test counts.
+- [ ] C01–C18 execute with no zero/skip/stale/missing/tampered evidence; ledger-selected rows match the handoff.
 - [ ] compiler-only source authority, atomic image construction and verifier hard-cut reverse search are green.
-- [ ] schema/ISA/artifact/image identities come from and agree with the exact candidate; no old-schema compatibility path exists.
-- [ ] memory/fuel/hot-path negative limits are bounded and leave pending/root/resource/heap owners balanced.
-- [ ] the supported capability inventory agrees with the scenarios actually run; disabled lanes fail closed.
-- [ ] the whole-system matrix uses real Router/Runtime composition and completes without fallback or hand-built execution facts.
-- [ ] one red workload cannot truncate later commands; tamper, missing, zero, skip and stale evidence all fail closed.
-- [ ] frozen implementation candidate receives a fresh read-only semantic review and a separate independent Acceptance PASS.
+- [ ] schema/ISA/artifact/image/observation identities are dynamically read from and agree with the exact candidate.
+- [ ] fuel, memory and deterministic hot-path bounds terminate/reject safely and balance all applicable inventories.
+- [ ] whole-system HTTP, enabled capability and disabled-capability paths use real Router/Runtime composition without fallback.
+- [ ] controlled red proves sensitivity and no ordinary failure truncation; evidence chain/checker negatives fail closed.
+- [ ] fresh same-HEAD semantic and proof/Gate reviewers all finish; the sealed blocker ledger is empty after required rechecks.
+- [ ] a different fresh owner runs the full Gate in a new detached clean worktree and independently checks raw evidence.
+- [ ] the result records candidate commit/tree, Gate/manifest/chain digests, evidence location, capability/limit ledger and review/Acceptance identities.
+- [ ] result/status-only closeout is safely merged and pushed to `main`; Phase 7 evidence is outside removable worktrees.
+- [ ] every Phase 7 worktree, stash and active branch/ref is either cleanly removed or explicitly archived by exact identity; unrelated Phase state is untouched.
+- [ ] project status is `closed/accepted`, all Phase 7 agents stop, and no Phase 8 or follow-on task is started.
 
-## 6. Stop and reopen conditions
-
-Stop only the affected lane and amend the Execution Map before code changes when a scenario requires a new source fact,
-artifact field, execution transition, owner state machine, Router behavior, production write-set extension or second
-authority. Reopen the original semantic owner rather than assigning the fix to Phase 7 proof/Gate.
-
-Documentation completeness, historical wording and unrelated architecture/reference drift are not Phase 7 blockers. A
-real second authority, unsafe failure, false-green Gate, broken accepted invariant or unavailable exact composition seam is.
+The final in-repo deliverables are the activated Contract/MAP, canonical proof/Gate assets, `results/phase-7.md`, and the
+README status update. The final result links machine-verifiable raw receipts and hashes; it does not replace them.

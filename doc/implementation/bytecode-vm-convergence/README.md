@@ -1,13 +1,13 @@
 # Bytecode VM 架构收敛重构总计划
 
-> Status: project plan; Phase 0/1/2/3/4 accepted; Phase 5 active in recovery epoch r1
+> Status: project plan; Phase 0/1/2/3/4 accepted; Phase 5 active in recovery epoch r1; Phase 6/7 execution blocked
 >
 > Created: 2026-08-12
 >
 > This document is implementation coordination, not a second semantic authority.
 
-本项目修复当前 bytecode-only production path 的架构和运行语义。目标不是继续扩大 opcode 或 verifier
-覆盖，而是先建立一个小、正确、可解释、可逐阶段证明的执行模型，再逐项恢复能力。
+本项目修复当前 bytecode-only production path 的架构和运行语义。目标不是继续扩大 opcode 或支持面，
+而是先建立一个小、正确、可解释、可逐阶段证明的执行模型，再逐项恢复能力。
 
 本项目采用[大型重构的滚动细化与多 Agent 实施原则](./large-change-execution-principles.md)。它明确替代
 [`worker-crate-parallel.md`](../../worker-crate-parallel.md) 中“多个 Agent 直接写同一 main checkout”、
@@ -96,7 +96,7 @@ crate 只负责 write-set 隔离，不再提供完成语义。
 | VM-04/12/13：Pending、root graph、session/request lifetime | Phase 4 | 禁止新增 async lane |
 | VM-04/05：HTTP、ResourceRef、stream ownership/backpressure | Phase 5 | containment 或 disabled |
 | VM-08/09/10：task/cross-owner heap、materialization、handle provenance | Phase 6 | 分 lane disabled |
-| VM-14：fuel、memory、hot-path bound | Phase 1 建基础，Phase 7 完整收口 | 不宣称有统一预算保证 |
+| VM-14：fuel、memory、hot-path bound | Phase 1 持有 raw fuel；各 feature Phase 持有自己的 bounded work；Phase 6 持有 memory/GC；Phase 7 只聚合 Gate | mandatory owner workload 缺失时重开原 Phase，不在 Phase 7 临场补 enforcement |
 
 Phase 0 必须用当前代码证据校正这张初始分配表；只有具体事实不清楚时才派 Clarification task。发现某项是
 更早 Phase 的前置条件时，只能前移或缩小支持面，不能把错误可达路径留给最终 Gate。
@@ -111,7 +111,7 @@ source-owned semantic facts
   -> relocatable artifact
   -> bounded structural decode and validation
   -> exact deployment linker
-  -> immutable ExecutableBytecodeImage
+  -> immutable DeploymentExecutionImage
   -> synchronous VM core
   -> scheduler / typed effect adapter when actually needed
   -> request boundary result
@@ -275,7 +275,8 @@ stream/backpressure。删除 adapter singleton、字符串 dispatch、blocking `
 stream handle；证明 handle 精确路由、bounded buffer、drop/cancel 和无 worker 阻塞。
 
 Router 侧 owner：Phase 5 的 stream VCP 与 Phase 7 的 whole-system 会触及 router 的 WS→HTTP chunked 传输
-路径；两个 Phase 的 contract 必须显式列出 router 侧 write owner 与其真实 composition 边界。
+路径。Phase 5 Contract 必须列出实际生产 write owner；Phase 7 默认只读消费并只写 proof carrier，真实缺陷按
+[`MAP7`](./tasks/phase-7-execution-map.md)重开原 owner，不能由 Gate/integrator 顺手修。
 
 ### Phase 6 — Cross-owner execution and managed-memory readiness
 
@@ -295,14 +296,22 @@ throw；证明无 raw handle 穿越、parent 同步恢复和 Pending chain root 
 这不是 cutover。旧 evaluator 已删除，production 已是 bytecode-only。Phase 7 只完成统一 memory/fuel/hot-path
 门禁、observability、支持面清单和 whole-system acceptance；不能首次实现新的语言或 boundary 语义。
 
-某个 whole-system scenario 暴露语义缺口时，重开原 owner Phase。最终 VCP matrix 组合此前 accepted receipts，
-再运行真实 HTTP/service/stream/task/Actor 中实际声明支持的场景。
+某个 whole-system scenario 暴露语义缺口时，重开原 owner Phase。最终 VCP matrix 以此前 accepted receipts 只做
+provenance，从候选的单一 Phase 6 cumulative workload API 在同一 exact candidate 上重跑 Phase 1–6 canonical
+workload，并运行真实 HTTP unary/server-stream 以及 ledger 声明 accepted/disabled 的 service/task/interface/
+callback/Actor/DB/recoverable 场景；不嵌套旧 Gate、不复用旧 PASS。
+
+实施 Contract：[`phases/phase-7-whole-system-closure.md`](./phases/phase-7-whole-system-closure.md)。
+执行地图：[`tasks/phase-7-execution-map.md`](./tasks/phase-7-execution-map.md)。Phase 7 是本项目 terminal Phase；
+Acceptance、main 合流、evidence 归档和所有 Phase 7 临时状态退役后把项目标为 `closed/accepted` 并停止，不自动
+创建 Phase 8。
 
 ## 8. Phase 内核心流程
 
 每个 Phase 按 [`runbook.md`](./runbook.md) 的 9 步执行；该文件是流程的唯一权威。Clarification/Design 的
 触发条件见[原则文档 §4](./large-change-execution-principles.md#4-条件支持任务)。下一 Phase 可以提前做只读
-调查，不能在前一 Phase 未 `accepted` 时启动 production implementation。
+调查，不能在前一 Phase 未 `accepted` 时启动 production implementation。Terminal Phase 还必须完成同 HEAD
+并行 review、合并 blocker/batch fix 循环、独立 Acceptance、main push 和精确 worktree/stash/ref 清理后停止。
 
 ## 9. Worktree 和 Agent 约束
 
@@ -320,8 +329,10 @@ throw；证明无 raw handle 穿越、parent 同步恢复和 Pending chain root 
 - 每个并发 write owner 一个 leaf worktree；
 - central kernel 不能为满足 crate 边界而拆给多个 owner；
 - integrator 串行合流，不在 merge 时发明兼容语义；
-- gate worktree 从 frozen commit 创建，由未参与生产实现的 acceptance owner 只读验收；
+- frozen candidate 的多名 fresh reviewer 在同一 HEAD 上并行完成互补 scope；全部返回后才合并 blocker、批量修复；
+- acceptance worktree 在 review blocker 清零后从 frozen commit 新建，由既未写候选也未参与 review 的 fresh owner 只读验收；
 - candidate 任意变化开启新 evidence epoch。
+- accepted/main push 后按 exact inventory 处理每个本 Phase worktree、stash、branch/archive ref；不得通配删除或触碰其它 Phase。
 
 Phase plan 只冻结角色分离、write set 和验收约束；实际 Agent、worktree 数量、路径和复用方式不在总体
 计划中提前冻结。
@@ -339,13 +350,15 @@ Phase plan 只冻结角色分离、write set 和验收约束；实际 Agent、wo
 | Phase 3 | accepted; [`results/phase-3.md`](./results/phase-3.md) |
 | Phase 4 | accepted; [`results/phase-4.md`](./results/phase-4.md) |
 | Phase 5 | active; Contract Amendment r2 + [`tasks/phase-5-execution-map.md`](./tasks/phase-5-execution-map.md) |
-| Phase 6–7 | outline only; not implementation-ready |
+| Phase 6 | planning package prepared separately; implementation blocked on Phase 5 accepted and merged |
+| Phase 7 | implementation-ready planning package; [`Contract`](./phases/phase-7-whole-system-closure.md) + [`MAP7`](./tasks/phase-7-execution-map.md); execution blocked on Phase 6 accepted |
 
 Phase 0/1/2/3/4 均已由独立 Acceptance Agent 在 exact detached candidate 上通过 canonical Gate，且各 result
 commit 已合入 `main`（`results/phase-*.md` 记录 accepted candidate、merge commit/tree 与独立 Acceptance
 receipt）。Phase 5 从 exact Phase 4 main baseline 进入 recovery epoch r1；旧中断 lanes 全部只是 audit/salvage
 source，不构成已完成成果。Phase 5 的 architecture/decision 文档不设独立 review/PASS 开码门禁；最终只对 frozen
-implementation candidate 做 semantic review 与 Acceptance。Phase 6–7 仍未授权 production implementation。
+implementation candidate 做 semantic review 与 Acceptance。Phase 6/7 均未授权提前启动 implementation；Phase 7
+只接受 Phase 6 final exact receipt、capability/limit ledger 和 cumulative workload API，不接受中间 candidate。
 
 **稳定 dev env 运营注意**：本机常驻 dev 进程（router/runtime/各 client）仍在运行旧二进制，`main` 上
 Phase 1–3 的 admission 收紧只影响**下一次重建并重启**。真实业务服务（aihub/registry/agine 的 string/stream/

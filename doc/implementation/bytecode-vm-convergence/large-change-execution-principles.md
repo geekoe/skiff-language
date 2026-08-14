@@ -192,7 +192,9 @@ Execution Map 初始版本只记录当前 ready frontier：
 - `started_at`、`status_after`、expected output 和 join condition；
 - conditional Clarification/Design/Review 的触发条件；
 - first-code、first-proof-attempt 和 integration checkpoint；
-- candidate/evidence epoch。
+- candidate/evidence epoch；
+- freeze/review round、同 HEAD reviewer scope、唯一 blocker ledger 与 targeted/full recheck 规则；
+- 本 Phase worktree/branch/stash/archive ref/evidence 的 exact cleanup inventory 和 terminal state。
 
 任一 Agent 完成、失败、中断或交付 commit 后，主 Agent立即核对 handoff、更新 Map、重算 ready frontier，派发
 所有无依赖/写冲突的任务。不等待整齐 wave。
@@ -298,8 +300,9 @@ Phase Contract
 VCP 是 proof obligation，test/script 是 proof carrier，Gate 是 decision function。Gate 必须 fail closed：缺
 manifest、零场景、skip、命令未运行、dirty/stale candidate、tampered raw evidence 或跨 epoch 拼接都是 FAIL。
 
-一个 accepted Phase 的 VCP/negative/Gate assets 成为后续 Phase regression。修改 fixture、assertion、observability
-或 checker 会使相关 evidence epoch 失效。
+一个 accepted Phase 的 VCP/negative/Gate assets 成为后续 Phase regression。后续 Gate 在同一新候选上重跑其
+canonical workload specs；accepted receipt 只提供 provenance，不能代替执行，也不能用 nested Gate 形成另一个
+candidate/evidence epoch。修改 fixture、assertion、observability 或 checker 会使相关 evidence epoch 失效。
 
 ## 8. Integration、freeze 和 acceptance
 
@@ -307,11 +310,19 @@ manifest、零场景、skip、命令未运行、dirty/stale candidate、tampered
 并重算 ready frontier。Integrator 不通过 type equivalence、字符串特判、registry bypass、默认 owner、第二执行
 路径或无 owner sidecar 解决冲突；出现这类需求退回原 owner或触发 Design task。
 
-完成两条线的 Phase Contract obligations 后冻结 exact commit/tree。冻结后任何 production/test/fixture/Gate/
-event/schema 变化都开始新 evidence epoch。
+完成两条线的 Phase Contract obligations 后冻结 exact commit/tree。冻结后同时派发多个全新只读 reviewer，在
+同一 HEAD 上按 semantic implementation、proof/Gate/evidence 等互补 scope 并行审查；每个 reviewer 即使发现 blocker
+也完成 scope。Integrator 等全部返回后才合并去重为唯一 blocker ledger，不能进入“发现一个、修一个、再发现
+一个”的串行循环。
 
-Acceptance Agent 在 detached clean worktree 执行完整 Gate，核对 raw evidence 而非只看 exit code。`FAIL` 返回
-对应 Development/Proof owner；修复后重新 freeze，旧 verdict 不可复用。
+blocker ledger 非空时先 unfreeze，把每项退回原 Development/Proof owner并列 exact write set；无冲突项一次并行
+修完整批次。合流后跑 affected focused checks + full preflight，重新 freeze 新 commit/tree/evidence epoch。只有当
+变更严格落在 sealed fix scope 且影响可界定时才做并行 targeted recheck；authority、support surface、ownership、
+write-set 或 Gate/checker 非预期变化要求完整 fresh reviewer cohort。
+
+blocker 清零后，另一名未参与写入和本轮 review 的 Acceptance Agent 才在新 detached clean worktree执行完整
+Gate，核对 raw evidence 而非只看 exit code。`FAIL` 返回对应 owner并重新 freeze；旧 verdict/receipt 不可复用。
+冻结后任何 production/test/fixture/Gate/event/schema 变化都开始新 evidence epoch。
 
 ## 9. Worktree 规则
 
@@ -333,6 +344,11 @@ main checkout                       始终停在 main
 - Phase accepted 并合流后清理 Phase worktree；
 - 未提交状态不能作为下游隐式输入。
 
+Acceptance PASS 后先记录 evidence path/manifest hash并安全合入、push main，再按 Execution Map 的 exact inventory
+清理。clean+merged worktree/branch 可按 exact name移除；dirty/unmerged状态先提交、取得明确丢弃授权，或把对象固定
+到可解析且已记录的 archive ref，不能默认强删。stash必须逐条了结；禁止 wildcard 删除和触碰其它 Phase 的
+worktree、stash、branch或archive ref。Terminal Phase 清理完成后停止，不自动创建下一 Phase。
+
 ## 10. 最小角色分离
 
 角色数量由当前 write owner 和 proof owner 决定。稳定存在的职责只有：
@@ -340,11 +356,13 @@ main checkout                       始终停在 main
 - **Main/Integrator**：Map、调度、监控、机械合流、freeze；
 - **Development owner(s)**：production implementation；
 - **Proof owner(s)**：canonical tests/VCP/Gate/evidence；
-- **Acceptance owner**：frozen candidate 的独立 verdict。
+- **Reviewer cohort**：同一 frozen HEAD 的互补只读实现/证明审查；
+- **Acceptance owner**：review blocker清零后，另一 detached worktree上的独立 verdict。
 
 Clarification 与 Design 都是 conditional task；专项 Reviewer只用于实现候选。强制分离只有：
 
-- Frozen candidate semantic reviewer / Acceptance owner 不参与 candidate production/test/Gate 写入；
+- Frozen candidate reviewer cohort / Acceptance owner 不参与 candidate production/test/Gate 写入，Acceptance owner
+  也不复用本轮 reviewer；
 - Proof owner 不修改 production code 来制造 PASS；
 - 多个 owner 不共同拥有同一状态机；
 - integrator 不在 merge 时补语义。
@@ -387,6 +405,7 @@ production-route proof。
 - Proof Line 最后才启动，真实 composition 到最终验收才首次执行；
 - VCP 只存在于文档，没有 fixture、canonical command 或 raw evidence；
 - Gate 依赖人工拼接命令或允许 skip/zero/stale evidence；
+- reviewer 每报一个问题就立即串行修复，没有先完成同 HEAD cohort并封存 blocker batch；
 - 开发者自己定义场景、写实现、生成 PASS 并作最终验收；
 - replacement 未接受就删除旧行为 oracle。
 
