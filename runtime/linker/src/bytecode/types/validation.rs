@@ -377,6 +377,11 @@ impl TypeLinker<'_> {
         ty: &TypeRefIr,
         location: BytecodeLinkLocation,
     ) -> Result<LinkedValueTransferPlan, BytecodeLinkError> {
+        if is_canonical_sleep_duration_type(ty) {
+            return Ok(LinkedValueTransferPlan::SnapshotShare {
+                drop: LinkedValueDropPlan::Trivial,
+            });
+        }
         match ty {
             TypeRefIr::Record { .. } | TypeRefIr::Union { .. } | TypeRefIr::Nullable { .. } => {
                 Ok(LinkedValueTransferPlan::SnapshotShare {
@@ -394,11 +399,6 @@ impl TypeLinker<'_> {
                         )
                     })?;
                 link_native_lifecycle(resolution.lifecycle, location)
-            }
-            TypeRefIr::PackageSymbol { symbol } if symbol.symbol_path == "std.time.Duration" => {
-                Ok(LinkedValueTransferPlan::SnapshotShare {
-                    drop: LinkedValueDropPlan::Trivial,
-                })
             }
             TypeRefIr::PackageSymbol { symbol } => {
                 let package_id = match &symbol.package {

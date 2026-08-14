@@ -26,6 +26,7 @@ use skiff_runtime_bytecode_verifier::VerifiedResumeKind;
 use skiff_runtime_linked_bytecode::{
     HostEffectAdapterIndex, InstructionIndex, LinkedBytecodeCandidate, LinkedContainerLayoutKind,
     LinkedFunction, LinkedInstructionTarget, LinkedPackageBytecodeProvenance, LinkedSlotState,
+    LinkedValueDropPlan, LinkedValueTransferPlan,
 };
 use skiff_runtime_loader::{
     DeploymentBytecodeLoader, FilesystemDeploymentBytecodeContentResolver, HydratedBytecodePackage,
@@ -115,6 +116,13 @@ fn production_sleep_image_exposes_only_the_indexed_typed_executor_target() {
     assert_eq!(
         target.executor_identity(),
         HostEffectExecutorIdentity::Sleep
+    );
+    assert_eq!(
+        target.signature().parameter_plans(),
+        [LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::Trivial,
+        }],
+        "the exact registry-owned Duration parameter must remain an immediate-safe trivial snapshot",
     );
     assert!(
         image
