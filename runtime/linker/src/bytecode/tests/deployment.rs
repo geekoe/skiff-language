@@ -1216,10 +1216,11 @@ fn linked_emit_stream_shape_rejects_missing_out_of_range_nominal_and_plan_drift(
     .unwrap();
     assert!(matches!(
         LinkedBytecodeCandidate::try_from_parts(wrong_plan),
-        Err(LinkedBytecodeCandidateError::EmitStreamItemShapeMismatch {
-            resume_site: 0,
-            detail: "shape plan differs from the site stack-top item plan",
+        Err(LinkedBytecodeCandidateError::TypePlanMismatch {
+            type_index,
+            ..
         })
+            if type_index == original.nominal_type()
     ));
 }
 
