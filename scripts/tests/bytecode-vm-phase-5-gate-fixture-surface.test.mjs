@@ -17,16 +17,18 @@ test('positive fixture is the rawHttp serverStream carrier consumed by Rust proo
   assert.match(source, /request\.body\.toUtf8String\(\)/);
   assert.equal((source.match(/std\.http\.request\(/g) ?? []).length, 1);
   assert.equal((source.match(/std\.http\.stream\(/g) ?? []).length, 4);
+  assert.match(source, /function headers\(\) -> Array<std\.http\.HttpHeader> \{\s+return \[\]\s+\}/);
+  assert.doesNotMatch(source, /Array\.empty\s*</);
   assert.match(source, /for chunk in left\.body/);
   assert.match(source, /for chunk in right\.body/);
   const dropLeftOffset = source.indexOf('function dropLeft(');
   assert.notEqual(dropLeftOffset, -1);
   const runSource = source.slice(0, dropLeftOffset);
   const dropLeftSource = source.slice(dropLeftOffset);
-  assert.match(runSource, /emit\(\{ tag: "start", status: 207, headers: headers\(\) \}\)/);
+  assert.match(runSource, /emit\(\{ tag: "start", status: 207, headers: \[\] \}\)/);
   assert.equal((runSource.match(/emit\(\{ tag: "chunk", value:/g) ?? []).length, 6);
   assert.equal((runSource.match(/emit\(\{ tag: "end" \}\)/g) ?? []).length, 1);
-  assert.match(dropLeftSource, /emit\(\{ tag: "start", status: 208, headers: headers\(\) \}\)/);
+  assert.match(dropLeftSource, /emit\(\{ tag: "start", status: 208, headers: \[\] \}\)/);
   assert.equal((dropLeftSource.match(/emit\(\{ tag: "chunk", value:/g) ?? []).length, 2);
   assert.equal((dropLeftSource.match(/emit\(\{ tag: "end" \}\)/g) ?? []).length, 1);
   assert.doesNotMatch(source, /std\.http\.stream(?:Start|Chunk|End)\(/);
@@ -40,6 +42,8 @@ test('negative fixture set pins SSE, same-context Date.now, and illegal Stream p
     readFile(fixture('illegal-stream-placement'), 'utf8'),
   ]);
   assert.match(sse, /std\.http\.sse\(/);
+  assert.match(sse, /headers: \[\],/);
+  assert.doesNotMatch(sse, /Array\.empty\s*</);
   assert.match(date, /Date\.now\(\)/);
   assert.match(placement, /function leak\(\) -> Stream<string>/);
 });

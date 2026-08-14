@@ -4,7 +4,7 @@ function run(seed: number) -> number {
   std.http.sse(std.http.HttpClientRequest {
     method: "GET",
     url: "http://phase5.test/unsupported-sse",
-    headers: Array.empty<std.http.HttpHeader>(),
+    headers: [],
     body: null,
     timeoutMs: 5000,
   })

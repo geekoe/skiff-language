@@ -14,6 +14,7 @@ use skiff_runtime_linked_bytecode::{
 use super::fixture::{BuildOutcome, FixtureSpec, PublishedFixture};
 
 const VCP_PATH: &str = "/phase-5/vcp";
+const DROP_PATH: &str = "/phase-5/drop-left";
 
 pub fn published_positive(prefix: &str) -> PublishedFixture {
     match FixtureSpec::positive().build(prefix) {
@@ -31,6 +32,49 @@ fn phase_5_stage_sentinel_admission_to_emission() {
     let package = fixture.package_artifact();
     let deployment = fixture.deployment_artifact();
     let function = gateway_artifact_function(&package, &deployment, bytecode.view(), VCP_PATH);
+    let drop_left_function =
+        gateway_artifact_function(&package, &deployment, bytecode.view(), DROP_PATH);
+
+    for (handler, emitted) in [("run", function), ("dropLeft", drop_left_function)] {
+        assert_eq!(
+            emitted
+                .instructions
+                .iter()
+                .filter(|instruction| instruction.descriptor.kind == Opcode::NewArrayBuilder)
+                .count(),
+            1,
+            "{handler} response.start headers use the typed empty-array builder"
+        );
+        assert_eq!(
+            emitted
+                .instructions
+                .iter()
+                .filter(|instruction| instruction.descriptor.kind == Opcode::FreezeArray)
+                .count(),
+            1,
+            "{handler} response.start headers freeze the typed empty array"
+        );
+    }
+    assert_eq!(
+        bytecode
+            .view()
+            .functions()
+            .iter()
+            .flat_map(|function| function.relocations.iter())
+            .filter(|relocation| {
+                matches!(
+                    relocation,
+                    BytecodeRelocation::IntrinsicRef { intrinsic }
+                        if matches!(
+                            &intrinsic.target,
+                            skiff_artifact_model::BytecodeIntrinsicRef::Static { .. }
+                        )
+                )
+            })
+            .count(),
+        0,
+        "the Phase 5 carrier must not regain Array.empty through a static intrinsic relocation"
+    );
 
     let host_bindings = function
         .instructions
