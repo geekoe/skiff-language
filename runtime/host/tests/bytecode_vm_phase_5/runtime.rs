@@ -23,7 +23,7 @@ const IO_TIMEOUT: Duration = Duration::from_secs(5);
 /// never constructs the scheduler's mandatory HTTP port, resource table,
 /// executor, handle, or frame; RuntimeHost owns that composition and the
 /// canonical WebSocket request is the only ingress.
-pub async fn verify_to_scheduler() {
+pub async fn image_to_scheduler() {
     exercise_scheduler_path("s5-scheduler", "phase-5-s5", false).await;
 }
 

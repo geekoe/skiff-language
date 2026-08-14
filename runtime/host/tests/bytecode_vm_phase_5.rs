@@ -59,8 +59,8 @@ fn phase_5_stage_sentinel_source_to_admission() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn phase_5_stage_sentinel_verify_to_scheduler() {
-    runtime::verify_to_scheduler().await;
+async fn phase_5_stage_sentinel_image_to_scheduler() {
+    runtime::image_to_scheduler().await;
 }
 
 #[tokio::test(flavor = "current_thread")]
