@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_model::{contract_for_opcode, OperandRole, TypeRefIr, ValueSource};
+use skiff_artifact_model::{contract_for_opcode, Opcode, OperandRole, TypeRefIr, ValueSource};
 use skiff_runtime_linked_bytecode::{
-    ConstantIndex, LinkedInstruction, LinkedInstructionTarget, LinkedStackValue,
+    ConstantIndex, LinkedInstruction, LinkedInstructionTarget, LinkedResumeSite, LinkedStackValue,
+    TypeIndex,
 };
 
 use crate::bytecode::{BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation};
@@ -101,22 +102,7 @@ pub(super) fn source_values(
                     "interface receiver requires a local interface table".to_string(),
                 )
             })?;
-            let concrete = context
-                .type_linker
-                .linked_type_ref(ty)
-                .cloned()
-                .ok_or_else(|| {
-                    obligation_error(
-                        location.clone(),
-                        "interface receiver type is absent".to_string(),
-                    )
-                })?;
-            Ok(vec![LinkedStackValue::new(
-                ty,
-                context
-                    .type_linker
-                    .plan_for_concrete_type(&concrete, location)?,
-            )])
+            Ok(vec![value_with_linked_plan(context, ty, location)?])
         }
         ValueSource::InterfaceCarrier { interface } => {
             let table = interface_table(context, instruction, interface, location.clone())?;
@@ -130,22 +116,7 @@ pub(super) fn source_values(
                 context.substitutions,
                 location.clone(),
             )?;
-            let concrete = context
-                .type_linker
-                .linked_type_ref(ty)
-                .cloned()
-                .ok_or_else(|| {
-                    obligation_error(
-                        location.clone(),
-                        "interface carrier type is absent".to_string(),
-                    )
-                })?;
-            Ok(vec![LinkedStackValue::new(
-                ty,
-                context
-                    .type_linker
-                    .plan_for_concrete_type(&concrete, location)?,
-            )])
+            Ok(vec![value_with_linked_plan(context, ty, location)?])
         }
         ValueSource::CallbackCaptures { layout } => {
             let index = pool_index(instruction, layout, location.clone())?;
@@ -225,22 +196,7 @@ pub(super) fn source_values(
                     context.substitutions,
                     location.clone(),
                 )?;
-                let concrete = context
-                    .type_linker
-                    .linked_type_ref(ty)
-                    .cloned()
-                    .ok_or_else(|| {
-                        obligation_error(
-                            location.clone(),
-                            "callback closure type is absent".to_string(),
-                        )
-                    })?;
-                return Ok(vec![LinkedStackValue::new(
-                    ty,
-                    context
-                        .type_linker
-                        .plan_for_concrete_type(&concrete, location)?,
-                )]);
+                return Ok(vec![value_with_linked_plan(context, ty, location)?]);
             }
             Err(obligation_error(
                 location,
@@ -337,22 +293,11 @@ pub(super) fn source_values(
                         key_type,
                         ..
                     } => {
-                        let concrete = context
-                            .type_linker
-                            .linked_type_ref(*key_type)
-                            .cloned()
-                            .ok_or_else(|| {
-                                obligation_error(
-                                    location.clone(),
-                                    "map selector type is absent".to_string(),
-                                )
-                            })?;
-                        values.push(LinkedStackValue::new(
+                        values.push(value_with_linked_plan(
+                            context,
                             *key_type,
-                            context
-                                .type_linker
-                                .plan_for_concrete_type(&concrete, location.clone())?,
-                        ));
+                            location.clone(),
+                        )?);
                     }
                     skiff_runtime_linked_bytecode::LinkedWritablePathSegment::DenseField {
                         ..
@@ -373,22 +318,11 @@ pub(super) fn source_values(
             let entry = context.type_linker.writable_path(row).ok_or_else(|| {
                 obligation_error(location.clone(), "writable path row is absent".to_string())
             })?;
-            let concrete = context
-                .type_linker
-                .linked_type_ref(entry.leaf_type())
-                .cloned()
-                .ok_or_else(|| {
-                    obligation_error(
-                        location.clone(),
-                        "writable path leaf type is absent".to_string(),
-                    )
-                })?;
-            Ok(vec![LinkedStackValue::new(
+            Ok(vec![value_with_linked_plan(
+                context,
                 entry.leaf_type(),
-                context
-                    .type_linker
-                    .plan_for_concrete_type(&concrete, location)?,
-            )])
+                location,
+            )?])
         }
         ValueSource::RepresentationPayload { ty } => {
             let type_index = pool_index(instruction, ty, location.clone())?;
@@ -422,12 +356,7 @@ pub(super) fn source_values(
                 context.substitutions,
                 location.clone(),
             )?;
-            Ok(vec![LinkedStackValue::new(
-                payload_ty,
-                context
-                    .type_linker
-                    .plan_for_concrete_type(&payload, location)?,
-            )])
+            Ok(vec![value_with_linked_plan(context, payload_ty, location)?])
         }
         ValueSource::RepresentationValue { ty } => {
             let type_index = pool_index(instruction, ty, location.clone())?;
@@ -438,40 +367,17 @@ pub(super) fn source_values(
                 context.substitutions,
                 location.clone(),
             )?;
-            let concrete = context
-                .type_linker
-                .linked_type_ref(linked_ty)
-                .cloned()
-                .ok_or_else(|| {
-                    obligation_error(
-                        location.clone(),
-                        "representation type is absent".to_string(),
-                    )
-                })?;
-            Ok(vec![LinkedStackValue::new(
-                linked_ty,
-                context
-                    .type_linker
-                    .plan_for_concrete_type(&concrete, location)?,
-            )])
+            Ok(vec![value_with_linked_plan(context, linked_ty, location)?])
         }
         ValueSource::ArrayBuilder { element_type } => {
             container_builder(context, instruction, element_type, "Array", 0, location)
         }
-        ValueSource::ArrayValue | ValueSource::MapValue => Ok(vec![LinkedStackValue::new(
-            context.frame.slot_types().first().copied().ok_or_else(|| {
-                obligation_error(
-                    location.clone(),
-                    "container input requires a typed stack value".to_string(),
-                )
-            })?,
-            context.frame.slot_plans().first().cloned().ok_or_else(|| {
-                obligation_error(
-                    location.clone(),
-                    "container input plan is absent".to_string(),
-                )
-            })?,
-        )]),
+        ValueSource::ArrayValue | ValueSource::MapValue => {
+            Err(BytecodeLinkError::ImplementationUnavailable {
+                obligation: BytecodeLinkObligation::ControlFlowAndStackMap,
+                location,
+            })
+        }
         ValueSource::ArrayFromBuilder { builder_input } => {
             container_from_builder(context, inputs, builder_input, "Array", location)
         }
@@ -530,10 +436,7 @@ pub(super) fn source_values(
                 context.substitutions,
                 location.clone(),
             )?;
-            Ok(vec![LinkedStackValue::new(
-                ty,
-                context.type_linker.plan_for_concrete_type(&map, location)?,
-            )])
+            Ok(vec![value_with_linked_plan(context, ty, location)?])
         }
         ValueSource::MapFromBuilder { builder_input } => {
             container_from_builder(context, inputs, builder_input, "Map", location)
@@ -553,30 +456,8 @@ pub(super) fn source_values(
         ValueSource::MapElementFromSlot { slot } => {
             container_element_from_slot(context, instruction, slot, false, location)
         }
-        ValueSource::StreamItem { endpoint_slot } => {
-            let slot = operand_word(instruction, endpoint_slot, location.clone())? as usize;
-            let endpoint = context
-                .frame
-                .slot_types()
-                .get(slot)
-                .copied()
-                .ok_or_else(|| {
-                    obligation_error(
-                        location.clone(),
-                        format!("stream endpoint slot {slot} is absent"),
-                    )
-                })?;
-            stream_item_from_endpoint(context, endpoint, location)
-        }
-        ValueSource::FunctionStreamItem => {
-            let stream = context.frame.stream_result_type_ref().ok_or_else(|| {
-                obligation_error(
-                    location.clone(),
-                    "stream producer has no stream result type".to_string(),
-                )
-            })?;
-            stream_item_from_endpoint(context, stream, location)
-        }
+        ValueSource::StreamItem { .. } => stream_next_item(context, instruction, location),
+        ValueSource::FunctionStreamItem => function_stream_item(context, instruction, location),
         ValueSource::ExceptionPayload { type_ref } => {
             let type_index = pool_index(instruction, type_ref, location.clone())?;
             let ty = context.type_linker.intern_pool_type(
@@ -586,22 +467,7 @@ pub(super) fn source_values(
                 context.substitutions,
                 location.clone(),
             )?;
-            let concrete = context
-                .type_linker
-                .linked_type_ref(ty)
-                .cloned()
-                .ok_or_else(|| {
-                    obligation_error(
-                        location.clone(),
-                        "exception payload type is absent".to_string(),
-                    )
-                })?;
-            Ok(vec![LinkedStackValue::new(
-                ty,
-                context
-                    .type_linker
-                    .plan_for_concrete_type(&concrete, location)?,
-            )])
+            Ok(vec![value_with_linked_plan(context, ty, location)?])
         }
         ValueSource::ExceptionEnvelope { source_slot } => {
             let slot = operand_word(instruction, source_slot, location.clone())? as usize;
@@ -1029,12 +895,7 @@ fn container_builder(
         context.substitutions,
         location.clone(),
     )?;
-    Ok(vec![LinkedStackValue::new(
-        ty,
-        context
-            .type_linker
-            .plan_for_concrete_type(&builtin, location)?,
-    )])
+    Ok(vec![value_with_linked_plan(context, ty, location)?])
 }
 
 fn container_from_builder(
@@ -1054,22 +915,7 @@ fn container_from_builder(
                 "container builder input is absent".to_string(),
             )
         })?;
-    let concrete = context
-        .type_linker
-        .linked_type_ref(builder.ty())
-        .cloned()
-        .ok_or_else(|| {
-            obligation_error(
-                location.clone(),
-                "container builder type is absent".to_string(),
-            )
-        })?;
-    Ok(vec![LinkedStackValue::new(
-        builder.ty(),
-        context
-            .type_linker
-            .plan_for_concrete_type(&concrete, location)?,
-    )])
+    Ok(vec![builder])
 }
 
 fn container_element(
@@ -1142,50 +988,143 @@ fn container_element_from_slot(
     )])
 }
 
-fn stream_item_from_endpoint(
-    context: &mut StackMapContext<'_, '_>,
-    endpoint: skiff_runtime_linked_bytecode::TypeIndex,
+fn stream_next_item(
+    context: &StackMapContext<'_, '_>,
+    instruction: &LinkedInstruction,
     location: BytecodeLinkLocation,
 ) -> Result<Vec<LinkedStackValue>, BytecodeLinkError> {
-    let concrete = context
+    let site = exact_resume_site(context, instruction, Opcode::StreamNext, location.clone())?;
+    let ([ty], [plan]) = (site.result_types(), site.result_plans()) else {
+        return Err(obligation_error(
+            location,
+            "StreamNext resume site must carry exactly one result type and plan".to_string(),
+        ));
+    };
+    Ok(vec![LinkedStackValue::new(*ty, plan.clone())])
+}
+
+fn function_stream_item(
+    context: &StackMapContext<'_, '_>,
+    instruction: &LinkedInstruction,
+    location: BytecodeLinkLocation,
+) -> Result<Vec<LinkedStackValue>, BytecodeLinkError> {
+    let site = exact_resume_site(context, instruction, Opcode::EmitStream, location.clone())?;
+    let shape_index = site.emit_stream_item_shape().ok_or_else(|| {
+        obligation_error(
+            location.clone(),
+            "EmitStream resume site has no exact item shape".to_string(),
+        )
+    })?;
+    let shape = context
         .type_linker
-        .linked_type_ref(endpoint)
-        .cloned()
+        .shape(shape_index)
+        .filter(|shape| shape.index() == shape_index)
+        .ok_or_else(|| {
+            obligation_error(
+                location,
+                format!("EmitStream item shape {} is absent", shape_index.get()),
+            )
+        })?;
+    Ok(vec![LinkedStackValue::new(
+        shape.nominal_type(),
+        shape.plan().clone(),
+    )])
+}
+
+fn exact_resume_site<'a>(
+    context: &'a StackMapContext<'_, '_>,
+    instruction: &LinkedInstruction,
+    expected_opcode: Opcode,
+    location: BytecodeLinkLocation,
+) -> Result<&'a LinkedResumeSite, BytecodeLinkError> {
+    if instruction.opcode() != expected_opcode {
+        return Err(obligation_error(
+            location,
+            format!(
+                "{} value authority cannot be used by opcode {}",
+                expected_opcode.name(),
+                instruction.opcode().name()
+            ),
+        ));
+    }
+    let ordinal = contract_for_opcode(expected_opcode)
+        .operand_position(OperandRole::ResumeRef)
+        .and_then(|ordinal| u32::try_from(ordinal).ok())
         .ok_or_else(|| {
             obligation_error(
                 location.clone(),
-                "stream endpoint type is absent".to_string(),
+                format!("{} has no resume operand", expected_opcode.name()),
             )
         })?;
-    let TypeRefIr::Builtin { name, args } = &concrete else {
+    let resume_index = instruction
+        .resolved_operands()
+        .iter()
+        .find(|resolved| resolved.operand_ordinal() == ordinal)
+        .and_then(|resolved| match resolved.target() {
+            LinkedInstructionTarget::ResumeSite(index) => Some(index),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                format!(
+                    "{} has no exact resolved resume site",
+                    expected_opcode.name()
+                ),
+            )
+        })?;
+    let site = context
+        .type_linker
+        .resume_site(resume_index)
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                format!("resolved resume site {} is absent", resume_index.get()),
+            )
+        })?;
+    let function = context
+        .type_linker
+        .function_index(context.source.specialization)
+        .ok_or_else(|| BytecodeLinkError::ImplementationUnavailable {
+            obligation: BytecodeLinkObligation::ControlFlowAndStackMap,
+            location: location.clone(),
+        })?;
+    if site.function() != function {
         return Err(obligation_error(
             location.clone(),
-            "stream endpoint is not a builtin".to_string(),
-        ));
-    };
-    if name != "Stream" {
-        return Err(obligation_error(
-            location.clone(),
-            "stream endpoint is not Stream".to_string(),
+            format!(
+                "resume site {} belongs to function {}, expected {}",
+                resume_index.get(),
+                site.function().get(),
+                function.get()
+            ),
         ));
     }
-    let [item] = args.as_slice() else {
+    let instruction_index = context
+        .source
+        .function
+        .header_pcs
+        .binary_search(&instruction.artifact_pc())
+        .map_err(|_| {
+            obligation_error(
+                location.clone(),
+                format!(
+                    "instruction pc {} is absent from its function headers",
+                    instruction.artifact_pc()
+                ),
+            )
+        })?;
+    if site.site().get() as usize != instruction_index {
         return Err(obligation_error(
-            location.clone(),
-            "Stream endpoint must have one item type".to_string(),
+            location,
+            format!(
+                "resume site {} belongs to instruction {}, expected {instruction_index}",
+                resume_index.get(),
+                site.site().get()
+            ),
         ));
-    };
-    let ty = context.type_linker.intern_concrete_type(
-        context.source.package,
-        context.source.specialization,
-        item,
-        context.substitutions,
-        location.clone(),
-    )?;
-    Ok(vec![LinkedStackValue::new(
-        ty,
-        context.type_linker.plan_for_concrete_type(item, location)?,
-    )])
+    }
+    Ok(site)
 }
 
 fn representation_payload(
@@ -1299,8 +1238,19 @@ fn scalar_value(
         context.substitutions,
         location.clone(),
     )?;
-    let plan = context
-        .type_linker
-        .plan_for_concrete_type(&TypeRefIr::builtin(name), location)?;
-    Ok(vec![LinkedStackValue::new(ty, plan)])
+    Ok(vec![value_with_linked_plan(context, ty, location)?])
+}
+
+fn value_with_linked_plan(
+    context: &StackMapContext<'_, '_>,
+    ty: TypeIndex,
+    location: BytecodeLinkLocation,
+) -> Result<LinkedStackValue, BytecodeLinkError> {
+    let plan = context.type_linker.linked_type_plan(ty).cloned().ok_or(
+        BytecodeLinkError::ImplementationUnavailable {
+            obligation: BytecodeLinkObligation::ControlFlowAndStackMap,
+            location,
+        },
+    )?;
+    Ok(LinkedStackValue::new(ty, plan))
 }
