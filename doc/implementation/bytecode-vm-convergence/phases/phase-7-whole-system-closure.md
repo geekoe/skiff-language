@@ -4,7 +4,9 @@
 >
 > Planning baseline: `3f2e5ae3c6e62cba3e513c3941d31e5bd9cef4a0`
 >
-> Execution baseline: the exact clean Phase 6 accepted commit/tree and its canonical handoff, recorded by the activation amendment
+> Phase 6 planning handoff reviewed: `ee4805ef4ab785f288b734f845fae5912d33c29e` / `274c83d72ad2b93b449ef048d28dd05e1d0d4199`
+>
+> Execution baseline: the exact clean Phase 6 accepted closeout commit/tree and its canonical handoff, recorded by the activation amendment
 >
 > Semantic Closure: one exact candidate proves the accepted bytecode-only support surface, executable bounds and whole-system composition
 
@@ -15,18 +17,22 @@ boundary or execution semantics. Execution write sets and rolling state are cont
 
 ## 1. Activation contract and Phase 6 handoff
 
-Phase 7 implementation starts only after Phase 6 is independently accepted, merged and clean. Read-only preparation may
+Phase 7 implementation starts only after Phase 6 is independently accepted, merged and clean. The Phase 6 planning handoff
+named above fixes the API vocabulary but is not an accepted implementation baseline. Read-only preparation may
 happen earlier, but this planning commit is never an execution baseline or PASS input. Before dispatch, the activation
-amendment must resolve the following fields from the accepted Phase 6 result and candidate, not from this document:
+amendment must resolve the following fields from the accepted Phase 6 result, frozen implementation candidate and final
+closeout baseline, not from this document:
 
 | Required handoff | Phase 7 use | Missing or ambiguous disposition |
 | --- | --- | --- |
-| exact accepted commit and tree; result and Gate receipt identity | parent of the Phase 7 integration line and first evidence epoch | activation blocked |
-| one cumulative `phase6WorkloadSpecs(root)` export and its selector/contract tests | the sole inherited workload input; it must transitively cover Phase 1–6 without duplicate execution | Phase 6 proof/Gate owner reopens |
-| capability ledger with every service/task/interface/callback/Actor/DB/recoverable surface `accepted` or `disabled` | chooses positive versus fail-closed rows in the matrix below | Phase 6 owner reopens; Phase 7 cannot choose |
-| owner/root/resource/pending/buffer inventory contract | terminal balance checks for every applicable row | owning Phase reopens |
-| memory ledger and executable limit; GC/compaction `accepted`, `disabled` or `planned` with root receipt | mandatory memory row and conditional GC row | Phase 6 memory owner reopens if the mandatory limit is absent |
-| bounded-work ledger mapping each accepted Phase 1–6 loop/queue/buffer to a canonical limit workload | mandatory deterministic hot-path aggregation | the first missing feature owner reopens; Phase 7 cannot invent the bound |
+| frozen implementation candidate commit/tree and Phase 6 Acceptance evidence | provenance for the inherited implementation and prior verdict only; Phase 7 never substitutes the receipt for a rerun | activation blocked |
+| accepted result/status-only closeout commit/tree, final `main` identity and clean status; proof that the frozen candidate is its ancestor and candidate→baseline changes only the Phase 6 result/status allowlist | parent of the Phase 7 integration line and first evidence epoch | activation blocked; any production/test/fixture/Gate/schema delta reopens Phase 6 |
+| selector `bytecode-vm-phase-6-gate`; one cumulative `phase6WorkloadSpecs(root)` export; candidate-owned `phase6WorkloadProvenance(root)`; Gate spec/manifest/evidence schemas and contract tests | the sole inherited workload input; exact `sourcePhase/sourceId`, immediate `parentPhase/parentId` and ordered `originChain[{phase,id}]` cover Phase 1–6 without duplicate execution or ID-prefix inference | Phase 6 proof/Gate owner reopens |
+| capability ledger with exact keys `service`, `task-function`, `task-Actor`, `interface-local`, `interface-remote`, `callback-same-runtime`, `callback-cross-runtime`, `Actor`, `DB`, `recoverable`, `request-GC` and `Actor-compaction` | chooses positive versus fail-closed rows in the matrix below; no variant is collapsed into a generic state and no enabled-but-unaccepted surface is allowed | Phase 6 owner reopens; Phase 7 cannot choose |
+| accepted-lane pending/root/resource/child-heap/boundary-staging/memory-peak-release/Actor-arena observations | terminal balance checks for every applicable row | owning Phase reopens |
+| memory ledger and executable limit; `request-GC`/`Actor-compaction` state and disabled/deferred disposition or accepted root receipt | mandatory memory row and conditional GC row | Phase 6 memory owner reopens if the mandatory limit is absent |
+| `phase6BoundedWorkLedger(root)` with exact keys `p1-dispatch-fuel`, `p2-p3-cleanup-unwind`, `p4-wake-claim`, `p5-stream-pump-buffer` and `p6-materialization-root-walk`, each mapped to canonical transitive spec IDs | mandatory deterministic hot-path aggregation | the first missing feature owner reopens; Phase 7 cannot invent the bound |
+| exact inherited workload inventory whose original `expectedTests` state is missing, `null` or an integer | candidate-specific input to the explicit P7G adapter/catalog; the original state remains auditable beside the effective count | Phase 6 proof/Gate owner reopens if the inventory is absent |
 | compiler/artifact/image identity sources, observation schema identity and actual schema/ISA constants | dynamically bound Gate evidence | activation blocked; no literal is copied from an older plan |
 | canonical compiler/runtime/router entry points used by accepted workloads | production-shaped composition, not a test-only seam | affected original owner reopens |
 
@@ -73,7 +79,7 @@ are decided before execution as follows:
 | --- | --- | --- |
 | raw fuel and frame/dispatch bound | mandatory inherited Gate; rerun the accepted Phase 1 exact-boundary, overflow and deep-call workloads | Phase 1 budget/VM owner |
 | unified per-request memory limit | mandatory inherited Gate across every accepted Phase 6 owner/heap lane; Phase 7 only composes and observes | Phase 6 memory/owner kernel |
-| request GC/compaction | conditional: rerun only if the Phase 6 ledger says `accepted`; otherwise prove it remains disabled/planned and do not enable it | Phase 6 memory/root owner |
+| request GC/compaction | conditional: rerun only if the Phase 6 ledger says `accepted`; otherwise prove the declared disabled/deferred disposition remains unreachable and do not enable it | Phase 6 memory/root owner |
 | hot-path bounded work | mandatory deterministic work-bound aggregation: VM dispatch/fuel (P1), lifecycle cleanup (P2/3), wake/claim (P4), bounded stream pump/buffer (P5), materialization/root walk (P6) | the first Phase whose canonical workload exposes the unbounded transition |
 | wall-clock performance, throughput and optimization | optional non-blocking observation only when an accepted owner already defines a stable threshold; not a Phase 7 release benchmark | original subsystem owner in a separately authorized task |
 | observability | reuse the candidate observation schema; P7O may add one read-only, non-decision-changing port after a concrete proof gap | original fact owner plus P7O observation owner |
@@ -103,12 +109,15 @@ scenario and control specs. It does not import each cumulative Phase list separa
 reuse their PASS receipts. Earlier receipts establish provenance; every canonical workload executes again against the same
 Phase 7 candidate and evidence epoch.
 
-The composer must preserve command, args, cwd, environment identity, test format, declared `expectedTests`, semantic lanes and
-original Phase provenance. It rejects duplicate IDs/executions, an empty owner group, missing provenance, a test-formatted
+The composer must preserve command, args, cwd, environment identity, test format, the original `expectedTests`
+missing/`null`/integer state, semantic lanes and
+the exact `phase6WorkloadProvenance(root)` record. It rejects duplicate IDs/executions, an empty source-Phase group, a
+non-bijective or non-monotonic origin chain, missing provenance, a test-formatted
 spec without a positive exact test count, and an inherited `cargo test` spec without effective `--no-fail-fast`. An explicit
 Phase 7 adapter catalog may add a missing historical `expectedTests` or normalize an inherited `cargo test` argument, but it
-must be a reviewed `(spec id -> exact value/change)` table covered by contract tests; it cannot invent a default or mutate
-`cargo build`, `cargo fmt` or `cargo clippy` arguments.
+must be a reviewed `(spec id -> original state, effective value/change)` table covered by contract tests and bound into every
+affected receipt. A non-test spec records `testFormat = null` and no effective count. The catalog cannot invent a default,
+erase the original state or mutate `cargo build`, `cargo fmt` or `cargo clippy` arguments.
 
 Inherited stage sentinels remain the producer-to-consumer proofs. Phase 7 does not duplicate them under new names or
 hand-build artifacts, linked facts, images, entries, fibers, owner tokens, response frames or execution results.
@@ -125,7 +134,7 @@ handoff, records that choice and rejects an unrecognized/omitted state.
 | C03 HTTP unary | P1 and P5 / P7P | real HTTP client → Router gateway/dispatcher → Runtime session → request/VM → final response | exact service/version route, deterministic status/headers/body, one terminal, balanced owners | raw client response, Router/runtime route identity, terminal and inventory receipt |
 | C04 HTTP server-stream | P5 / P7P | real HTTP client → Router WS→HTTP writer → Runtime host stream → provider | headers precede ordered bounded chunks and one end; cancel/disconnect/error releases handle, buffer and pending owner | chunk timeline, backpressure/cancel companion, resource/buffer/pending zero receipt |
 | C05 service child | P6 / P7P | compiled caller → exact provider build → flat child trampoline → caller response | ledger-selected; accepted means distinct owner/heap success + ordinary throw + actual Pending; disabled means unique boundary rejects | Phase 6 service spec receipts plus whole-system response and owner/root chain |
-| C06 task and durable task | P6 / P7P | canonical task ingress → scheduler/host → completion or restart seam | ledger-selected; accepted task preserves exact build, payload/materialization and terminal; durable retry/restart subcases run only when recoverable is also accepted, otherwise that ingress fails closed | task receipts, build/payload identity, conditional restart/terminal evidence and disabled negative |
+| C06 function task and Actor task | P6 / P7P | canonical `task-function` or `task-Actor` ingress → scheduler/host/TaskStore and, for Actor task, exact Actor activation/lease seam → completion or restart | the two capabilities are selected independently; accepted paths preserve exact target/build, recoverable payload/materialization, lease/fence and one terminal across late/duplicate/retry cases; restart subcases require accepted `recoverable`, while disabled variants fail closed; DB commit and TaskStore submission are never claimed atomic | per-capability task receipts, build/payload/lease/fence identity, conditional restart/terminal evidence and disabled negatives |
 | C07 interface dispatch | P6 / P7P | compiled Local/Remote interface call → exact table/target/carrier → result/error | ledger-selected; accepted Local/Remote variants run only those stated in ledger, with exact method/materialization facts; all other variants reject | dispatch identity, return/error receipt, disabled-carrier negative |
 | C08 callback | P6 / P7P | provider callback request → same-Runtime callback owner → caller resume/cancel | ledger-selected; accepted callback preserves lifetime/owner and terminal once; cross-Runtime remains disabled unless explicitly accepted | callback owner/resume receipt, cancel/late negative, disabled-route evidence |
 | C09 Actor | P6 / P7P | exact Actor id/build → Router/runtime Actor arena and lease/fence path → result/Pending/destroy | ledger-selected; accepted matrix covers exact build coexistence, lease/fence/session ownership, Pending and stale/late/destroy outcomes; otherwise fail closed | Actor route/build/lease/fence receipts and arena/root/resource terminal inventory |
@@ -133,11 +142,11 @@ handoff, records that choice and rejects an unrecognized/omitted state.
 | C11 cancel/deadline/error mapping | P3–P6 / P7P | throw/VmFailure, due deadline, client/session disconnect and losing completion through real request path | one winner and one external mapping; late/duplicate losers cannot publish; unwind/partial values/pending/resources clean exactly once | outcome identity, HTTP/error result, race timeline and terminal inventory |
 | C12 lifecycle and resource inventory | P2–P6 / P7P | aggregate/exception/Pending/HTTP/stream/cross-owner terminals | copy/move/drop/unwind/materialization balances every owner/root/resource/buffer/heap counter; no double release or orphan | before/after inventory, owner-specific cleanup sequence and failure receipts |
 | C13 fuel/frame bound | P1 / P7G | request-owned execution budget → VM dispatch/local-call loop | limit N permits N attempts and rejects N+1; overflow/deep call bounded; terminal and settlement exact | inherited raw-fuel/deep-call receipts with exact test counts |
-| C14 memory and conditional GC | P6 / P7P | accepted per-request memory ledger under aggregate, Pending, stream and cross-owner pressure | hard memory limit covers heaps, frames, sidecars, pending owners, resources, host buffers and accepted child/Actor owners; failure balances all owners; if GC accepted, compaction only at legal quiescence with complete roots; otherwise no GC route | ledger charge/limit/peak/terminal receipt, pressure companion and accepted-GC root receipt or disabled/planned proof |
+| C14 memory and conditional GC | P6 / P7P | accepted per-request memory ledger under aggregate, Pending, stream and cross-owner pressure | hard memory limit covers heaps, frames, sidecars, pending owners, resources, host buffers and accepted child/Actor owners; failure balances all owners; if GC accepted, compaction only at legal quiescence with complete roots; otherwise no GC route | ledger charge/limit/peak/terminal receipt, pressure companion and accepted-GC root receipt or disabled/deferred proof |
 | C15 deterministic hot-path bounds | P1–P6 / P7G | dispatch, lifecycle cleanup, unwind, wake/claim, stream pump and materialization/root-walk workloads | every accepted loop/queue/buffer has an inherited finite counter/limit; an exceeded bound terminates or rejects without leak | owner workload receipts and summarized limit inventory; wall-clock timing is informational only |
-| C16 capability and observation ledger | P6 / P7G | candidate handoff + actual manifest observations | every capability has exactly one accepted/disabled state consistent with rows C03–C10; observation schema identity is candidate-derived and contains no verdict authority | ledger/schema digests, row-to-capability reconciliation, unexpected/missing-state negative |
+| C16 capability and observation ledger | P6 / P7G | candidate handoff + actual manifest observations | all 12 exact capability keys have one declared state consistent with rows C03–C10; ordinary capabilities are `accepted` or `disabled`, `request-GC`/`Actor-compaction` additionally retain their explicit disabled/deferred disposition, and no enabled-but-unaccepted surface exists; observation schema identity is candidate-derived and contains no verdict authority | ledger/schema digests, exact-key row reconciliation, unexpected/missing/state-drift negative |
 | C17 hard-cut and damaged-artifact closure | P5 / P7G | workspace/production graph plus real admission boundary | zero verifier crate/API/seal/selector/alias/dual path; damaged artifacts cause typed construction/safe request failure, never panic/OOB/partial image/leak | reverse search, dependency/selector graph checks and behavioral damaged-artifact receipts |
-| C18 Gate/evidence controls | P7G | Phase 7 runner/checker self-test fixture | early ordinary red does not truncate later reachable commands; missing/unexpected/zero/skip/stale/tampered/reordered/cross-epoch evidence fails | runner sequence receipts and independent checker negatives |
+| C18 Gate/evidence controls | P7G | Phase 7 runner/checker self-test fixture | early ordinary red does not truncate later reachable commands; missing/unexpected/zero/skip/stale/tampered/reordered/cross-epoch evidence, active-lease contention plus unsafe stale-lease recovery, and path escape/symlink/directory swap each fail | runner sequence receipts, lease/evidence-root safety probes and independent checker negatives |
 
 The activation amendment maps every row to exact candidate spec IDs and fails if any accepted capability has no positive row
 or any disabled capability has no fail-closed row. A row may cite multiple command receipts, but no command may silently
@@ -147,11 +156,21 @@ stand in for a different semantic surface.
 
 ### 5.1 Candidate and command execution
 
-The Gate accepts caller-supplied `--candidate`, `--tree` and an absolute canonical absent `--output-dir` outside the candidate
-repository. It never selects its own HEAD or reuses an evidence directory. Preflight records HEAD/tree/status before any
-workload; an identity mismatch or dirty tree is a safety stop and produces a complete FAIL assessment with all unexecuted
-specs marked missing. Ordinary command failure is not a safety stop: the outer runner continues through every later reachable
-spec, postflight/closure/fresh probes and evidence finalization. Signal interruption is recorded and missing work remains FAIL.
+The direct runner command is
+`node scripts/run-bytecode-vm-phase-7-gate.mjs --candidate <40hex> --tree <40hex> --output-dir <absent-absolute-dir>`.
+The public selector command is
+`node scripts/verify.mjs --only bytecode-vm-phase-7-gate --jobs 1` with the three equivalent pinned environment fields
+defined by MAP7. The Gate accepts caller-supplied `--candidate`, `--tree` and an absolute canonical absent `--output-dir`
+outside and not an ancestor of the candidate repository. Repo/output roots and the output parent must resolve canonically
+without a symlink; the evidence root is created exclusively and its directory identity is frozen. The Gate rejects ambient string `GIT_*` variables
+except `GIT_PAGER` and snapshots a sorted normalized string environment for every spec. It never selects its
+own HEAD or reuses an evidence directory.
+
+Candidate evidence is four HEAD/tree/status triplets: preflight, postflight, closure and fresh, with status including
+untracked files. An identity mismatch or dirty preflight is a safety stop and produces a complete FAIL assessment with all
+unexecuted specs marked missing. Ordinary command failure is not a safety stop: the outer runner continues through every
+later reachable spec, the remaining candidate probes and evidence finalization. Signal interruption is recorded and missing
+work remains FAIL.
 
 Before the workload epoch, the owner verifies there is no Cargo/rustc process or active earlier-Phase lease and pauses every
 other Cargo-capable agent until release. All Cargo commands then execute serially while the runner holds exactly one
@@ -165,9 +184,10 @@ process/log rather than restarting it.
 ### 5.2 Spec and receipt schema
 
 Every spec has a unique ID/execution, owner Phase, coverage rows, semantic lanes, exact command/args/cwd, normalized allowlisted
-environment identity, `testFormat`, and for test-formatted commands a positive `expectedTests`. It also declares dependencies
+environment identity, `testFormat`, original `expectedTests` state and, for test-formatted commands, a positive effective
+`expectedTests`. It also declares dependencies
 and produced/required binary or artifact identities where applicable. Candidate probes are specs too. The receipt schema
-records those fields plus sequence number, start/finish time, normalized PASS/FAIL/BLOCKED/INTERRUPTED outcome,
+records both count fields plus sequence number, start/finish time, normalized PASS/FAIL/BLOCKED/INTERRUPTED outcome,
 `blockedBy`, stdout/stderr path/bytes/SHA-256 and prior-receipt digest. A failed producer creates a BLOCKED receipt for its
 dependent consumer rather than allowing that consumer to use a stale shared-target binary; unrelated later commands run.
 
@@ -265,7 +285,8 @@ exact production composition seam is a blocker and reopens the exact owner above
 
 Acceptance requires all of the following on one frozen candidate:
 
-- [ ] Phase 6 exact accepted handoff is recorded and every capability has an accepted/disabled disposition.
+- [ ] Phase 6 frozen candidate and accepted closeout baseline are recorded separately; every exact capability key has its
+      accepted/disabled disposition and request-GC/Actor-compaction retain any disabled/deferred disposition.
 - [ ] the cumulative spec catalog has complete Phase 1–6 provenance, unique execution and exact positive test counts.
 - [ ] C01–C18 execute with no zero/skip/stale/missing/tampered evidence; ledger-selected rows match the handoff.
 - [ ] compiler-only source authority, atomic image construction and verifier hard-cut reverse search are green.

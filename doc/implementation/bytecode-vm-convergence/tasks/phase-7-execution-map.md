@@ -6,12 +6,15 @@
 >
 > Planning baseline commit/tree: `3f2e5ae3c6e62cba3e513c3941d31e5bd9cef4a0` / `705f681c7097353bfc2633f0b67854efc17d370b`
 >
-> Execution baseline / upstream receipt: set from the exact Phase 6 final Acceptance result before dispatch
+> Phase 6 planning handoff reviewed: `ee4805ef4ab785f288b734f845fae5912d33c29e` / `274c83d72ad2b93b449ef048d28dd05e1d0d4199`
+>
+> Execution baseline / upstream receipt: set from the exact Phase 6 accepted closeout baseline and final Acceptance result before dispatch
 >
 > Planning branch/worktree: `codex/bcvm-p7-plan-r1` / `/Users/geek/workspace/skiff-bcvm-p7-plan-r1`
 
-This planning branch is portable coordination input, not a Phase 7 candidate. The activation owner creates a clean integration
-worktree from the exact accepted Phase 6 commit, applies this planning package, records the resulting commit/tree and fills
+This planning branch is portable coordination input, not a Phase 7 candidate. The reviewed Phase 6 planning handoff fixes API
+vocabulary but is not an implementation baseline. The activation owner creates a clean integration worktree from the exact
+accepted Phase 6 closeout commit, applies this planning package, records the resulting commit/tree and fills
 only the explicitly deferred fields below. No production, proof or Gate lane starts from the planning baseline.
 
 ## 1. Activation amendment
@@ -20,19 +23,25 @@ The activation commit must contain one immutable handoff table before any write 
 
 | Field | Required exact value |
 | --- | --- |
-| Phase 6 result / Acceptance | result path and receipt/manifest digest |
-| upstream baseline | accepted commit, tree and clean-status evidence |
+| Phase 6 frozen candidate / Acceptance | implementation candidate commit/tree, result path and receipt/manifest digest; provenance only, not reusable PASS evidence |
+| upstream closeout baseline | result/status-only closeout commit/tree, final `main` identity and clean-status evidence; frozen candidate ancestor proof and candidate→baseline diff proof limited to the Phase 6 result/status allowlist |
 | active integration | branch, worktree, activated plan commit and tree |
-| cumulative workload API | exact module/export for `phase6WorkloadSpecs(root)`, spec-catalog digest and selector contract test |
-| capabilities | accepted/disabled state and receipt for service, task, interface variants, callback variants, Actor, DB and recoverable |
-| inventories and bounds | owner/root/resource/pending/buffer/heap/memory fields, hard limit, GC disposition/root receipt, observation schema and bounded-work ledger with owner spec IDs |
+| cumulative workload API | selector `bytecode-vm-phase-6-gate`; exact module/exports for `phase6WorkloadSpecs(root)` and `phase6WorkloadProvenance(root)`; Gate spec/manifest/evidence schemas, spec/provenance catalog digest and selector contract test |
+| capabilities | state and receipt for service, task-function, task-Actor, interface-local, interface-remote, callback-same-runtime, callback-cross-runtime, Actor, DB, recoverable, request-GC and Actor-compaction |
+| observations and memory | per-accepted-lane pending/root/resource/child-heap/boundary-staging/memory-peak-release/Actor-arena fields; hard memory limit; request-GC/Actor-compaction state and disabled/deferred disposition or accepted root receipt; observation schema |
+| bounded work | `phase6BoundedWorkLedger(root)` with exact keys `p1-dispatch-fuel`, `p2-p3-cleanup-unwind`, `p4-wake-claim`, `p5-stream-pump-buffer`, `p6-materialization-root-walk` and nonempty canonical spec IDs |
+| inherited expected-count residuals | exact per-spec inventory of original `expectedTests` state as missing, `null` or integer; no inferred default |
 | identities | candidate source for schema, ISA, compiler/runtime/router binaries, artifact, deployment and image identities |
 | write owners | actual agent, branch, worktree, started-at, status-after and exact write set for every activated lane |
 | evidence epoch | `P7-E0`, caller-selected output-root parent and exact cleanup inventory baseline |
 
-The activation checker fails on a missing field, a capability state other than `accepted`/`disabled`, a mandatory memory
-limit without an executable Phase 6 workload, a bounded-work entry without an owner workload, or a cumulative export without
-Phase 1–6 provenance. It also inventories
+The activation checker fails on a missing field; a non-GC capability state other than `accepted`/`disabled`; an enabled but
+unaccepted surface; `request-GC`/`Actor-compaction` without an explicit accepted state or disabled/deferred disposition; a
+mandatory memory limit without an executable Phase 6 workload; a missing/empty/unknown bounded-work key or owner workload;
+an inherited missing/null expected-count entry absent from the exact residual inventory; a non-ancestor candidate or
+candidate→closeout delta outside the Phase 6 result/status allowlist; or a cumulative export without a bijective explicit
+Phase 1–6 provenance record. Prefix
+parsing is not provenance. It also inventories
 Phase 7-scoped worktrees, branches, stashes and archive refs by exact name/object; the inventory is the closeout checklist,
 not permission to touch similarly named state from another Phase.
 
@@ -40,7 +49,7 @@ not permission to touch similarly named state from another Phase.
 
 ```text
 BLOCKED_ON_PHASE6
-  -> ACTIVATED(exact Phase6 commit/tree + handoff)
+  -> ACTIVATED(exact Phase6 accepted closeout commit/tree + candidate provenance + handoff)
   -> P7P proof carriers || P7G Gate/evidence
   -> [P7O observation only after a concrete proof gap]
   -> rolling join and matrix preflight
@@ -99,22 +108,26 @@ Phase 7 spec ids | production entry | expected result | receipt/evidence fields
 P7G implements the following invariants:
 
 1. `phase7WorkloadSpecs(root)` is `phase7ScenarioSpecs(root)` plus exactly one imported
-   `phase6WorkloadSpecs(root)` list. The imported list is re-IDed once, retains original Phase/lane provenance and is never
-   expanded by child Gate execution.
+   `phase6WorkloadSpecs(root)` list. The imported list is re-IDed once, retains
+   `phase6WorkloadProvenance(root)` (`sourcePhase/sourceId`, immediate parent and ordered origin chain) plus semantic lanes and
+   is never expanded by child Gate execution. P7G never derives provenance by parsing nested ID prefixes.
 2. The catalog asserts unique IDs and exact executions, at least one spec for each Phase 1–6, complete C01–C18 coverage and
    exactly one positive or disabled companion for every ledger capability.
-3. Historical specs without positive `expectedTests` are covered by an explicit Phase 7 adapter table; no wildcard/default
-   count is allowed. Intentional test additions update the exact count and start a new evidence epoch.
+3. Every historical spec without positive `expectedTests` has an explicit Phase 7 adapter row binding spec ID and original
+   missing/`null`/integer state. A test-formatted row adds a positive effective count; a non-test row records
+   `testFormat = null` and no effective count. Receipts retain both applicable fields; no wildcard/default count or erasure
+   of the inherited state is allowed. Intentional test additions update the exact count and start a new evidence epoch.
 4. Only inherited `cargo test` specs may receive an idempotent mechanical `--no-fail-fast` normalization. `cargo build`,
    `cargo fmt`, `cargo clippy` and non-Cargo commands are unchanged. Contract tests enumerate every normalized ID/effective
    argv and reject duplicate flags.
 5. Specs declare `dependsOn` and optional produced/required artifact identities. A failed producer yields a deterministic
    `BLOCKED` receipt for its dependent consumer instead of running against a stale shared-target binary; independent later
-   specs and final candidate probes still execute. Whole-system commands may instead be self-contained producer/consumer
-   specs.
+   specs and final candidate probes still execute. The catalog rejects unknown, self or cyclic dependencies. Whole-system
+   commands may instead be self-contained producer/consumer specs.
 6. Dynamic schema/ISA/artifact/image/binary/observation/ledger identities are obtained from the candidate path. No script or
    fixture pins an earlier numeric/string identity.
-7. `bytecode-vm-phase-7-gate` is one public leaf selector, absent from the default `verify` expansion. Its sole task is
+7. `bytecode-vm-phase-7-gate` is one public leaf selector, absent from the default `verify` expansion. The canonical selector
+   invocation is `node scripts/verify.mjs --only bytecode-vm-phase-7-gate --jobs 1`; its sole task is
    `{id: bytecode-vm-phase-7:gate, kind: implementation:runtime, command: node,
    args: [scripts/run-bytecode-vm-phase-7-gate.mjs], exclusive: true, slots: 1}`. Selector/leaf/builder symmetry and nonempty
    expansion are contract-tested.
@@ -165,8 +178,10 @@ commands/<sequence>-<id>.stderr.log
 observations/<row>-<identity>.json
 ```
 
-Each receipt binds spec identity, dependency/artifact inputs, normalized environment, exact count, outcome, stream hashes and
-the previous exact receipt digest. `manifest.json` records the ordered receipt hash chain, sorted allowed-path closure of all
+Each receipt binds spec identity, dependency/artifact inputs, normalized environment, the original missing/`null`/integer
+count state and, for a test-formatted spec, its positive effective count, plus outcome, stream hashes and the previous exact
+receipt digest. `manifest.json` records
+the ordered receipt hash chain, sorted allowed-path closure of all
 non-manifest evidence files, dynamic production identities, candidate probes, row/ledger coverage, counts and failures. The
 checker rejects unexpected regular files and independently re-derives all fields. The CLI prints the final manifest SHA-256
 as the external bundle anchor; no signature is claimed because there is no deployed signing authority.
@@ -196,7 +211,8 @@ P7G first supplies a self-contained fake-capture runner fixture with at least:
 2. a later independent PASS command and final fresh-status probe;
 3. a dependent command that becomes `BLOCKED`, proving stale producer output is not consumed;
 4. missing, unexpected, zero-test, skip/todo/ignored, stale candidate, reordered receipt, stream tamper, receipt-chain
-   tamper, environment drift and cross-epoch cases, each independently FAIL;
+   tamper, environment drift, active-lease contention, unsafe stale-lease removal, path escape, symlink/directory identity swap
+   and cross-epoch cases, each independently FAIL;
 5. an all-green control proving the checker itself can pass.
 
 Because Phase 7 is closure-only, this controlled red replaces a deliberately broken real baseline. If P7O or an original
