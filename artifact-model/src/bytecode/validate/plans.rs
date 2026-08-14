@@ -68,20 +68,41 @@ pub(super) fn validate_privileged_shape_declaration(
     pools: &BytecodePools,
 ) -> Result<(), StructuralValidationError> {
     let Some(identity) = shape.privileged_affine_composite else {
+        if !matches!(
+            shape.plan,
+            ValueTransferPlan::SnapshotShare {
+                drop: ValueDropPlan::SnapshotRelease
+            }
+        ) {
+            return Err(header_error(format!(
+                "image.pools.shapes[{shape_index}] ordinary shape requires an explicit SnapshotShare/SnapshotRelease root plan"
+            )));
+        }
         if shape.fields.iter().any(|field| {
-            matches!(
+            !matches!(
                 field.plan,
-                ValueTransferPlan::AffineResource { .. }
-                    | ValueTransferPlan::ExplicitCloneLease { .. }
+                ValueTransferPlan::SnapshotShare {
+                    drop: ValueDropPlan::Trivial | ValueDropPlan::SnapshotRelease
+                }
             )
         }) {
             return Err(header_error(format!(
-                "image.pools.shapes[{shape_index}] ordinary shape may not contain an affine resource field"
+                "image.pools.shapes[{shape_index}] ordinary shape fields require explicit non-recursive SnapshotShare plans"
             )));
         }
         return Ok(());
     };
     let location = format!("image.pools.shapes[{shape_index}]");
+    if !matches!(
+        shape.plan,
+        ValueTransferPlan::MoveOnly {
+            drop: ValueDropPlan::RecursiveShape { shape_ref }
+        } if shape_ref as usize == shape_index
+    ) {
+        return Err(header_error(format!(
+            "{location}.plan must be an explicit self-recursive MoveOnly plan"
+        )));
+    }
     let schema = crate::native_value_lifecycle_registry()
         .privileged_affine_composite(identity)
         .ok_or_else(|| {

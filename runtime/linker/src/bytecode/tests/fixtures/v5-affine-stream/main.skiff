@@ -1,7 +1,8 @@
 import std
 
-function consume(input: std.http.HttpClientRequest) -> void {
+function consume(input: std.http.HttpClientRequest) -> bool {
   final response = std.http.stream(input)
   for chunk in response.body {
   }
+  return true
 }

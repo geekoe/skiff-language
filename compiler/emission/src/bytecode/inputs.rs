@@ -12,6 +12,7 @@ pub(crate) struct ValidatedEmissionInputs<'a> {
     pub(crate) constants: BTreeMap<String, ValidatedConstant<'a>>,
     pub(crate) functions: BTreeMap<String, &'a MirFunction>,
     pub(crate) function_plans: BTreeMap<String, &'a FunctionValueTransferPlans>,
+    pub(crate) transfer_plans: &'a BytecodeValueTransferPlans,
     pub(crate) units: BTreeMap<String, &'a MirUnit>,
 }
 
@@ -158,6 +159,7 @@ impl<'a> ValidatedEmissionInputs<'a> {
             constants,
             functions,
             function_plans,
+            transfer_plans,
             units: units_by_module,
         })
     }

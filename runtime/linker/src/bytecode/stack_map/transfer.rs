@@ -281,25 +281,6 @@ fn linked_value_matches(
         || union_branch_value_matches(expected, actual, context)
 }
 
-/// Narrow anonymous-union branch assignability: the destination type is an
-/// anonymous union and the source runtime leaf type is one of its branches
-/// (nested anonymous unions recurse). Lifecycle plans are not consulted here;
-/// callers require exact plan equality. Every other type inequality remains
-/// a mismatch.
-fn union_branch_assignable(
-    expected: &LinkedStackValue,
-    actual: &LinkedStackValue,
-    context: &StackMapContext<'_, '_>,
-) -> bool {
-    let Some(expected_ref) = context.type_linker.linked_type_ref(expected.ty()) else {
-        return false;
-    };
-    let Some(actual_ref) = context.type_linker.linked_type_ref(actual.ty()) else {
-        return false;
-    };
-    union_branch_assignable_refs(expected_ref, actual_ref)
-}
-
 /// The union-branch slice plus exact lifecycle-plan equality.
 fn union_branch_value_matches(
     expected: &LinkedStackValue,
@@ -711,9 +692,13 @@ fn validate_slot_write(
         })?;
     let expected = LinkedStackValue::new(expected_type, expected_plan);
     if !linked_value_matches(&expected, value, context) {
+        let expected_type = context.type_linker.linked_type_ref(expected.ty());
+        let actual_type = context.type_linker.linked_type_ref(value.ty());
         return Err(obligation_error(
             location,
-            format!("slot write type or lifecycle plan differs at slot {slot}"),
+            format!(
+                "slot write type or lifecycle plan differs at slot {slot}: expected {expected:?} ({expected_type:?}), actual {value:?} ({actual_type:?})"
+            ),
         ));
     }
     Ok(expected)

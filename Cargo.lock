@@ -2443,6 +2443,7 @@ dependencies = [
  "skiff-compiler-core",
  "skiff-compiler-lowering",
  "skiff-compiler-projection",
+ "skiff-compiler-source",
  "thiserror 2.0.18",
 ]
 

@@ -43,6 +43,9 @@ fn affine_take_artifact() -> BytecodeArtifact {
         .push(BytecodePoolEntry::ShapeRef {
             shape: ShapeDeclaration {
                 type_ref: handle_type_ref,
+                plan: ValueTransferPlan::MoveOnly {
+                    drop: ValueDropPlan::RecursiveShape { shape_ref },
+                },
                 privileged_affine_composite: Some(
                     crate::PrivilegedAffineCompositeIdentity::HttpClientStreamHandle,
                 ),
@@ -129,7 +132,7 @@ fn take_dense_field_requires_exact_privileged_affine_field() {
 }
 
 #[test]
-fn ordinary_shape_cannot_embed_an_affine_resource_field() {
+fn ordinary_shape_fields_require_exact_non_recursive_snapshot_plans() {
     let mut artifact = canonical_artifact();
     let BytecodePoolEntry::ShapeRef { shape } = &mut artifact.image.pools.shapes[0] else {
         unreachable!("canonical shape")
@@ -139,5 +142,47 @@ fn ordinary_shape_cannot_embed_an_affine_resource_field() {
     };
     assert!(assert_rejected(&artifact)
         .to_string()
-        .contains("ordinary shape may not contain an affine resource field"));
+        .contains("ordinary shape fields require explicit non-recursive SnapshotShare plans"));
+
+    let mut deferred = canonical_artifact();
+    let BytecodePoolEntry::ShapeRef { shape } = &mut deferred.image.pools.shapes[0] else {
+        unreachable!("canonical shape")
+    };
+    shape.fields[0].plan = ValueTransferPlan::FromType { ty: number_type() };
+    assert!(assert_rejected(&deferred)
+        .to_string()
+        .contains("ordinary shape fields require explicit non-recursive SnapshotShare plans"));
+}
+
+#[test]
+fn shape_roots_require_exact_compiler_owned_lifecycle_plans() {
+    let mut ordinary = canonical_artifact();
+    let BytecodePoolEntry::ShapeRef { shape } = &mut ordinary.image.pools.shapes[0] else {
+        unreachable!("canonical shape")
+    };
+    shape.plan = ValueTransferPlan::FromType {
+        ty: TypeRefIr::Record {
+            fields: BTreeMap::from([("value".to_string(), number_type())]),
+        },
+    };
+    assert!(assert_rejected(&ordinary)
+        .to_string()
+        .contains("ordinary shape requires an explicit SnapshotShare/SnapshotRelease root plan"));
+
+    let mut privileged = affine_take_artifact();
+    let BytecodePoolEntry::ShapeRef { shape } = privileged
+        .image
+        .pools
+        .shapes
+        .last_mut()
+        .expect("privileged shape row")
+    else {
+        unreachable!("shape pool is homogeneous")
+    };
+    shape.plan = ValueTransferPlan::SnapshotShare {
+        drop: ValueDropPlan::SnapshotRelease,
+    };
+    assert!(assert_rejected(&privileged)
+        .to_string()
+        .contains("plan must be an explicit self-recursive MoveOnly plan"));
 }

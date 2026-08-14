@@ -44,8 +44,8 @@ impl LinkedInterfaceInstantiation {
     }
 }
 
-/// Validated textual method ABI leaf. This wrapper is not ABI authority; the
-/// verifier must exact-compare it with hydrated declarations.
+/// Validated textual method ABI leaf. This wrapper is not ABI authority; link
+/// construction retains its exact hydrated declaration owner.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LinkedInterfaceMethodAbiId(Box<str>);
 
@@ -363,14 +363,14 @@ pub enum LinkedInterfaceTableKind {
     Local(LinkedLocalInterfaceTable),
     Remote(LinkedRemoteInterfaceTable),
     /// Canonical method surface for a callback-capability carrier. It remains
-    /// distinct from a plain requirement so the verifier cannot erase the
-    /// carrier provenance while comparing all three dispatch paths.
+    /// distinct from a plain requirement so construction retains carrier
+    /// provenance across all three dispatch paths.
     Callback(LinkedInterfaceRequirementTable),
 }
 
-/// Unverified interface target table. A requirement variant deliberately has
-/// no executable; local, remote and callback carrier rows retain distinct
-/// exact facts.
+/// Interface target table. A requirement variant deliberately has no
+/// executable; local, remote and callback carrier rows retain distinct exact
+/// facts.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LinkedInterfaceTable {
     index: InterfaceTableIndex,

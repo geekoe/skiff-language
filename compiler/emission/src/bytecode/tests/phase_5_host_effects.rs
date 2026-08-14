@@ -263,6 +263,12 @@ function consume(input: std.http.HttpClientRequest) -> void {
         shape.privileged_affine_composite,
         Some(PrivilegedAffineCompositeIdentity::HttpClientStreamHandle)
     );
+    assert_eq!(
+        shape.plan,
+        ValueTransferPlan::MoveOnly {
+            drop: ValueDropPlan::RecursiveShape { shape_ref },
+        }
+    );
     assert_eq!(shape.fields[0].name, "body");
     assert_eq!(
         shape.fields[0].plan,

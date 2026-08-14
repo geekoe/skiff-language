@@ -417,6 +417,9 @@ pub(crate) fn canonical_pools() -> BytecodePools {
         shapes: vec![BytecodePoolEntry::ShapeRef {
             shape: ShapeDeclaration {
                 type_ref: 0,
+                plan: ValueTransferPlan::SnapshotShare {
+                    drop: ValueDropPlan::SnapshotRelease,
+                },
                 privileged_affine_composite: None,
                 fields: vec![ShapeFieldDeclaration {
                     name: "value".to_string(),

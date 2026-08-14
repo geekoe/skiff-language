@@ -288,10 +288,9 @@ fn transfer_program_point(
     Ok(result)
 }
 
-/// The exceptional successor of one program point, mirroring the verifier's
-/// `ControlFlowEdgeKind::Exceptional` contract: an instruction with non-`None`
-/// exception behavior inside an exception region can hand control to the
-/// innermost region's handler with its operand stack truncated to the
+/// The exceptional successor of one program point: an instruction with
+/// non-`None` exception behavior inside an exception region can hand control
+/// to the innermost region's handler with its operand stack truncated to the
 /// handler's declared stack height.
 fn exceptional_successor(
     context: &StackMapContext<'_, '_>,
@@ -330,7 +329,7 @@ fn exceptional_successor(
 }
 
 /// The innermost artifact exception region containing `pc`, in declaration
-/// order (innermost last), exactly as the verifier's region lookup.
+/// order (innermost last).
 fn innermost_exception_region(regions: &[ExceptionRegion], pc: u32) -> Option<&ExceptionRegion> {
     regions
         .iter()
@@ -338,10 +337,10 @@ fn innermost_exception_region(regions: &[ExceptionRegion], pc: u32) -> Option<&E
         .find(|region| region.start_pc <= pc && pc < region.end_pc)
 }
 
-/// The handler entry state produced by one exceptional edge, matching the
-/// verifier's `exception_state`: the throw-site stack truncates to the
-/// handler height, the catch slot turns `Live` with its linked frame type and
-/// plan, and handler entry starts with no active regions or writable loans.
+/// The handler entry state produced by one exceptional edge: the throw-site
+/// stack truncates to the handler height, the catch slot turns `Live` with its
+/// linked frame type and plan, and handler entry starts with no active regions
+/// or writable loans.
 fn exception_handler_state(
     context: &StackMapContext<'_, '_>,
     before: &MachineState,
@@ -360,7 +359,7 @@ fn exception_handler_state(
 /// Pure handler-state transformation: the throw-site operand stack truncates
 /// to the region's handler height and the catch slot becomes `Live` with its
 /// exact linked frame type and plan. Handler entry carries no active regions
-/// or writable loans, matching the verifier's exceptional-edge state.
+/// or writable loans.
 fn handler_state_from(
     before: &MachineState,
     region: &ExceptionRegion,

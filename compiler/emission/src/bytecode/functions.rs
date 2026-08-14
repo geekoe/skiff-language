@@ -448,13 +448,17 @@ impl<'a> FunctionEmitter<'a> {
         let signature = HostEffectSignature {
             parameter_types: vec![qualified_target.clone()],
             parameter_modes: vec![ParamModeIr::Value],
-            parameter_plans: vec![skiff_artifact_model::ValueTransferPlan::FromType {
-                ty: qualified_target.clone(),
-            }],
+            parameter_plans: vec![self.image.exact_type_plan(
+                self.unit.module_path.as_str(),
+                &operation.target.type_ref,
+                &format!("DbOperation parameter plan in `{}`", self.key),
+            )?],
             result_types: vec![qualified_result.clone()],
-            result_plans: vec![skiff_artifact_model::ValueTransferPlan::FromType {
-                ty: qualified_result.clone(),
-            }],
+            result_plans: vec![self.image.exact_type_plan(
+                self.unit.module_path.as_str(),
+                &operation.result_type,
+                &format!("DbOperation result plan in `{}`", self.key),
+            )?],
             effects,
         };
         let reference = HostEffectReference {
@@ -473,9 +477,11 @@ impl<'a> FunctionEmitter<'a> {
                 },
                 operand_roles: vec![DbOperandRole::ObjectFields],
                 result_type: qualified_result.clone(),
-                result_plans: vec![skiff_artifact_model::ValueTransferPlan::FromType {
-                    ty: qualified_result,
-                }],
+                result_plans: vec![self.image.exact_type_plan(
+                    self.unit.module_path.as_str(),
+                    &operation.result_type,
+                    &format!("DbOperation reference result plan in `{}`", self.key),
+                )?],
             })),
         };
         let relocation_index = u32::try_from(self.relocations.len()).map_err(|_| {
@@ -1554,9 +1560,16 @@ impl<'a> FunctionEmitter<'a> {
             .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
         let parameter_plans = parameter_types
             .iter()
-            .cloned()
-            .map(|ty| skiff_artifact_model::ValueTransferPlan::FromType { ty })
-            .collect();
+            .zip(&call.args)
+            .map(|(_, argument)| {
+                let ty = &self.function.expression(*argument)?.ty;
+                self.image.exact_type_plan(
+                    self.unit.module_path.as_str(),
+                    ty,
+                    &format!("host call parameter plan in `{}`", self.key),
+                )
+            })
+            .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
         let result_types = if is_void(&expression.ty) {
             Vec::new()
         } else {
@@ -1567,9 +1580,14 @@ impl<'a> FunctionEmitter<'a> {
         };
         let result_plans = result_types
             .iter()
-            .cloned()
-            .map(|ty| skiff_artifact_model::ValueTransferPlan::FromType { ty })
-            .collect();
+            .map(|_| {
+                self.image.exact_type_plan(
+                    self.unit.module_path.as_str(),
+                    &expression.ty,
+                    &format!("host call result plan in `{}`", self.key),
+                )
+            })
+            .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
         let parameter_count = parameter_types.len();
         Ok(HostEffectSignature {
             parameter_types,
@@ -3180,25 +3198,15 @@ impl<'a> FunctionEmitter<'a> {
         Ok(())
     }
 
-    fn generated_slot_plan(&self, ty: &TypeRefIr) -> skiff_artifact_model::ValueTransferPlan {
-        if is_stream_type(ty) {
-            return skiff_artifact_model::ValueTransferPlan::AffineResource {
-                drop: skiff_artifact_model::ResourceDropPlan::ResourceTableRelease,
-            };
-        }
-        if is_never_type(ty) {
-            return skiff_artifact_model::ValueTransferPlan::SnapshotShare {
-                drop: skiff_artifact_model::ValueDropPlan::Trivial,
-            };
-        }
-        if is_package_symbol_type(ty) {
-            return skiff_artifact_model::ValueTransferPlan::SnapshotShare {
-                drop: skiff_artifact_model::ValueDropPlan::SnapshotRelease,
-            };
-        }
-        skiff_artifact_model::ValueTransferPlan::FromType {
-            ty: super::constants::qualify_local_types(self.unit.module_path.as_str(), ty),
-        }
+    fn generated_slot_plan(
+        &self,
+        ty: &TypeRefIr,
+    ) -> Result<skiff_artifact_model::ValueTransferPlan, BytecodeEmissionError> {
+        self.image.exact_type_plan(
+            self.unit.module_path.as_str(),
+            ty,
+            &format!("generated slot plan in `{}`", self.key),
+        )
     }
 
     fn slot_type(&self, slot: u32) -> Result<&TypeRefIr, BytecodeEmissionError> {
@@ -3561,10 +3569,14 @@ impl<'a> FunctionEmitter<'a> {
             let result_plans = pending
                 .result_ty
                 .iter()
-                .map(|ty| skiff_artifact_model::ValueTransferPlan::FromType {
-                    ty: super::constants::qualify_local_types(self.unit.module_path.as_str(), ty),
+                .map(|ty| {
+                    self.image.exact_type_plan(
+                        self.unit.module_path.as_str(),
+                        ty,
+                        &format!("resume result plan in `{}`", self.key),
+                    )
                 })
-                .collect();
+                .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
             let end_resume_pc = if let Some(end_block) = pending.end_block {
                 let ordinal = usize::try_from(end_block)
                     .map_err(|_| arithmetic(&self.key, "resume end block ordinal"))?;
@@ -3894,24 +3906,33 @@ impl<'a> FunctionEmitter<'a> {
         for (ty, plan) in source_slot_plans {
             slot_plans.push(self.bind_privileged_slot_plan(&ty, &plan)?);
         }
-        for generated in &self.generated_slots {
-            let ty = generated.ty.as_ref().ok_or_else(|| {
-                unsupported(
-                    &self.key,
-                    "generated frame slot type",
-                    &format!("slot `{}` has no exact type", generated.name),
-                )
-            })?;
+        let generated = self
+            .generated_slots
+            .iter()
+            .map(|slot| {
+                Ok((
+                    slot.name.clone(),
+                    slot.ty.clone().ok_or_else(|| {
+                        unsupported(
+                            &self.key,
+                            "generated frame slot type",
+                            &format!("slot `{}` has no exact type", slot.name),
+                        )
+                    })?,
+                ))
+            })
+            .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
+        for (name, ty) in generated {
             slot_type_refs.push(self.image.type_index(
                 self.unit.module_path.as_str(),
-                ty,
+                &ty,
                 &format!(
                     "function `{key}` generated slot `{name}` type",
                     key = self.key,
-                    name = generated.name
                 ),
             )?);
-            slot_plans.push(self.generated_slot_plan(ty));
+            let plan = self.generated_slot_plan(&ty)?;
+            slot_plans.push(self.bind_privileged_slot_plan(&ty, &plan)?);
         }
         let mut parameter_slots = Vec::new();
         for parameter in &self.function.params {
@@ -4443,7 +4464,7 @@ mod tests {
 
     use super::*;
     use crate::bytecode::constants::build_constant_image;
-    use crate::{BytecodeValueTransferPlans, FunctionValueTransferPlans};
+    use crate::bytecode::plans::derive_test_bytecode_value_transfer_plans;
 
     /// The statement form of `throw` emits its payload first; the raise
     /// instruction must still carry exactly one source/synthetic site in the
@@ -4531,17 +4552,9 @@ mod tests {
             constants: Vec::new(),
             functions: vec![function],
         };
-        let plans = BytecodeValueTransferPlans::new(
-            BTreeMap::from([(
-                "main::boom".to_string(),
-                FunctionValueTransferPlans {
-                    slot_plans: Vec::new(),
-                    result_plans: Vec::new(),
-                },
-            )]),
-            BTreeMap::new(),
-        );
         let units = [unit];
+        let plans = derive_test_bytecode_value_transfer_plans(&units)
+            .expect("the source classifier covers the test MIR");
         let bundles = [bundle];
         let inputs = ValidatedEmissionInputs::validate(&units, &bundles, &plans)
             .expect("test inputs validate");
@@ -4727,18 +4740,8 @@ mod tests {
             constants: Vec::new(),
             functions: vec![function],
         };
-        let plans = BytecodeValueTransferPlans::new(
-            BTreeMap::from([(
-                "main::run".to_string(),
-                FunctionValueTransferPlans {
-                    slot_plans: vec![ValueTransferPlan::SnapshotShare {
-                        drop: ValueDropPlan::SnapshotRelease,
-                    }],
-                    result_plans: Vec::new(),
-                },
-            )]),
-            BTreeMap::new(),
-        );
+        let plans = derive_test_bytecode_value_transfer_plans(std::slice::from_ref(&unit))
+            .expect("the source classifier covers the test MIR");
         let artifact =
             crate::bytecode::emitter::emit_bytecode_artifact_unchecked(&[unit], &[bundle], &plans)
                 .expect("tag discriminator emission succeeds");
@@ -4898,16 +4901,8 @@ mod tests {
             constants: Vec::new(),
             functions: vec![function],
         };
-        let plans = BytecodeValueTransferPlans::new(
-            BTreeMap::from([(
-                "main::run".to_string(),
-                FunctionValueTransferPlans {
-                    slot_plans: Vec::new(),
-                    result_plans: Vec::new(),
-                },
-            )]),
-            BTreeMap::new(),
-        );
+        let plans = derive_test_bytecode_value_transfer_plans(std::slice::from_ref(&unit))
+            .expect("the source classifier covers the test MIR");
         let artifact =
             crate::bytecode::emitter::emit_bytecode_artifact_unchecked(&[unit], &[bundle], &plans)
                 .expect("union-typed construct emission succeeds");
@@ -5064,18 +5059,8 @@ mod tests {
             constants: Vec::new(),
             functions: vec![function],
         };
-        let plans = BytecodeValueTransferPlans::new(
-            BTreeMap::from([(
-                "main::run".to_string(),
-                FunctionValueTransferPlans {
-                    slot_plans: vec![ValueTransferPlan::SnapshotShare {
-                        drop: ValueDropPlan::Trivial,
-                    }],
-                    result_plans: Vec::new(),
-                },
-            )]),
-            BTreeMap::new(),
-        );
+        let plans = derive_test_bytecode_value_transfer_plans(std::slice::from_ref(&unit))
+            .expect("the source classifier covers the test MIR");
         let artifact =
             crate::bytecode::emitter::emit_bytecode_artifact_unchecked(&[unit], &[bundle], &plans)
                 .expect("canonical sleep emission succeeds");
@@ -5104,8 +5089,8 @@ mod tests {
         );
         assert_eq!(
             relocation.signature.parameter_plans,
-            vec![ValueTransferPlan::FromType {
-                ty: duration.clone()
+            vec![ValueTransferPlan::SnapshotShare {
+                drop: ValueDropPlan::Trivial,
             }]
         );
         assert!(relocation.signature.result_types.is_empty());

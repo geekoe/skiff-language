@@ -62,7 +62,7 @@ pub mod limits {
 /// defined here so the Phase 1 bytecode module owns its version surface.
 /// The artifact record is still canonical JSON (D8).
 pub const BYTECODE_MAGIC: &str = "skiff-bytecode";
-pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v8";
+pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v9";
 pub const BYTECODE_ISA_VERSION: &str = "skiff-bytecode-isa-v5";
 
 /// Root bytecode artifact record (D11: one image per package).
@@ -723,6 +723,10 @@ pub struct IntrinsicReference {
 pub struct ShapeDeclaration {
     /// Nominal or exact structural type; references the types pool.
     pub type_ref: u32,
+    /// Exact compiler-owned transfer plan for a value carried by this shape.
+    /// A privileged recursive root names this shape's own pool row; ordinary
+    /// shapes must carry a concrete non-recursive plan.
+    pub plan: ValueTransferPlan,
     /// Registry-owned exception to the ordinary snapshot-only record rule.
     /// The identity is absent for every ordinary shape and is never inferred
     /// from the nominal type name or field layout.

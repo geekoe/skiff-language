@@ -3,12 +3,12 @@ use skiff_runtime_loader::HydratedDeploymentBytecode;
 
 use crate::bytecode::{link::DeploymentLinker, BytecodeLinkError, LinkLimits};
 
-/// Links one exact, consumer-only hydrated deployment into an unverified
-/// concrete candidate.
+/// Links one exact, consumer-only hydrated deployment into a concrete
+/// candidate.
 ///
-/// The input is borrowed so the independent verifier and deployment owner can
-/// cross-check the candidate against the exact same opaque hydration. A
-/// candidate is never owner, contract, ABI or structural-validation authority.
+/// The input is borrowed so candidate construction uses the exact same opaque
+/// hydration as the deployment owner. The linker is not source-semantic
+/// authority and does not reconstruct compiler admission.
 ///
 /// The current implementation deliberately recognizes only the exact local,
 /// non-generic closure for which it can construct every candidate fact. Any
@@ -19,12 +19,4 @@ pub(crate) fn link_deployment(
     limits: &LinkLimits,
 ) -> Result<LinkedBytecodeCandidate, BytecodeLinkError> {
     DeploymentLinker::new(deployment, limits).link()
-}
-
-#[cfg(test)]
-pub(super) fn link_deployment_backend_for_test(
-    deployment: &HydratedDeploymentBytecode,
-    limits: &LinkLimits,
-) -> Result<LinkedBytecodeCandidate, BytecodeLinkError> {
-    DeploymentLinker::new(deployment, limits).link_backend_for_test()
 }

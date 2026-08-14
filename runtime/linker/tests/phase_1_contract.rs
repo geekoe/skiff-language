@@ -15,10 +15,7 @@ use skiff_compiler::{
 use skiff_runtime_linked_bytecode::{
     LinkedFunction, LinkedInstruction, LinkedInstructionTarget, TypeIndex,
 };
-use skiff_runtime_linker::{
-    link_deployment_execution_image, BytecodeLinkError, BytecodeLinkLocation,
-    DeploymentExecutionImage, DeploymentExecutionImageError, Phase1LinkedCapability,
-};
+use skiff_runtime_linker::{link_deployment_execution_image, DeploymentExecutionImage};
 use skiff_test_runner::canonical_package::{compile_package_project, CanonicalPackageProjectError};
 
 use support::{
@@ -299,23 +296,21 @@ fn bytecode_content_identity_mismatch_is_owned_by_artifact_admission() {
 }
 
 #[test]
-fn reachable_pending_effect_is_rejected_by_the_link_capability_owner() {
+fn reachable_pending_effect_is_linked_as_an_exact_compiler_owned_fact() {
     let fixture = PublishedService::build("reachable-effect");
-    let (hydrated, package, function_key) = fixture.with_pending_effect("::run");
-    let error = link_deployment_execution_image(hydrated, &production_sized_execution_limits())
-        .expect_err("a reachable host effect must not enter the Phase 1 executable closure");
-    let DeploymentExecutionImageError::Link(error) = error else {
-        panic!("reachable host effect failed at the wrong boundary: {error}");
+    let (hydrated, _package, function_key) = fixture.with_pending_effect("::run");
+    let image = link_deployment_execution_image(hydrated, &production_sized_execution_limits())
+        .expect("linking transports compiler-owned pending-effect facts");
+    let function = linked_function(&image, &function_key);
+    let skiff_artifact_model::CallableEffectSummary::Analyzed { effects } =
+        function.effect().declarative_summary()
+    else {
+        panic!("compiler-owned effect fact remains analyzed")
     };
+    assert!(effects.may_pending);
     assert_eq!(
-        error,
-        BytecodeLinkError::UnsupportedPhase1Capability {
-            capability: Phase1LinkedCapability::PendingEffect(PendingEffectCategory::HostEffect,),
-            location: BytecodeLinkLocation::Function {
-                package: Box::new(package),
-                function_key,
-            },
-        },
+        effects.pending_effect_categories,
+        [PendingEffectCategory::HostEffect]
     );
 }
 

@@ -6,5 +6,5 @@ pub use bytecode::{
     DeploymentExecutionImage, DeploymentExecutionImageError, DeploymentHostEffectTarget,
     ExecutionConstantHeap, ExecutionImageConstructionError, ExecutionResumeKind,
     ExecutionResumeSite, ExecutionResumeSites, ExecutionStatementEvent, ExecutionStatementSchedule,
-    LinkLimits, Phase1LinkedCapability,
+    LinkLimits,
 };

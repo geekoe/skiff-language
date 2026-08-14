@@ -3,7 +3,10 @@ mod tests {
 
     use std::collections::BTreeMap;
 
-    use crate::bytecode::emitter::emit_bytecode_artifact_unchecked as emit_bytecode_artifact;
+    use crate::bytecode::{
+        emitter::emit_bytecode_artifact_unchecked as emit_bytecode_artifact,
+        plans::derive_test_bytecode_value_transfer_plans,
+    };
     use crate::{BytecodeEmissionError, BytecodeValueTransferPlans, FunctionValueTransferPlans};
     use skiff_artifact_identity::validate_bytecode_identity;
     use skiff_artifact_model::{
@@ -78,19 +81,8 @@ mod tests {
     }
 
     fn explicit_constant_plans(units: &[MirUnit]) -> BytecodeValueTransferPlans {
-        let constants = units
-            .iter()
-            .flat_map(|unit| &unit.constants)
-            .map(|constant| {
-                (
-                    constant.symbol.clone(),
-                    ValueTransferPlan::FromType {
-                        ty: constant.ty.clone(),
-                    },
-                )
-            })
-            .collect();
-        BytecodeValueTransferPlans::new(BTreeMap::new(), constants)
+        derive_test_bytecode_value_transfer_plans(units)
+            .expect("the source classifier covers the constant-only test MIR")
     }
 
     fn empty_function(file_ir_identity: &str, module_path: &str, declaration: &str) -> MirFunction {
@@ -158,8 +150,8 @@ mod tests {
         assert_eq!(*type_ref, 0);
         assert_eq!(
             plan,
-            &ValueTransferPlan::FromType {
-                ty: TypeRefIr::builtin("number"),
+            &ValueTransferPlan::SnapshotShare {
+                drop: skiff_artifact_model::ValueDropPlan::Trivial,
             }
         );
         assert_eq!(artifact.image.constant_roots["sample.answer"], 0);

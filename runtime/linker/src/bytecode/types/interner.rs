@@ -34,8 +34,8 @@ pub(in crate::bytecode) struct LinkedPoolTables {
 }
 
 /// Deployment-wide interner keyed by exact artifact row and specialization.
-/// The independent verifier can therefore trace every concrete type back to
-/// the validated owner without treating the linked row as authority.
+/// Every concrete type therefore retains its validated artifact owner and
+/// exact specialization provenance.
 pub(in crate::bytecode) struct TypeLinker<'a> {
     deployment: &'a HydratedDeploymentBytecode,
     tracker: LinkLimitTracker<'a>,
@@ -385,10 +385,11 @@ impl<'a> TypeLinker<'a> {
         substitutions: &BTreeMap<String, TypeRefIr>,
         location: BytecodeLinkLocation,
     ) -> Result<ShapeIndex, BytecodeLinkError> {
+        let origin_specialization = (!substitutions.is_empty()).then(|| specialization.clone());
         let origin_key = (
             package.reference().package_build_id.clone(),
             artifact_index,
-            Some(specialization.clone()),
+            origin_specialization.clone(),
         );
         if let Some(index) = self.shape_origins.get(&origin_key) {
             return Ok(*index);
@@ -429,6 +430,13 @@ impl<'a> TypeLinker<'a> {
             substitutions,
             location.clone(),
         )?;
+        let predicted_shape =
+            ShapeIndex::new(u32::try_from(self.shape_entries.len()).map_err(|_| {
+                obligation_error(
+                    location.clone(),
+                    "linked shape table index does not fit u32".to_string(),
+                )
+            })?);
         let mut fields = Vec::with_capacity(shape.fields.len());
         for field in &shape.fields {
             let ty = self.intern_pool_type(
@@ -457,12 +465,45 @@ impl<'a> TypeLinker<'a> {
                     .map_err(|error| obligation_error(location.clone(), error.to_string()))?,
             );
         }
+        let plan = match &shape.plan {
+            skiff_artifact_model::ValueTransferPlan::MoveOnly {
+                drop: skiff_artifact_model::ValueDropPlan::RecursiveShape { shape_ref },
+            } if *shape_ref == artifact_index && shape.privileged_affine_composite.is_some() => {
+                skiff_runtime_linked_bytecode::LinkedValueTransferPlan::MoveOnly {
+                    drop: skiff_runtime_linked_bytecode::LinkedValueDropPlan::RecursiveShape {
+                        shape: predicted_shape,
+                    },
+                }
+            }
+            declared => {
+                let concrete = self.linked_type_ref(nominal_type).cloned().ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        "linked shape nominal type is absent".to_string(),
+                    )
+                })?;
+                self.link_plan_for_type_at(
+                    package,
+                    specialization,
+                    substitutions,
+                    declared,
+                    &concrete,
+                    location.clone(),
+                )?
+            }
+        };
         let raw_index = self.reserve_shape(origin_key, location.clone())?;
         let index = ShapeIndex::new(raw_index);
+        if index != predicted_shape {
+            return Err(obligation_error(
+                location,
+                "linked shape reservation diverged from its exact recursive root".to_string(),
+            ));
+        }
         let origin = LinkedArtifactPoolOrigin::new(
             package.reference().package_build_id.clone(),
             ArtifactShapeIndex::new(artifact_index),
-            Some(specialization.clone()),
+            origin_specialization,
         )
         .map_err(|error| obligation_error(location.clone(), error.to_string()))?;
         self.validate_privileged_shape_authority(
@@ -476,6 +517,7 @@ impl<'a> TypeLinker<'a> {
                 index,
                 origin,
                 nominal_type,
+                plan,
                 shape.privileged_affine_composite,
                 fields.into_boxed_slice(),
             )

@@ -4,8 +4,8 @@ use crate::{CallLoanLayoutIndex, FrameSlotIndex, WritablePathIndex};
 
 /// One concrete caller-owned writable loan bound to a callee parameter
 /// ordinal. The surrounding function supplies the exact caller
-/// specialization; the verifier still proves target modes, path types and
-/// non-overlap.
+/// specialization; link construction checks target modes, path types and
+/// non-overlap against the exact artifact facts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LinkedCallLoanBinding {
     parameter_ordinal: u32,

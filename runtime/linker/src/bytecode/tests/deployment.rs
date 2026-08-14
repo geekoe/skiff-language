@@ -35,10 +35,9 @@ use skiff_runtime_loader::{
 
 use crate::bytecode::{
     execution_image::{build_resume_sites, build_statement_schedule},
-    link_deployment, link_deployment_backend_for_test, link_deployment_execution_image,
-    BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation, CodeEntryLookupError,
-    DeploymentExecutionImage, ExecutionImageConstructionError, ExecutionResumeKind,
-    Phase1LinkedCapability,
+    link_deployment, link_deployment_execution_image, BytecodeLinkError, BytecodeLinkLocation,
+    BytecodeLinkObligation, CodeEntryLookupError, DeploymentExecutionImage,
+    ExecutionImageConstructionError, ExecutionResumeKind,
 };
 
 use super::{
@@ -135,7 +134,7 @@ fn atomic_image_resume_view_rejects_swapped_descriptor_with_typed_construction_e
         "runtime/host/src/host/request_entry/phase_4_proof_support/fixtures/vcp4-sleep",
         "swapped-resume",
     );
-    let candidate = link_deployment_backend_for_test(&hydrated, &super::generous_limits()).unwrap();
+    let candidate = link_deployment(&hydrated, &super::generous_limits()).unwrap();
     let mut parts = clone_candidate_parts(&candidate);
     let original = parts.resume_sites[0].clone();
     let function = &parts.functions[original.function().get() as usize];
@@ -182,7 +181,7 @@ fn atomic_image_resume_view_rejects_swapped_descriptor_with_typed_construction_e
 fn atomic_image_statement_view_rejects_missing_required_fact_with_typed_construction_error() {
     let fixture = Fixture::exact_local();
     let hydrated = fixture.hydrate();
-    let candidate = link_deployment_backend_for_test(&hydrated, &super::generous_limits()).unwrap();
+    let candidate = link_deployment(&hydrated, &super::generous_limits()).unwrap();
     let mut parts = clone_candidate_parts(&candidate);
     let (function_position, instruction) = parts
         .functions
@@ -310,20 +309,31 @@ fn production_stream_image_proves_exact_privileged_shape_and_affine_body_take() 
         .expect("real host call retains its exact typed target index");
     let target = image
         .host_effect_target(target_index)
-        .expect("verified target remains accessible only by its opaque index");
+        .expect("linked target remains accessible only by its opaque index");
     assert_eq!(
         target.executor_identity(),
         HostEffectExecutorIdentity::HttpClientStream
     );
 
-    let shape = image
+    let privileged_shapes = image
         .shapes()
         .iter()
-        .find(|shape| {
+        .filter(|shape| {
             shape.privileged_affine_composite()
                 == Some(PrivilegedAffineCompositeIdentity::HttpClientStreamHandle)
         })
-        .expect("production image transports the exact privileged shape identity");
+        .collect::<Vec<_>>();
+    let [shape] = privileged_shapes.as_slice() else {
+        panic!("one package-global privileged shape must serve every function specialization")
+    };
+    assert_eq!(
+        shape.plan(),
+        &LinkedValueTransferPlan::MoveOnly {
+            drop: LinkedValueDropPlan::RecursiveShape {
+                shape: shape.index(),
+            },
+        }
+    );
     assert_eq!(shape.fields()[0].name(), "body");
     assert!(matches!(
         shape.fields()[0].plan(),
@@ -343,7 +353,7 @@ fn production_stream_image_proves_exact_privileged_shape_and_affine_body_take() 
     let host_resume = image
         .resume_sites()
         .get(host_resume_index)
-        .expect("verified image retains the exact host resume certificate");
+        .expect("atomic image retains the exact host resume facts");
     assert_eq!(host_resume.function(), host_function.index());
     assert_eq!(
         host_resume.site(),
@@ -422,7 +432,7 @@ fn production_stream_image_proves_exact_privileged_shape_and_affine_body_take() 
     let resume = image
         .resume_sites()
         .get(resume_index)
-        .expect("verified image retains the exact StreamNext certificate");
+        .expect("atomic image retains the exact StreamNext facts");
     assert_eq!(resume.function(), function.index());
     assert_eq!(
         resume.site(),
@@ -434,7 +444,7 @@ fn production_stream_image_proves_exact_privileged_shape_and_affine_body_take() 
         ..
     } = resume.kind()
     else {
-        panic!("StreamNext must carry a verified StreamRead certificate")
+        panic!("StreamNext must carry exact StreamRead facts")
     };
     assert_eq!(resume.result_types(), std::slice::from_ref(item_type));
     assert_eq!(resume.end_resume(), Some(*end_resume));
@@ -465,7 +475,7 @@ fn production_entry_links_exact_ordinary_root_local_call_and_return() {
         .packages()
         .get(&fixture.package_reference.package_build_id)
         .unwrap();
-    assert_exact_v8_provenance(provenance, hydrated_package);
+    assert_exact_v9_provenance(provenance, hydrated_package);
     // The loader is the only safe hydrated-deployment constructor, so its
     // mixed-registry negative tests own impossible receipt construction. The
     // linker tests prove that the opaque joined receipt survives unchanged.
@@ -605,35 +615,29 @@ fn production_entry_links_exact_ordinary_root_local_call_and_return() {
 }
 
 #[test]
-fn production_entry_rejects_server_stream_gateway_at_exact_entry() {
+fn production_entry_links_server_stream_gateway_without_rechecking_source_semantics() {
     let fixture = Fixture::gateway_server_stream();
     let hydrated = fixture.hydrate();
-    assert!(matches!(
-        link_deployment(&hydrated, &generous_limits()),
-        Err(BytecodeLinkError::UnsupportedPhase1Capability {
-            capability: Phase1LinkedCapability::Stream,
-            location: BytecodeLinkLocation::GatewayEntry {
-                gateway_entry_key,
-                ..
-            },
-        }) if gateway_entry_key.as_str() == "phase-1"
-    ));
+    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+    assert_eq!(candidate.gateway_entries().len(), 1);
+    assert_eq!(
+        candidate.gateway_entries()[0].gateway_entry_key().as_str(),
+        "phase-1"
+    );
 }
 
 #[test]
-fn production_entry_rejects_guard_or_pre_gateway_at_exact_entry() {
-    for fixture in [Fixture::gateway_guard(), Fixture::gateway_pre()] {
+fn production_entry_links_guard_and_pre_gateway_roles_as_exact_structure() {
+    for (fixture, guard) in [
+        (Fixture::gateway_guard(), true),
+        (Fixture::gateway_pre(), false),
+    ] {
         let hydrated = fixture.hydrate();
-        assert!(matches!(
-            link_deployment(&hydrated, &generous_limits()),
-            Err(BytecodeLinkError::UnsupportedPhase1Capability {
-                capability: Phase1LinkedCapability::HttpGuardOrPre,
-                location: BytecodeLinkLocation::GatewayEntry {
-                    gateway_entry_key,
-                    ..
-                },
-            }) if gateway_entry_key.as_str() == "phase-1"
-        ));
+        let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+        let entry = &candidate.gateway_entries()[0];
+        assert_eq!(entry.gateway_entry_key().as_str(), "phase-1");
+        assert_eq!(entry.guard().is_some(), guard);
+        assert_eq!(entry.pre().is_some(), !guard);
     }
 }
 
@@ -702,16 +706,21 @@ fn production_entry_prunes_unreachable_private_interface_and_callback_authority(
 }
 
 #[test]
-fn production_entry_rejects_interface_requirement_target_at_exact_pc() {
+fn production_entry_links_interface_requirement_target_at_exact_pc() {
     let fixture = Fixture::interface();
     let hydrated = fixture.hydrate();
-    assert!(matches!(
-        link_deployment(&hydrated, &generous_limits()),
-        Err(BytecodeLinkError::UnsupportedPhase1Capability {
-            capability: Phase1LinkedCapability::Interface,
-            location: BytecodeLinkLocation::Instruction { artifact_pc: 2, .. },
-        })
-    ));
+    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+    assert_eq!(candidate.interface_tables().len(), 1);
+    let root = function(&candidate, ROOT_FUNCTION);
+    let interface_call = root
+        .instructions()
+        .iter()
+        .find(|instruction| instruction.artifact_pc() == 2)
+        .expect("fixture retains the exact interface call pc");
+    assert!(interface_call
+        .resolved_operands()
+        .iter()
+        .any(|operand| { matches!(operand.target(), LinkedInstructionTarget::InterfaceTable(_)) }));
 }
 
 #[test]
@@ -731,16 +740,16 @@ fn production_entry_rejects_date_row_without_executor_identity() {
 }
 
 #[test]
-fn production_entry_rejects_registered_intrinsic_target_at_exact_pc() {
+fn production_entry_links_registered_intrinsic_target_at_exact_pc() {
     let fixture = Fixture::intrinsic();
     let hydrated = fixture.hydrate();
-    assert!(matches!(
-        link_deployment(&hydrated, &generous_limits()),
-        Err(BytecodeLinkError::UnsupportedPhase1Capability {
-            capability: Phase1LinkedCapability::IntrinsicTarget,
-            location: BytecodeLinkLocation::Instruction { artifact_pc: 0, .. },
-        })
-    ));
+    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+    assert_eq!(candidate.intrinsics().len(), 1);
+    let root = function(&candidate, ROOT_FUNCTION);
+    assert!(root.instructions()[0]
+        .resolved_operands()
+        .iter()
+        .any(|operand| matches!(operand.target(), LinkedInstructionTarget::Intrinsic(_))));
 }
 
 #[test]
@@ -758,10 +767,10 @@ fn production_entry_rejects_from_type_transfer_authority() {
 }
 
 #[test]
-fn backend_links_stream_next_dual_resume_successors() {
+fn production_entry_links_stream_next_dual_resume_successors() {
     let fixture = Fixture::stream_next();
     let hydrated = fixture.hydrate();
-    let candidate = link_deployment_backend_for_test(&hydrated, &generous_limits()).unwrap();
+    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
     assert_eq!(candidate.resume_sites().len(), 1);
     let resume = &candidate.resume_sites()[0];
     assert_eq!(resume.site(), InstructionIndex::new(0));
@@ -781,15 +790,7 @@ fn backend_links_stream_next_dual_resume_successors() {
 fn stream_for_in_loop_header_merges_item_slot_deadness() {
     let fixture = Fixture::stream_next_loop();
     let hydrated = fixture.hydrate();
-    assert!(matches!(
-        link_deployment(&hydrated, &generous_limits()),
-        Err(BytecodeLinkError::UnsupportedPhase1Capability {
-            capability: Phase1LinkedCapability::Stream,
-            location: BytecodeLinkLocation::Instruction { artifact_pc: 3, .. },
-        })
-    ));
-
-    let candidate = link_deployment_backend_for_test(&hydrated, &generous_limits()).unwrap();
+    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
     let root = function(&candidate, ROOT_FUNCTION);
     assert_eq!(root.instructions().len(), 5);
     assert_eq!(root.instructions()[1].opcode(), Opcode::StreamNext);
@@ -805,10 +806,10 @@ fn stream_for_in_loop_header_merges_item_slot_deadness() {
 }
 
 #[test]
-fn backend_links_stream_producer_with_zero_ordinary_results() {
+fn production_entry_links_stream_producer_with_zero_ordinary_results() {
     let fixture = Fixture::stream_producer();
     let hydrated = fixture.hydrate();
-    let candidate = link_deployment_backend_for_test(&hydrated, &generous_limits()).unwrap();
+    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
     assert_eq!(candidate.resume_sites().len(), 1);
     let resume = &candidate.resume_sites()[0];
     assert_eq!(resume.end_resume(), None);
@@ -949,7 +950,7 @@ fn source_site(source_id: u64) -> InstructionSourceSite {
     }
 }
 
-fn assert_exact_v8_provenance(
+fn assert_exact_v9_provenance(
     provenance: &LinkedPackageBytecodeProvenance,
     package: &HydratedBytecodePackage,
 ) {
@@ -957,7 +958,7 @@ fn assert_exact_v8_provenance(
     let view = admitted.view();
 
     assert_eq!(provenance.magic(), "skiff-bytecode");
-    assert_eq!(provenance.schema_version(), "skiff-bytecode-v8");
+    assert_eq!(provenance.schema_version(), "skiff-bytecode-v9");
     assert_eq!(provenance.isa_version(), "skiff-bytecode-isa-v5");
     assert_eq!(provenance.schema_version(), view.schema_version());
     assert_eq!(provenance.isa_version(), view.isa_version());
@@ -1015,12 +1016,18 @@ fn clone_candidate_parts(candidate: &LinkedBytecodeCandidate) -> LinkedBytecodeC
 }
 
 #[test]
-fn backend_links_record_shape_and_dense_field_relocation() {
+fn production_entry_links_record_shape_and_dense_field_relocation() {
     let fixture = Fixture::record_shape();
     let hydrated = fixture.hydrate();
-    let candidate = link_deployment_backend_for_test(&hydrated, &generous_limits()).unwrap();
+    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
     assert_eq!(candidate.shapes().len(), 1);
     let shape = &candidate.shapes()[0];
+    assert_eq!(
+        shape.plan(),
+        &LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::SnapshotRelease,
+        }
+    );
     assert_eq!(shape.fields().len(), 1);
     assert_eq!(shape.fields()[0].name(), "name");
     let root = function(&candidate, ROOT_FUNCTION);
@@ -1038,10 +1045,10 @@ fn backend_links_record_shape_and_dense_field_relocation() {
 }
 
 #[test]
-fn backend_links_array_builder_with_container_stack_map() {
+fn production_entry_links_array_builder_with_container_stack_map() {
     let fixture = Fixture::arrays_maps();
     let hydrated = fixture.hydrate();
-    let candidate = link_deployment_backend_for_test(&hydrated, &generous_limits()).unwrap();
+    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
     let array = candidate
         .types()
         .iter()

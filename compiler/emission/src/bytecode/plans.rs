@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_model::{TypeRefIr, ValueTransferPlan};
+use skiff_artifact_model::{ExprIr, PackageRefIr, TypeRefIr, ValueTransferPlan};
+use skiff_compiler_core::type_ref::walk_type_ref;
 use skiff_compiler_lowering::mir::{MirSlot, MirUnit};
 
 use super::{
@@ -13,10 +14,11 @@ use super::{
 ///
 /// The bytecode pipeline injects `plan_for`, which production backs with
 /// `SourceValueTransferFacts` through `source_value_transfer_plan`: every slot
-/// and result therefore receives the exact source plan. Constants retain their
-/// owner-qualified `FromType` plan. The emitter never inspects a MIR slot kind
-/// or type shape to invent a plan, and a missing exact plan becomes a stable
-/// typed [`BytecodeEmissionError`] rather than a `SnapshotRelease` fallback.
+/// and result therefore receives the exact source plan. Constants and every
+/// value type materialized by emission retain the same exact source fact. The
+/// emitter never inspects a MIR slot kind or type shape to invent a plan, and a
+/// missing exact plan becomes a stable typed [`BytecodeEmissionError`] rather
+/// than a `SnapshotRelease` fallback.
 pub fn derive_bytecode_value_transfer_plans(
     admitted: &AdmittedPhase1BytecodeMir,
     plan_for: impl Fn(&str, &TypeRefIr) -> Result<ValueTransferPlan, String>,
@@ -67,19 +69,257 @@ pub(super) fn derive_bytecode_value_transfer_plans_unchecked(
             );
         }
     }
-    let constants = units
-        .iter()
-        .flat_map(|unit| &unit.constants)
-        .map(|constant| {
-            (
+    let mut constants = BTreeMap::new();
+    for unit in units {
+        for constant in &unit.constants {
+            constants.insert(
                 constant.symbol.clone(),
-                ValueTransferPlan::FromType {
-                    ty: constant.ty.clone(),
-                },
-            )
-        })
-        .collect();
-    Ok(BytecodeValueTransferPlans::new(functions, constants))
+                exact_source_plan(
+                    &plan_for,
+                    &unit.module_path,
+                    &constant.symbol,
+                    "constant",
+                    &constant.ty,
+                )?,
+            );
+        }
+    }
+    let type_plans = collect_exact_type_plans(units, &plan_for)?;
+    Ok(BytecodeValueTransferPlans::new_with_type_plans(
+        functions, constants, type_plans,
+    ))
+}
+
+fn collect_exact_type_plans(
+    units: &[MirUnit],
+    plan_for: &impl Fn(&str, &TypeRefIr) -> Result<ValueTransferPlan, String>,
+) -> Result<Vec<TypeValueTransferPlan>, BytecodeEmissionError> {
+    let mut rows = Vec::new();
+    for unit in units {
+        let module_path = unit.module_path.as_str();
+        let mut register = |ty: &TypeRefIr, location: &str| {
+            register_type_tree(&mut rows, plan_for, unit, module_path, location, ty)
+        };
+        for constant in &unit.constants {
+            register(&constant.ty, &format!("constant `{}`", constant.symbol))?;
+        }
+        for function in &unit.functions {
+            let function_key = canonical_function_key(module_path, &function.symbol)?;
+            register(
+                &TypeRefIr::builtin("number"),
+                &format!("function `{function_key}` generated attribution carrier"),
+            )?;
+            if function.stream_result.is_none() {
+                register(
+                    &function.return_type,
+                    &format!("function `{function_key}` return"),
+                )?;
+            }
+            for parameter in &function.params {
+                register(
+                    &parameter.ty,
+                    &format!("function `{function_key}` parameter `{}`", parameter.name),
+                )?;
+            }
+            if let Some(ty) = &function.self_type {
+                register(ty, &format!("function `{function_key}` self type"))?;
+            }
+            if let Some(receiver) = &function.receiver {
+                register(
+                    &receiver.ty,
+                    &format!("function `{function_key}` receiver type"),
+                )?;
+            }
+            for slot in &function.slots {
+                if let Some(ty) = &slot.ty {
+                    register(
+                        ty,
+                        &format!("function `{function_key}` slot `{}`", slot.name),
+                    )?;
+                }
+            }
+            for expression in &function.expressions {
+                if function.stream_result.is_none() || expression.ty != function.return_type {
+                    register(
+                        &expression.ty,
+                        &format!("function `{function_key}` expression {}", expression.index),
+                    )?;
+                }
+                if let ExprIr::Call { call } = &expression.expression {
+                    if let Some(ty) = &call.concrete_receiver {
+                        register(
+                            ty,
+                            &format!(
+                                "function `{function_key}` expression {} receiver",
+                                expression.index
+                            ),
+                        )?;
+                    }
+                    for ty in call.type_args.values() {
+                        register(
+                            ty,
+                            &format!(
+                                "function `{function_key}` expression {} type argument",
+                                expression.index
+                            ),
+                        )?;
+                    }
+                }
+                match &expression.expression {
+                    ExprIr::Literal { value } => register(
+                        &TypeRefIr::builtin(match value {
+                            skiff_artifact_model::LiteralIr::Null => "null",
+                            skiff_artifact_model::LiteralIr::Bool { .. } => "bool",
+                            skiff_artifact_model::LiteralIr::Number { .. } => "number",
+                            skiff_artifact_model::LiteralIr::String { .. } => "string",
+                        }),
+                        &format!(
+                            "function `{function_key}` expression {} literal carrier",
+                            expression.index
+                        ),
+                    )?,
+                    ExprIr::Construct { type_ref, .. }
+                    | ExprIr::RepresentationWrap { type_ref, .. }
+                    | ExprIr::Throw {
+                        payload_type: type_ref,
+                        ..
+                    } => register(
+                        type_ref,
+                        &format!(
+                            "function `{function_key}` expression {} materialized type",
+                            expression.index
+                        ),
+                    )?,
+                    ExprIr::DbOperation { operation } => {
+                        register(
+                            &operation.target.type_ref,
+                            &format!(
+                                "function `{function_key}` expression {} database target",
+                                expression.index
+                            ),
+                        )?;
+                        register(
+                            &operation.result_type,
+                            &format!(
+                                "function `{function_key}` expression {} database result",
+                                expression.index
+                            ),
+                        )?;
+                    }
+                    _ => {}
+                }
+                if let ExprIr::Catch {
+                    try_expression,
+                    catch_type,
+                    ..
+                } = &expression.expression
+                {
+                    let try_ty = function
+                        .expressions
+                        .get(try_expression.expression as usize)
+                        .filter(|candidate| candidate.index == try_expression.expression)
+                        .map(|candidate| candidate.ty.clone())
+                        .ok_or_else(|| BytecodeEmissionError::UnsupportedConstruct {
+                            function_key: function_key.clone(),
+                            construct: "exact source value-transfer plan",
+                            location: format!(
+                                " catch expression {} has no exact try type",
+                                expression.index
+                            ),
+                        })?;
+                    let exception = TypeRefIr::Builtin {
+                        name: "Exception".to_string(),
+                        args: vec![catch_type.clone()],
+                    };
+                    let result = TypeRefIr::Builtin {
+                        name: "CatchResult".to_string(),
+                        args: vec![try_ty, catch_type.clone()],
+                    };
+                    register(
+                        &exception,
+                        &format!("function `{function_key}` generated Exception shape"),
+                    )?;
+                    register(
+                        &result,
+                        &format!("function `{function_key}` generated CatchResult shape"),
+                    )?;
+                    register(
+                        &TypeRefIr::builtin("string"),
+                        &format!("function `{function_key}` generated CatchResult tag"),
+                    )?;
+                }
+            }
+        }
+    }
+    Ok(rows)
+}
+
+fn register_type_tree(
+    rows: &mut Vec<TypeValueTransferPlan>,
+    plan_for: &impl Fn(&str, &TypeRefIr) -> Result<ValueTransferPlan, String>,
+    unit: &MirUnit,
+    module_path: &str,
+    location: &str,
+    ty: &TypeRefIr,
+) -> Result<(), BytecodeEmissionError> {
+    let mut nested = Vec::new();
+    walk_type_ref(ty, &mut |candidate| nested.push(candidate.clone()));
+    for ty in nested {
+        if rows
+            .iter()
+            .any(|row| row.module_path == module_path && row.ty == ty)
+        {
+            continue;
+        }
+        let plan = exact_source_plan(plan_for, module_path, location, "type", &ty)?;
+        rows.push(TypeValueTransferPlan {
+            module_path: module_path.to_string(),
+            ty: ty.clone(),
+            plan,
+        });
+        let fields = match &ty {
+            TypeRefIr::Builtin { name, args } if name == "CatchResult" && args.len() == 2 => {
+                Some(vec![
+                    TypeRefIr::Builtin {
+                        name: "Exception".to_string(),
+                        args: vec![args[1].clone()],
+                    },
+                    TypeRefIr::builtin("string"),
+                ])
+            }
+            TypeRefIr::LocalType { type_index } => unit
+                .type_table
+                .get(*type_index as usize)
+                .and_then(|declaration| match &declaration.descriptor {
+                    skiff_artifact_model::TypeDescriptorIr::Record { fields } => {
+                        Some(fields.values().cloned().collect::<Vec<_>>())
+                    }
+                    skiff_artifact_model::TypeDescriptorIr::Alias { target } => {
+                        Some(vec![target.clone()])
+                    }
+                    _ => None,
+                }),
+            TypeRefIr::PackageSymbol { symbol }
+                if skiff_artifact_model::native_value_lifecycle_registry()
+                    .privileged_affine_composite_for_symbol(symbol)
+                    .is_none() =>
+            {
+                let PackageRefIr::PackageId { package_id } = &symbol.package else {
+                    continue;
+                };
+                unit.package_type_records
+                    .get(&(package_id.clone(), symbol.symbol_path.clone()))
+                    .map(|fields| fields.values().cloned().collect::<Vec<_>>())
+            }
+            _ => None,
+        };
+        if let Some(fields) = fields {
+            for field_ty in fields {
+                register_type_tree(rows, plan_for, unit, module_path, location, &field_ty)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Consumes one exact plan from the injected source authority.
@@ -109,6 +349,66 @@ fn unsupported_slot_type(function_key: &str, slot: &MirSlot) -> BytecodeEmission
     }
 }
 
+#[cfg(test)]
+pub(crate) fn derive_test_bytecode_value_transfer_plans(
+    units: &[MirUnit],
+) -> Result<BytecodeValueTransferPlans, BytecodeEmissionError> {
+    use skiff_artifact_model::{PackageRefIr, ValueDropPlan};
+    use skiff_compiler_source::{
+        source_value_transfer_plan, SourceValueTransferFacts, SourceValueTransferNominalFact,
+        SourceValueTransferNominalId, SourceValueTransferNominalSemantics,
+        SourceValueTransferPlanInput,
+    };
+
+    let mut facts = SourceValueTransferFacts::new();
+    for unit in units {
+        for (type_index, declaration) in unit.type_table.iter().enumerate() {
+            let type_index = u32::try_from(type_index).expect("test type table index fits u32");
+            let fact = SourceValueTransferNominalFact {
+                declaration_module: unit.module_path.clone(),
+                type_parameters: declaration.type_params.clone(),
+                semantics: SourceValueTransferNominalSemantics::Ordinary(
+                    declaration.descriptor.clone(),
+                ),
+            };
+            facts.insert_nominal(
+                SourceValueTransferNominalId::Local {
+                    module_path: unit.module_path.clone(),
+                    type_index,
+                },
+                fact.clone(),
+            );
+            facts.insert_nominal(
+                SourceValueTransferNominalId::Publication {
+                    module_path: unit.module_path.clone(),
+                    type_index,
+                },
+                fact,
+            );
+        }
+    }
+    derive_bytecode_value_transfer_plans_unchecked(units, |module_path, ty| {
+        if matches!(
+            ty,
+            TypeRefIr::PackageSymbol { symbol }
+                if symbol.package
+                    == PackageRefIr::PackageId {
+                        package_id: "skiff.run/std".to_string(),
+                    }
+                    && symbol.symbol_path == "std.time.Duration"
+        ) {
+            return Ok(ValueTransferPlan::SnapshotShare {
+                drop: ValueDropPlan::Trivial,
+            });
+        }
+        source_value_transfer_plan(
+            &facts,
+            SourceValueTransferPlanInput::concrete(module_path, ty),
+        )
+        .map_err(|error| error.to_string())
+    })
+}
+
 /// Explicit source-owned transfer facts for every bytecode function and
 /// implementation constant.
 ///
@@ -124,6 +424,7 @@ fn unsupported_slot_type(function_key: &str, slot: &MirSlot) -> BytecodeEmission
 pub struct BytecodeValueTransferPlans {
     functions: BTreeMap<String, FunctionValueTransferPlans>,
     constants: BTreeMap<String, ValueTransferPlan>,
+    type_plans: Vec<TypeValueTransferPlan>,
 }
 
 impl BytecodeValueTransferPlans {
@@ -136,9 +437,20 @@ impl BytecodeValueTransferPlans {
         functions: BTreeMap<String, FunctionValueTransferPlans>,
         constants: BTreeMap<String, ValueTransferPlan>,
     ) -> Self {
+        Self::new_with_type_plans(functions, constants, Vec::new())
+    }
+
+    /// Creates a package plan bundle with exact source-owned plans for every
+    /// type that emission may materialize as a value.
+    pub(crate) fn new_with_type_plans(
+        functions: BTreeMap<String, FunctionValueTransferPlans>,
+        constants: BTreeMap<String, ValueTransferPlan>,
+        type_plans: Vec<TypeValueTransferPlan>,
+    ) -> Self {
         Self {
             functions,
             constants,
+            type_plans,
         }
     }
 
@@ -162,6 +474,20 @@ impl BytecodeValueTransferPlans {
     pub fn constant(&self, symbol: &str) -> Option<&ValueTransferPlan> {
         self.constants.get(symbol)
     }
+
+    pub(crate) fn type_plans(&self) -> &[TypeValueTransferPlan] {
+        &self.type_plans
+    }
+}
+
+/// One exact source-owned type lifecycle fact consumed during bytecode
+/// materialization. `ty` retains its MIR owner spelling; emission qualifies
+/// local references only when writing the artifact.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TypeValueTransferPlan {
+    pub(crate) module_path: String,
+    pub(crate) ty: TypeRefIr,
+    pub(crate) plan: ValueTransferPlan,
 }
 
 /// Dense transfer plans for one function frame.
@@ -343,8 +669,8 @@ mod tests {
             plans.constants(),
             &BTreeMap::from([(
                 "sample.answer".to_string(),
-                ValueTransferPlan::FromType {
-                    ty: TypeRefIr::builtin("number"),
+                ValueTransferPlan::SnapshotShare {
+                    drop: ValueDropPlan::Trivial,
                 },
             )])
         );

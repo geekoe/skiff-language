@@ -581,6 +581,12 @@ fn validate_pool_entry_references(
             shape.type_ref,
             &format!("image.pools.shapes[{index}].typeRef"),
         )?;
+        validate_transfer_plan(
+            &shape.plan,
+            pools,
+            None,
+            &format!("image.pools.shapes[{index}].plan"),
+        )?;
         if shape.fields.len() as u64 > limits::MAX_ARITY {
             return Err(limit_error(
                 "MAX_ARITY",

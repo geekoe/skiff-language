@@ -65,8 +65,8 @@ pub enum LinkedValueTransferPlan {
 }
 
 impl LinkedValueTransferPlan {
-    /// Coarse diagnostic category only. Execution and verification must use
-    /// the complete plan, including exact drop/clone adapter role and ABI.
+    /// Coarse diagnostic category only. Execution must use the complete plan,
+    /// including the exact drop/clone adapter role and ABI.
     pub const fn kind(&self) -> ValueTransferPlanKind {
         match self {
             Self::SnapshotShare { .. } => ValueTransferPlanKind::SnapshotShare,

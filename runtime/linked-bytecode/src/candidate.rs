@@ -23,8 +23,8 @@ use crate::BytecodePackageIndex;
 
 /// Exact package bytecode/header provenance retained beside all linked rows.
 /// The schema string remains untrusted data here: artifact admission and
-/// hydration accept the current five-authority `skiff-bytecode-v8`, while
-/// verifier exact package binding rejects any candidate/header divergence.
+/// hydration accept the current five-authority `skiff-bytecode-v9`, while
+/// candidate construction retains the exact hydrated package binding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedPackageBytecodeProvenance {
     index: BytecodePackageIndex,
@@ -252,8 +252,9 @@ pub struct LinkedBytecodeCandidateParts {
     pub writable_paths: Vec<LinkedWritablePathEntry>,
 }
 
-/// Concrete linker output that has passed only local candidate-shape checks.
-/// It is not a verified execution image and is never a valid VM input.
+/// Concrete linker output that has passed bounded candidate construction.
+/// It remains an internal assembly value and is never a valid VM input until
+/// atomically wrapped by the deployment execution image.
 #[derive(Debug)]
 pub struct LinkedBytecodeCandidate {
     packages: Box<[LinkedPackageBytecodeProvenance]>,

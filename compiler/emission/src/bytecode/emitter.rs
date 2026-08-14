@@ -127,7 +127,7 @@ mod tests {
         let artifact =
             emit_bytecode_artifact(&admitted, &[], &BytecodeValueTransferPlans::empty()).unwrap();
 
-        assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v8");
+        assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v9");
         assert_eq!(BYTECODE_ISA_VERSION, "skiff-bytecode-isa-v5");
         assert_eq!(BYTECODE_IDENTITY_PREFIX, "skiff-bytecode-image-v5:sha256");
         assert_eq!(artifact.magic, BYTECODE_MAGIC);

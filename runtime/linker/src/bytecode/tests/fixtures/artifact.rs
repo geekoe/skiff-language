@@ -557,6 +557,9 @@ fn pools(program: RootProgram) -> BytecodePools {
             RootProgram::RecordShape => vec![BytecodePoolEntry::ShapeRef {
                 shape: skiff_artifact_model::ShapeDeclaration {
                     type_ref: 1,
+                    plan: skiff_artifact_model::ValueTransferPlan::SnapshotShare {
+                        drop: skiff_artifact_model::ValueDropPlan::SnapshotRelease,
+                    },
                     privileged_affine_composite: None,
                     fields: vec![skiff_artifact_model::ShapeFieldDeclaration {
                         name: "name".to_string(),

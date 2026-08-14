@@ -1,10 +1,9 @@
-//! Public vocabulary for an unverified, concrete linked-bytecode candidate.
+//! Public vocabulary for a concrete linked-bytecode candidate.
 //!
-//! A [`LinkedBytecodeCandidate`] is linker output and verifier input. Its
-//! constructors enforce only local container shape, canonical table keys and
-//! image-local reference bounds;
-//! possession of a candidate never implies semantic verification or VM
-//! executability.
+//! A [`LinkedBytecodeCandidate`] is the bounded linker's atomic construction
+//! substrate for a deployment execution image. Its constructors enforce local
+//! container shape, canonical table keys and image-local reference bounds;
+//! source-semantic authority remains exclusively with the compiler.
 
 mod authority;
 mod candidate;

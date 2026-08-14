@@ -249,20 +249,6 @@ impl TypeLinker<'_> {
                     .to_string(),
             ));
         }
-        let lifecycle = registry.lookup(nominal).map_err(|error| {
-            obligation_error(
-                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
-                location.clone(),
-                format!("privileged affine nominal lifecycle is not exact: {error}"),
-            )
-        })?;
-        if lifecycle.lifecycle != schema.lifecycle || lifecycle.embedding != schema.embedding {
-            return Err(obligation_error(
-                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
-                location.clone(),
-                "privileged affine root lifecycle differs from the pinned schema".to_string(),
-            ));
-        }
         if fields.len() != schema.fields.len() {
             return Err(obligation_error(
                 BytecodeLinkObligation::ConcreteTypeAndShapeTables,

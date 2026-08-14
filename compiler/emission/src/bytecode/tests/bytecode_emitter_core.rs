@@ -4,9 +4,12 @@ mod tests {
 
     use crate::bytecode::{
         emitter::emit_bytecode_artifact_unchecked as emit_bytecode_artifact,
-        plans::derive_bytecode_value_transfer_plans_unchecked as derive_bytecode_value_transfer_plans,
+        plans::{
+            derive_bytecode_value_transfer_plans_unchecked as derive_bytecode_value_transfer_plans,
+            derive_test_bytecode_value_transfer_plans,
+        },
     };
-    use crate::{BytecodeValueTransferPlans, FunctionValueTransferPlans};
+    use crate::BytecodeValueTransferPlans;
     use skiff_artifact_model::{
         ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, AssignTargetIr,
         BoxSourceIr, BytecodeIntrinsicRef, BytecodePoolEntry, BytecodeRelocation, CallIr,
@@ -39,10 +42,6 @@ mod tests {
         InstructionSourceSite::Synthetic {
             reason: SyntheticInstructionSiteReason::CompilerDesugaring,
         }
-    }
-
-    fn is_void(ty: &TypeRefIr) -> bool {
-        matches!(ty, TypeRefIr::Builtin { name, args } if name == "void" && args.is_empty())
     }
 
     fn span() -> SourceSpanRef {
@@ -138,31 +137,9 @@ mod tests {
         function
     }
 
-    fn plans(
-        function_key: &str,
-        slot_types: &[TypeRefIr],
-        return_type: &TypeRefIr,
-    ) -> BytecodeValueTransferPlans {
-        BytecodeValueTransferPlans::new(
-            BTreeMap::from([(
-                function_key.to_string(),
-                FunctionValueTransferPlans {
-                    slot_plans: slot_types
-                        .iter()
-                        .cloned()
-                        .map(|ty| ValueTransferPlan::FromType { ty })
-                        .collect(),
-                    result_plans: if is_void(return_type) {
-                        Vec::new()
-                    } else {
-                        vec![ValueTransferPlan::FromType {
-                            ty: return_type.clone(),
-                        }]
-                    },
-                },
-            )]),
-            BTreeMap::new(),
-        )
+    fn plans(unit: &MirUnit) -> BytecodeValueTransferPlans {
+        derive_test_bytecode_value_transfer_plans(std::slice::from_ref(unit))
+            .expect("the source classifier covers the test MIR")
     }
 
     fn stream_plan(ty: &TypeRefIr) -> Result<ValueTransferPlan, String> {
@@ -175,7 +152,15 @@ mod tests {
                 drop: ResourceDropPlan::ResourceTableRelease,
             });
         }
-        if *ty == TypeRefIr::builtin("number") {
+        if matches!(
+            ty,
+            TypeRefIr::Builtin { name, args }
+                if args.is_empty()
+                    && matches!(
+                        name.as_str(),
+                        "bool" | "integer" | "never" | "null" | "number" | "string" | "void"
+                    )
+        ) {
             return Ok(ValueTransferPlan::SnapshotShare {
                 drop: ValueDropPlan::Trivial,
             });
@@ -273,12 +258,9 @@ mod tests {
         );
         let (unit, bundle) =
             mir_and_bundle("slots", Vec::new(), ExternalRefTable::default(), function);
-        let artifact = emit_bytecode_artifact(
-            &[unit],
-            &[bundle],
-            &plans("slots::init", &[slot_ty], &TypeRefIr::builtin("void")),
-        )
-        .expect("init slot body emits");
+        let plans = plans(&unit);
+        let artifact =
+            emit_bytecode_artifact(&[unit], &[bundle], &plans).expect("init slot body emits");
         let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
             .expect("init slot body must validate");
         let function = view
@@ -360,18 +342,40 @@ mod tests {
         );
         let (unit, bundle) =
             mir_and_bundle("records", type_table, ExternalRefTable::default(), function);
-        let artifact = emit_bytecode_artifact(
-            &[unit],
-            &[bundle],
-            &plans("records::name", &[], &TypeRefIr::builtin("string")),
+        let plans = plans(&unit);
+        let missing_type_facts =
+            BytecodeValueTransferPlans::new(plans.functions().clone(), plans.constants().clone());
+        let error = emit_bytecode_artifact(
+            std::slice::from_ref(&unit),
+            std::slice::from_ref(&bundle),
+            &missing_type_facts,
         )
-        .expect("record body emits");
+        .expect_err("record emission requires the compiler-owned type lifecycle facts");
+        assert!(matches!(
+            error,
+            crate::BytecodeEmissionError::CanonicalSerialization { message, .. }
+                if message.contains("missing exact compiler-owned value-transfer plan")
+        ));
+        let artifact =
+            emit_bytecode_artifact(&[unit], &[bundle], &plans).expect("record body emits");
 
         assert_eq!(artifact.image.pools.shapes.len(), 1);
         let BytecodePoolEntry::ShapeRef { shape } = &artifact.image.pools.shapes[0] else {
             panic!("shapes pool is homogeneous");
         };
+        assert_eq!(
+            shape.plan,
+            ValueTransferPlan::SnapshotShare {
+                drop: ValueDropPlan::SnapshotRelease,
+            }
+        );
         assert_eq!(shape.fields[0].name, "name");
+        assert_eq!(
+            shape.fields[0].plan,
+            ValueTransferPlan::SnapshotShare {
+                drop: ValueDropPlan::SnapshotRelease,
+            }
+        );
         assert!(!artifact.image.functions["records::name"].words.is_empty());
     }
 
@@ -474,12 +478,9 @@ mod tests {
         );
         let (unit, bundle) =
             mir_and_bundle("arrays", Vec::new(), ExternalRefTable::default(), function);
-        let artifact = emit_bytecode_artifact(
-            &[unit],
-            &[bundle],
-            &plans("arrays::second", &[], &TypeRefIr::builtin("number")),
-        )
-        .expect("array body emits");
+        let plans = plans(&unit);
+        let artifact =
+            emit_bytecode_artifact(&[unit], &[bundle], &plans).expect("array body emits");
         let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
             .expect("array body must validate");
         let function = view
@@ -593,12 +594,8 @@ mod tests {
         );
         let (unit, bundle) =
             mir_and_bundle("maps", Vec::new(), ExternalRefTable::default(), function);
-        let artifact = emit_bytecode_artifact(
-            &[unit],
-            &[bundle],
-            &plans("maps::answer", &[], &TypeRefIr::builtin("number")),
-        )
-        .expect("map body emits");
+        let plans = plans(&unit);
+        let artifact = emit_bytecode_artifact(&[unit], &[bundle], &plans).expect("map body emits");
         let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
             .expect("map body must validate");
         let function = view
@@ -659,9 +656,9 @@ mod tests {
         );
         let (unit, bundle) =
             mir_and_bundle("maps", Vec::new(), ExternalRefTable::default(), function);
+        let plans = plans(&unit);
         let artifact =
-            emit_bytecode_artifact(&[unit], &[bundle], &plans("maps::empty", &[], &map_ty))
-                .expect("empty map body emits");
+            emit_bytecode_artifact(&[unit], &[bundle], &plans).expect("empty map body emits");
         let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
             .expect("empty map body must validate");
         let function = view
@@ -724,12 +721,9 @@ mod tests {
             ExternalRefTable::default(),
             throw_function,
         );
-        emit_bytecode_artifact(
-            &[throw_unit],
-            &[throw_bundle],
-            &plans("throws::boom", &[], &TypeRefIr::builtin("void")),
-        )
-        .expect("throw body emits");
+        let throw_plans = plans(&throw_unit);
+        emit_bytecode_artifact(&[throw_unit], &[throw_bundle], &throw_plans)
+            .expect("throw body emits");
 
         let assert_function = function(
             "asserts",
@@ -786,12 +780,9 @@ mod tests {
             ExternalRefTable::default(),
             assert_function,
         );
-        emit_bytecode_artifact(
-            &[assert_unit],
-            &[assert_bundle],
-            &plans("asserts::check", &[], &TypeRefIr::builtin("void")),
-        )
-        .expect("assert body emits");
+        let assert_plans = plans(&assert_unit);
+        emit_bytecode_artifact(&[assert_unit], &[assert_bundle], &assert_plans)
+            .expect("assert body emits");
     }
 
     #[test]
@@ -943,12 +934,9 @@ mod tests {
             ..ExternalRefTable::default()
         };
         let (unit, bundle) = mir_and_bundle("calls", Vec::new(), external_refs, function);
-        let artifact = emit_bytecode_artifact(
-            &[unit],
-            &[bundle],
-            &plans("calls::run", &[], &TypeRefIr::builtin("string")),
-        )
-        .expect("service/actor/host body emits");
+        let plans = plans(&unit);
+        let artifact = emit_bytecode_artifact(&[unit], &[bundle], &plans)
+            .expect("service/actor/host body emits");
         let relocations = &artifact.image.functions["calls::run"].relocations;
         assert!(relocations.iter().any(|relocation| matches!(
             relocation,
@@ -1082,16 +1070,8 @@ mod tests {
         );
         let (unit, bundle) =
             mir_and_bundle("loops", Vec::new(), ExternalRefTable::default(), function);
-        emit_bytecode_artifact(
-            &[unit],
-            &[bundle],
-            &plans(
-                "loops::sum",
-                &[TypeRefIr::builtin("number")],
-                &TypeRefIr::builtin("void"),
-            ),
-        )
-        .expect("for-in body emits");
+        let plans = plans(&unit);
+        emit_bytecode_artifact(&[unit], &[bundle], &plans).expect("for-in body emits");
     }
 
     #[test]
@@ -1184,12 +1164,8 @@ mod tests {
         );
         let (unit, bundle) =
             mir_and_bundle("matches", Vec::new(), ExternalRefTable::default(), function);
-        emit_bytecode_artifact(
-            &[unit],
-            &[bundle],
-            &plans("matches::classify", &[], &TypeRefIr::builtin("number")),
-        )
-        .expect("match body emits");
+        let plans = plans(&unit);
+        emit_bytecode_artifact(&[unit], &[bundle], &plans).expect("match body emits");
     }
 
     #[test]
@@ -1421,8 +1397,8 @@ mod tests {
         };
         assert_eq!(
             descriptor.result_plans,
-            vec![ValueTransferPlan::FromType {
-                ty: item_type.clone(),
+            vec![ValueTransferPlan::SnapshotShare {
+                drop: ValueDropPlan::Trivial,
             }]
         );
         assert!(
@@ -1626,12 +1602,9 @@ mod tests {
             ..ExternalRefTable::default()
         };
         let (unit, bundle) = mir_and_bundle("remote", Vec::new(), external_refs, function);
-        let artifact = emit_bytecode_artifact(
-            &[unit],
-            &[bundle],
-            &plans("remote::boxReader", &[], &box_type),
-        )
-        .expect("remote interface box emits");
+        let plans = plans(&unit);
+        let artifact =
+            emit_bytecode_artifact(&[unit], &[bundle], &plans).expect("remote interface box emits");
         let relocation = artifact.image.functions["remote::boxReader"]
             .relocations
             .iter()
@@ -1832,12 +1805,9 @@ mod tests {
         function.liveness = compute_liveness(&function).expect("ValueBlock liveness computes");
         let (unit, bundle) =
             mir_and_bundle("blocks", Vec::new(), ExternalRefTable::default(), function);
-        let artifact = emit_bytecode_artifact(
-            &[unit],
-            &[bundle],
-            &plans("blocks::pick", &[slot_ty.clone()], &slot_ty),
-        )
-        .expect("ValueBlock linearization emits");
+        let plans = plans(&unit);
+        let artifact = emit_bytecode_artifact(&[unit], &[bundle], &plans)
+            .expect("ValueBlock linearization emits");
         let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
             .expect("ValueBlock artifact validates");
         let function = view
@@ -1963,12 +1933,9 @@ mod tests {
         );
         let (unit, bundle) =
             mir_and_bundle("db", Vec::new(), ExternalRefTable::default(), function);
-        let artifact = emit_bytecode_artifact(
-            &[unit],
-            &[bundle],
-            &plans("db::insertItem", &[], &record_ty),
-        )
-        .expect("single insert DbOperation emits");
+        let plans = plans(&unit);
+        let artifact = emit_bytecode_artifact(&[unit], &[bundle], &plans)
+            .expect("single insert DbOperation emits");
         let relocation = artifact.image.functions["db::insertItem"]
             .relocations
             .iter()
@@ -2074,12 +2041,9 @@ mod tests {
         );
         let (unit, bundle) =
             mir_and_bundle("strings", Vec::new(), ExternalRefTable::default(), function);
-        let artifact = emit_bytecode_artifact(
-            &[unit],
-            &[bundle],
-            &plans("strings::concat", &[], &string_ty),
-        )
-        .expect("string.concat intrinsic emits");
+        let plans = plans(&unit);
+        let artifact = emit_bytecode_artifact(&[unit], &[bundle], &plans)
+            .expect("string.concat intrinsic emits");
         let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
             .expect("string.concat artifact validates");
         let function = view
@@ -2168,9 +2132,9 @@ mod tests {
         );
         let (unit, bundle) =
             mir_and_bundle("config", Vec::new(), ExternalRefTable::default(), function);
-        let artifact =
-            emit_bytecode_artifact(&[unit], &[bundle], &plans("config::load", &[], &string_ty))
-                .expect("config.require host call emits");
+        let plans = plans(&unit);
+        let artifact = emit_bytecode_artifact(&[unit], &[bundle], &plans)
+            .expect("config.require host call emits");
         let view = skiff_artifact_model::bytecode::structurally_validate(&artifact)
             .expect("config.require artifact validates");
         let function = view

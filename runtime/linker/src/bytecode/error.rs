@@ -1,8 +1,8 @@
 use std::fmt;
 
 use skiff_artifact_model::{
-    ContractOperationId, GatewayEntryKey, Opcode, PackageArtifactRef, PendingEffectCategory,
-    ServiceDeploymentRef, ServiceRequirementKey,
+    ContractOperationId, GatewayEntryKey, PackageArtifactRef, ServiceDeploymentRef,
+    ServiceRequirementKey,
 };
 
 /// Bounded resource whose configured link ceiling was exceeded.
@@ -50,9 +50,9 @@ impl BytecodeLinkLimit {
 /// Linker-owned fact family that must be established before a candidate can
 /// be emitted.
 ///
-/// These are construction obligations, not semantic-verifier proofs. The
-/// verifier independently recomputes safety facts and may reject every field
-/// emitted by the linker.
+/// These are bounded construction obligations, not source-semantic proofs.
+/// The linker checks exact artifact references and assembles the image without
+/// reconstructing compiler admission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BytecodeLinkObligation {
     ExactPackageClosure,
@@ -69,32 +69,6 @@ pub enum BytecodeLinkObligation {
     SourceAndStatementTables,
     ControlFlowAndStackMap,
     CandidateAssembly,
-}
-
-/// Typed category rejected by the Phase 1 post-link capability gate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Phase1LinkedCapability {
-    HostTarget,
-    IntrinsicTarget,
-    ServiceTarget,
-    Actor,
-    Interface,
-    Callback,
-    HttpGuardOrPre,
-    WebSocket,
-    Stream,
-    Resource,
-    Aggregate,
-    Exception,
-    TailCall,
-    InOut,
-    Generic,
-    Writable,
-    Constant,
-    ValueShape,
-    Effect,
-    PendingEffect(PendingEffectCategory),
-    UnsupportedOpcode(Opcode),
 }
 
 impl BytecodeLinkObligation {
@@ -244,10 +218,6 @@ pub enum BytecodeLinkError {
         location: BytecodeLinkLocation,
         detail: String,
     },
-    UnsupportedPhase1Capability {
-        capability: Phase1LinkedCapability,
-        location: BytecodeLinkLocation,
-    },
     /// The crate has not implemented a required link obligation.
     ///
     /// This is never a soft warning and must never publish a candidate or
@@ -279,13 +249,6 @@ impl fmt::Display for BytecodeLinkError {
                 formatter,
                 "bytecode {} linking failed at {location}: {detail}",
                 obligation.name()
-            ),
-            Self::UnsupportedPhase1Capability {
-                capability,
-                location,
-            } => write!(
-                formatter,
-                "Phase 1 linked capability {capability:?} is unsupported at {location}"
             ),
             Self::ImplementationUnavailable {
                 obligation,

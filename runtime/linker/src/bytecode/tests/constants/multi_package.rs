@@ -5,8 +5,8 @@ use skiff_runtime_linked_bytecode::{
 };
 
 use crate::bytecode::{
-    link_deployment_execution_image, BytecodeLinkError, BytecodeLinkLimit, BytecodeLinkLocation,
-    DeploymentExecutionImage, DeploymentExecutionImageError, Phase1LinkedCapability,
+    link_deployment_execution_image, BytecodeLinkError, BytecodeLinkLimit,
+    DeploymentExecutionImage, DeploymentExecutionImageError,
 };
 
 use super::super::{
@@ -108,19 +108,31 @@ fn two_packages_rebase_local_zero_rows_and_relink_deterministically() {
 }
 
 #[test]
-fn unreferenced_dependency_string_reports_its_exact_constant_node() {
+fn unreferenced_dependency_string_keeps_its_exact_package_owned_lifecycle() {
     let fixture = Fixture::two_package_constants(ConstantProgram::Number, ConstantProgram::String);
     let hydrated = fixture.hydrate();
-    assert!(matches!(
-        link_deployment_execution_image(hydrated, &generous_execution_limits()),
-        Err(DeploymentExecutionImageError::Link(BytecodeLinkError::UnsupportedPhase1Capability {
-            capability: Phase1LinkedCapability::ValueShape,
-            location: BytecodeLinkLocation::Constant {
-                package,
-                node_index: 0,
-            },
-        })) if package.package_id == DEPENDENCY_PACKAGE_ID
-    ));
+    let dependency_build = hydrated
+        .packages()
+        .values()
+        .find(|package| package.reference().package_id == DEPENDENCY_PACKAGE_ID)
+        .expect("dependency package is hydrated")
+        .reference()
+        .package_build_id
+        .clone();
+    let image = link_deployment_execution_image(hydrated, &generous_execution_limits()).unwrap();
+    let dependency_constant = constant_for(&image, &dependency_build);
+    assert_constant_authority(
+        &image,
+        dependency_constant,
+        &dependency_build,
+        &LiteralIr::String {
+            value: "ready".to_string(),
+        },
+        &TypeRefIr::builtin("string"),
+        &LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::SnapshotRelease,
+        },
+    );
 }
 
 #[test]

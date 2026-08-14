@@ -6,8 +6,7 @@ use crate::{
     LinkedSwitchTable, SpecializationKey, TypeIndex,
 };
 
-/// Linker-declared effect facts. The summary remains untrusted until the
-/// independent semantic verifier recomputes and checks it.
+/// Exact compiler-owned declarative effect facts retained through linking.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedCallableEffectDeclaration {
     effect_summary_ref: PackageCallableId,
@@ -34,8 +33,7 @@ impl LinkedCallableEffectDeclaration {
     }
 }
 
-/// Function-local candidate tables. Their semantic validity is deliberately
-/// left for the independent verifier.
+/// Function-local tables constructed from bounded exact artifact references.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedFunctionTables {
     exception_regions: Box<[LinkedExceptionRegion]>,
@@ -90,13 +88,12 @@ impl LinkedFunctionTables {
     }
 }
 
-/// One concrete but unverified linked function candidate.
+/// One concrete linked function candidate.
 ///
 /// [`SpecializationKey`] carries the exact package build and artifact function
 /// key. Candidate validation requires that build to have exactly one package
-/// bytecode provenance row, so the verifier can return to the validated
-/// function (including its function origin and `self_type_ref`) without a
-/// duplicate FileIR-origin or address field here.
+/// bytecode provenance row, retaining the validated function origin and
+/// `self_type_ref` without a duplicate FileIR-origin or address field here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedFunction {
     index: crate::FunctionIndex,

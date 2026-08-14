@@ -1,4 +1,3 @@
-mod capability;
 mod closure;
 mod constants;
 pub(super) mod dispatch;
@@ -36,24 +35,12 @@ impl<'a> DeploymentLinker<'a> {
     }
 
     pub(super) fn link(self) -> Result<LinkedBytecodeCandidate, BytecodeLinkError> {
-        let deployment = self.deployment;
-        let limits = self.limits;
-        let candidate = self.link_candidate()?;
-        DeploymentLinker::new(deployment, limits).admit_phase_1_capabilities(&candidate)?;
-        Ok(candidate)
-    }
-
-    #[cfg(test)]
-    pub(super) fn link_backend_for_test(
-        self,
-    ) -> Result<LinkedBytecodeCandidate, BytecodeLinkError> {
         self.link_candidate()
     }
 
     fn link_candidate(mut self) -> Result<LinkedBytecodeCandidate, BytecodeLinkError> {
         let deployment_location = self.deployment_location();
         self.validate_exact_package_closure()?;
-        self.reject_unsupported_global_authorities()?;
         let packages = self.link_package_provenance()?;
         let mut type_linker = TypeLinker::new(self.deployment, self.limits);
         let roots = self.canonical_roots()?;

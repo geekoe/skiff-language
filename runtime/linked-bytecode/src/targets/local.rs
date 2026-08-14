@@ -9,7 +9,8 @@ use crate::{
 };
 
 /// Exact concrete local or package-direct target. The key and function remain
-/// visible so the verifier can independently compare specialization and code.
+/// visible so execution-image construction retains specialization and code
+/// provenance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedExactLocalTarget {
     key: SpecializationKey,
@@ -80,8 +81,7 @@ impl LinkedServiceOperationTarget {
 }
 
 /// Exact build-owned actor implementation facts shared by method and create
-/// targets. The verifier must still compare these untrusted linked facts with
-/// the owning package's actor authority.
+/// targets, joined from the owning package's hydrated actor authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedActorImplementationRef {
     owner_package_build_id: PackageBuildId,

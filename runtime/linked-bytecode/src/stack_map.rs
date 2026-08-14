@@ -6,7 +6,7 @@ use crate::{
     WritablePathIndex,
 };
 
-/// One untrusted typed operand-stack claim at a function program point.
+/// One linker-computed typed operand-stack state at a function program point.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedStackValue {
     ty: TypeIndex,
@@ -28,8 +28,7 @@ impl LinkedStackValue {
 }
 
 /// Claimed slot liveness before an instruction. `Moved` is distinct from a
-/// never-initialized slot so verifier diagnostics can retain the producer's
-/// ownership claim while independently recomputing it.
+/// never-initialized slot so diagnostics retain the exact ownership state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkedSlotState {
     Uninitialized,
@@ -58,9 +57,8 @@ impl LinkedWritableLoanState {
     }
 }
 
-/// Linker-produced state claim at instruction entry. This is not a proof or a
-/// seal; the semantic verifier must compute instruction transfer and compare
-/// every CFG predecessor/merge independently.
+/// Linker-produced state at instruction entry after bounded instruction
+/// transfer and exact CFG predecessor/merge checks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedProgramPointState {
     instruction: InstructionIndex,

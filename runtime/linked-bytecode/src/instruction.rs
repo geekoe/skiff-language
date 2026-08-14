@@ -11,7 +11,8 @@ use crate::{
 
 /// Typed resolution of one non-immediate linked operand. Immediate words stay
 /// in `LinkedInstruction::operands`; every address-like word is retained here
-/// so the verifier never has to guess a target-table kind from an integer.
+/// so execution-image consumers never guess a target-table kind from an
+/// integer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LinkedInstructionTarget {
     FrameSlot(FrameSlotIndex),

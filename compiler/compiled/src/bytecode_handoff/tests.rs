@@ -252,7 +252,7 @@ fn fixture_carries_current_bytecode_and_statement_schema() {
     let wire = serde_json::to_value(&artifact).unwrap();
     let entry = &wire["image"]["functions"]["module::event"]["statementEntries"][0];
 
-    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v8");
+    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v9");
     assert_eq!(BYTECODE_IDENTITY_PREFIX, "skiff-bytecode-image-v5:sha256");
     assert_eq!(
         BYTECODE_IDENTITY_SCHEMA_MARKER,

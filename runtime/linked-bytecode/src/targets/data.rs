@@ -248,9 +248,8 @@ pub enum LinkedContainerPositionKind {
 }
 
 /// Candidate type entry with exact artifact provenance and, for built-in
-/// containers, an exact concrete position layout. The verifier must still
-/// reject any residual `TypeParam` in the retained `TypeRefIr` and rederive
-/// every layout from the pinned lifecycle registry.
+/// containers, an exact concrete position layout. Candidate construction
+/// rejects residual `TypeParam` values and retains only bounded concrete rows.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LinkedTypeEntry {
     index: TypeIndex,
@@ -336,6 +335,7 @@ pub struct LinkedShapeEntry {
     index: ShapeIndex,
     origin: LinkedArtifactPoolOrigin<ArtifactShapeIndex>,
     nominal_type: TypeIndex,
+    plan: LinkedValueTransferPlan,
     privileged_affine_composite: Option<PrivilegedAffineCompositeIdentity>,
     fields: Box<[LinkedShapeField]>,
 }
@@ -345,6 +345,7 @@ impl LinkedShapeEntry {
         index: ShapeIndex,
         origin: LinkedArtifactPoolOrigin<ArtifactShapeIndex>,
         nominal_type: TypeIndex,
+        plan: LinkedValueTransferPlan,
         privileged_affine_composite: Option<PrivilegedAffineCompositeIdentity>,
         fields: Box<[LinkedShapeField]>,
     ) -> Result<Self, LinkedShapeError> {
@@ -364,6 +365,7 @@ impl LinkedShapeEntry {
             index,
             origin,
             nominal_type,
+            plan,
             privileged_affine_composite,
             fields,
         })
@@ -379,6 +381,11 @@ impl LinkedShapeEntry {
 
     pub const fn nominal_type(&self) -> TypeIndex {
         self.nominal_type
+    }
+
+    /// Exact compiler-emitted transfer plan for values of this shape.
+    pub const fn plan(&self) -> &LinkedValueTransferPlan {
+        &self.plan
     }
 
     /// Registry-owned authority transported from the exact admitted artifact

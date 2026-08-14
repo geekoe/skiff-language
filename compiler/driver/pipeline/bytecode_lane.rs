@@ -1,9 +1,9 @@
 use skiff_artifact_model::{
-    derive_bytecode_statement_manifest_identity,
+    derive_bytecode_statement_manifest_identity, http_boundary::canonical_http_boundary_type,
     validate_current_platform_error_projection_registry_ref, BytecodeArtifactRef,
-    BytecodeFunctionStatementManifest, GatewayDispatchMode, GatewayProtocolSurface,
-    PackageArtifact, PackageLocalAbiSymbol, PackageRefIr, PackageTypeRef, TypeDescriptorIr,
-    TypeRefIr,
+    BytecodeFunctionStatementManifest, ContractLiteral, ContractTypeRef, GatewayDispatchMode,
+    GatewayProtocolSurface, LiteralIr, PackageArtifact, PackageLocalAbiSymbol, PackageRefIr,
+    PackageTypeRef, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_compiler_compiled::{
     BytecodeCompilationHandoff, BytecodeCompilationOutcome, BytecodeCompilationReceipt,
@@ -378,10 +378,26 @@ fn source_value_transfer_facts_for_units(units: &[MirUnit]) -> SourceValueTransf
             if count != 1 {
                 continue;
             }
-            let Some(fields) = unit
+            let descriptor = if let Some(fields) = unit
                 .package_type_records
                 .get(&(package_id.clone(), symbol_path.clone()))
-            else {
+            {
+                TypeDescriptorIr::Record {
+                    fields: fields.clone(),
+                }
+            } else if package_id == "skiff.run/std" && symbol_path == "std.time.Duration" {
+                TypeDescriptorIr::Alias {
+                    target: TypeRefIr::builtin("integer"),
+                }
+            } else if package_id == skiff_artifact_model::http_boundary::HTTP_BOUNDARY_PACKAGE_ID {
+                let Some(contract) = canonical_http_boundary_type(&symbol_path) else {
+                    continue;
+                };
+                let Some(target) = lifecycle_type_from_contract(&contract) else {
+                    continue;
+                };
+                TypeDescriptorIr::Alias { target }
+            } else {
                 continue;
             };
             let declaration_module = symbol_path
@@ -395,11 +411,7 @@ fn source_value_transfer_facts_for_units(units: &[MirUnit]) -> SourceValueTransf
             let fact = SourceValueTransferNominalFact {
                 declaration_module,
                 type_parameters: Vec::new(),
-                semantics: SourceValueTransferNominalSemantics::Ordinary(
-                    TypeDescriptorIr::Record {
-                        fields: fields.clone(),
-                    },
-                ),
+                semantics: SourceValueTransferNominalSemantics::Ordinary(descriptor),
             };
             package_facts
                 .entry(identity)
@@ -441,6 +453,43 @@ fn source_value_transfer_facts_for_units(units: &[MirUnit]) -> SourceValueTransf
         }
     }
     facts
+}
+
+fn lifecycle_type_from_contract(ty: &ContractTypeRef) -> Option<TypeRefIr> {
+    Some(match ty {
+        ContractTypeRef::Builtin { name, arguments } => TypeRefIr::Builtin {
+            name: name.clone(),
+            args: arguments
+                .iter()
+                .map(lifecycle_type_from_contract)
+                .collect::<Option<Vec<_>>>()?,
+        },
+        ContractTypeRef::Record { fields } => TypeRefIr::Record {
+            fields: fields
+                .iter()
+                .map(|(name, ty)| Some((name.clone(), lifecycle_type_from_contract(ty)?)))
+                .collect::<Option<std::collections::BTreeMap<_, _>>>()?,
+        },
+        ContractTypeRef::StructuralUnion { variants } => TypeRefIr::Union {
+            items: variants
+                .iter()
+                .map(lifecycle_type_from_contract)
+                .collect::<Option<Vec<_>>>()?,
+        },
+        ContractTypeRef::Nullable { inner } => TypeRefIr::Nullable {
+            inner: Box::new(lifecycle_type_from_contract(inner)?),
+        },
+        ContractTypeRef::Literal {
+            value: ContractLiteral::String { value },
+        } => TypeRefIr::Literal {
+            value: LiteralIr::String {
+                value: value.clone(),
+            },
+        },
+        ContractTypeRef::PackageSchema { .. }
+        | ContractTypeRef::AnyInterface { .. }
+        | ContractTypeRef::TypeParam { .. } => return None,
+    })
 }
 
 /// Attaches one exact admitted execution handoff without mutating the source

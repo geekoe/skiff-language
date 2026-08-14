@@ -70,13 +70,6 @@ impl LinkedConstantTables {
 }
 
 impl DeploymentLinker<'_> {
-    /// Rejects package-wide non-constant facts whose exact candidate plans are
-    /// outside this checkpoint. Constants are handled by
-    /// `link_constant_tables`, including unreachable package-global rows.
-    pub(super) fn reject_unsupported_global_authorities(&self) -> Result<(), BytecodeLinkError> {
-        Ok(())
-    }
-
     pub(super) fn link_constant_tables(
         &mut self,
         type_linker: &mut TypeLinker<'_>,

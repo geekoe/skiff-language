@@ -83,17 +83,20 @@ fn package_global_number_literal_links_exact_authority_and_const_use() {
 }
 
 #[test]
-fn package_global_string_literal_is_rejected_at_exact_constant_node() {
+fn package_global_string_literal_links_its_exact_compiler_lifecycle() {
     let fixture = Fixture::constant(ConstantProgram::LiteralString);
     let hydrated = fixture.hydrate();
+    let image = link_deployment_execution_image(hydrated, &generous_execution_limits()).unwrap();
+    assert_eq!(image.constants().len(), 1);
+    assert_eq!(
+        image.constants()[0].plan(),
+        &LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::SnapshotRelease,
+        }
+    );
     assert!(matches!(
-        link_deployment_execution_image(hydrated, &generous_execution_limits()),
-        Err(DeploymentExecutionImageError::Link(
-            BytecodeLinkError::UnsupportedPhase1Capability {
-                location: BytecodeLinkLocation::Constant { node_index: 0, .. },
-                ..
-            }
-        ))
+        image.frozen_constant_nodes()[0].value(),
+        LinkedFrozenConstantValue::Literal(LiteralIr::String { value }) if value == "ready"
     ));
 }
 

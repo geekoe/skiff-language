@@ -14,7 +14,7 @@ pub enum LinkedCatchMatcher {
     CatchAll,
 }
 
-/// Unverified linked exception-region declaration.
+/// Linked exception-region declaration with image-local typed references.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedExceptionRegion {
     start: InstructionIndex,

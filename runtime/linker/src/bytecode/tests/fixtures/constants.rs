@@ -210,12 +210,15 @@ pub(super) fn populate_bytecode(artifact: &mut BytecodeArtifact, program: Consta
         vec![BytecodePoolEntry::ShapeRef {
             shape: ShapeDeclaration {
                 type_ref: 0,
+                plan: ValueTransferPlan::SnapshotShare {
+                    drop: skiff_artifact_model::ValueDropPlan::SnapshotRelease,
+                },
                 privileged_affine_composite: None,
                 fields: vec![ShapeFieldDeclaration {
                     name: "value".to_string(),
                     type_ref: 0,
-                    plan: ValueTransferPlan::FromType {
-                        ty: TypeRefIr::builtin("number"),
+                    plan: ValueTransferPlan::SnapshotShare {
+                        drop: skiff_artifact_model::ValueDropPlan::Trivial,
                     },
                 }],
             },

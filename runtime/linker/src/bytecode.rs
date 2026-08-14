@@ -18,11 +18,8 @@ mod types;
 mod worklist;
 
 pub(crate) use entry::link_deployment;
-#[cfg(test)]
-use entry::link_deployment_backend_for_test;
 pub use error::{
     BytecodeLinkError, BytecodeLinkLimit, BytecodeLinkLocation, BytecodeLinkObligation,
-    Phase1LinkedCapability,
 };
 pub use execution_image::{
     link_deployment_execution_image, CodeEntryLookupError, DeploymentExecutionEntry,

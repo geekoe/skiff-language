@@ -62,7 +62,7 @@ struct HttpGatewayEntryFacts {
     adapter_plan: GatewayAdapterPlan,
 }
 
-/// Opaque, verifier-backed execution authority for one indexed host target.
+/// Opaque, atomic-image-backed execution authority for one indexed host target.
 ///
 /// Target text, binding strings and required context deliberately do not cross
 /// the execution-image boundary: runtime consumers dispatch exhaustively on

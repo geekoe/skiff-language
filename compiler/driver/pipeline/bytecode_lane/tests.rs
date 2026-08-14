@@ -132,7 +132,7 @@ fn enabled_lane_attaches_exact_handoff_ref_and_manifest_to_a_new_projection() {
         .reference()
         .bytecode_identity
         .starts_with("skiff-bytecode-image-v5:sha256:"));
-    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v8");
+    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v9");
     assert_eq!(
         BYTECODE_IDENTITY_SCHEMA_MARKER,
         "skiff-bytecode-artifact-v5"
@@ -902,6 +902,43 @@ fn phase_5_source_facts_require_exact_canonical_package_record_authority() {
     assert!(source_value_transfer_facts_for_units(&[exact, drifted])
         .nominal(&identity)
         .is_none());
+}
+
+#[test]
+fn phase_5_source_facts_own_the_canonical_http_boundary_lifecycle() {
+    const ABI: &str = "sha256:exact-http-abi";
+    let path = skiff_artifact_model::http_boundary::HTTP_RESPONSE_STREAM_EVENT_TYPE;
+    let mut unit = package_fact_unit(
+        skiff_artifact_model::PackageRefIr::PackageId {
+            package_id: "skiff.run/std".to_string(),
+        },
+        path,
+        Some(ABI),
+        BTreeMap::new(),
+    );
+    unit.package_type_records.clear();
+
+    let facts = source_value_transfer_facts_for_units(&[unit]);
+    let ty = skiff_artifact_model::TypeRefIr::PackageSymbol {
+        symbol: skiff_artifact_model::PackageSymbolRef {
+            package: skiff_artifact_model::PackageRefIr::PackageId {
+                package_id: "skiff.run/std".to_string(),
+            },
+            symbol_path: path.to_string(),
+            abi_expectation: Some(ABI.to_string()),
+        },
+    };
+    let plan = skiff_compiler_source::source_value_transfer_plan(
+        &facts,
+        skiff_compiler_source::SourceValueTransferPlanInput::concrete("main", &ty),
+    )
+    .expect("the compiler owns the canonical HTTP boundary lifecycle");
+    assert_eq!(
+        plan,
+        skiff_artifact_model::ValueTransferPlan::SnapshotShare {
+            drop: skiff_artifact_model::ValueDropPlan::SnapshotRelease,
+        }
+    );
 }
 
 fn package_fact_unit(

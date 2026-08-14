@@ -8,8 +8,8 @@ use skiff_artifact_model::{
 
 use crate::{FunctionIndex, LinkedCallableSignature};
 
-/// Unverified external operation entry facts. The verifier must independently
-/// compare the operation contract, concrete signature and referenced function.
+/// Exact external operation entry facts joined from the hydrated deployment
+/// contract, concrete signature and referenced function.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedOperationEntry {
     contract_operation_id: ContractOperationId,
@@ -54,7 +54,7 @@ pub enum LinkedGatewayCallableRole {
     CloseHandler,
 }
 
-/// Unverified resolution of one deployment gateway callable role.
+/// Exact resolution of one deployment gateway callable role.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedGatewayCallable {
     role: LinkedGatewayCallableRole,
@@ -137,10 +137,9 @@ impl fmt::Display for LinkedGatewayEntryError {
 
 impl std::error::Error for LinkedGatewayEntryError {}
 
-/// Unverified gateway entry facts copied from the deployment and hydrated
-/// package closure. The verifier must independently compare the protocol
-/// surface, both adapter plans, every role's callable identity, concrete
-/// signature and referenced function.
+/// Gateway entry facts joined from the deployment and hydrated package
+/// closure, retaining the exact protocol surface, adapter plans and callable
+/// references.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedGatewayEntry {
     gateway_entry_key: GatewayEntryKey,

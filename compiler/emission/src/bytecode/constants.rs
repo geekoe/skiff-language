@@ -13,6 +13,7 @@ use skiff_compiler_lowering::mir::{MirFunction, MirUnit};
 
 use super::{
     inputs::{ValidatedConstant, ValidatedEmissionInputs},
+    plans::TypeValueTransferPlan,
     BytecodeEmissionError,
 };
 
@@ -23,6 +24,7 @@ pub(crate) struct ConstantImage {
     type_indices: BTreeMap<String, u32>,
     shape_indices: BTreeMap<String, u32>,
     writable_path_indices: BTreeMap<String, u32>,
+    type_plans: Vec<TypeValueTransferPlan>,
 }
 
 impl ConstantImage {
@@ -83,7 +85,7 @@ impl ConstantImage {
         self.graph.nodes.push(FrozenConstantNode::Literal {
             literal: literal.clone(),
         });
-        let plan = ValueTransferPlan::FromType { ty: ty.clone() };
+        let plan = self.exact_type_plan(module_path, ty, context)?;
         let pool_index = checked_index(
             self.pools.constants.len(),
             "indexing function literal constant pool",
@@ -113,7 +115,6 @@ impl ConstantImage {
             .enumerate()
             .map(|(ordinal, (name, field_ty))| {
                 let field_type_ref = self.intern_type(module_path, field_ty, context)?;
-                let qualified = qualify_local_types(module_path, field_ty);
                 Ok(ShapeFieldDeclaration {
                     name: name.clone(),
                     type_ref: field_type_ref,
@@ -121,26 +122,58 @@ impl ConstantImage {
                         Some(schema) => {
                             privileged_field_plan(&schema.fields[ordinal].lifecycle, context)?
                         }
-                        None => ValueTransferPlan::FromType { ty: qualified },
+                        None => self.exact_type_plan(module_path, field_ty, context)?,
                     },
                 })
             })
             .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
-        let shape = ShapeDeclaration {
-            type_ref,
-            privileged_affine_composite: privileged_schema.as_ref().map(|schema| schema.identity),
-            fields: field_declarations,
-        };
-        let key = serde_json::to_string(&shape).map_err(|error| {
-            BytecodeEmissionError::CanonicalSerialization {
-                context: context.to_string(),
-                message: error.to_string(),
-            }
+        let source_plan = self.exact_type_plan(module_path, ty, context)?;
+        let identity = privileged_schema.as_ref().map(|schema| schema.identity);
+        let key = serde_json::to_string(&(type_ref, &source_plan, identity, &field_declarations))
+            .map_err(|error| BytecodeEmissionError::CanonicalSerialization {
+            context: context.to_string(),
+            message: error.to_string(),
         })?;
         if let Some(index) = self.shape_indices.get(&key) {
             return Ok(*index);
         }
         let index = checked_index(self.pools.shapes.len(), "indexing canonical record shapes")?;
+        let plan = match (identity, source_plan) {
+            (Some(_), ValueTransferPlan::FromType { ty: planned_ty }) => {
+                let qualified = qualify_local_types(module_path, ty);
+                if planned_ty != qualified {
+                    return Err(BytecodeEmissionError::CanonicalSerialization {
+                        context: context.to_string(),
+                        message: "privileged shape plan does not name its exact nominal type"
+                            .to_string(),
+                    });
+                }
+                ValueTransferPlan::MoveOnly {
+                    drop: ValueDropPlan::RecursiveShape { shape_ref: index },
+                }
+            }
+            (Some(_), _) => {
+                return Err(BytecodeEmissionError::CanonicalSerialization {
+                    context: context.to_string(),
+                    message: "privileged shape source authority must defer only its pool-local recursive reference"
+                        .to_string(),
+                })
+            }
+            (None, ValueTransferPlan::FromType { .. }) => {
+                return Err(BytecodeEmissionError::CanonicalSerialization {
+                    context: context.to_string(),
+                    message: "ordinary shape lacks a concrete compiler-owned transfer plan"
+                        .to_string(),
+                })
+            }
+            (None, plan) => plan,
+        };
+        let shape = ShapeDeclaration {
+            type_ref,
+            plan,
+            privileged_affine_composite: identity,
+            fields: field_declarations,
+        };
         self.pools
             .shapes
             .push(BytecodePoolEntry::ShapeRef { shape });
@@ -152,6 +185,26 @@ impl ConstantImage {
         )?;
         self.shape_indices.insert(key, index);
         Ok(index)
+    }
+
+    pub(crate) fn exact_type_plan(
+        &self,
+        module_path: &str,
+        ty: &TypeRefIr,
+        context: &str,
+    ) -> Result<ValueTransferPlan, BytecodeEmissionError> {
+        let plan = self
+            .type_plans
+            .iter()
+            .find(|row| row.module_path == module_path && row.ty == *ty)
+            .map(|row| &row.plan)
+            .ok_or_else(|| BytecodeEmissionError::CanonicalSerialization {
+                context: context.to_string(),
+                message: format!(
+                    "missing exact compiler-owned value-transfer plan for type {ty:?} in module {module_path:?}"
+                ),
+            })?;
+        Ok(qualify_transfer_plan(module_path, plan))
     }
 
     pub(crate) fn intern_writable_path(
@@ -521,6 +574,7 @@ fn merge_graphs(
                 &mut pools,
                 &mut type_indices,
                 &mut shape_indices,
+                inputs.transfer_plans.type_plans(),
             )?);
         }
 
@@ -564,6 +618,7 @@ fn merge_graphs(
         type_indices,
         shape_indices,
         writable_path_indices: BTreeMap::new(),
+        type_plans: inputs.transfer_plans.type_plans().to_vec(),
     })
 }
 
@@ -577,6 +632,7 @@ fn relocate_node(
     pools: &mut BytecodePools,
     type_indices: &mut BTreeMap<String, u32>,
     shape_indices: &mut BTreeMap<String, u32>,
+    type_plans: &[TypeValueTransferPlan],
 ) -> Result<FrozenConstantNode, BytecodeEmissionError> {
     let relocate_children = |children: &[u32]| {
         children
@@ -617,6 +673,7 @@ fn relocate_node(
                 pools,
                 type_indices,
                 shape_indices,
+                type_plans,
             )?;
             Ok(FrozenConstantNode::Record {
                 shape_index,
@@ -652,6 +709,7 @@ fn relocate_constant_shape(
     pools: &mut BytecodePools,
     type_indices: &mut BTreeMap<String, u32>,
     shape_indices: &mut BTreeMap<String, u32>,
+    type_plans: &[TypeValueTransferPlan],
 ) -> Result<u32, BytecodeEmissionError> {
     let shape = validated.bundle.shape(shape_index).map_err(|error| {
         BytecodeEmissionError::CanonicalSerialization {
@@ -670,8 +728,22 @@ fn relocate_constant_shape(
             message: error.to_string(),
         })?
         .clone();
-    let owner = qualify_local_types(validated.module_path, &owner);
-    let owner_ref = intern_merged_type(validated.module_path, &owner, pools, type_indices)?;
+    let owner_plan = exact_type_plan(
+        type_plans,
+        validated.module_path,
+        &owner,
+        &format!("constant `{}` shape owner", validated.constant.symbol),
+    )?;
+    if matches!(owner_plan, ValueTransferPlan::FromType { .. }) {
+        return Err(BytecodeEmissionError::CanonicalSerialization {
+            context: format!("constant `{}` shape owner", validated.constant.symbol),
+            message: "ordinary constant shape lacks a concrete compiler-owned transfer plan"
+                .to_string(),
+        });
+    }
+    let qualified_owner = qualify_local_types(validated.module_path, &owner);
+    let owner_ref =
+        intern_merged_type(validated.module_path, &qualified_owner, pools, type_indices)?;
     let mut fields = Vec::with_capacity(shape.fields().len());
     for field in shape.fields() {
         let ty = validated
@@ -686,17 +758,28 @@ fn relocate_constant_shape(
                 message: error.to_string(),
             })?
             .clone();
+        let plan = exact_type_plan(
+            type_plans,
+            validated.module_path,
+            &ty,
+            &format!(
+                "constant `{}` shape field `{}` lifecycle",
+                validated.constant.symbol,
+                field.name()
+            ),
+        )?;
         let qualified = qualify_local_types(validated.module_path, &ty);
         let field_type_ref =
             intern_merged_type(validated.module_path, &qualified, pools, type_indices)?;
         fields.push(ShapeFieldDeclaration {
             name: field.name().to_string(),
             type_ref: field_type_ref,
-            plan: ValueTransferPlan::FromType { ty: qualified },
+            plan,
         });
     }
     let declaration = ShapeDeclaration {
         type_ref: owner_ref,
+        plan: owner_plan,
         privileged_affine_composite: None,
         fields,
     };
@@ -721,6 +804,24 @@ fn relocate_constant_shape(
     )?;
     shape_indices.insert(key, index);
     Ok(index)
+}
+
+fn exact_type_plan(
+    type_plans: &[TypeValueTransferPlan],
+    module_path: &str,
+    ty: &TypeRefIr,
+    context: &str,
+) -> Result<ValueTransferPlan, BytecodeEmissionError> {
+    type_plans
+        .iter()
+        .find(|row| row.module_path == module_path && row.ty == *ty)
+        .map(|row| qualify_transfer_plan(module_path, &row.plan))
+        .ok_or_else(|| BytecodeEmissionError::CanonicalSerialization {
+            context: context.to_string(),
+            message: format!(
+                "missing exact compiler-owned value-transfer plan for type {ty:?} in module {module_path:?}"
+            ),
+        })
 }
 
 fn intern_merged_type(

@@ -331,7 +331,9 @@ fn corpus_validates_nominal_shape_fields_and_plans() {
             args: vec![string_type()],
         },
     };
-    assert_validates(&bad_plan);
+    assert!(assert_rejected(&bad_plan)
+        .to_string()
+        .contains("ordinary shape fields require explicit non-recursive SnapshotShare plans"));
 }
 
 #[test]

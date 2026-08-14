@@ -279,23 +279,9 @@ pub(super) fn source_values(
             let entry = context.type_linker.shape(row).ok_or_else(|| {
                 obligation_error(location.clone(), "shape row is absent".to_string())
             })?;
-            let nominal_type = entry.nominal_type();
-            let concrete = context
-                .type_linker
-                .linked_type_ref(nominal_type)
-                .cloned()
-                .ok_or_else(|| {
-                    obligation_error(location.clone(), "shape nominal type is absent".to_string())
-                })?;
             Ok(vec![LinkedStackValue::new(
-                nominal_type,
-                context.type_linker.plan_for_concrete_type_at(
-                    context.source.package,
-                    context.source.specialization,
-                    context.substitutions,
-                    &concrete,
-                    location,
-                )?,
+                entry.nominal_type(),
+                entry.plan().clone(),
             )])
         }
         ValueSource::ShapeField { shape, ordinal } => {

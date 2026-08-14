@@ -9,8 +9,7 @@ use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 use crate::bytecode::{BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation};
 
 /// Replaces every caller-relative or source-local nominal reference with the
-/// exact owner form that the independent verifier can reconstruct from the
-/// same hydration.
+/// exact owner form carried by the same hydration.
 pub(in crate::bytecode) fn normalize_type(
     deployment: &HydratedDeploymentBytecode,
     caller: &HydratedBytecodePackage,
