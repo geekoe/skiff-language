@@ -562,13 +562,43 @@ fn server_stream_start_chunk_and_end_link_exact_site_shapes() {
                 shape.plan(),
                 "site shape plan closes over the actual stack-top plan"
             );
-            layouts.push(
-                shape
+            let names = shape
+                .fields()
+                .iter()
+                .map(|field| field.name())
+                .collect::<Vec<_>>();
+            let construct_ordinal = ordinal
+                .checked_sub(1)
+                .expect("EmitStream follows its exact NewRecord");
+            assert_eq!(
+                function.instructions()[construct_ordinal].opcode(),
+                Opcode::NewRecord
+            );
+            let before_construct = function.stack_map().entries()[construct_ordinal].stack_before();
+            assert!(before_construct.len() >= shape.fields().len());
+            let actual_fields = &before_construct[before_construct.len() - shape.fields().len()..];
+            for (actual, expected) in actual_fields.iter().zip(shape.fields()) {
+                assert_eq!(
+                    image.types()[actual.ty().get() as usize].type_ref(),
+                    image.types()[expected.ty().get() as usize].type_ref(),
+                    "NewRecord field closes over its exact emitted carrier TypeRef/ABI"
+                );
+                assert_eq!(actual.plan(), expected.plan());
+            }
+            if names == ["headers", "status", "tag"] {
+                let carrier_types = shape
                     .fields()
                     .iter()
-                    .map(|field| field.name())
-                    .collect::<Vec<_>>(),
-            );
+                    .map(|field| image.types()[field.ty().get() as usize].type_ref())
+                    .collect::<Vec<_>>();
+                assert!(matches!(
+                    carrier_types[0],
+                    TypeRefIr::Builtin { name, args } if name == "Array" && args.len() == 1
+                ));
+                assert_eq!(carrier_types[1], &TypeRefIr::builtin("number"));
+                assert_eq!(carrier_types[2], &TypeRefIr::builtin("string"));
+            }
+            layouts.push(names);
         }
     }
     assert_eq!(

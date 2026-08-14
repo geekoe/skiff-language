@@ -1771,7 +1771,7 @@ impl<'a> FunctionEmitter<'a> {
                 ),
             ));
         }
-        let declared = self.record_construct_fields(
+        let carriers = self.record_construct_carrier_fields(
             &construct_type,
             &construct_fields,
             "EmitStream item shape",
@@ -1779,7 +1779,7 @@ impl<'a> FunctionEmitter<'a> {
         let emit_stream_item_shape_ref = self.image.intern_shape(
             self.unit.module_path.as_str(),
             &construct_type,
-            &declared,
+            &carriers,
             &format!("EmitStream item shape in `{}`", self.key),
         )?;
         self.emit_expression(value)?;
@@ -2665,7 +2665,8 @@ impl<'a> FunctionEmitter<'a> {
         type_ref: &TypeRefIr,
         fields: &BTreeMap<String, ExprRefIr>,
     ) -> Result<(), BytecodeEmissionError> {
-        let declared = self.record_construct_fields(type_ref, fields, "record construct")?;
+        let carriers =
+            self.record_construct_carrier_fields(type_ref, fields, "record construct")?;
         // The runtime tag comes from the constructed nominal leaf, not the
         // surrounding static context: a union-typed constructor must still
         // carry its concrete leaf identity so throw/catch match the actual
@@ -2673,16 +2674,42 @@ impl<'a> FunctionEmitter<'a> {
         let shape = self.image.intern_shape(
             self.unit.module_path.as_str(),
             type_ref,
-            &declared,
+            &carriers,
             &format!("record construct in `{}`", self.key),
         )?;
-        for name in declared.keys() {
+        for name in carriers.keys() {
             self.emit_expression(*fields.get(name).expect("field set was checked"))?;
         }
-        let field_count = u32::try_from(declared.len())
+        let field_count = u32::try_from(carriers.len())
             .map_err(|_| arithmetic(&self.key, "record field count conversion"))?;
         self.emit_op(Opcode::NewRecord, vec![shape, field_count])?;
         Ok(())
+    }
+
+    fn record_construct_carrier_fields(
+        &self,
+        type_ref: &TypeRefIr,
+        fields: &BTreeMap<String, ExprRefIr>,
+        context: &'static str,
+    ) -> Result<BTreeMap<String, TypeRefIr>, BytecodeEmissionError> {
+        let declared = self.record_construct_fields(type_ref, fields, context)?;
+        declared
+            .into_keys()
+            .map(|name| {
+                let value = fields
+                    .get(&name)
+                    .copied()
+                    .expect("declared field set was checked");
+                let expression = self.function.expression(value)?;
+                // Source typing remains the admission authority for the
+                // declared field. The shape consumed by NewRecord instead
+                // publishes the exact machine carrier selected below by
+                // emit_expression: literal refinements and integer literals
+                // are represented by their builtin string/number carriers.
+                let carrier = expression_machine_carrier_type(expression);
+                Ok((name, carrier))
+            })
+            .collect()
     }
 
     fn record_construct_fields(
@@ -4751,6 +4778,13 @@ fn literal_type(literal: &LiteralIr) -> TypeRefIr {
     })
 }
 
+fn expression_machine_carrier_type(expression: &MirExpression) -> TypeRefIr {
+    match &expression.expression {
+        ExprIr::Literal { value } => literal_type(value),
+        _ => expression.ty.clone(),
+    }
+}
+
 fn require_narrow_target(caller: &str, target: &MirFunction) -> Result<(), BytecodeEmissionError> {
     if target.self_type.is_some() {
         return Err(unsupported(
@@ -4883,6 +4917,64 @@ mod tests {
     use super::*;
     use crate::bytecode::constants::build_constant_image;
     use crate::bytecode::plans::derive_test_bytecode_value_transfer_plans;
+
+    #[test]
+    fn record_construct_carrier_rewrites_only_literal_lowering() {
+        let number_literal = MirExpression {
+            index: 0,
+            expression: ExprIr::Literal {
+                value: LiteralIr::Number {
+                    value: serde_json::Number::from(207_u64),
+                },
+            },
+            ty: TypeRefIr::builtin("integer"),
+            writable: None,
+            direct_call: None,
+            stream_result: None,
+            remote_interface: None,
+        };
+        assert_eq!(
+            expression_machine_carrier_type(&number_literal),
+            TypeRefIr::builtin("number")
+        );
+
+        let string_literal = MirExpression {
+            index: 1,
+            expression: ExprIr::Literal {
+                value: LiteralIr::String {
+                    value: "start".to_string(),
+                },
+            },
+            ty: TypeRefIr::Literal {
+                value: LiteralIr::String {
+                    value: "start".to_string(),
+                },
+            },
+            writable: None,
+            direct_call: None,
+            stream_result: None,
+            remote_interface: None,
+        };
+        assert_eq!(
+            expression_machine_carrier_type(&string_literal),
+            TypeRefIr::builtin("string")
+        );
+
+        let loaded_slot = MirExpression {
+            index: 2,
+            expression: ExprIr::LoadSlot { slot: 0 },
+            ty: TypeRefIr::builtin("integer"),
+            writable: None,
+            direct_call: None,
+            stream_result: None,
+            remote_interface: None,
+        };
+        assert_eq!(
+            expression_machine_carrier_type(&loaded_slot),
+            TypeRefIr::builtin("integer"),
+            "non-literal expressions retain their source-semantic type fact"
+        );
+    }
 
     #[test]
     fn stream_backedge_state_distinguishes_shared_and_consumed_items() {

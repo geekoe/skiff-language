@@ -318,11 +318,41 @@ fn production_authoring_publishes_exact_affine_http_stream_bytecode() {
             else {
                 panic!("EmitStream item shape ref selects a dense shape")
             };
-            shape
+            let names = shape
                 .fields
                 .iter()
                 .map(|field| field.name.as_str())
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>();
+            if names == ["headers", "status", "tag"] {
+                let carrier_types = shape
+                    .fields
+                    .iter()
+                    .map(|field| {
+                        let BytecodePoolEntry::TypeRef { ty, .. } =
+                            &bytecode.artifact().image.pools.types[field.type_ref as usize]
+                        else {
+                            panic!("shape field selects a TypeRef row")
+                        };
+                        ty
+                    })
+                    .collect::<Vec<_>>();
+                assert!(matches!(
+                    carrier_types[0],
+                    skiff_artifact_model::TypeRefIr::Builtin { name, args }
+                        if name == "Array" && args.len() == 1
+                ));
+                assert_eq!(
+                    carrier_types[1],
+                    &skiff_artifact_model::TypeRefIr::builtin("number"),
+                    "integer source semantics lower to the number VM carrier"
+                );
+                assert_eq!(
+                    carrier_types[2],
+                    &skiff_artifact_model::TypeRefIr::builtin("string"),
+                    "literal tag source semantics lower to the string VM carrier"
+                );
+            }
+            names
         })
         .collect::<Vec<_>>();
     emit_shapes.sort_unstable();
@@ -587,6 +617,60 @@ fn production_gateway_negatives_fail_before_package_or_release_pointer() {
         ));
         assert_no_publication_pointers(&artifact_root, &package_id);
         std::fs::remove_dir_all(temp).expect("remove negative fixture tree");
+    }
+}
+
+#[test]
+fn production_stream_shape_mismatches_fail_typed_before_publication() {
+    const HTTP: &str = "consume:\n  method: POST\n  path: /phase-5/compiler\n  kind: rawHttp\n  handler: main.consume\n  adapterArgs:\n    - param: request\n      source: { kind: http.request }\n";
+    let start = "  emit({\n    tag: \"start\",\n    status: 207,\n    headers: [],\n  })";
+    for (label, source, expected) in [
+        (
+            "nominal-mismatch",
+            format!(
+                "type WrongEvent {{ tag: string }}\n\n{}",
+                PRODUCTION_SERVER_STREAM_SOURCE.replacen(
+                    start,
+                    "  emit(WrongEvent { tag: \"start\" })",
+                    1,
+                )
+            ),
+            "emit chunk type mismatch",
+        ),
+        (
+            "field-set-mismatch",
+            PRODUCTION_SERVER_STREAM_SOURCE.replacen("    headers: [],\n", "", 1),
+            "missing required object literal field `headers`",
+        ),
+    ] {
+        let package_id = format!("test.skiff/c5-production-{label}");
+        let (platform, package_root, artifact_root, temp) =
+            production_fixture(&package_id, Some(HTTP));
+        std::fs::write(package_root.join("main.skiff"), source)
+            .expect("write invalid stream shape source");
+        let error = crate::authoring::build_authoring_object(
+            &platform,
+            crate::authoring::AuthoringObject::Package,
+            &package_root,
+            &artifact_root,
+            "skiff-test",
+            true,
+        )
+        .expect_err("invalid stream item shape must fail before publication");
+        let typed = error
+            .downcast_ref::<crate::ServicePackageCompileError>()
+            .expect("source rejection preserves its typed service compile error");
+        assert!(
+            matches!(
+                typed,
+                crate::ServicePackageCompileError::Package(
+                    PackageCompileError::ContractValidation { message }
+                ) if message.contains(expected)
+            ),
+            "expected diagnostic {expected:?}, got: {typed}"
+        );
+        assert_no_publication_pointers(&artifact_root, &package_id);
+        std::fs::remove_dir_all(temp).expect("remove invalid stream shape fixture tree");
     }
 }
 
