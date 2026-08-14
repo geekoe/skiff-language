@@ -1,0 +1,59 @@
+import std
+
+function headers() -> Array<std.http.HttpHeader> {
+  return Array.empty<std.http.HttpHeader>()
+}
+
+function outbound(url: string) -> std.http.HttpClientRequest {
+  return std.http.HttpClientRequest {
+    method: "GET",
+    url: url,
+    headers: headers(),
+    body: null,
+    timeoutMs: 5000,
+  }
+}
+
+function run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  final unary = std.http.request(outbound("http://phase5.test/request"))
+  final left = std.http.stream(outbound("http://phase5.test/stream/left"))
+  final right = std.http.stream(outbound("http://phase5.test/stream/right"))
+
+  var leftBody = ""
+  for chunk in left.body {
+    leftBody = leftBody.concat(chunk.toUtf8String())
+  }
+  var rightBody = ""
+  for chunk in right.body {
+    rightBody = rightBody.concat(chunk.toUtf8String())
+  }
+
+  emit(std.http.streamStart(207, headers()))
+  emit(std.http.streamChunk(bytes.fromUtf8("U=")))
+  emit(std.http.streamChunk(unary.body))
+  emit(std.http.streamChunk(bytes.fromUtf8("|A=")))
+  emit(std.http.streamChunk(bytes.fromUtf8(leftBody)))
+  emit(std.http.streamChunk(bytes.fromUtf8("|B=")))
+  emit(std.http.streamChunk(bytes.fromUtf8(rightBody)))
+  emit(std.http.streamEnd())
+  return null
+}
+
+function dropLeft(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  final left = std.http.stream(outbound("http://phase5.test/stream/drop-left"))
+  final right = std.http.stream(outbound("http://phase5.test/stream/drop-right"))
+  var firstLeft = ""
+  for chunk in left.body {
+    firstLeft = chunk.toUtf8String()
+    break
+  }
+  var rightBody = ""
+  for chunk in right.body {
+    rightBody = rightBody.concat(chunk.toUtf8String())
+  }
+  emit(std.http.streamStart(208, headers()))
+  emit(std.http.streamChunk(bytes.fromUtf8("A=".concat(firstLeft))))
+  emit(std.http.streamChunk(bytes.fromUtf8("|B=".concat(rightBody))))
+  emit(std.http.streamEnd())
+  return null
+}

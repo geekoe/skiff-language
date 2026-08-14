@@ -1,0 +1,16 @@
+run:
+  method: POST
+  path: /phase-5/vcp
+  kind: rawHttp
+  handler: main.run
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+drop-left:
+  method: POST
+  path: /phase-5/drop-left
+  kind: rawHttp
+  handler: main.dropLeft
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
