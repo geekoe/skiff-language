@@ -22,6 +22,7 @@
 mod bytecode;
 mod owner_inventory;
 mod pending;
+mod resource;
 mod root_escrow;
 mod stream;
 mod stream_driver;
@@ -42,6 +43,11 @@ pub use pending::{
     PendingPublication, PendingPublicationError, PendingPublicationFailure, PendingRegistry,
     PendingSettlement, PendingWake, PendingWakeQueue, SettleDisposition, SettlementSource,
     VmCompletionHandle, VmPendingOwner, VmPendingRegistry, VmPendingWake,
+};
+pub use resource::{
+    RequestResourceHandle, RequestResourceLookupError, RequestResourceRegistrationError,
+    RequestResourceRegistrationFailure, RequestResourceRelease, RequestResourceState,
+    RequestResourceTable, RequestResourceTermination,
 };
 pub use root_escrow::{RootDisposition, RootEscrow, RootEscrowBacking};
 pub use skiff_runtime_model::bytecode_execution_observation::{

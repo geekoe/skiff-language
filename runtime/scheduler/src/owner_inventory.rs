@@ -12,7 +12,7 @@ use skiff_runtime_vm::VmBudget;
 
 use crate::{
     BytecodeScheduler, BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts,
-    BytecodeUnit,
+    BytecodeUnit, RequestResourceTable, RequestResourceTermination,
 };
 
 /// One counted owner domain inside a request execution inventory.
@@ -441,13 +441,14 @@ impl RequestExecutionOwnerInventoryFreezePermit {
 /// opens a fresh inventory, installs the root unit exactly once, and then
 /// consumes itself either into a frozen `NotStarted` snapshot or into the
 /// single scheduler drive, which freezes the actual `Started` snapshot on
-/// every outcome. It exposes no independently composable Pending/resource/
-/// child factories, no raw registration/guard/lease/install parts and no
-/// freeze-by-reference: callers can neither forge a carrier nor mix authority
-/// from two requests.
+/// every outcome. Its resource table and pending registration remain bound to
+/// this inventory; it exposes no raw registration/guard/lease/install parts
+/// and no freeze-by-reference, so callers cannot forge a carrier or mix owner
+/// authority from two requests.
 pub struct RequestExecutionContext<U: BytecodeUnit> {
     registrations: RequestExecutionOwnerRegistrations,
-    freeze: RequestExecutionOwnerInventoryFreezePermit,
+    freeze: Option<RequestExecutionOwnerInventoryFreezePermit>,
+    resources: RequestResourceTable,
     root: Option<U>,
     ports: BytecodeSchedulerPorts<U>,
 }
@@ -460,9 +461,11 @@ where
     pub fn create(ports: BytecodeSchedulerPorts<U>) -> Self {
         let inventory = RequestExecutionOwnerInventory::open();
         let (registrations, freeze) = inventory.into_parts();
+        let resources = RequestResourceTable::new(registrations.resource());
         Self {
             registrations,
-            freeze,
+            freeze: Some(freeze),
+            resources,
             root: None,
             ports,
         }
@@ -476,6 +479,15 @@ where
     /// never outlives the context's inventory.
     pub fn pending_registration(&self) -> PendingOwnerRegistration {
         self.registrations.pending()
+    }
+
+    /// Clones this request's single scheduler-owned resource table capability.
+    ///
+    /// The clone cannot outlive the request as an open authority: every
+    /// consuming terminal path and abandoned-context drop closes the shared
+    /// table before freezing the owner inventory.
+    pub fn resource_table(&self) -> RequestResourceTable {
+        self.resources.clone()
     }
 
     /// Replaces the scheduler ports installed at [`Self::create`].
@@ -508,8 +520,8 @@ where
 
     /// Consumes the context before any drive and freezes the `NotStarted`
     /// owner inventory snapshot.
-    pub fn into_not_started(self) -> RequestExecutionOwnerInventorySnapshot {
-        self.freeze.freeze()
+    pub fn into_not_started(mut self) -> RequestExecutionOwnerInventorySnapshot {
+        self.close_and_freeze(RequestResourceTermination::RequestNotStarted)
     }
 
     /// Consumes the context, runs the scheduler exactly once, and freezes the
@@ -519,7 +531,7 @@ where
     ///
     /// Panics when no root unit was installed before driving.
     pub fn drive(
-        self,
+        mut self,
         heap: &mut dyn VmHeap,
         budget: &mut dyn VmBudget,
     ) -> (
@@ -528,10 +540,12 @@ where
     ) {
         let root = self
             .root
+            .take()
             .expect("the request execution context must install its root unit before driving");
-        let scheduler = BytecodeScheduler::new(root, self.ports, self.registrations.child());
+        let scheduler =
+            BytecodeScheduler::new(root, self.ports.clone(), self.registrations.child());
         let result = scheduler.run(heap, budget);
-        let snapshot = self.freeze.freeze();
+        let snapshot = self.close_and_freeze(RequestResourceTermination::RequestScopeClosed);
         (result, snapshot)
     }
 
@@ -583,14 +597,44 @@ where
     ///
     /// Panics when the context was already frozen by
     /// [`Self::into_not_started`] or an earlier freeze.
-    pub fn freeze(self) -> RequestExecutionOwnerInventorySnapshot {
-        self.freeze.freeze()
+    pub fn freeze(mut self) -> RequestExecutionOwnerInventorySnapshot {
+        self.close_and_freeze(RequestResourceTermination::RequestScopeClosed)
+    }
+
+    fn close_and_freeze(
+        &mut self,
+        termination: RequestResourceTermination,
+    ) -> RequestExecutionOwnerInventorySnapshot {
+        self.resources.close_all(termination);
+        self.freeze
+            .take()
+            .expect("the request execution context freezes its inventory exactly once")
+            .freeze()
+    }
+}
+
+impl<U: BytecodeUnit> Drop for RequestExecutionContext<U> {
+    fn drop(&mut self) {
+        self.resources
+            .close_all(RequestResourceTermination::OwnerAbandoned);
+        if let Some(freeze) = self.freeze.take() {
+            let _ = freeze.freeze();
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::mpsc, time::Duration};
+    use std::{
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            mpsc, Arc,
+        },
+        time::Duration,
+    };
+
+    use skiff_runtime_model::{vm_heap::VmHeapError, vm_root::VmRootVisitor};
+    use skiff_runtime_vm::VmFiber;
 
     use super::*;
 
@@ -684,5 +728,42 @@ mod tests {
         let snapshot = freeze.freeze();
         assert_eq!(snapshot.pending.current, u64::MAX);
         assert!(!snapshot.pending.ever_created);
+    }
+
+    struct ContextResource(Arc<AtomicUsize>);
+
+    impl VmRootSource for ContextResource {
+        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    impl crate::RequestResourceState for ContextResource {
+        fn terminate(self: Box<Self>, _termination: RequestResourceTermination) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn context_owns_one_shared_resource_table_and_closes_it_before_freeze() {
+        let context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
+        let first_view = context.resource_table();
+        let second_view = context.resource_table();
+        let terminal_count = Arc::new(AtomicUsize::new(0));
+        let handle = first_view
+            .register(Box::new(ContextResource(Arc::clone(&terminal_count))))
+            .unwrap();
+
+        assert!(second_view.validate(&handle).is_ok());
+        assert_eq!(first_view.live_count(), 1);
+
+        let snapshot = context.freeze();
+        assert_eq!(snapshot.resource.current, 0);
+        assert!(snapshot.resource.ever_created);
+        assert_eq!(terminal_count.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            second_view.release(&handle).unwrap(),
+            crate::RequestResourceRelease::AlreadyReleased
+        );
     }
 }
