@@ -424,12 +424,14 @@ fn artifact_pool_origin_distinguishes_specialization_context() {
             TypeIndex::new(1),
             type_origin(1, Some(first_key)),
             TypeRefIr::builtin("string"),
+            snapshot_plan(),
             None,
         ),
         LinkedTypeEntry::new(
             TypeIndex::new(2),
             type_origin(1, Some(second_key)),
             TypeRefIr::builtin("string"),
+            snapshot_plan(),
             None,
         ),
     ]);
@@ -453,6 +455,7 @@ fn candidate_rejects_duplicate_artifact_origin() {
         TypeIndex::new(1),
         type_origin(0, None),
         TypeRefIr::builtin("string"),
+        snapshot_plan(),
         None,
     ));
 
@@ -477,6 +480,7 @@ fn candidate_retains_exact_container_position_layouts() {
                 name: "Array".to_string(),
                 args: vec![TypeRefIr::builtin("string")],
             },
+            snapshot_plan(),
             Some(LinkedContainerLayout::array(LinkedContainerPosition::new(
                 TypeIndex::new(0),
                 snapshot_release_plan(),
@@ -486,6 +490,7 @@ fn candidate_retains_exact_container_position_layouts() {
             TypeIndex::new(2),
             type_origin(2, None),
             TypeRefIr::builtin("Json"),
+            snapshot_plan(),
             Some(LinkedContainerLayout::json(LinkedContainerPosition::new(
                 TypeIndex::new(2),
                 snapshot_release_plan(),
@@ -495,6 +500,7 @@ fn candidate_retains_exact_container_position_layouts() {
             TypeIndex::new(3),
             type_origin(3, None),
             TypeRefIr::builtin("JsonObject"),
+            snapshot_plan(),
             Some(LinkedContainerLayout::json_object(
                 LinkedContainerPosition::new(TypeIndex::new(0), snapshot_release_plan()),
                 LinkedContainerPosition::new(TypeIndex::new(2), snapshot_release_plan()),
@@ -507,6 +513,7 @@ fn candidate_retains_exact_container_position_layouts() {
                 name: "Map".to_string(),
                 args: vec![TypeRefIr::builtin("string"), TypeRefIr::builtin("Json")],
             },
+            snapshot_plan(),
             Some(LinkedContainerLayout::map(
                 LinkedContainerPosition::new(TypeIndex::new(0), snapshot_release_plan()),
                 LinkedContainerPosition::new(TypeIndex::new(2), snapshot_release_plan()),
@@ -547,6 +554,7 @@ fn candidate_rejects_missing_or_wrong_container_layout_kind() {
         TypeIndex::new(1),
         type_origin(1, None),
         array_type.clone(),
+        snapshot_plan(),
         None,
     ));
     assert!(matches!(
@@ -562,6 +570,7 @@ fn candidate_rejects_missing_or_wrong_container_layout_kind() {
         TypeIndex::new(1),
         type_origin(1, None),
         array_type,
+        snapshot_plan(),
         Some(LinkedContainerLayout::map(
             LinkedContainerPosition::new(TypeIndex::new(0), snapshot_release_plan()),
             LinkedContainerPosition::new(TypeIndex::new(0), snapshot_release_plan()),
@@ -584,6 +593,7 @@ fn candidate_rejects_invalid_json_recursive_position() {
         TypeIndex::new(1),
         type_origin(1, None),
         TypeRefIr::builtin("Json"),
+        snapshot_plan(),
         Some(LinkedContainerLayout::json(LinkedContainerPosition::new(
             TypeIndex::new(0),
             snapshot_release_plan(),
@@ -604,6 +614,7 @@ fn candidate_rejects_invalid_json_recursive_position() {
         TypeIndex::new(1),
         type_origin(1, None),
         TypeRefIr::builtin("Json"),
+        snapshot_plan(),
         Some(LinkedContainerLayout::json(LinkedContainerPosition::new(
             TypeIndex::new(1),
             snapshot_plan(),
@@ -1338,6 +1349,7 @@ fn linked_function_retains_explicit_stream_producer_authority() {
             name: "Stream".to_string(),
             args: vec![TypeRefIr::builtin("string")],
         },
+        snapshot_plan(),
         None,
     ));
 
@@ -1366,6 +1378,7 @@ fn ordinary_result_frame_is_not_derived_as_stream_producer() {
             name: "Stream".to_string(),
             args: vec![TypeRefIr::builtin("string")],
         },
+        snapshot_plan(),
         None,
     ));
 
@@ -1390,6 +1403,7 @@ fn candidate_rejects_stream_producer_with_ordinary_results() {
             name: "Stream".to_string(),
             args: vec![TypeRefIr::builtin("string")],
         },
+        snapshot_plan(),
         None,
     ));
 

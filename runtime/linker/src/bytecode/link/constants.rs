@@ -193,8 +193,21 @@ impl DeploymentLinker<'_> {
             let (ty, concrete_type) =
                 type_linker.intern_package_global_type(package, *type_ref, location.clone())?;
             require_literal_carrier(literal, &concrete_type, location.clone())?;
-            let linked_plan =
-                type_linker.link_constant_plan(plan, &concrete_type, location.clone())?;
+            let linked_plan = type_linker
+                .link_transfer_plan(plan, &BTreeMap::new(), location.clone())
+                .map_err(|error| constant_error(location.clone(), error.to_string()))?;
+            let exact_type_plan = type_linker.linked_type_plan(ty).ok_or_else(|| {
+                constant_error(
+                    location.clone(),
+                    format!("constant type row {} has no compiler-owned plan", ty.get()),
+                )
+            })?;
+            if &linked_plan != exact_type_plan {
+                return Err(constant_error(
+                    location,
+                    "constant plan differs from its exact TypeRef plan".to_string(),
+                ));
+            }
             let index = constant_index(linked.len(), location.clone())?;
             let origin = LinkedArtifactPoolOrigin::new(
                 package.reference().package_build_id.clone(),

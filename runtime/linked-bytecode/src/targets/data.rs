@@ -247,14 +247,16 @@ pub enum LinkedContainerPositionKind {
     JsonObjectValue,
 }
 
-/// Candidate type entry with exact artifact provenance and, for built-in
-/// containers, an exact concrete position layout. Candidate construction
-/// rejects residual `TypeParam` values and retains only bounded concrete rows.
+/// Candidate type entry with exact artifact provenance, the compiler-owned
+/// transfer plan, and, for built-in containers, an exact concrete position
+/// layout. Candidate construction rejects residual `TypeParam` values and
+/// retains only bounded concrete rows.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LinkedTypeEntry {
     index: TypeIndex,
     origin: LinkedArtifactPoolOrigin<ArtifactTypeIndex>,
     type_ref: TypeRefIr,
+    plan: LinkedValueTransferPlan,
     container_layout: Option<LinkedContainerLayout>,
 }
 
@@ -263,12 +265,14 @@ impl LinkedTypeEntry {
         index: TypeIndex,
         origin: LinkedArtifactPoolOrigin<ArtifactTypeIndex>,
         type_ref: TypeRefIr,
+        plan: LinkedValueTransferPlan,
         container_layout: Option<LinkedContainerLayout>,
     ) -> Self {
         Self {
             index,
             origin,
             type_ref,
+            plan,
             container_layout,
         }
     }
@@ -283,6 +287,10 @@ impl LinkedTypeEntry {
 
     pub const fn type_ref(&self) -> &TypeRefIr {
         &self.type_ref
+    }
+
+    pub const fn plan(&self) -> &LinkedValueTransferPlan {
+        &self.plan
     }
 
     pub const fn container_layout(&self) -> Option<&LinkedContainerLayout> {

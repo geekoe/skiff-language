@@ -6,8 +6,9 @@ use skiff_runtime_linked_bytecode::{
     CallbackCaptureLayoutIndex, FunctionIndex, InstructionIndex, LinkedArtifactPoolOrigin,
     LinkedCallbackCapture, LinkedCallbackCaptureLayout, LinkedContainerLayout,
     LinkedContainerPosition, LinkedResumeResultMaterialization, LinkedResumeSite, LinkedShapeEntry,
-    LinkedShapeField, LinkedTypeEntry, LinkedWritablePathEntry, LinkedWritablePathSegment,
-    ResumeSiteIndex, ShapeIndex, SpecializationKey, TypeIndex, WritablePathIndex,
+    LinkedShapeField, LinkedTypeEntry, LinkedValueTransferPlan, LinkedWritablePathEntry,
+    LinkedWritablePathSegment, ResumeSiteIndex, ShapeIndex, SpecializationKey, TypeIndex,
+    WritablePathIndex,
 };
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
@@ -56,6 +57,7 @@ pub(in crate::bytecode) struct TypeLinker<'a> {
     tracker: LinkLimitTracker<'a>,
     origins: BTreeMap<TypeOriginKey, TypeIndex>,
     entries: Vec<Option<LinkedTypeEntry>>,
+    pending_type_refs: BTreeMap<TypeIndex, TypeRefIr>,
     shape_origins: BTreeMap<ShapeOriginKey, ShapeIndex>,
     shape_entries: Vec<LinkedShapeEntry>,
     writable_path_origins: BTreeMap<WritablePathOriginKey, WritablePathIndex>,
@@ -77,6 +79,7 @@ impl<'a> TypeLinker<'a> {
             tracker: LinkLimitTracker::new(limits),
             origins: BTreeMap::new(),
             entries: Vec::new(),
+            pending_type_refs: BTreeMap::new(),
             shape_origins: BTreeMap::new(),
             shape_entries: Vec::new(),
             writable_path_origins: BTreeMap::new(),
@@ -100,6 +103,13 @@ impl<'a> TypeLinker<'a> {
         self.function_indices = Some(function_indices);
     }
 
+    pub(in crate::bytecode) fn function_index(
+        &self,
+        specialization: &SpecializationKey,
+    ) -> Option<FunctionIndex> {
+        self.function_indices?.get(specialization).copied()
+    }
+
     pub(in crate::bytecode) fn intern_pool_type(
         &mut self,
         package: &HydratedBytecodePackage,
@@ -119,13 +129,25 @@ impl<'a> TypeLinker<'a> {
 
         let concrete =
             self.concrete_type(package, artifact_index, substitutions, location.clone())?;
+        let declared_plan = self.artifact_type_plan(package, artifact_index, location.clone())?;
         let (index, entry_position) = self.reserve(origin_key, location.clone())?;
+        self.pending_type_refs.insert(index, concrete.clone());
+        let plan = self.link_type_entry_plan_at(
+            package,
+            specialization,
+            substitutions,
+            index,
+            &declared_plan,
+            &concrete,
+            location.clone(),
+        )?;
         let container_layout = self.link_container_layout(
             package,
             specialization,
             substitutions,
             index,
             &concrete,
+            &plan,
             location.clone(),
         )?;
         let origin = LinkedArtifactPoolOrigin::new(
@@ -144,8 +166,10 @@ impl<'a> TypeLinker<'a> {
             index,
             origin,
             concrete,
+            plan,
             container_layout,
         ));
+        self.pending_type_refs.remove(&index);
         Ok(index)
     }
 
@@ -193,7 +217,10 @@ impl<'a> TypeLinker<'a> {
         let substitutions = BTreeMap::new();
         let concrete =
             self.concrete_type(package, artifact_index, &substitutions, location.clone())?;
+        let declared_plan = self.artifact_type_plan(package, artifact_index, location.clone())?;
+        let plan = self.link_transfer_plan(&declared_plan, &substitutions, location.clone())?;
         let (index, entry_position) = self.reserve(origin_key, location.clone())?;
+        self.pending_type_refs.insert(index, concrete.clone());
         let origin = LinkedArtifactPoolOrigin::new(
             package.reference().package_build_id.clone(),
             ArtifactTypeIndex::new(artifact_index),
@@ -209,7 +236,14 @@ impl<'a> TypeLinker<'a> {
                 ),
             )
         })?;
-        *reserved = Some(LinkedTypeEntry::new(index, origin, concrete.clone(), None));
+        *reserved = Some(LinkedTypeEntry::new(
+            index,
+            origin,
+            concrete.clone(),
+            plan,
+            None,
+        ));
+        self.pending_type_refs.remove(&index);
         Ok((index, concrete))
     }
 
@@ -247,7 +281,7 @@ impl<'a> TypeLinker<'a> {
         location: BytecodeLinkLocation,
     ) -> Result<TypeIndex, BytecodeLinkError> {
         let expected = TypeRefIr::builtin(name);
-        let artifact_index = find_pool_type(package, &expected).ok_or_else(|| {
+        let artifact_index = find_pool_type(package, &expected, location.clone())?.ok_or_else(|| {
             obligation_error(
                 location.clone(),
                 format!(
@@ -279,6 +313,18 @@ impl<'a> TypeLinker<'a> {
             .get(index.get() as usize)
             .and_then(Option::as_ref)
             .map(LinkedTypeEntry::type_ref)
+            .or_else(|| self.pending_type_refs.get(&index))
+    }
+
+    pub(in crate::bytecode) fn linked_type_plan(
+        &self,
+        index: TypeIndex,
+    ) -> Option<&LinkedValueTransferPlan> {
+        self.entries
+            .get(index.get() as usize)
+            .and_then(Option::as_ref)
+            .filter(|entry| entry.index() == index)
+            .map(LinkedTypeEntry::plan)
     }
 
     pub(in crate::bytecode) fn finish(
@@ -363,6 +409,36 @@ impl<'a> TypeLinker<'a> {
         self.tracker
             .add_expanded_type(nodes, byte_count, location)?;
         Ok(concrete)
+    }
+
+    fn artifact_type_plan(
+        &self,
+        package: &HydratedBytecodePackage,
+        artifact_index: u32,
+        location: BytecodeLinkLocation,
+    ) -> Result<skiff_artifact_model::ValueTransferPlan, BytecodeLinkError> {
+        let artifact_index_usize = usize::try_from(artifact_index).map_err(|_| {
+            obligation_error(
+                location.clone(),
+                format!("validated type pool row {artifact_index} does not fit usize"),
+            )
+        })?;
+        let entry = package
+            .bytecode()
+            .and_then(|bytecode| bytecode.view().pools().types.get(artifact_index_usize))
+            .ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    format!("validated type pool row {artifact_index} is absent"),
+                )
+            })?;
+        let BytecodePoolEntry::TypeRef { plan, .. } = entry else {
+            return Err(obligation_error(
+                location,
+                format!("validated type pool row {artifact_index} has the wrong entry kind"),
+            ));
+        };
+        Ok(plan.clone())
     }
 
     fn reserve(
@@ -461,18 +537,12 @@ impl<'a> TypeLinker<'a> {
                 substitutions,
                 location.clone(),
             )?;
-            let concrete = self.linked_type_ref(ty).cloned().ok_or_else(|| {
-                obligation_error(
-                    location.clone(),
-                    format!("linked shape field type {} is absent", ty.get()),
-                )
-            })?;
-            let plan = self.link_plan_for_type_at(
+            let plan = self.link_exact_plan_for_type_at(
                 package,
                 specialization,
                 substitutions,
+                ty,
                 &field.plan,
-                &concrete,
                 location.clone(),
             )?;
             fields.push(
@@ -490,22 +560,14 @@ impl<'a> TypeLinker<'a> {
                     },
                 }
             }
-            declared => {
-                let concrete = self.linked_type_ref(nominal_type).cloned().ok_or_else(|| {
-                    obligation_error(
-                        location.clone(),
-                        "linked shape nominal type is absent".to_string(),
-                    )
-                })?;
-                self.link_plan_for_type_at(
-                    package,
-                    specialization,
-                    substitutions,
-                    declared,
-                    &concrete,
-                    location.clone(),
-                )?
-            }
+            declared => self.link_exact_plan_for_type_at(
+                package,
+                specialization,
+                substitutions,
+                nominal_type,
+                declared,
+                location.clone(),
+            )?,
         };
         let raw_index = self.reserve_shape(origin_key, location.clone())?;
         let index = ShapeIndex::new(raw_index);
@@ -767,18 +829,12 @@ impl<'a> TypeLinker<'a> {
                 &BTreeMap::new(),
                 location.clone(),
             )?;
-            let concrete = self.linked_type_ref(ty).cloned().ok_or_else(|| {
-                obligation_error(
-                    location.clone(),
-                    format!("linked callback capture type {} is absent", ty.get()),
-                )
-            })?;
-            let plan = self.link_plan_for_type_at(
+            let plan = self.link_exact_plan_for_type_at(
                 package,
                 &target_specialization,
                 &BTreeMap::new(),
+                ty,
                 &capture.plan,
-                &concrete,
                 location.clone(),
             )?;
             captures.push(LinkedCallbackCapture::new(
@@ -881,18 +937,12 @@ impl<'a> TypeLinker<'a> {
         }
         let mut result_plans = Vec::with_capacity(descriptor.result_plans.len());
         for (type_index, plan) in result_types.iter().copied().zip(&descriptor.result_plans) {
-            let concrete = self.linked_type_ref(type_index).cloned().ok_or_else(|| {
-                obligation_error(
-                    location.clone(),
-                    format!("linked resume result type {} is absent", type_index.get()),
-                )
-            })?;
-            result_plans.push(self.link_plan_for_type_at(
+            result_plans.push(self.link_exact_plan_for_type_at(
                 package,
                 specialization,
                 &BTreeMap::new(),
+                type_index,
                 plan,
-                &concrete,
                 location.clone(),
             )?);
         }
@@ -1101,6 +1151,7 @@ impl<'a> TypeLinker<'a> {
         substitutions: &BTreeMap<String, TypeRefIr>,
         self_index: TypeIndex,
         ty: &TypeRefIr,
+        self_plan: &LinkedValueTransferPlan,
         location: BytecodeLinkLocation,
     ) -> Result<Option<LinkedContainerLayout>, BytecodeLinkError> {
         let TypeRefIr::Builtin { name, args } = ty else {
@@ -1122,10 +1173,7 @@ impl<'a> TypeLinker<'a> {
                 self.container_position(package, specialization, substitutions, value, location)?,
             ))),
             ("Json", []) => Ok(Some(LinkedContainerLayout::json(
-                LinkedContainerPosition::new(
-                    self_index,
-                    self.plan_for_concrete_type(ty, location)?,
-                ),
+                LinkedContainerPosition::new(self_index, self_plan.clone()),
             ))),
             ("JsonObject", []) => self
                 .json_object_layout(package, specialization, substitutions, location)
@@ -1182,86 +1230,46 @@ impl<'a> TypeLinker<'a> {
             substitutions,
             location.clone(),
         )?;
-        Ok(LinkedContainerPosition::new(
-            ty,
-            self.plan_for_concrete_type(expected, location)?,
-        ))
+        let plan = self.linked_type_plan(ty).cloned().ok_or_else(|| {
+            obligation_error(
+                location,
+                format!(
+                    "container position type row {} has no compiler-owned plan",
+                    ty.get()
+                ),
+            )
+        })?;
+        Ok(LinkedContainerPosition::new(ty, plan))
     }
 }
 
-fn find_pool_type(package: &HydratedBytecodePackage, expected: &TypeRefIr) -> Option<u32> {
-    package
-        .bytecode()?
-        .view()
-        .pools()
-        .types
-        .iter()
-        .position(|entry| matches!(entry, BytecodePoolEntry::TypeRef { ty, .. } if ty == expected))
-        .and_then(|index| u32::try_from(index).ok())
-}
-
-fn concrete_type_equivalent(left: &TypeRefIr, right: &TypeRefIr) -> bool {
-    if left == right {
-        return true;
+fn find_pool_type(
+    package: &HydratedBytecodePackage,
+    expected: &TypeRefIr,
+    location: BytecodeLinkLocation,
+) -> Result<Option<u32>, BytecodeLinkError> {
+    let Some(bytecode) = package.bytecode() else {
+        return Ok(None);
+    };
+    let mut matched = None;
+    for (index, entry) in bytecode.view().pools().types.iter().enumerate() {
+        if !matches!(entry, BytecodePoolEntry::TypeRef { ty, .. } if ty == expected) {
+            continue;
+        }
+        let index = u32::try_from(index).map_err(|_| {
+            obligation_error(
+                location.clone(),
+                "type pool index does not fit u32".to_string(),
+            )
+        })?;
+        if matched.replace(index).is_some() {
+            return Err(obligation_error(
+                location,
+                format!("type {expected:?} has multiple admitted pool origins"),
+            ));
+        }
     }
-    match (left, right) {
-        (TypeRefIr::PackageSymbol { symbol: left }, TypeRefIr::PackageSymbol { symbol: right }) => {
-            left.package == right.package && left.symbol_path == right.symbol_path
-        }
-        (
-            TypeRefIr::Builtin {
-                name: left_name,
-                args: left_args,
-            },
-            TypeRefIr::Builtin {
-                name: right_name,
-                args: right_args,
-            },
-        ) => {
-            left_name == right_name
-                && left_args.len() == right_args.len()
-                && left_args
-                    .iter()
-                    .zip(right_args)
-                    .all(|(left, right)| concrete_type_equivalent(left, right))
-        }
-        (TypeRefIr::Nullable { inner: left }, TypeRefIr::Nullable { inner: right }) => {
-            concrete_type_equivalent(left, right)
-        }
-        (TypeRefIr::Union { items: left }, TypeRefIr::Union { items: right }) => {
-            left.len() == right.len()
-                && left
-                    .iter()
-                    .zip(right)
-                    .all(|(left, right)| concrete_type_equivalent(left, right))
-        }
-        (
-            TypeRefIr::AppliedNominal {
-                base: left_base,
-                arguments: left_args,
-            },
-            TypeRefIr::AppliedNominal {
-                base: right_base,
-                arguments: right_args,
-            },
-        ) => {
-            left_base == right_base
-                && left_args.len() == right_args.len()
-                && left_args
-                    .iter()
-                    .zip(right_args)
-                    .all(|(left, right)| concrete_type_equivalent(left, right))
-        }
-        (TypeRefIr::Record { fields: left }, TypeRefIr::Record { fields: right }) => {
-            left.len() == right.len()
-                && left.iter().all(|(name, left_ty)| {
-                    right
-                        .get(name)
-                        .is_some_and(|right_ty| concrete_type_equivalent(left_ty, right_ty))
-                })
-        }
-        _ => false,
-    }
+    Ok(matched)
 }
 
 fn find_pool_type_after_substitution(
@@ -1279,21 +1287,33 @@ fn find_pool_type_after_substitution(
             "type-only package has no bytecode type pool".to_string(),
         )
     })?;
+    let expected = normalize_type(deployment, package, expected, &location)?;
+    let mut matched = None;
     for (index, entry) in bytecode.view().pools().types.iter().enumerate() {
         let BytecodePoolEntry::TypeRef { ty, .. } = entry else {
             continue;
         };
-        let expected = normalize_type(deployment, package, expected, &location)?;
         let concrete = match substitute_type(ty, substitutions, &location) {
             Ok(concrete) => concrete,
             Err(_) => continue,
         };
         let concrete = normalize_type(deployment, package, &concrete, &location)?;
-        if concrete_type_equivalent(&concrete, &expected) {
-            return Ok(u32::try_from(index).ok());
+        if concrete == expected {
+            let index = u32::try_from(index).map_err(|_| {
+                obligation_error(
+                    location.clone(),
+                    "type pool index does not fit u32".to_string(),
+                )
+            })?;
+            if matched.replace(index).is_some() {
+                return Err(obligation_error(
+                    location,
+                    format!("concrete type {expected:?} has multiple admitted pool origins"),
+                ));
+            }
         }
     }
-    Ok(None)
+    Ok(matched)
 }
 
 fn obligation_error(location: BytecodeLinkLocation, detail: String) -> BytecodeLinkError {

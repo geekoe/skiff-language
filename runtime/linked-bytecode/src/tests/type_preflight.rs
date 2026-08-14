@@ -7,7 +7,7 @@ use crate::{
     LinkedTypeEntry, TypeIndex,
 };
 
-use super::fixtures::{minimal_parts, type_origin};
+use super::fixtures::{minimal_parts, snapshot_plan, type_origin};
 
 fn nullable_type(depth: u64) -> TypeRefIr {
     let mut ty = TypeRefIr::LocalType { type_index: 0 };
@@ -25,6 +25,7 @@ fn parts_with_type(ty: TypeRefIr) -> crate::LinkedBytecodeCandidateParts {
         TypeIndex::new(0),
         type_origin(0, None),
         ty,
+        snapshot_plan(),
         None,
     )];
     parts

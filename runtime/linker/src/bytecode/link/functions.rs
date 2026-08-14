@@ -55,19 +55,12 @@ impl DeploymentLinker<'_> {
                         format!("frame slot plan ordinal {ordinal} has no exact slot type"),
                     )
                 })?;
-                let concrete = type_linker.linked_type_ref(ty).cloned().ok_or_else(|| {
-                    unsatisfied(
-                        BytecodeLinkObligation::FrameAndValueTransferPlan,
-                        location.clone(),
-                        format!("frame slot type {} is absent", ty.get()),
-                    )
-                })?;
-                type_linker.link_plan_for_type_at(
+                type_linker.link_exact_plan_for_type_at(
                     package,
                     key,
                     &substitutions,
+                    ty,
                     plan,
-                    &concrete,
                     location.clone(),
                 )
             })
@@ -88,19 +81,12 @@ impl DeploymentLinker<'_> {
                             format!("frame parameter slot {} has no exact type", slot.get()),
                         )
                     })?;
-                let concrete = type_linker.linked_type_ref(ty).cloned().ok_or_else(|| {
-                    unsatisfied(
-                        BytecodeLinkObligation::FrameAndValueTransferPlan,
-                        location.clone(),
-                        format!("frame parameter type {} is absent", ty.get()),
-                    )
-                })?;
-                let plan = type_linker.link_plan_for_type_at(
+                let plan = type_linker.link_exact_plan_for_type_at(
                     package,
                     key,
                     &substitutions,
+                    ty,
                     &parameter.plan,
-                    &concrete,
                     location.clone(),
                 )?;
                 let dense_record_shape = parameter
@@ -164,19 +150,12 @@ impl DeploymentLinker<'_> {
                         format!("frame result plan ordinal {ordinal} has no exact result type"),
                     )
                 })?;
-                let concrete = type_linker.linked_type_ref(ty).cloned().ok_or_else(|| {
-                    unsatisfied(
-                        BytecodeLinkObligation::FrameAndValueTransferPlan,
-                        location.clone(),
-                        format!("frame result type {} is absent", ty.get()),
-                    )
-                })?;
-                type_linker.link_plan_for_type_at(
+                type_linker.link_exact_plan_for_type_at(
                     package,
                     key,
                     &substitutions,
+                    ty,
                     plan,
-                    &concrete,
                     location.clone(),
                 )
             })

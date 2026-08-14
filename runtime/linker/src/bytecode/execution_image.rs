@@ -148,6 +148,22 @@ impl DeploymentExecutionImage {
         self.linked.types()
     }
 
+    /// Returns the compiler-owned plan for one exact linked type row.
+    ///
+    /// This is a checked direct-index lookup. It deliberately performs no
+    /// nominal, registry, or equivalent-type search.
+    pub fn type_plan(
+        &self,
+        index: TypeIndex,
+    ) -> Option<&skiff_runtime_linked_bytecode::LinkedValueTransferPlan> {
+        let position = usize::try_from(index.get()).ok()?;
+        self.linked
+            .types()
+            .get(position)
+            .filter(|entry| entry.index() == index)
+            .map(LinkedTypeEntry::plan)
+    }
+
     pub fn shapes(&self) -> &[LinkedShapeEntry] {
         self.linked.shapes()
     }

@@ -27,7 +27,7 @@ use skiff_runtime_linked_bytecode::{
     LinkedBytecodeCandidateError, LinkedBytecodeCandidateParts, LinkedContainerLayoutKind,
     LinkedFunction, LinkedFunctionTables, LinkedInstructionTarget, LinkedPackageBytecodeProvenance,
     LinkedResumeResultMaterialization, LinkedResumeSite, LinkedShapeEntry, LinkedSlotState,
-    LinkedValueDropPlan, LinkedValueTransferPlan, ShapeIndex,
+    LinkedValueDropPlan, LinkedValueTransferPlan, ShapeIndex, TypeIndex,
 };
 use skiff_runtime_loader::{
     DeploymentBytecodeLoader, FilesystemDeploymentBytecodeContentResolver, HydratedBytecodePackage,
@@ -118,6 +118,15 @@ fn atomic_image_exposes_image_owned_runtime_views_without_effect_certificate() {
         constant_image.statement_schedule().function_count(),
         constant_image.functions().len(),
     );
+    let exact_type = constant_image
+        .types()
+        .first()
+        .expect("constant image retains its compiler-emitted TypeRef row");
+    assert_eq!(
+        constant_image.type_plan(exact_type.index()),
+        Some(exact_type.plan()),
+    );
+    assert_eq!(constant_image.type_plan(TypeIndex::new(u32::MAX)), None);
 
     let pending_image = production_execution_image(
         "runtime/host/src/host/request_entry/phase_4_proof_support/fixtures/vcp4-sleep",
