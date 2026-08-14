@@ -87,3 +87,21 @@ impl SourceCallableProvenanceFacts {
 }
 
 pub(crate) use analysis::analyze_source_callables;
+
+/// Initializes the compiler-owned platform facts used by source callable
+/// analysis from an explicit, validated repository root.
+///
+/// Production driver entrypoints already own this initialization. This
+/// path-based adapter exists so downstream compiler-crate tests can exercise
+/// the same parser, semantic model and lowering without inventing MIR or
+/// depending on driver-private publication helpers.
+#[doc(hidden)]
+pub fn initialize_platform_for_compiler_test(
+    platform_root: &std::path::Path,
+) -> Result<(), String> {
+    let sources = skiff_compiler_input::CompilerPlatformSources::new(platform_root)
+        .map_err(|error| error.to_string())?;
+    crate::prelude_registry::initialize_prelude_registry(&sources)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}

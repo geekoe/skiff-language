@@ -96,6 +96,7 @@ mod index;
 
 pub mod builder;
 pub mod liveness;
+pub mod source_program;
 
 pub use abi::{MirCallArgument, MirDirectCallFacts, MirReceiverFacts};
 pub use contract::{MirBuildError, MirContractError};

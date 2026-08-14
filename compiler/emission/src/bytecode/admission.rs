@@ -11,12 +11,14 @@ use skiff_compiler_lowering::mir::{
 };
 
 use super::{
-    inputs::{canonical_function_key, is_void},
-    BytecodeEmissionError, Phase1MirFactMismatch, Phase1UnsupportedCapability,
+    inputs::canonical_function_key, BytecodeEmissionError, Phase1MirFactMismatch,
+    Phase1UnsupportedCapability,
 };
 
-/// Canonical host binding admitted by the Phase 4 gate: `std.time.sleep`.
-const CANONICAL_SLEEP_BINDING_KEY: &str = "std.time.sleep";
+mod host_effects;
+
+use host_effects::{HostEffectAdmissions, RegistryValueAuthority};
+
 const CANONICAL_DURATION_MILLISECONDS_BINDING_KEY: &str = "core.duration.milliseconds";
 /// Canonical package owner of the pinned `Duration` parameter type.
 const CANONICAL_SLEEP_DURATION_PACKAGE: &str = "skiff.run/std";
@@ -174,6 +176,19 @@ fn admit_function(
             "receiver facts",
         ));
     }
+    let host_effects =
+        HostEffectAdmissions::analyze(function, CANONICAL_DURATION_MILLISECONDS_BINDING_KEY)
+            .map_err(|error| {
+                rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::HostTarget,
+                    &format!(
+                        "expression {} exact host-effect admission: {}",
+                        error.expression_index, error.detail
+                    ),
+                )
+            })?;
     admit_type(
         units,
         unit,
@@ -192,13 +207,14 @@ fn admit_function(
                 &format!("parameter {parameter_index}"),
             ));
         }
-        admit_type(
+        admit_type_with_registry_authority(
             units,
             unit,
             function_key,
             &parameter.ty,
             false,
             &format!("parameter {parameter_index} type"),
+            host_effects.slot_authorities(parameter.slot),
         )?;
         if usize::try_from(parameter.slot).ok() != Some(parameter_index) {
             return Err(fact_mismatch(
@@ -246,13 +262,14 @@ fn admit_function(
                 &format!("slot {} without an exact type", slot.slot),
             ));
         };
-        admit_type(
+        admit_type_with_registry_authority(
             units,
             unit,
             function_key,
             ty,
             false,
             &format!("slot {} type", slot.slot),
+            host_effects.slot_authorities(slot.slot),
         )?;
     }
     if !function.expression_blocks.is_empty() {
@@ -273,15 +290,28 @@ fn admit_function(
         ));
     }
     admit_effects(unit, function_key, function, &function.effect_summary)?;
+    if let CallableEffectSummary::Analyzed { effects } = &function.effect_summary {
+        host_effects
+            .validate_effect_coverage(effects)
+            .map_err(|detail| {
+                rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::PendingEffect,
+                    &format!("registry host-effect summary mismatch: {detail}"),
+                )
+            })?;
+    }
     let discriminator_literals = collect_discriminator_literal_positions(function)?;
     for expression in &function.expressions {
-        admit_expression(
+        admit_expression_with_host_effects(
             units,
             unit,
             function_key,
             function,
             expression,
             &discriminator_literals,
+            &host_effects,
         )?;
     }
     for block in &function.blocks {
@@ -750,6 +780,7 @@ fn is_catch_result_narrowed_load(slot_type: &TypeRefIr, load_type: &TypeRefIr) -
             .is_some_and(|tag| is_string_literal_type(tag) || is_string_literal_union(tag))
 }
 
+#[cfg(test)]
 fn admit_expression(
     units: &[MirUnit],
     unit: &MirUnit,
@@ -758,14 +789,79 @@ fn admit_expression(
     expression: &skiff_compiler_lowering::mir::MirExpression,
     discriminator_literals: &BTreeSet<u32>,
 ) -> Result<(), BytecodeEmissionError> {
+    let host_effects =
+        HostEffectAdmissions::analyze(function, CANONICAL_DURATION_MILLISECONDS_BINDING_KEY)
+            .map_err(|error| {
+                rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::HostTarget,
+                    &format!(
+                        "expression {} exact host-effect admission: {}",
+                        error.expression_index, error.detail
+                    ),
+                )
+            })?;
+    admit_expression_with_host_effects(
+        units,
+        unit,
+        function_key,
+        function,
+        expression,
+        discriminator_literals,
+        &host_effects,
+    )
+}
+
+fn admit_expression_with_host_effects(
+    units: &[MirUnit],
+    unit: &MirUnit,
+    function_key: &str,
+    function: &MirFunction,
+    expression: &skiff_compiler_lowering::mir::MirExpression,
+    discriminator_literals: &BTreeSet<u32>,
+    host_effects: &HostEffectAdmissions,
+) -> Result<(), BytecodeEmissionError> {
+    let registry_authorities = host_effects.expression_authorities(expression.index);
+    if let ExprIr::Call { call } = &expression.expression {
+        admit_call(
+            units,
+            unit,
+            function_key,
+            function,
+            expression,
+            call,
+            host_effects,
+        )?;
+        if matches!(
+            &call.target,
+            CallTargetIr::Native { target }
+                if target.binding_key.as_deref()
+                    == Some(CANONICAL_DURATION_MILLISECONDS_BINDING_KEY)
+        ) && !registry_authorities
+            .iter()
+            .any(|authority| authority.admits(&expression.ty))
+        {
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::HostTarget,
+                &format!(
+                    "expression {} Duration.milliseconds is outside an exact Sleep argument",
+                    expression.index
+                ),
+            ));
+        }
+    }
     if let ExprIr::Construct { type_ref, .. } = &expression.expression {
-        admit_type(
+        admit_type_with_registry_authority(
             units,
             unit,
             function_key,
             type_ref,
             false,
             &format!("expression {} construct type", expression.index),
+            registry_authorities,
         )?;
     }
     let discriminator_context = discriminator_literals.contains(&expression.index)
@@ -775,15 +871,20 @@ fn admit_expression(
                 expression: expression.index,
             },
         )?;
-    admit_type_with_discriminator_flag(
-        units,
-        unit,
-        function_key,
-        &expression.ty,
-        true,
-        &format!("expression {} type", expression.index),
-        discriminator_context,
-    )?;
+    if !registry_authorities
+        .iter()
+        .any(|authority| authority.admits(&expression.ty))
+    {
+        admit_type_with_discriminator_flag(
+            units,
+            unit,
+            function_key,
+            &expression.ty,
+            true,
+            &format!("expression {} type", expression.index),
+            discriminator_context,
+        )?;
+    }
     if expression.writable.is_some() {
         return Err(rejected_function(
             unit,
@@ -833,10 +934,7 @@ fn admit_expression(
             BinaryOpIr::And | BinaryOpIr::Or => Some(Phase1UnsupportedCapability::ControlFlow),
             _ => None,
         },
-        ExprIr::Call { call } => {
-            admit_call(units, unit, function_key, function, expression, call)?;
-            None
-        }
+        ExprIr::Call { .. } => None,
         ExprIr::LoadConst { .. } | ExprIr::LoadPackageConst { .. } => {
             Some(Phase1UnsupportedCapability::Constant)
         }
@@ -925,6 +1023,7 @@ fn admit_call(
     function: &MirFunction,
     expression: &skiff_compiler_lowering::mir::MirExpression,
     call: &skiff_artifact_model::CallIr,
+    host_effects: &HostEffectAdmissions,
 ) -> Result<(), BytecodeEmissionError> {
     if !call.type_args.is_empty() {
         return Err(rejected_function(
@@ -1004,16 +1103,16 @@ fn admit_call(
                     call,
                     target,
                 )?;
-            } else {
-                admit_native_host_effect(
-                    units,
+            } else if host_effects.executor_for_call(expression.index).is_none() {
+                return Err(rejected_function(
                     unit,
                     function_key,
-                    function,
-                    expression,
-                    call,
-                    target,
-                )?;
+                    Phase1UnsupportedCapability::HostTarget,
+                    &format!(
+                        "expression {} native call lacks exact registry executor admission",
+                        expression.index
+                    ),
+                ));
             }
             return Ok(());
         }
@@ -1082,85 +1181,6 @@ fn admit_call(
     Ok(())
 }
 
-/// Phase 4 gate 1: admits only the canonical `std.time.sleep` host effect.
-///
-/// The gate checks the exact pinned facts and nothing else. The artifact gets
-/// no self-reported effect authority: only the canonical binding key passes,
-/// with exactly one `Duration` (`skiff.run/std::std.time.Duration`) value
-/// argument, an all-`Value` parameter surface (type args, inout, receivers and
-/// metadata are already rejected by the shared call checks) and a `void`
-/// result. Any other binding, a missing binding key, a wrong arity, a wrong
-/// parameter/result type, or a drifted declaration all produce the same
-/// stable typed `HostTarget` rejection and never publish an artifact.
-fn admit_native_host_effect(
-    units: &[MirUnit],
-    unit: &MirUnit,
-    function_key: &str,
-    function: &MirFunction,
-    expression: &skiff_compiler_lowering::mir::MirExpression,
-    call: &skiff_artifact_model::CallIr,
-    target: &NativeTarget,
-) -> Result<(), BytecodeEmissionError> {
-    let Some(binding_key) = target.binding_key.as_deref() else {
-        return Err(rejected_function(
-            unit,
-            function_key,
-            Phase1UnsupportedCapability::HostTarget,
-            &format!(
-                "expression {} native target lacks an exact binding key",
-                expression.index
-            ),
-        ));
-    };
-    if binding_key != CANONICAL_SLEEP_BINDING_KEY {
-        return Err(rejected_function(
-            unit,
-            function_key,
-            Phase1UnsupportedCapability::HostTarget,
-            &format!(
-                "expression {} host binding `{binding_key}` is not the canonical std.time.sleep",
-                expression.index
-            ),
-        ));
-    }
-    if call.args.len() != 1 {
-        return Err(rejected_function(
-            unit,
-            function_key,
-            Phase1UnsupportedCapability::HostTarget,
-            &format!(
-                "expression {} sleep arity {} (pinned arity is exactly one Duration argument)",
-                expression.index,
-                call.args.len()
-            ),
-        ));
-    }
-    let argument_type = &function.expression(call.args[0])?.ty;
-    if !is_canonical_sleep_duration_type(units, unit, argument_type) {
-        return Err(rejected_function(
-            unit,
-            function_key,
-            Phase1UnsupportedCapability::HostTarget,
-            &format!(
-                "expression {} sleep argument type {argument_type:?} is not the pinned skiff.run/std::std.time.Duration",
-                expression.index
-            ),
-        ));
-    }
-    if !is_void(&expression.ty) {
-        return Err(rejected_function(
-            unit,
-            function_key,
-            Phase1UnsupportedCapability::HostTarget,
-            &format!(
-                "expression {} sleep result type {:?} is not the pinned void result",
-                expression.index, expression.ty
-            ),
-        ));
-    }
-    Ok(())
-}
-
 /// Phase 4 gate 1 companion: admits the pure `Duration.milliseconds`
 /// constructor only when its exact argument and result stay on the pinned
 /// sleep argument face. It is not a host effect, does not carry Pending, and
@@ -1175,6 +1195,21 @@ fn admit_duration_milliseconds_constructor(
     call: &skiff_artifact_model::CallIr,
     target: &NativeTarget,
 ) -> Result<(), BytecodeEmissionError> {
+    if target.namespace != "Duration"
+        || target.symbol != "milliseconds"
+        || target.binding_key.as_deref() != Some(CANONICAL_DURATION_MILLISECONDS_BINDING_KEY)
+        || !target.metadata.is_empty()
+    {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::HostTarget,
+            &format!(
+                "expression {} Duration.milliseconds target identity is not exact",
+                expression.index
+            ),
+        ));
+    }
     if call.args.len() != 1 {
         return Err(rejected_function(
             unit,
@@ -1230,7 +1265,6 @@ fn admit_duration_milliseconds_constructor(
             ),
         ));
     }
-    let _ = target;
     Ok(())
 }
 
@@ -1529,6 +1563,21 @@ fn admit_type(
     admit_type_with_discriminator_flag(units, unit, function_key, ty, allow_void, location, false)
 }
 
+fn admit_type_with_registry_authority(
+    units: &[MirUnit],
+    unit: &MirUnit,
+    function_key: &str,
+    ty: &TypeRefIr,
+    allow_void: bool,
+    location: &str,
+    authorities: &[RegistryValueAuthority],
+) -> Result<(), BytecodeEmissionError> {
+    if authorities.iter().any(|authority| authority.admits(ty)) {
+        return Ok(());
+    }
+    admit_type(units, unit, function_key, ty, allow_void, location)
+}
+
 fn admit_type_with_discriminator_flag(
     units: &[MirUnit],
     unit: &MirUnit,
@@ -1663,16 +1712,6 @@ fn admit_type_nested(
             module_path,
             type_index,
         } => admit_nominal_declaration(context, unit, module_path, *type_index, location),
-        // Phase 4 gate 1 pins `Duration` (`skiff.run/std::std.time.Duration`) as
-        // the sole std package type admitted on the value face, because the
-        // canonical `std.time.sleep` parameter carries exactly that type. The
-        // alias is a transparent `integer`; every other package symbol stays
-        // fail closed through the catch-all below.
-        TypeRefIr::PackageSymbol { symbol } if is_canonical_sleep_duration_symbol(symbol) => Ok(()),
-        TypeRefIr::AppliedNominal {
-            base: NominalTypeRefBaseIr::PackageSymbol { symbol },
-            arguments,
-        } if arguments.is_empty() && is_canonical_sleep_duration_symbol(symbol) => Ok(()),
         _ => {
             if let Some(capability) = unsupported_type_capability(ty, allow_void) {
                 return if nested {
@@ -2044,7 +2083,7 @@ mod tests {
                     package_id: "skiff.run/std".to_string(),
                 },
                 symbol_path: "std.time.Duration".to_string(),
-                abi_expectation: None,
+                abi_expectation: Some("std-abi-fixture".to_string()),
             },
         }
     }

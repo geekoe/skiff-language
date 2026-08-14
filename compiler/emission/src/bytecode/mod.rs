@@ -37,3 +37,6 @@ mod bytecode_emitter_core_tests;
 #[cfg(test)]
 #[path = "tests/phase_1_admission.rs"]
 mod phase_1_admission_tests;
+#[cfg(test)]
+#[path = "tests/phase_5_host_effects.rs"]
+mod phase_5_host_effect_tests;
