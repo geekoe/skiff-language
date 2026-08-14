@@ -67,6 +67,22 @@ fn build_model(module_path: &str, source_text: &str) -> skiff_compiler_source::P
 const MODULE: &str = "internal.mir_fixture";
 const PACKAGE_ID: &str = "example.com/mir-fixture";
 
+fn is_exact_catch_tag_type(ty: &TypeRefIr) -> bool {
+    let TypeRefIr::Union { items } = ty else {
+        return false;
+    };
+    items
+        .iter()
+        .filter_map(|item| match item {
+            TypeRefIr::Literal {
+                value: skiff_artifact_model::LiteralIr::String { value },
+            } => Some(value.as_str()),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>()
+        == BTreeSet::from(["err", "ok"])
+}
+
 const MIR_FIXTURE: &str = r#"
   const answer: number = 42
   const backup: number = 7
@@ -1307,6 +1323,22 @@ fn phase_3_union_catch_fixture_lowers_with_union_bindings_and_aligned_rethrow() 
             ],
         })
     );
+    let outer_tag = run
+        .expressions
+        .get(21)
+        .expect("outer.tag retains its exact MIR expression index");
+    assert!(matches!(
+        outer_tag.expression,
+        ExprIr::Field {
+            object: ExprRefIr { expression: 20 },
+            ref field,
+        } if field == "tag"
+    ));
+    assert!(
+        is_exact_catch_tag_type(&outer_tag.ty),
+        "outer.tag must retain its exact ok/err source type, got {:?}",
+        outer_tag.ty
+    );
 
     // The expression-form rethrow consumed the exception identifier's source
     // ExpressionKey, so the trailing LeafB constructor fact stays aligned
@@ -1441,6 +1473,22 @@ fn phase_3_catch_over_throw_binding_gets_a_never_result_slot_type() {
         }),
         "catch over a throw expression should type its slot CatchResult<never, E>"
     );
+    let attempted_tag = run
+        .expressions
+        .get(6)
+        .expect("attempt.tag retains its exact MIR expression index");
+    assert!(matches!(
+        attempted_tag.expression,
+        ExprIr::Field {
+            object: ExprRefIr { expression: 5 },
+            ref field,
+        } if field == "tag"
+    ));
+    assert!(
+        is_exact_catch_tag_type(&attempted_tag.ty),
+        "attempt.tag must retain its exact ok/err source type, got {:?}",
+        attempted_tag.ty
+    );
 }
 
 #[test]
@@ -1454,7 +1502,9 @@ fn phase_3_rethrow_with_non_identifier_operand_fails_closed() {
 
   function run() -> void {
     final inner = catch<LeafA>(throw LeafA { marker: 1 })
-    final e = rethrow inner.exception
+    if inner.tag == "err" {
+      final e = rethrow inner.exception
+    }
   }
 "#,
     );

@@ -2085,10 +2085,10 @@ impl<'a> FunctionLowerer<'a> {
 
     /// Static type of a lowered File IR expression. The source-owned
     /// `expression_types` fact is authoritative; constructs the source model
-    /// deliberately leaves untyped (diverging expressions, catches over
-    /// throws, dependency calls without an exact signature, pattern-binding
-    /// loads) fall back to a structural type from the File IR shape, and
-    /// `unknown` as the honest top type when the shape fixes nothing.
+    /// deliberately leaves untyped (diverging expressions, dependency calls
+    /// without an exact signature, pattern-binding loads) fall back to a
+    /// structural type from the File IR shape, and `unknown` as the honest top
+    /// type when the shape fixes nothing.
     fn typed_expression_type(
         &self,
         key: Option<&ExpressionKey>,

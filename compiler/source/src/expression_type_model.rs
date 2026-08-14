@@ -2276,7 +2276,13 @@ impl<'a> OwnerChecker<'a> {
         catch_type: &TypeRef,
         try_expr: &Expr,
     ) -> Option<ResolvedTypeRef> {
-        let try_ty = self.check_expr(try_expr)?;
+        let try_ty = match self.check_expr(try_expr) {
+            Some(ty) => ty,
+            None if matches!(try_expr, Expr::Throw { .. } | Expr::Rethrow { .. }) => {
+                self.resolve_builtin(BuiltinShape::Never.name())?
+            }
+            None => return None,
+        };
         let catch_ty = match self
             .type_resolution
             .resolve_type_ref(catch_type, &self.type_context)

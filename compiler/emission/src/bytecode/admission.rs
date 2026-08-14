@@ -1967,15 +1967,6 @@ fn admit_type_nested(
         TypeRefIr::Literal {
             value: LiteralIr::String { .. },
         } if context.allow_discriminator_literal => Ok(()),
-        // A `tag` read on a CatchResult whose try expression was a throw or
-        // rethrow is typed `unknown` by the expression model (the catch node
-        // has no recorded result type). The admission admits that honest top
-        // type only in the verified tag-read discriminator position.
-        TypeRefIr::Builtin { name, args }
-            if name == "unknown" && args.is_empty() && context.allow_discriminator_literal =>
-        {
-            Ok(())
-        }
         TypeRefIr::LocalType { type_index } => {
             admit_nominal_declaration(context, unit, &unit.module_path, *type_index, location)
         }
@@ -2964,7 +2955,20 @@ mod tests {
                 object: ExprRefIr { expression: 5 },
                 field: "tag".to_string(),
             },
-            TypeRefIr::builtin("unknown"),
+            TypeRefIr::Union {
+                items: vec![
+                    TypeRefIr::Literal {
+                        value: LiteralIr::String {
+                            value: "err".to_string(),
+                        },
+                    },
+                    TypeRefIr::Literal {
+                        value: LiteralIr::String {
+                            value: "ok".to_string(),
+                        },
+                    },
+                ],
+            },
         ));
         function.expressions.push(expression(
             7,
@@ -3004,6 +3008,26 @@ mod tests {
             vec![7],
             "only the tag-equality string literal is a discriminator constant"
         );
+
+        let mut unknown_function = function.clone();
+        unknown_function.expressions[6].ty = TypeRefIr::builtin("unknown");
+        let error = admit_expression(
+            &units,
+            &units[0],
+            FUNCTION_KEY,
+            &unknown_function,
+            &unknown_function.expressions[6],
+            &positions,
+        )
+        .expect_err("a materialized tag field cannot retain an unknown type");
+        assert!(matches!(
+            error,
+            BytecodeEmissionError::UnsupportedPhase1Capability {
+                capability: Phase1UnsupportedCapability::ValueShape,
+                ..
+            }
+        ));
+
         for index in 4..=8 {
             admit_expression(
                 &units,

@@ -1035,6 +1035,93 @@ fn typed_catch_value_requires_and_respects_tag_narrowing() {
 }
 
 #[test]
+fn direct_throw_and_rethrow_catches_publish_exact_never_tag_types() {
+    let model = expression_type_result(
+        r#"
+              type LeafA { marker: number }
+              type LeafB { marker: number }
+
+              function throwLeaf(leaf: LeafA) -> void {
+                throw leaf
+              }
+
+              function direct(seed: number) -> number {
+                final attempted = catch<LeafB>(throw LeafA { marker: seed })
+                if attempted.tag == "ok" { return 7 }
+                return 99
+              }
+
+              function rethrowing(seed: number) -> number {
+                final first = catch<LeafA>(throwLeaf(LeafA { marker: seed }))
+                if first.tag == "err" {
+                  final exception = first.exception
+                  final outer = catch<LeafA>(rethrow exception)
+                  if outer.tag == "err" { return 2 }
+                }
+                return 11
+              }
+            "#,
+    )
+    .expect("direct throw and rethrow catches should retain exact source types");
+
+    let owner_types = |function: &str| {
+        model
+            .facts
+            .iter()
+            .filter_map(|(key, fact)| {
+                matches!(
+                    key.owner(),
+                    ExpressionOwnerKey::Function(owner) if owner == function
+                )
+                .then(|| fact.ty.as_ref().map(|ty| &ty.ir))
+                .flatten()
+            })
+            .collect::<Vec<_>>()
+    };
+    let is_never_catch = |ty: &TypeRefIr| {
+        matches!(
+            ty,
+            TypeRefIr::Builtin { name, args }
+                if name == "CatchResult"
+                    && matches!(
+                        args.first(),
+                        Some(TypeRefIr::Builtin { name, args })
+                            if name == "never" && args.is_empty()
+                    )
+        )
+    };
+    let is_tag_union = |ty: &TypeRefIr| {
+        matches!(
+            ty,
+            TypeRefIr::Union { items }
+                if items.len() == 2
+                    && items.iter().all(|item| matches!(
+                        item,
+                        TypeRefIr::Literal {
+                            value: skiff_artifact_model::LiteralIr::String { value }
+                        } if value == "ok" || value == "err"
+                    ))
+        )
+    };
+
+    let direct = owner_types("direct");
+    assert!(direct.iter().any(|ty| is_never_catch(ty)));
+    assert_eq!(direct.iter().filter(|ty| is_tag_union(ty)).count(), 1);
+    assert!(!direct.iter().any(|ty| matches!(
+        ty,
+        TypeRefIr::Builtin { name, args } if name == "unknown" && args.is_empty()
+    )));
+
+    let rethrowing = owner_types("rethrowing");
+    assert!(rethrowing.iter().any(|ty| is_never_catch(ty)));
+    assert_eq!(rethrowing.iter().filter(|ty| is_tag_union(ty)).count(), 2);
+    assert!(!rethrowing.iter().any(|ty| matches!(
+        ty,
+        TypeRefIr::Builtin { name, args } if name == "unknown" && args.is_empty()
+    )));
+}
+
+#[test]
 fn test_assertion_true_flow_narrows_stable_bindings() {
     test_expression_type_result(
         r#"

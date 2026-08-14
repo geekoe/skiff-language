@@ -48,6 +48,47 @@ function consume(
 }
 "#;
 
+const PRODUCTION_DIVERGING_CATCH_SOURCE: &str = r#"
+type LeafA {
+  marker: number,
+  owner: Array<number>,
+}
+
+type LeafB {
+  marker: number,
+  owner: Array<number>,
+}
+
+function innerThrow(leaf: LeafA | LeafB) -> void {
+  final cleanupOwner = [7]
+  throw leaf
+}
+
+function direct(seed: number) -> number {
+  final attempted = catch<LeafB>(throw LeafA { marker: seed, owner: [seed] })
+  if attempted.tag == "ok" {
+    return 7
+  }
+  return 99
+}
+
+function rethrowing(seed: number) -> number {
+  if seed == 1 {
+    final leaf: LeafA | LeafB = LeafA { marker: seed, owner: [seed] }
+    final inner = catch<LeafA>(innerThrow(leaf))
+    if inner.tag == "err" {
+      final exception = inner.exception
+      final outer = catch<LeafA>(rethrow exception)
+      if outer.tag == "err" {
+        return 2
+      }
+      return 11
+    }
+  }
+  return 12
+}
+"#;
+
 #[test]
 fn explicitly_disabled_outcome_is_the_only_none_lane() {
     let lane = finish_bytecode_lane(BytecodeCompilationOutcome::disabled()).unwrap();
@@ -371,6 +412,74 @@ fn production_authoring_publishes_exact_affine_http_stream_bytecode() {
     assert!(surface.response_schema.is_none());
     assert!(surface.stream_item_schema.is_some());
     std::fs::remove_dir_all(temp).expect("remove production fixture tree");
+}
+
+#[test]
+fn production_authoring_publishes_direct_throw_and_rethrow_catch_discriminators() {
+    let package_id = "test.skiff/diverging-catch-types";
+    let (platform, package_root, artifact_root, temp) = production_fixture(package_id, None);
+    std::fs::write(
+        package_root.join("main.skiff"),
+        PRODUCTION_DIVERGING_CATCH_SOURCE,
+    )
+    .expect("write diverging catch source");
+
+    let receipt = crate::authoring::build_authoring_object(
+        &platform,
+        crate::authoring::AuthoringObject::Package,
+        &package_root,
+        &artifact_root,
+        "skiff-test",
+        true,
+    )
+    .expect("direct throw and rethrow catch facts must cross production publication");
+    let package_ref: skiff_artifact_model::PackageArtifactRef =
+        serde_json::from_value(receipt["packageArtifactReceipt"]["artifact"].clone())
+            .expect("authoring receipt carries package ref");
+    let store = skiff_deployment::storage::CanonicalArtifactStore::open(&artifact_root)
+        .expect("open production artifact store");
+    let package = store
+        .read_package_artifact(&package_ref)
+        .expect("read published package artifact");
+    let bytecode = store
+        .read_package_bytecode(
+            &package_ref,
+            package
+                .bytecode
+                .as_ref()
+                .expect("publication attaches admitted bytecode"),
+        )
+        .expect("read published bytecode");
+
+    for function_key in ["main::direct", "main::rethrowing"] {
+        let function = bytecode
+            .artifact()
+            .image
+            .functions
+            .get(function_key)
+            .unwrap_or_else(|| panic!("published bytecode carries {function_key}"));
+        let decoded = skiff_artifact_model::bytecode::BoundedDecoder::new()
+            .decode_function(&function.words)
+            .unwrap_or_else(|error| panic!("decode {function_key}: {error}"));
+        assert!(decoded
+            .instructions
+            .iter()
+            .any(|instruction| instruction.descriptor.kind == Opcode::GetDenseField));
+        assert!(decoded
+            .instructions
+            .iter()
+            .any(|instruction| instruction.descriptor.kind == Opcode::Equal));
+    }
+    assert!(bytecode.artifact().image.pools.types.iter().all(|entry| {
+        !matches!(
+            entry,
+            BytecodePoolEntry::TypeRef {
+                ty: skiff_artifact_model::TypeRefIr::Builtin { name, args }
+            } if name == "unknown" && args.is_empty()
+        )
+    }));
+
+    std::fs::remove_dir_all(temp).expect("remove diverging catch fixture tree");
 }
 
 #[test]
