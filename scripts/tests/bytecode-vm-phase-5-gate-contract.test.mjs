@@ -34,7 +34,7 @@ test('r1 schemas cannot accept a receipt from the interrupted Phase 5 epoch', ()
 test('r1 matrix names all G1-G10 owners and uses only executable commands', () => {
   const scenarios = phase5ScenarioSpecs(ROOT);
   const workloads = phase5WorkloadSpecs(ROOT);
-  assert.equal(scenarios.length, 40);
+  assert.equal(scenarios.length, 42);
   assert.doesNotThrow(() => assertPhase5LaneCoverage(workloads));
   const observed = new Set(workloads.flatMap(({ lanes }) => lanes));
   for (const lane of PHASE5_REQUIRED_LANES) {
@@ -132,6 +132,9 @@ test('A5/C5/V5 focused joins pin every typed positive and fail-closed companion'
   assert.equal(byId['h5-production-bytecode-http-composition'].expectedTests, 3);
   assert.equal(byId['h5-server-stream-flush-ack'].args.includes('stream_flush_ack'), true);
   assert.equal(byId['h5-server-stream-flush-ack'].expectedTests, 4);
+  assert.equal(byId['k5-request-resource-materialization'].expectedTests, 2);
+  assert.equal(byId['k5-scheduler-first-poll-publication'].expectedTests, 1);
+  assert.equal(byId['k5-request-first-poll-http-arbitration'].expectedTests, 6);
   assert.equal(phase5ScenarioSpecs(ROOT).some(({ args }) => (
     args.includes('phase_5_admission') || args.includes('stream_resume')
   )), false);
@@ -157,8 +160,8 @@ test('the accepted Phase 4 matrix is reused verbatim as the Phase 1-4 regression
 
 test('candidate closure and command count are frozen by the matrix', () => {
   assert.equal(phase5CandidateSpecs(ROOT).length, 12);
-  assert.equal(phase5WorkloadSpecs(ROOT).length, 95);
-  assert.equal(phase5CandidateSpecs(ROOT).length + phase5WorkloadSpecs(ROOT).length, 107);
+  assert.equal(phase5WorkloadSpecs(ROOT).length, 97);
+  assert.equal(phase5CandidateSpecs(ROOT).length + phase5WorkloadSpecs(ROOT).length, 109);
   assert.deepEqual(phase5CandidateSpecs(ROOT).slice(-3).map(({ id }) => id), [
     'fresh-head', 'fresh-tree', 'fresh-status',
   ]);
