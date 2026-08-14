@@ -1033,8 +1033,43 @@ impl VmFiber {
         };
         let frame = self.current_frame()?.clone();
         let slot_count = self.function(frame.function())?.frame().slot_types().len();
-        let plan = self.operand_plan(&frame, instruction, 0)?;
+        let (operand_type, plan) = self.operand_type_and_plan(&frame, instruction, 0)?;
+        let destination_type = self.slot_type(frame.function(), destination)?;
+        let destination_plan = self.slot_plan(frame.function(), destination)?;
         let value = self.pop_operands(1, false)?.remove(0);
+        if matches!(value.kind(), Some(ValueKind::ConstRef)) {
+            let owned = self.materialize_store_string_constant(
+                executor.heap(),
+                &value,
+                operand_type,
+                &plan,
+                destination_type,
+                &destination_plan,
+                function,
+                instruction,
+            )?;
+            let moved =
+                transfer_materialized_store_owner(executor, &owned, &plan, function, instruction)?;
+            if let Err(error) = self.overwrite_slot(
+                executor,
+                &frame,
+                slot_count,
+                destination,
+                moved,
+                function,
+                instruction,
+                Opcode::StoreSlot,
+            ) {
+                return match executor.release(&moved, &plan) {
+                    Ok(()) => Err(error),
+                    Err(cleanup) => {
+                        Err(cleanup.into_vm_error(function, instruction, Opcode::StoreSlot))
+                    }
+                };
+            }
+            self.advance_current_instruction()?;
+            return Ok(DispatchOutcome::Continue);
+        }
         let moved = executor
             .transfer(&value, &plan)
             .map_err(|error| error.into_vm_error(function, instruction, Opcode::StoreSlot))?;
@@ -1050,6 +1085,78 @@ impl VmFiber {
         )?;
         self.advance_current_instruction()?;
         Ok(DispatchOutcome::Continue)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn materialize_store_string_constant(
+        &self,
+        heap: &mut dyn VmHeap,
+        value: &ValueSlot,
+        operand_type: TypeIndex,
+        operand_plan: &LinkedValueTransferPlan,
+        destination_type: TypeIndex,
+        destination_plan: &LinkedValueTransferPlan,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+    ) -> Result<ValueSlot, VmError> {
+        let constant_type = TypeIndex::new(value.compact_type_tag().get());
+        let constant_type_ref = self
+            .execution_image()
+            .types()
+            .get(constant_type.get() as usize)
+            .filter(|row| row.index() == constant_type)
+            .map(|row| row.type_ref())
+            .ok_or(VmError::LinkedTableRowMissing {
+                table: CandidateTable::Types,
+                row: constant_type.get(),
+            })?;
+        let operand_type_ref = self
+            .execution_image()
+            .types()
+            .get(operand_type.get() as usize)
+            .filter(|row| row.index() == operand_type)
+            .map(|row| row.type_ref())
+            .ok_or(VmError::LinkedTableRowMissing {
+                table: CandidateTable::Types,
+                row: operand_type.get(),
+            })?;
+        let destination_type_ref = self
+            .execution_image()
+            .types()
+            .get(destination_type.get() as usize)
+            .filter(|row| row.index() == destination_type)
+            .map(|row| row.type_ref())
+            .ok_or(VmError::LinkedTableRowMissing {
+                table: CandidateTable::Types,
+                row: destination_type.get(),
+            })?;
+        let string = self.string_slot_value(heap, value)?;
+        if value.flags() != ValueFlags::new(0) {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::StoreSlot,
+            });
+        }
+        let Some(materialized) = allocate_store_string_constant(
+            heap,
+            string,
+            operand_type,
+            constant_type_ref,
+            operand_type_ref,
+            operand_plan,
+            destination_type_ref,
+            destination_plan,
+        )
+        .map_err(VmError::Heap)?
+        else {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::StoreSlot,
+            });
+        };
+        Ok(materialized)
     }
 
     fn execute_drop(
@@ -4032,6 +4139,19 @@ impl VmFiber {
             .ok_or(VmError::SlotOutOfBounds { function, slot })
     }
 
+    fn slot_type(
+        &self,
+        function: FunctionIndex,
+        slot: FrameSlotIndex,
+    ) -> Result<TypeIndex, VmError> {
+        self.function(function)?
+            .frame()
+            .slot_types()
+            .get(slot.get() as usize)
+            .copied()
+            .ok_or(VmError::SlotOutOfBounds { function, slot })
+    }
+
     fn operand_plan(
         &self,
         frame: &VmFrame,
@@ -4438,6 +4558,98 @@ fn nominal_tag_index(value: &ValueSlot) -> u32 {
         ) => value.compact_type_tag().get(),
         _ => 0,
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn allocate_store_string_constant(
+    heap: &mut dyn VmHeap,
+    value: String,
+    operand_type_index: TypeIndex,
+    constant_type: &TypeRefIr,
+    operand_type: &TypeRefIr,
+    operand_plan: &LinkedValueTransferPlan,
+    destination_type: &TypeRefIr,
+    destination_plan: &LinkedValueTransferPlan,
+) -> Result<Option<ValueSlot>, VmHeapError> {
+    if !store_slot_string_constant_authorized(
+        constant_type,
+        &value,
+        operand_type,
+        operand_plan,
+        destination_type,
+        destination_plan,
+    ) {
+        return Ok(None);
+    }
+    heap.alloc_typed_string(
+        value,
+        CompactTypeTag::new(operand_type_index.get()),
+        ValueFlags::new(0),
+    )
+    .map(Some)
+}
+
+fn transfer_materialized_store_owner(
+    executor: &mut LifecycleExecutor<'_>,
+    owner: &ValueSlot,
+    plan: &LinkedValueTransferPlan,
+    function: FunctionIndex,
+    instruction: InstructionIndex,
+) -> Result<ValueSlot, VmError> {
+    match executor.transfer(owner, plan) {
+        Ok(moved) => Ok(moved),
+        Err(error) => {
+            let primary = error.into_vm_error(function, instruction, Opcode::StoreSlot);
+            match executor.release(owner, plan) {
+                Ok(()) => Err(primary),
+                Err(cleanup) => {
+                    Err(cleanup.into_vm_error(function, instruction, Opcode::StoreSlot))
+                }
+            }
+        }
+    }
+}
+
+fn store_slot_string_constant_authorized(
+    constant_type: &TypeRefIr,
+    constant_value: &str,
+    operand_type: &TypeRefIr,
+    operand_plan: &LinkedValueTransferPlan,
+    destination_type: &TypeRefIr,
+    destination_plan: &LinkedValueTransferPlan,
+) -> bool {
+    let exact_string = |ty: &TypeRefIr| {
+        matches!(
+            ty,
+            TypeRefIr::Builtin { name, args } if name == "string" && args.is_empty()
+        )
+    };
+    let exact_constant = matches!(
+        constant_type,
+        TypeRefIr::Literal {
+            value: LiteralIr::String { value },
+        } if value == constant_value
+    ) || exact_string(constant_type);
+    let exact_destination = exact_string(destination_type)
+        || matches!(
+            destination_type,
+            TypeRefIr::Literal {
+                value: LiteralIr::String { value },
+            } if value == constant_value
+        );
+    let exact_owned_plan = |plan: &LinkedValueTransferPlan| {
+        matches!(
+            plan,
+            LinkedValueTransferPlan::SnapshotShare {
+                drop: LinkedValueDropPlan::SnapshotRelease,
+            }
+        )
+    };
+    exact_constant
+        && exact_string(operand_type)
+        && exact_destination
+        && exact_owned_plan(operand_plan)
+        && operand_plan == destination_plan
 }
 
 /// The actual concrete leaf identity of one runtime value, read from the

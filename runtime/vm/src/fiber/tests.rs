@@ -25,7 +25,8 @@ use skiff_compiler::{
 };
 use skiff_runtime_linked_bytecode::{
     FrameSlotIndex, FunctionIndex, InstructionBoundaryIndex, InstructionIndex, LinkedCatchMatcher,
-    LinkedExceptionRegion, ResumeSiteIndex, TypeIndex,
+    LinkedExceptionRegion, LinkedValueDropPlan, LinkedValueTransferPlan, ResumeSiteIndex,
+    TypeIndex,
 };
 use skiff_runtime_linker::{
     link_deployment_execution_image, DeploymentExecutionEntry, DeploymentExecutionImage, LinkLimits,
@@ -39,15 +40,18 @@ use skiff_runtime_model::bytecode_execution_observation::{
 use skiff_runtime_model::service_error::{
     CatchIdentity, ErrorCorrelation, ExceptionStackFrame, NominalTypeIdentity, RequestException,
 };
-use skiff_runtime_model::vm_heap::{VmHeap, VmHeapError, VmRecordField};
+use skiff_runtime_model::vm_heap::{VmHeap, VmHeapError, VmHeapOperation, VmRecordField};
 use skiff_runtime_model::vm_value::{CompactTypeTag, ValueFlags, ValueSlot, VmHandle};
 
 use super::{
-    catch_matches, comparable_equality, comparable_equality_with_string_resolver,
-    find_exception_region, linked_type_catch_identity, nominal_tag_index, opcode_supported,
-    runtime_leaf_catch_identity, DispatchOutcome, Vm, VmFiber,
+    allocate_store_string_constant, catch_matches, comparable_equality,
+    comparable_equality_with_string_resolver, find_exception_region, linked_type_catch_identity,
+    nominal_tag_index, opcode_supported, runtime_leaf_catch_identity,
+    store_slot_string_constant_authorized, transfer_materialized_store_owner, DispatchOutcome, Vm,
+    VmFiber,
 };
 use crate::control::VmResumeAuthority;
+use crate::lifecycle::LifecycleExecutor;
 use crate::{
     ChildTarget, ResumeOutcome, VmBudget, VmBudgetClosed, VmControl, VmError, VmFiberState,
     VmLimits, VmSemanticCharge,
@@ -326,6 +330,245 @@ fn discriminator_tag_constant_comparison_uses_exact_literal_equality() {
         comparable_equality_with_string_resolver(&tag_err, &literal_err, resolve_string),
         Some(true)
     );
+}
+
+#[test]
+fn store_slot_materializes_only_an_exact_string_constant_into_an_owned_string_slot() {
+    let literal = TypeRefIr::Literal {
+        value: skiff_artifact_model::LiteralIr::String {
+            value: "seed".to_string(),
+        },
+    };
+    let builtin_string = TypeRefIr::Builtin {
+        name: "string".to_string(),
+        args: Vec::new(),
+    };
+    let builtin_bytes = TypeRefIr::Builtin {
+        name: "bytes".to_string(),
+        args: Vec::new(),
+    };
+    let owned = LinkedValueTransferPlan::SnapshotShare {
+        drop: LinkedValueDropPlan::SnapshotRelease,
+    };
+    let trivial = LinkedValueTransferPlan::SnapshotShare {
+        drop: LinkedValueDropPlan::Trivial,
+    };
+
+    assert!(store_slot_string_constant_authorized(
+        &literal,
+        "seed",
+        &builtin_string,
+        &owned,
+        &builtin_string,
+        &owned,
+    ));
+    assert!(!store_slot_string_constant_authorized(
+        &literal,
+        "different",
+        &builtin_string,
+        &owned,
+        &builtin_string,
+        &owned,
+    ));
+    assert!(!store_slot_string_constant_authorized(
+        &literal,
+        "seed",
+        &builtin_bytes,
+        &owned,
+        &builtin_string,
+        &owned,
+    ));
+    assert!(!store_slot_string_constant_authorized(
+        &literal,
+        "seed",
+        &builtin_string,
+        &trivial,
+        &builtin_string,
+        &trivial,
+    ));
+}
+
+#[derive(Default)]
+struct StoreStringRecordingHeap {
+    next_handle: u64,
+    allocations: usize,
+    transfer_attempts: usize,
+    snapshot_releases: usize,
+    fail_next_transfer: bool,
+    live: BTreeMap<u64, CompactTypeTag>,
+}
+
+impl VmHeap for StoreStringRecordingHeap {
+    fn validate_live(&self, value: &ValueSlot) -> Result<(), VmHeapError> {
+        match value.kind() {
+            Some(
+                skiff_runtime_model::vm_value::ValueKind::Null
+                | skiff_runtime_model::vm_value::ValueKind::Bool
+                | skiff_runtime_model::vm_value::ValueKind::Number
+                | skiff_runtime_model::vm_value::ValueKind::Integer
+                | skiff_runtime_model::vm_value::ValueKind::Date,
+            ) => Ok(()),
+            Some(skiff_runtime_model::vm_value::ValueKind::RequestHeapRef)
+                if value
+                    .as_handle()
+                    .is_some_and(|handle| self.live.contains_key(&handle.get())) =>
+            {
+                Ok(())
+            }
+            _ => Err(VmHeapError::InvalidValueMetadata),
+        }
+    }
+
+    fn snapshot_share(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        self.validate_live(source)?;
+        Ok(*source)
+    }
+
+    fn transfer_owner(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        self.transfer_attempts += 1;
+        self.validate_live(source)?;
+        if std::mem::take(&mut self.fail_next_transfer) {
+            return Err(VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::TransferOwner,
+                message: "injected transfer failure".to_string(),
+            });
+        }
+        Ok(*source)
+    }
+
+    fn release_snapshot(&mut self, owner: &ValueSlot) -> Result<(), VmHeapError> {
+        let handle = owner.as_handle().ok_or(VmHeapError::InvalidValueMetadata)?;
+        self.live
+            .remove(&handle.get())
+            .ok_or(VmHeapError::InvalidValueMetadata)?;
+        self.snapshot_releases += 1;
+        Ok(())
+    }
+
+    fn release_resource(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::ReleaseResource,
+            kind: skiff_runtime_model::vm_value::ValueKind::ResourceRef,
+        })
+    }
+
+    fn alloc_typed_string(
+        &mut self,
+        _value: String,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        assert_ne!(compact_type_tag.get(), 0, "owned strings retain exact type");
+        assert_eq!(flags, ValueFlags::new(0));
+        self.next_handle += 1;
+        self.allocations += 1;
+        self.live.insert(self.next_handle, compact_type_tag);
+        Ok(ValueSlot::request_heap_ref(
+            VmHandle::new(self.next_handle),
+            compact_type_tag,
+            flags,
+        ))
+    }
+}
+
+fn store_string_types_and_plan() -> (TypeRefIr, TypeRefIr, LinkedValueTransferPlan) {
+    (
+        TypeRefIr::Literal {
+            value: skiff_artifact_model::LiteralIr::String {
+                value: "seed".to_string(),
+            },
+        },
+        TypeRefIr::Builtin {
+            name: "string".to_string(),
+            args: Vec::new(),
+        },
+        LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::SnapshotRelease,
+        },
+    )
+}
+
+#[test]
+fn store_slot_string_constant_transfers_and_releases_each_owned_cell_once() {
+    let (constant_type, string_type, plan) = store_string_types_and_plan();
+    let mut heap = StoreStringRecordingHeap::default();
+    let materialized = allocate_store_string_constant(
+        &mut heap,
+        "seed".to_string(),
+        TypeIndex::new(7),
+        &constant_type,
+        &string_type,
+        &plan,
+        &string_type,
+        &plan,
+    )
+    .unwrap()
+    .expect("exact compiler-owned string carrier is materialized");
+    assert_eq!(materialized.compact_type_tag(), CompactTypeTag::new(7));
+    let mut executor = LifecycleExecutor::new(&mut heap);
+    let moved = transfer_materialized_store_owner(
+        &mut executor,
+        &materialized,
+        &plan,
+        FunctionIndex::new(1),
+        InstructionIndex::new(2),
+    )
+    .unwrap();
+    assert!(
+        executor.release(&moved, &plan).is_ok(),
+        "the transferred owner must retain its exact release plan"
+    );
+    drop(executor);
+
+    assert_eq!(heap.allocations, 1);
+    assert_eq!(heap.transfer_attempts, 1);
+    assert_eq!(heap.snapshot_releases, 1);
+    assert!(heap.live.is_empty());
+}
+
+#[test]
+fn store_slot_string_constant_cleans_the_new_owner_when_transfer_fails() {
+    let (constant_type, string_type, plan) = store_string_types_and_plan();
+    let mut heap = StoreStringRecordingHeap {
+        fail_next_transfer: true,
+        ..StoreStringRecordingHeap::default()
+    };
+    let materialized = allocate_store_string_constant(
+        &mut heap,
+        "seed".to_string(),
+        TypeIndex::new(7),
+        &constant_type,
+        &string_type,
+        &plan,
+        &string_type,
+        &plan,
+    )
+    .unwrap()
+    .expect("exact compiler-owned string carrier is materialized");
+    let mut executor = LifecycleExecutor::new(&mut heap);
+    let error = match transfer_materialized_store_owner(
+        &mut executor,
+        &materialized,
+        &plan,
+        FunctionIndex::new(1),
+        InstructionIndex::new(2),
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("injected transfer failure must reject the store"),
+    };
+    drop(executor);
+
+    assert!(matches!(
+        error,
+        VmError::Heap(VmHeapError::HeapOperationFailed {
+            operation: VmHeapOperation::TransferOwner,
+            ..
+        })
+    ));
+    assert_eq!(heap.allocations, 1);
+    assert_eq!(heap.transfer_attempts, 1);
+    assert_eq!(heap.snapshot_releases, 1);
+    assert!(heap.live.is_empty());
 }
 
 // ---------------------------------------------------------------------------
