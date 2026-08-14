@@ -14,11 +14,11 @@ use skiff_runtime_vm::{
 };
 
 use crate::{
-    owner_inventory::PendingOwnerRegistration, BytecodeAdapterHandoff, BytecodeChildExecutor,
-    BytecodeChildStart, BytecodeHandoff, BytecodeSchedulerError, BytecodeStreamHandoff,
-    BytecodeStreamSupervisor, PendingWakeQueue, RootDisposition, RootEscrow, RootEscrowBacking,
-    StreamConsumer, StreamEmit, StreamError, StreamEvent, StreamPoll, StreamProducer,
-    StreamSupervisor, SuspendedTrampoline, VmCompletionHandle, VmPendingRegistry, WakeSignal,
+    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeHandoff,
+    BytecodeSchedulerError, BytecodeStreamHandoff, BytecodeStreamSupervisor, PendingWakeQueue,
+    RootDisposition, RootEscrow, RootEscrowBacking, StreamConsumer, StreamEmit, StreamError,
+    StreamEvent, StreamPoll, StreamProducer, StreamSupervisor, SuspendedTrampoline,
+    VmCompletionHandle, VmPendingRegistry, WakeSignal,
 };
 
 type VmSuspended = SuspendedTrampoline<VmFiber, VmResumeToken>;
@@ -147,7 +147,7 @@ where
 
 struct VmStreamConsumerShared<P> {
     consumer: Arc<Mutex<StreamConsumer<P, VmOwnedValues, VmStreamTerminal>>>,
-    registry: VmPendingRegistry<VmSuspended>,
+    registry: Arc<VmPendingRegistry<VmSuspended>>,
     queue: Arc<dyn PendingWakeQueue<VmResumeToken, VmSuspended, ResumeOutcome>>,
     cancelled: Arc<AtomicBool>,
 }
@@ -165,12 +165,12 @@ where
     pub(crate) fn open(
         consumer: StreamConsumer<P, VmOwnedValues, VmStreamTerminal>,
         queue: Arc<dyn PendingWakeQueue<VmResumeToken, VmSuspended, ResumeOutcome>>,
-        pending_owners: PendingOwnerRegistration,
+        registry: Arc<VmPendingRegistry<VmSuspended>>,
     ) -> Self {
         Self {
             shared: Arc::new(VmStreamConsumerShared {
                 consumer: Arc::new(Mutex::new(consumer)),
-                registry: VmPendingRegistry::new(pending_owners),
+                registry,
                 queue,
                 cancelled: Arc::new(AtomicBool::new(false)),
             }),
@@ -323,7 +323,7 @@ where
 struct VmStreamShared<P> {
     supervisor: StreamSupervisor<P, VmOwnedValues, VmStreamTerminal>,
     producer: Mutex<StreamProducer<P, VmOwnedValues, VmStreamTerminal>>,
-    registry: VmPendingRegistry<VmSuspended>,
+    registry: Arc<VmPendingRegistry<VmSuspended>>,
     queue: Arc<dyn PendingWakeQueue<VmResumeToken, VmSuspended, ResumeOutcome>>,
     active_depth: Mutex<Option<usize>>,
     cancelled: Arc<AtomicBool>,
@@ -353,7 +353,7 @@ where
     pub(crate) fn open(
         owner_pin: P,
         queue: Arc<dyn PendingWakeQueue<VmResumeToken, VmSuspended, ResumeOutcome>>,
-        pending_owners: PendingOwnerRegistration,
+        registry: Arc<VmPendingRegistry<VmSuspended>>,
     ) -> (Self, StreamConsumer<P, VmOwnedValues, VmStreamTerminal>) {
         let (supervisor, producer, consumer) = StreamSupervisor::open(owner_pin);
         (
@@ -361,7 +361,7 @@ where
                 shared: Arc::new(VmStreamShared {
                     supervisor,
                     producer: Mutex::new(producer),
-                    registry: VmPendingRegistry::new(pending_owners),
+                    registry,
                     queue,
                     active_depth: Mutex::new(None),
                     cancelled: Arc::new(AtomicBool::new(false)),
