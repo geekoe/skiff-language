@@ -6,7 +6,10 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 
-use skiff_artifact_model::{HostEffectExecutorIdentity, Opcode, PackageRefIr, TypeRefIr};
+use skiff_artifact_model::{
+    http_boundary::{canonical_http_boundary_symbol, HTTP_REQUEST_TYPE},
+    HostEffectExecutorIdentity, Opcode, TypeRefIr,
+};
 use skiff_runtime_boundary::http::HttpBoundaryNameValue;
 use skiff_runtime_capability_context::{CancellationToken, ExecutionBudgetReason};
 use skiff_runtime_linked_bytecode::{
@@ -2119,83 +2122,63 @@ fn materialize_http_request(
 ) -> RequestResult<ValueSlot> {
     let image = entry.image();
     let request_type = exact_gateway_parameter_type(entry, ordinal)?;
-    let request_shape = exact_shape(image, request_type)
-        .and_then(|shape| {
-            validate_shape_fields(
-                shape,
-                &["body", "headers", "method", "path", "query", "url"],
-            )?;
-            Ok(shape)
-        })
-        .map_err(|error| RequestError::Decode(error.to_string()))?;
-    let body_type = shape_field_type(request_shape, "body")
-        .map_err(|error| RequestError::Decode(error.to_string()))?;
-    let headers_type = shape_field_type(request_shape, "headers")
-        .map_err(|error| RequestError::Decode(error.to_string()))?;
-    let method_type = shape_field_type(request_shape, "method")
-        .map_err(|error| RequestError::Decode(error.to_string()))?;
-    let path_type = shape_field_type(request_shape, "path")
-        .map_err(|error| RequestError::Decode(error.to_string()))?;
-    let query_type = shape_field_type(request_shape, "query")
-        .map_err(|error| RequestError::Decode(error.to_string()))?;
-    let url_type = shape_field_type(request_shape, "url")
-        .map_err(|error| RequestError::Decode(error.to_string()))?;
-    for (field, ty, builtin) in [
-        ("body", body_type, "bytes"),
-        ("method", method_type, "string"),
-        ("path", path_type, "string"),
-        ("url", url_type, "string"),
-    ] {
-        validate_builtin_type(image, ty, builtin).map_err(|error| {
+    let request_entry = image
+        .types()
+        .get(request_type.get() as usize)
+        .filter(|row| row.index() == request_type)
+        .ok_or_else(|| {
             RequestError::Decode(format!(
-                "raw HTTP request field {field:?} failed exact type validation: {error}"
+                "raw HTTP request argument {ordinal} references missing linked type {}",
+                request_type.get()
             ))
         })?;
+    let TypeRefIr::PackageSymbol { symbol } = request_entry.type_ref() else {
+        return Err(noncanonical_raw_http_request_type(ordinal, request_type));
+    };
+    if canonical_http_boundary_symbol(symbol) != Some(HTTP_REQUEST_TYPE)
+        || symbol.abi_expectation.as_deref().is_none_or(str::is_empty)
+    {
+        return Err(noncanonical_raw_http_request_type(ordinal, request_type));
     }
-    let method = heap
-        .alloc_typed_string(
-            binary.metadata.method.clone(),
-            CompactTypeTag::new(method_type.get()),
-            ValueFlags::new(0),
-        )
-        .map_err(heap_error_to_request_error)?;
-    let url = heap
-        .alloc_typed_string(
-            binary.metadata.url.clone(),
-            CompactTypeTag::new(url_type.get()),
-            ValueFlags::new(0),
-        )
-        .map_err(heap_error_to_request_error)?;
-    let path = heap
-        .alloc_typed_string(
-            binary.metadata.path.clone(),
-            CompactTypeTag::new(path_type.get()),
-            ValueFlags::new(0),
-        )
-        .map_err(heap_error_to_request_error)?;
-    let query = materialize_name_values(
-        image,
-        query_type,
-        &binary.metadata.query,
-        "raw HTTP query",
-        "std.http.HttpQueryParam",
+
+    // The canonical raw-HTTP boundary owns this transport materialization.
+    // Nested VM carriers intentionally use tag zero, exactly like VM-created
+    // string/bytes/record constants: the compiler-emitted entry signature and
+    // transfer plan own their static types. A dense opcode shape may use a
+    // different exact artifact-row TypeIndex, so matching it by nominal name
+    // or shape here would manufacture a second type authority.
+    let mut owned = Vec::new();
+    let method = retain_materialized_root(
+        heap.alloc_string(binary.metadata.method.clone()),
         heap,
+        &mut owned,
     )?;
-    let headers = materialize_name_values(
-        image,
-        headers_type,
-        &binary.metadata.headers,
-        "raw HTTP headers",
-        "std.http.HttpHeader",
+    let url = retain_materialized_root(
+        heap.alloc_string(binary.metadata.url.clone()),
         heap,
+        &mut owned,
     )?;
-    let body = heap
-        .alloc_typed_bytes(
-            binary.body.clone(),
-            CompactTypeTag::new(body_type.get()),
-            ValueFlags::new(0),
-        )
-        .map_err(heap_error_to_request_error)?;
+    let path = retain_materialized_root(
+        heap.alloc_string(binary.metadata.path.clone()),
+        heap,
+        &mut owned,
+    )?;
+    let query = match materialize_name_values(&binary.metadata.query, "raw HTTP query", heap) {
+        Ok(query) => {
+            owned.push(query);
+            query
+        }
+        Err(error) => return Err(cleanup_materialized_roots(heap, &mut owned, error)),
+    };
+    let headers = match materialize_name_values(&binary.metadata.headers, "raw HTTP headers", heap)
+    {
+        Ok(headers) => {
+            owned.push(headers);
+            headers
+        }
+        Err(error) => return Err(cleanup_materialized_roots(heap, &mut owned, error)),
+    };
+    let body = retain_materialized_root(heap.alloc_bytes(binary.body.clone()), heap, &mut owned)?;
     let fields = [
         VmRecordField {
             name: "body".to_string(),
@@ -2222,141 +2205,123 @@ fn materialize_http_request(
             value: url,
         },
     ];
-    heap.allocate_record(
+    let request = heap.allocate_record(
         &fields,
         CompactTypeTag::new(request_type.get()),
         ValueFlags::new(0),
-    )
-    .map_err(heap_error_to_request_error)
+    );
+    match request {
+        Ok(request) => {
+            owned.clear();
+            Ok(request)
+        }
+        Err(error) => Err(cleanup_materialized_roots(
+            heap,
+            &mut owned,
+            heap_error_to_request_error(error),
+        )),
+    }
 }
 
 fn materialize_name_values(
-    image: &DeploymentExecutionImage,
-    array_type: TypeIndex,
     items: &[HttpNameValue],
     label: &str,
-    expected_item_symbol: &str,
     heap: &mut dyn VmHeap,
 ) -> RequestResult<ValueSlot> {
-    let item_type = array_element_type(image, array_type)
-        .map_err(|error| RequestError::Decode(error.to_string()))?;
-    if items.is_empty() {
-        return heap
-            .allocate_array(
-                &[],
-                CompactTypeTag::new(array_type.get()),
-                ValueFlags::new(0),
-            )
-            .map_err(|error| {
-                RequestError::Decode(format!(
-                    "{label} materialization failed on the request heap: {error}"
-                ))
-            });
+    let mut owned = Vec::with_capacity(items.len());
+    for item in items {
+        let checkpoint = owned.len();
+        let name =
+            retain_materialized_root(heap.alloc_string(item.name.clone()), heap, &mut owned)?;
+        let value =
+            retain_materialized_root(heap.alloc_string(item.value.clone()), heap, &mut owned)?;
+        let record = heap.allocate_record(
+            &[
+                VmRecordField {
+                    name: "name".to_string(),
+                    value: name,
+                },
+                VmRecordField {
+                    name: "value".to_string(),
+                    value,
+                },
+            ],
+            CompactTypeTag::new(0),
+            ValueFlags::new(0),
+        );
+        let record = match record {
+            Ok(record) => record,
+            Err(error) => {
+                return Err(cleanup_materialized_roots(
+                    heap,
+                    &mut owned,
+                    heap_error_to_request_error(error),
+                ));
+            }
+        };
+        owned.truncate(checkpoint);
+        owned.push(record);
     }
-    let mut shapes = image
-        .shapes()
-        .iter()
-        .filter(|shape| shape.nominal_type() == item_type);
-    let item_shape = shapes.next();
-    if shapes.next().is_some() {
-        return Err(RequestError::Decode(format!(
-            "{label} item type {} has more than one linked dense shape",
-            item_type.get()
-        )));
+    let array = heap.allocate_array(&owned, CompactTypeTag::new(0), ValueFlags::new(0));
+    match array {
+        Ok(array) => {
+            owned.clear();
+            Ok(array)
+        }
+        Err(error) => Err(cleanup_materialized_roots(
+            heap,
+            &mut owned,
+            RequestError::Decode(format!(
+                "{label} materialization failed on the request heap: {error}"
+            )),
+        )),
     }
-    let field_types = item_shape
-        .map(|shape| {
-            validate_shape_fields(shape, &["name", "value"])?;
-            let name = shape_field_type(shape, "name")?;
-            let value = shape_field_type(shape, "value")?;
-            validate_builtin_type(image, name, "string")?;
-            validate_builtin_type(image, value, "string")?;
-            Ok((name, value))
-        })
-        .transpose()
-        .map_err(|error: BytecodeSchedulerError| RequestError::Decode(error.to_string()))?;
-    if field_types.is_none() {
-        let item_entry = image
-            .types()
-            .get(item_type.get() as usize)
-            .filter(|entry| entry.index() == item_type)
-            .ok_or_else(|| {
-                RequestError::Decode(format!(
-                    "{label} item type {} is absent from the linked image",
-                    item_type.get()
-                ))
-            })?;
-        if !matches!(
-            item_entry.type_ref(),
-            TypeRefIr::PackageSymbol { symbol }
-                if matches!(
-                    &symbol.package,
-                    PackageRefIr::PackageId { package_id } if package_id == "skiff.run/std"
-                ) && symbol.symbol_path == expected_item_symbol
-        ) {
-            return Err(RequestError::Decode(format!(
-                "{label} has no linked item shape and type {} is not exact {expected_item_symbol}",
-                item_type.get()
-            )));
+}
+
+fn noncanonical_raw_http_request_type(ordinal: usize, ty: TypeIndex) -> RequestError {
+    RequestError::Decode(format!(
+        "raw HTTP request argument {ordinal} linked type {} is not exact canonical {HTTP_REQUEST_TYPE}",
+        ty.get()
+    ))
+}
+
+fn retain_materialized_root(
+    result: Result<ValueSlot, VmHeapError>,
+    heap: &mut dyn VmHeap,
+    owned: &mut Vec<ValueSlot>,
+) -> RequestResult<ValueSlot> {
+    match result {
+        Ok(value) => {
+            owned.push(value);
+            Ok(value)
+        }
+        Err(error) => Err(cleanup_materialized_roots(
+            heap,
+            owned,
+            heap_error_to_request_error(error),
+        )),
+    }
+}
+
+fn cleanup_materialized_roots(
+    heap: &mut dyn VmHeap,
+    owned: &mut Vec<ValueSlot>,
+    primary: RequestError,
+) -> RequestError {
+    let mut cleanup_errors = Vec::new();
+    while let Some(root) = owned.pop() {
+        if let Err(error) = heap.release_snapshot(&root) {
+            cleanup_errors.push(error.to_string());
         }
     }
-    let mut records = Vec::with_capacity(items.len());
-    for item in items {
-        // A handler that never reads an item field has no emitted dense shape
-        // for that nominal record. Keep the exact std nominal/array tags, but
-        // use the same untagged string carriers as VM record construction;
-        // do not invent a missing field TypeIndex. Any compiled field read
-        // contributes the shape above and takes the fully typed branch.
-        let (name, value) = match field_types {
-            Some((name_type, value_type)) => (
-                heap.alloc_typed_string(
-                    item.name.clone(),
-                    CompactTypeTag::new(name_type.get()),
-                    ValueFlags::new(0),
-                )
-                .map_err(heap_error_to_request_error)?,
-                heap.alloc_typed_string(
-                    item.value.clone(),
-                    CompactTypeTag::new(value_type.get()),
-                    ValueFlags::new(0),
-                )
-                .map_err(heap_error_to_request_error)?,
-            ),
-            None => (
-                heap.alloc_string(item.name.clone())
-                    .map_err(heap_error_to_request_error)?,
-                heap.alloc_string(item.value.clone())
-                    .map_err(heap_error_to_request_error)?,
-            ),
-        };
-        let record = heap
-            .allocate_record(
-                &[
-                    VmRecordField {
-                        name: "name".to_string(),
-                        value: name,
-                    },
-                    VmRecordField {
-                        name: "value".to_string(),
-                        value,
-                    },
-                ],
-                CompactTypeTag::new(item_type.get()),
-                ValueFlags::new(0),
-            )
-            .map_err(heap_error_to_request_error)?;
-        records.push(record);
-    }
-    heap.allocate_array(
-        &records,
-        CompactTypeTag::new(array_type.get()),
-        ValueFlags::new(0),
-    )
-    .map_err(|error| {
+    if cleanup_errors.is_empty() {
+        primary
+    } else {
         RequestError::Decode(format!(
-            "{label} materialization failed on the request heap: {error}"
+            "{primary}; raw HTTP request heap cleanup failed: {}",
+            cleanup_errors.join("; ")
         ))
-    })
+    }
 }
 
 fn heap_error_to_request_error(error: VmHeapError) -> RequestError {
@@ -2432,6 +2397,12 @@ fn validate_bytecode_request(
                     "serverStream bytecode ingress requires the exact raw HTTP adapter".to_string(),
                 ));
             }
+            function.stream_result_type_ref().ok_or_else(|| {
+                RequestError::Unsupported(
+                    "serverStream bytecode ingress entry has no linked stream-result authority"
+                        .to_string(),
+                )
+            })?;
             if !entry.signature().result_types().is_empty()
                 || !entry.signature().result_plans().is_empty()
             {
@@ -2439,12 +2410,6 @@ fn validate_bytecode_request(
                     "linked server-stream entry retains a scalar result signature".to_string(),
                 ));
             }
-            function.stream_result_type_ref().ok_or_else(|| {
-                RequestError::Unsupported(
-                    "serverStream bytecode ingress entry has no linked stream-result authority"
-                        .to_string(),
-                )
-            })?;
             let item_type = exact_server_stream_item_type(function)?;
             let writer = server_stream_writer.ok_or_else(|| {
                 RequestError::Unsupported(
@@ -2948,6 +2913,32 @@ mod tests {
         assert_eq!(null, None);
         assert_eq!(present_empty, Some(Vec::new()));
         assert_ne!(null, present_empty);
+    }
+
+    #[test]
+    fn raw_http_boundary_materialization_failure_releases_partial_roots() {
+        let mut heap = RequestVmHeap::new(RequestHeapLimits {
+            max_nodes: 1,
+            ..RequestHeapLimits::default()
+        });
+        let error = match materialize_name_values(
+            &[HttpNameValue {
+                name: "x-name".to_string(),
+                value: "value".to_string(),
+            }],
+            "raw HTTP headers",
+            &mut heap,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("the second carrier must exceed the one-node test heap"),
+        };
+
+        assert!(error.to_string().contains("resource limit"));
+        assert_eq!(
+            heap.live_value_count(),
+            0,
+            "failed boundary materialization must release every partial owner"
+        );
     }
 
     #[test]

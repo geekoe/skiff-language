@@ -171,6 +171,11 @@ impl RequestVmHeap {
         self.heap.limits()
     }
 
+    #[cfg(test)]
+    pub(crate) fn live_value_count(&self) -> usize {
+        self.live.len()
+    }
+
     /// Wraps an existing RequestHeap handle in a live VM slot.
     pub fn heap_ref(
         &mut self,

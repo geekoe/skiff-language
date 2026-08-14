@@ -526,12 +526,92 @@ struct ServerStreamFixture {
     image: Arc<DeploymentExecutionImage>,
     selector: IngressSelector,
     gateway_identity: GatewayEntryIdentity,
+    package_id: String,
 }
 
 static NEXT_SERVER_STREAM_TEST_TEMP: AtomicU64 = AtomicU64::new(0);
 
 impl ServerStreamFixture {
     fn build() -> Self {
+        Self::build_from_source(
+            "test.skiff/bytecode-vm-phase-5-request",
+            "/phase-5/request-stream",
+            "import std\n\nfunction run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {\n  emit({ tag: \"start\", status: 207, headers: [] })\n  emit({ tag: \"chunk\", value: bytes.fromUtf8(request.body.toUtf8String()) })\n  emit({ tag: \"end\" })\n  return null\n}\n",
+            "",
+        )
+    }
+
+    fn build_shape_mismatch() -> Self {
+        Self::build_from_source(
+            "test.skiff/bytecode-vm-phase-5-request-shapeless",
+            "/phase-5/request-stream-shapeless",
+            r#"import std
+
+function headers() -> Array<std.http.HttpHeader> {
+  return []
+}
+
+function outbound(url: string) -> std.http.HttpClientRequest {
+  return std.http.HttpClientRequest {
+    method: "GET",
+    url: url,
+    headers: headers(),
+    body: null,
+    timeoutMs: 5000,
+  }
+}
+
+function run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  final base = request.body.toUtf8String()
+  final unary = std.http.request(outbound(base.concat("/request")))
+  final left = std.http.stream(outbound(base.concat("/stream/left")))
+  final right = std.http.stream(outbound(base.concat("/stream/right")))
+
+  var leftBody = ""
+  for chunk in left.body {
+    leftBody = leftBody.concat(chunk.toUtf8String())
+  }
+  var rightBody = ""
+  for chunk in right.body {
+    rightBody = rightBody.concat(chunk.toUtf8String())
+  }
+
+  emit({ tag: "start", status: 207, headers: [] })
+  emit({ tag: "chunk", value: bytes.fromUtf8("U=") })
+  emit({ tag: "chunk", value: unary.body })
+  emit({ tag: "chunk", value: bytes.fromUtf8("|A=") })
+  emit({ tag: "chunk", value: bytes.fromUtf8(leftBody) })
+  emit({ tag: "chunk", value: bytes.fromUtf8("|B=") })
+  emit({ tag: "chunk", value: bytes.fromUtf8(rightBody) })
+  emit({ tag: "end" })
+  return null
+}
+
+function dropLeft(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  final base = request.body.toUtf8String()
+  final left = std.http.stream(outbound(base.concat("/stream/drop-left")))
+  final right = std.http.stream(outbound(base.concat("/stream/drop-right")))
+  var firstLeft = ""
+  for chunk in left.body {
+    firstLeft = chunk.toUtf8String()
+    break
+  }
+  var rightBody = ""
+  for chunk in right.body {
+    rightBody = rightBody.concat(chunk.toUtf8String())
+  }
+  emit({ tag: "start", status: 208, headers: [] })
+  emit({ tag: "chunk", value: bytes.fromUtf8("A=".concat(firstLeft)) })
+  emit({ tag: "chunk", value: bytes.fromUtf8("|B=".concat(rightBody)) })
+  emit({ tag: "end" })
+  return null
+}
+"#,
+            "drop-left:\n  method: POST\n  path: /phase-5/request-stream-shapeless-drop-left\n  kind: rawHttp\n  handler: main.dropLeft\n  adapterArgs:\n    - param: request\n      source: { kind: http.request }\n",
+        )
+    }
+
+    fn build_from_source(package_id: &str, path: &str, source: &str, extra_http: &str) -> Self {
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .and_then(|path| path.parent())
@@ -550,27 +630,25 @@ impl ServerStreamFixture {
         let artifact_root = temp.join("artifacts");
         std::fs::create_dir_all(&fixture_root).unwrap();
         std::fs::create_dir_all(&artifact_root).unwrap();
-        for (name, contents) in [
-            (
-                "package.yml",
-                "id: test.skiff/bytecode-vm-phase-5-request\nversion: 1.0.0\n",
+        std::fs::write(
+            fixture_root.join("package.yml"),
+            format!("id: {package_id}\nversion: 1.0.0\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            fixture_root.join("service.yml"),
+            format!("id: {package_id}\n"),
+        )
+        .unwrap();
+        std::fs::write(fixture_root.join("api.yml"), "{}\n").unwrap();
+        std::fs::write(
+            fixture_root.join("http.yml"),
+            format!(
+                "run:\n  method: POST\n  path: {path}\n  kind: rawHttp\n  handler: main.run\n  adapterArgs:\n    - param: request\n      source: {{ kind: http.request }}\n{extra_http}"
             ),
-            (
-                "service.yml",
-                "id: test.skiff/bytecode-vm-phase-5-request\n",
-            ),
-            ("api.yml", "{}\n"),
-            (
-                "http.yml",
-                "run:\n  method: POST\n  path: /phase-5/request-stream\n  kind: rawHttp\n  handler: main.run\n  adapterArgs:\n    - param: request\n      source: { kind: http.request }\n",
-            ),
-            (
-                "main.skiff",
-                "import std\n\nfunction run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {\n  emit({ tag: \"start\", status: 207, headers: [] })\n  emit({ tag: \"chunk\", value: bytes.fromUtf8(request.body.toUtf8String()) })\n  emit({ tag: \"end\" })\n  return null\n}\n",
-            ),
-        ] {
-            std::fs::write(fixture_root.join(name), contents).unwrap();
-        }
+        )
+        .unwrap();
+        std::fs::write(fixture_root.join("main.skiff"), source).unwrap();
 
         let platform_sources = CompilerPlatformSources::new(&repository_root)
             .expect("open repository platform sources");
@@ -603,7 +681,7 @@ impl ServerStreamFixture {
             .find(|binding| {
                 binding.selector.protocol == IngressProtocol::Http
                     && binding.selector.method.as_deref() == Some("POST")
-                    && binding.selector.path == "/phase-5/request-stream"
+                    && binding.selector.path == path
             })
             .expect("server-stream fixture publishes its exact HTTP ingress");
         let selector = ingress.selector.clone();
@@ -624,6 +702,7 @@ impl ServerStreamFixture {
             image,
             selector,
             gateway_identity,
+            package_id: package_id.to_string(),
         }
     }
 
@@ -637,6 +716,11 @@ impl ServerStreamFixture {
 fn server_stream_fixture() -> &'static ServerStreamFixture {
     static FIXTURE: OnceLock<ServerStreamFixture> = OnceLock::new();
     FIXTURE.get_or_init(ServerStreamFixture::build)
+}
+
+fn shapeless_raw_http_fixture() -> &'static ServerStreamFixture {
+    static FIXTURE: OnceLock<ServerStreamFixture> = OnceLock::new();
+    FIXTURE.get_or_init(ServerStreamFixture::build_shape_mismatch)
 }
 
 #[derive(Default)]
@@ -801,17 +885,32 @@ fn server_stream_input(
     execution_budget: Arc<ExecutionBudget>,
     max_response_bytes: NonZeroUsize,
 ) -> BytecodeRequestExecutionInput {
-    let fixture = server_stream_fixture();
+    server_stream_input_for_fixture(
+        server_stream_fixture(),
+        writer,
+        cancellation,
+        execution_budget,
+        max_response_bytes,
+    )
+}
+
+fn server_stream_input_for_fixture(
+    fixture: &ServerStreamFixture,
+    writer: Arc<dyn BytecodeServerStreamWriterPort>,
+    cancellation: CancellationToken,
+    execution_budget: Arc<ExecutionBudget>,
+    max_response_bytes: NonZeroUsize,
+) -> BytecodeRequestExecutionInput {
     let mut request = request_envelope();
     request.request_id = "phase-5-request-server-stream".to_string();
     request.mode = "serverStream".to_string();
-    request.service_id = Some("test.skiff/bytecode-vm-phase-5-request".to_string());
+    request.service_id = Some(fixture.package_id.clone());
     request.ingress_selector = Some(fixture.selector.clone());
     request.binary_http = Some(BinaryHttpRequest {
         metadata: BinaryHttpRequestMetadata {
             method: "POST".to_string(),
-            url: "https://example.test/phase-5/request-stream".to_string(),
-            path: "/phase-5/request-stream".to_string(),
+            url: format!("https://example.test{}", fixture.selector.path),
+            path: fixture.selector.path.clone(),
             query: vec![skiff_runtime_request::HttpNameValue {
                 name: "q".to_string(),
                 value: "typed".to_string(),
@@ -826,7 +925,7 @@ fn server_stream_input(
     request.http_adapter = Some(HttpAdapter {
         kind: HttpAdapterKind::RawHttp,
         handler: HttpAdapterCallable::PackageFunction {
-            package_id: "test.skiff/bytecode-vm-phase-5-request".to_string(),
+            package_id: fixture.package_id.clone(),
             symbol_path: "main.run".to_string(),
         },
         guard: None,
@@ -1331,6 +1430,13 @@ fn http_body_argument() -> RequestGatewayAdapterArg {
     }
 }
 
+fn http_request_argument() -> RequestGatewayAdapterArg {
+    RequestGatewayAdapterArg {
+        param: "value".to_string(),
+        source: RequestGatewayAdapterSource::HttpRequest,
+    }
+}
+
 fn noop_observer() -> BytecodeExecutionObserver {
     BytecodeExecutionObserver::noop(BytecodeExecutionCorrelation {
         router_session_id: "request-test-session".to_string(),
@@ -1616,6 +1722,60 @@ mod tests {
     }
 
     #[test]
+    fn raw_http_request_rejects_noncanonical_linked_parameter_before_vm_start() {
+        let error = execute_scalar_gateway(
+            "number",
+            HttpAdapterKind::RawHttp,
+            b"body",
+            vec![http_request_argument()],
+        )
+        .unwrap_err();
+
+        assert!(
+            matches!(
+                &error,
+                RequestError::Decode(message)
+                    if message.contains("is not exact canonical std.http.HttpRequest")
+            ),
+            "unexpected noncanonical raw HTTP request result: {error:?}"
+        );
+    }
+
+    #[test]
+    fn raw_http_server_stream_scalar_entry_rejects_on_linked_authority_contract() {
+        let writer = Arc::new(ControlledServerStreamWriter::new([]));
+        let mut request = scalar_gateway_request(
+            "number",
+            HttpAdapterKind::RawHttp,
+            b"body",
+            vec![http_request_argument()],
+        );
+        request.mode = "serverStream".to_string();
+        let error = run_synchronous_request(BytecodeRequestExecutionInput {
+            target: scalar_gateway_fixture().target("number"),
+            request,
+            observer: noop_observer(),
+            cancellation: CancellationToken::new(),
+            execution_budget: Arc::new(ExecutionBudget::for_runtime_request(None)),
+            handles: BytecodeRequestExecutionHandles {
+                request_heap_limits: RequestHeapLimits::default(),
+                max_response_bytes: NonZeroUsize::new(1024).unwrap(),
+            },
+            http_client: None,
+            server_stream_writer: Some(writer),
+            heap: None,
+        })
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RequestError::Unsupported(message)
+                if message
+                    == "serverStream bytecode ingress entry has no linked stream-result authority"
+        ));
+    }
+
+    #[test]
     fn request_heap_scalar_returns_payload() {
         let (package, bytecode) = compile_scalar_package();
         let (contract, operation_id) = service_contract(package.package_id.as_str());
@@ -1653,6 +1813,51 @@ mod tests {
             panic!("bytecode request returned a non-payload response: {response:?}");
         };
         assert_eq!(serde_json::from_slice::<f64>(&payload).unwrap(), 2.0);
+    }
+
+    #[test]
+    fn phase_5_raw_http_boundary_materializes_without_a_matching_dense_shape() {
+        let fixture = shapeless_raw_http_fixture();
+        let writer = Arc::new(ControlledServerStreamWriter::new([]));
+        let input = server_stream_input_for_fixture(
+            fixture,
+            Arc::clone(&writer) as Arc<dyn BytecodeServerStreamWriterPort>,
+            CancellationToken::new(),
+            Arc::new(ExecutionBudget::for_runtime_request(None)),
+            NonZeroUsize::new(64).unwrap(),
+        );
+        let [request_type] = input.target.signature().parameter_types() else {
+            panic!("raw HTTP server-stream fixture must have one exact request parameter");
+        };
+        assert!(
+            !input
+                .target
+                .image()
+                .shapes()
+                .iter()
+                .any(|shape| shape.nominal_type() == *request_type),
+            "the regression fixture must retain the distinct signature/type-row provenance"
+        );
+
+        let driven = drive_runtime_bytecode_request(input);
+
+        assert!(
+            matches!(
+                &driven.result,
+                Err(RequestError::Unsupported(message))
+                    if message.contains("typed bytecode HTTP provider is unavailable")
+            ),
+            "raw HTTP materialization must advance to the next typed port boundary: {:?}",
+            driven.result
+        );
+        assert!(writer.frames().is_empty());
+        let snapshot = driven.owner_inventory.into_snapshot();
+        assert_eq!(snapshot.pending.current, 0);
+        assert!(!snapshot.pending.ever_created);
+        assert_eq!(snapshot.resource.current, 0);
+        assert!(snapshot.resource.ever_created);
+        assert_eq!(snapshot.child.current, 0);
+        drop(driven.retention);
     }
 
     #[test]
