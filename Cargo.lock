@@ -2911,6 +2911,7 @@ name = "skiff-runtime-vm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "serde_json",
  "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-compiler",

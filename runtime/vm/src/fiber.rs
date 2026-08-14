@@ -166,6 +166,18 @@ struct OperandPushReservation {
     next_height: usize,
 }
 
+/// A top-of-stack operand window that can be atomically replaced by one
+/// newly allocated owner. The consumed operands remain live until allocation
+/// succeeds; failures therefore leave every current or already-materialized
+/// owner reachable from the fiber.
+#[derive(Clone, Copy)]
+struct OperandWindowReplacementReservation {
+    frame_ordinal: usize,
+    start: usize,
+    end: usize,
+    next_height: usize,
+}
+
 impl VmFiber {
     fn start(
         entry: DeploymentExecutionEntry,
@@ -2200,53 +2212,53 @@ impl VmFiber {
         let field_plans = (0..field_count)
             .map(|ordinal| self.operand_plan(&frame, instruction, field_count - 1 - ordinal))
             .collect::<Result<Vec<_>, _>>()?;
-        if !field_plans.iter().all(LifecycleExecutor::supports_release) {
+        if !field_plans.iter().all(LifecycleExecutor::supports_transfer) {
             return Err(VmError::FullValueLifecyclePlanUnavailable {
                 function,
                 instruction,
                 opcode: Opcode::NewRecord,
             });
         }
-        let mut values = self.pop_operands(field_count, false)?;
+
+        // Resolve every image-borrowed payload and every output index before
+        // the first heap mutation. The operand window stays live throughout
+        // materialization and transfer; each successful owner is written back
+        // into its original root slot before another fallible step begins.
+        let (reservation, values) = self.reserve_operand_window_replacement(field_count)?;
+        let constant_strings = values
+            .iter()
+            .map(|source| {
+                if matches!(source.kind(), Some(ValueKind::ConstRef)) {
+                    self.string_slot_value(executor.heap(), source).map(Some)
+                } else {
+                    Ok(None)
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let mut fields = Vec::with_capacity(field_count);
         for (ordinal, field) in shape.fields().iter().enumerate() {
-            let source = values[ordinal];
-            let value = if matches!(source.kind(), Some(ValueKind::ConstRef)) {
-                match self.string_slot_value(executor.heap(), &source) {
-                    Ok(string) => match materialize_new_record_const_string(
-                        executor,
-                        string,
-                        field_tags[ordinal],
-                    ) {
-                        Ok(value) => value,
-                        Err(error) => {
-                            release_unadopted_new_record_values(executor, &values, &field_plans);
-                            return Err(error);
-                        }
-                    },
-                    Err(_) => source,
-                }
+            let source_index = reservation.start + ordinal;
+            let source = self.values[source_index];
+            let value = if let Some(string) = constant_strings[ordinal].clone() {
+                materialize_new_record_const_string(executor, string, field_tags[ordinal])?
             } else {
-                match executor.transfer(&source, &field_plans[ordinal]) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        release_unadopted_new_record_values(executor, &values, &field_plans);
-                        return Err(error.into_vm_error(function, instruction, Opcode::NewRecord));
-                    }
-                }
+                executor
+                    .transfer(&source, &field_plans[ordinal])
+                    .map_err(|error| {
+                        error.into_vm_error(function, instruction, Opcode::NewRecord)
+                    })?
             };
-            values[ordinal] = value;
+            self.values[source_index] = value;
             fields.push(VmRecordField {
                 name: field.name().to_string(),
                 value,
             });
         }
-        let value =
-            allocate_new_record_with_cleanup(executor, &fields, record_tag, &values, &field_plans)?;
-        if let Err(error) = self.push_operand(value) {
-            let _ = executor.release(&value, shape.plan());
-            return Err(error);
-        }
+        let value = executor
+            .heap()
+            .allocate_record(&fields, record_tag, ValueFlags::new(0))
+            .map_err(VmError::Heap)?;
+        self.commit_operand_window_replacement(reservation, value);
         self.advance_current_instruction()?;
         Ok(DispatchOutcome::Continue)
     }
@@ -4604,6 +4616,96 @@ impl VmFiber {
         Ok(())
     }
 
+    fn reserve_operand_window_replacement(
+        &self,
+        count: usize,
+    ) -> Result<(OperandWindowReplacementReservation, Vec<ValueSlot>), VmError> {
+        let (frame, start, values) = self.borrow_operands(count)?;
+        let frame_ordinal = self
+            .frames
+            .len()
+            .checked_sub(1)
+            .ok_or(VmError::FiberNotRunnable { state: self.state })?;
+        let remaining_height =
+            frame
+                .operand_height()
+                .checked_sub(count)
+                .ok_or(VmError::OperandStackUnderflow {
+                    function: frame.function(),
+                    needed: count,
+                    available: frame.operand_height(),
+                })?;
+        let next_height = remaining_height
+            .checked_add(1)
+            .ok_or(VmError::OperandStackOverflow {
+                function: frame.function(),
+                capacity: frame.operand_capacity(),
+            })?;
+        if next_height > frame.operand_capacity() {
+            return Err(VmError::OperandStackOverflow {
+                function: frame.function(),
+                capacity: frame.operand_capacity(),
+            });
+        }
+        let end = start
+            .checked_add(count)
+            .ok_or(VmError::VerifiedEntryInvariant {
+                invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+            })?;
+        if end > self.values.len() || end > self.live_values.len() {
+            return Err(VmError::VerifiedEntryInvariant {
+                invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+            });
+        }
+        if count == 0 {
+            let destination_live =
+                self.live_values
+                    .get(start)
+                    .copied()
+                    .ok_or(VmError::VerifiedEntryInvariant {
+                        invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+                    })?;
+            self.values
+                .get(start)
+                .ok_or(VmError::VerifiedEntryInvariant {
+                    invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+                })?;
+            if destination_live {
+                return Err(VmError::LiveDestination {
+                    function: frame.function(),
+                    instruction: frame.instruction(),
+                    location: VmValueLocation::Operand(frame.operand_height()),
+                });
+            }
+        }
+        Ok((
+            OperandWindowReplacementReservation {
+                frame_ordinal,
+                start,
+                end,
+                next_height,
+            },
+            values,
+        ))
+    }
+
+    fn commit_operand_window_replacement(
+        &mut self,
+        reservation: OperandWindowReplacementReservation,
+        value: ValueSlot,
+    ) {
+        // Reservation validated every index. Allocation has adopted the
+        // window's owners, so commit clears their old storage and installs the
+        // sole record owner without any fallible tail.
+        for index in reservation.start..reservation.end {
+            self.values[index] = ValueSlot::null();
+            self.live_values[index] = false;
+        }
+        self.frames[reservation.frame_ordinal].set_operand_height(reservation.next_height);
+        self.values[reservation.start] = value;
+        self.live_values[reservation.start] = true;
+    }
+
     fn set_current_frame_operand_height(
         &mut self,
         frame: &VmFrame,
@@ -4751,41 +4853,6 @@ fn materialize_new_record_const_string(
         .heap()
         .alloc_typed_string(value, field_tag, ValueFlags::new(0))
         .map_err(VmError::Heap)
-}
-
-fn allocate_new_record_with_cleanup(
-    executor: &mut LifecycleExecutor<'_>,
-    fields: &[VmRecordField],
-    record_tag: CompactTypeTag,
-    unadopted_values: &[ValueSlot],
-    field_plans: &[LinkedValueTransferPlan],
-) -> Result<ValueSlot, VmError> {
-    match executor
-        .heap()
-        .allocate_record(fields, record_tag, ValueFlags::new(0))
-    {
-        Ok(value) => Ok(value),
-        Err(error) => {
-            release_unadopted_new_record_values(executor, unadopted_values, field_plans);
-            Err(VmError::Heap(error))
-        }
-    }
-}
-
-fn release_unadopted_new_record_values(
-    executor: &mut LifecycleExecutor<'_>,
-    values: &[ValueSlot],
-    plans: &[LinkedValueTransferPlan],
-) {
-    let mut owned_values = Vec::with_capacity(values.len());
-    let mut owned_plans = Vec::with_capacity(plans.len());
-    for (value, plan) in values.iter().zip(plans) {
-        if !matches!(value.kind(), Some(ValueKind::ConstRef)) {
-            owned_values.push(*value);
-            owned_plans.push(plan.clone());
-        }
-    }
-    let _ = executor.release_batch(&owned_values, &owned_plans);
 }
 
 fn nominal_type_index(value: &ValueSlot) -> Option<TypeIndex> {

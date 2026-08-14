@@ -1,37 +1,46 @@
+mod intrinsic_dispatch;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     num::{NonZeroU32, NonZeroUsize},
     path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex as StdMutex,
+        Arc, Mutex as StdMutex, OnceLock,
     },
 };
 
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
-    BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
-    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+    builtin_receiver_op, BoundaryCallbackContract, BoundaryEffectGuarantee,
+    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract,
+    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
+    BoundaryValuePlan, BuiltinReceiverMethod, BuiltinReceiverRoot, CallableMayEffects,
     ContractOperationId, ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
-    DeploymentOperationBinding, DeploymentRevision, InstructionSourceSite, Opcode, PackageArtifact,
-    ServiceContract, ServiceDeployment, SourcePosition, SourceSpanRef, TypeRefIr,
-    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    DeploymentOperationBinding, DeploymentRevision, GatewayEntryIdentity, IngressProtocol,
+    IngressSelector, InstructionSourceSite, Opcode, PackageArtifact, ParamModeIr, ServiceContract,
+    ServiceDeployment, SourcePosition, SourceSpanRef, TypeRefIr, SERVICE_CONTRACT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
+    authoring::{build_authoring_object, seed_official_std_package, AuthoringObject},
     compile_package, CompilerPlatformSources, ManifestOwner, ManifestProvenance,
     PackageCompileInput, PackageSourceInput, PublicationManifest, PublicationSourceGraph,
     SourceTree, SourceTreeFile,
 };
 use skiff_runtime_linked_bytecode::{
-    FrameSlotIndex, FunctionIndex, InstructionBoundaryIndex, InstructionIndex, LinkedCatchMatcher,
-    LinkedExceptionRegion, LinkedResourceDropPlan, LinkedValueDropPlan, LinkedValueTransferPlan,
-    ResumeSiteIndex, TypeIndex,
+    FrameSlotIndex, FunctionIndex, InstructionBoundaryIndex, InstructionIndex, IntrinsicIndex,
+    LinkedCatchMatcher, LinkedExceptionRegion, LinkedInstructionTarget, LinkedIntrinsicKind,
+    LinkedIntrinsicTarget, LinkedNativeCallableSignature, LinkedResourceDropPlan,
+    LinkedValueDropPlan, LinkedValueTransferPlan, ResumeSiteIndex, TypeIndex,
 };
 use skiff_runtime_linker::{
     link_deployment_execution_image, DeploymentExecutionEntry, DeploymentExecutionImage, LinkLimits,
 };
-use skiff_runtime_loader::{DeploymentBytecodeContentResolver, DeploymentBytecodeLoader};
+use skiff_runtime_loader::{
+    DeploymentBytecodeContentResolver, DeploymentBytecodeLoader,
+    FilesystemDeploymentBytecodeContentResolver,
+};
 use skiff_runtime_model::bytecode_execution_observation::{
     BytecodeExecutionCorrelation, BytecodeExecutionEvent, BytecodeExecutionEventSink,
     BytecodeExecutionObservation, BytecodeExecutionObserver, VmFunctionFrameEntered,
@@ -41,14 +50,14 @@ use skiff_runtime_model::service_error::{
     CatchIdentity, ErrorCorrelation, ExceptionStackFrame, NominalTypeIdentity, RequestException,
 };
 use skiff_runtime_model::vm_heap::{VmHeap, VmHeapError, VmHeapOperation, VmRecordField};
+use skiff_runtime_model::vm_root::{VmRootSource, VmRootVisitor};
 use skiff_runtime_model::vm_value::{CompactTypeTag, ValueFlags, ValueSlot, VmHandle};
 
 use super::{
-    allocate_new_record_with_cleanup, allocate_store_string_constant, catch_matches,
-    compact_record_type_tags, compact_type_tag, comparable_equality,
-    comparable_equality_with_string_resolver, find_exception_region, linked_type_catch_identity,
-    materialize_intrinsic_result, materialize_new_record_const_string, nominal_type_index,
-    opcode_supported, release_intrinsic_argument_window, runtime_leaf_catch_identity,
+    allocate_store_string_constant, catch_matches, compact_record_type_tags, compact_type_tag,
+    comparable_equality, comparable_equality_with_string_resolver, find_exception_region,
+    linked_type_catch_identity, materialize_intrinsic_result, nominal_type_index, opcode_supported,
+    release_intrinsic_argument_window, runtime_leaf_catch_identity,
     store_slot_string_constant_authorized, transfer_materialized_store_owner, DispatchOutcome,
     IntrinsicResultPayload, Vm, VmFiber,
 };
@@ -278,127 +287,6 @@ fn vm_type_tag_construction_preserves_row_zero_and_rejects_u32_max() {
             instruction,
             type_index: TypeIndex::new(u32::MAX),
         })
-    );
-}
-
-#[derive(Default)]
-struct NewRecordFailureHeap {
-    typed_strings: Vec<(String, u32)>,
-    record_tags: Vec<u32>,
-    record_field_tags: Vec<u32>,
-    released: Vec<ValueSlot>,
-}
-
-impl VmHeap for NewRecordFailureHeap {
-    fn validate_live(&self, _value: &ValueSlot) -> Result<(), VmHeapError> {
-        Ok(())
-    }
-
-    fn snapshot_share(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
-        Ok(*source)
-    }
-
-    fn transfer_owner(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
-        Ok(*source)
-    }
-
-    fn release_snapshot(&mut self, owner: &ValueSlot) -> Result<(), VmHeapError> {
-        self.released.push(*owner);
-        Ok(())
-    }
-
-    fn release_resource(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
-        Ok(())
-    }
-
-    fn alloc_typed_string(
-        &mut self,
-        value: String,
-        compact_type_tag: CompactTypeTag,
-        flags: ValueFlags,
-    ) -> Result<ValueSlot, VmHeapError> {
-        self.typed_strings
-            .push((value, compact_type_tag.type_index()));
-        Ok(ValueSlot::request_heap_ref(
-            VmHandle::new(41),
-            compact_type_tag,
-            flags,
-        ))
-    }
-
-    fn allocate_record(
-        &mut self,
-        fields: &[VmRecordField],
-        compact_type_tag: CompactTypeTag,
-        _flags: ValueFlags,
-    ) -> Result<ValueSlot, VmHeapError> {
-        self.record_tags.push(compact_type_tag.type_index());
-        self.record_field_tags
-            .extend(fields.iter().filter_map(|field| {
-                field
-                    .value
-                    .compact_type_tag()
-                    .map(CompactTypeTag::type_index)
-            }));
-        Err(VmHeapError::HeapOperationFailed {
-            operation: VmHeapOperation::AllocateRecord,
-            message: "injected record allocation failure".to_string(),
-        })
-    }
-}
-
-#[test]
-fn new_record_materializes_const_string_with_field_type_and_releases_it_on_failure() {
-    let function = FunctionIndex::new(3);
-    let instruction = InstructionIndex::new(5);
-    let (record_tag, field_tags) = compact_record_type_tags(
-        function,
-        instruction,
-        TypeIndex::new(7),
-        [TypeIndex::new(0)],
-    )
-    .expect("record and row-zero field tags must be representable");
-    let field_plan = LinkedValueTransferPlan::SnapshotShare {
-        drop: LinkedValueDropPlan::SnapshotRelease,
-    };
-    let mut heap = NewRecordFailureHeap::default();
-    {
-        let mut executor = LifecycleExecutor::new(&mut heap);
-        let field_value =
-            materialize_new_record_const_string(&mut executor, "typed".to_string(), field_tags[0])
-                .expect("typed string materialization must succeed");
-        let fields = [VmRecordField {
-            name: "value".to_string(),
-            value: field_value,
-        }];
-        assert!(matches!(
-            allocate_new_record_with_cleanup(
-                &mut executor,
-                &fields,
-                record_tag,
-                &[field_value],
-                std::slice::from_ref(&field_plan),
-            ),
-            Err(VmError::Heap(VmHeapError::HeapOperationFailed {
-                operation: VmHeapOperation::AllocateRecord,
-                ..
-            }))
-        ));
-    }
-
-    assert_eq!(heap.typed_strings, [("typed".to_string(), 0)]);
-    assert_eq!(heap.record_tags, [7]);
-    assert_eq!(heap.record_field_tags, [0]);
-    assert_eq!(heap.released.len(), 1);
-    assert_eq!(
-        heap.released[0].as_request_heap_ref(),
-        Some(VmHandle::new(41))
-    );
-    assert_eq!(
-        heap.released[0]
-            .compact_type_tag()
-            .map(CompactTypeTag::type_index),
-        Some(0)
     );
 }
 

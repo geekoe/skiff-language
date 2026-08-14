@@ -120,6 +120,21 @@ impl<'heap> LifecycleExecutor<'heap> {
         }
     }
 
+    /// Whether one linked plan has a synchronous physical owner-move in this
+    /// executor. Multi-value adopters preflight the complete batch before the
+    /// first transfer so a later unsupported plan cannot strand earlier
+    /// owners between storage and the adopting container.
+    pub(crate) const fn supports_transfer(plan: &LinkedValueTransferPlan) -> bool {
+        match plan {
+            LinkedValueTransferPlan::SnapshotShare { .. }
+            | LinkedValueTransferPlan::MoveOnly { .. } => true,
+            LinkedValueTransferPlan::AffineResource { drop } => {
+                matches!(drop, LinkedResourceDropPlan::ResourceTableRelease)
+            }
+            LinkedValueTransferPlan::ExplicitCloneLease { .. } => false,
+        }
+    }
+
     /// Releases exactly one logical owner according to the plan's drop role.
     pub(crate) fn release(
         &mut self,
