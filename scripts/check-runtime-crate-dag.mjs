@@ -109,6 +109,7 @@ const runtimeDag = new Map([
       'skiff-runtime-deployment-image',
       'skiff-runtime-linked-bytecode',
       'skiff-runtime-loader',
+      'skiff-runtime-model',
       'skiff-runtime-native-contract',
     ],
   ],
