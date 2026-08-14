@@ -105,6 +105,11 @@ pub enum VmError {
         table: CandidateTable,
         row: u32,
     },
+    CompactTypeTagOutOfRange {
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        type_index: TypeIndex,
+    },
     AssertionFailed {
         function: FunctionIndex,
         instruction: InstructionIndex,
@@ -305,6 +310,17 @@ impl fmt::Display for VmError {
             Self::LinkedTableRowMissing { table, row } => write!(
                 formatter,
                 "verified VM references missing linked {table:?} row {row}"
+            ),
+            Self::CompactTypeTagOutOfRange {
+                function,
+                instruction,
+                type_index,
+            } => write!(
+                formatter,
+                "VM function {} instruction {} cannot represent linked type {} in a value tag",
+                function.get(),
+                instruction.get(),
+                type_index.get()
             ),
             Self::AssertionFailed {
                 function,

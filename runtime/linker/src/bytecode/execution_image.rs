@@ -16,8 +16,10 @@ use skiff_runtime_linked_bytecode::{
     LinkedFrozenConstantNode, LinkedInterfaceTable, LinkedIntrinsicTarget,
     LinkedPackageBytecodeProvenance, LinkedServiceOperationTarget, LinkedShapeEntry,
     LinkedSyntheticCallbackTarget, LinkedTypeEntry, LinkedWritablePathEntry, ResumeSiteIndex,
+    TypeIndex,
 };
 use skiff_runtime_loader::HydratedDeploymentBytecode;
+use skiff_runtime_model::vm_value::CompactTypeTag;
 
 use super::{entry::link_deployment, BytecodeLinkError, LinkLimits};
 
@@ -352,6 +354,8 @@ impl std::error::Error for CodeEntryLookupError {}
 /// Fail-closed structural error while assembling runtime-only image views.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ExecutionImageConstructionError {
+    #[error("linked type {type_index:?} cannot be represented by a VM value type tag")]
+    CompactTypeTagOutOfRange { type_index: TypeIndex },
     #[error("constant {constant:?} has a reference kind unsupported by the execution image")]
     UnsupportedConstantReference { constant: ConstantIndex },
     #[error("constant {constant:?} references missing frozen node {node:?}")]
@@ -455,6 +459,7 @@ pub fn link_deployment_execution_image(
     limits: &LinkLimits,
 ) -> Result<DeploymentExecutionImage, DeploymentExecutionImageError> {
     let linked = link_deployment(&hydrated, limits)?;
+    validate_compact_type_tags(&linked)?;
     let constant_heap = build_constant_heap(&linked)?;
     let statement_schedule = build_statement_schedule(&linked)?;
     let resume_sites = build_resume_sites(&linked)?;
@@ -510,6 +515,22 @@ pub fn link_deployment_execution_image(
     })
 }
 
+pub(super) fn compact_type_tag(
+    type_index: TypeIndex,
+) -> Result<CompactTypeTag, ExecutionImageConstructionError> {
+    CompactTypeTag::try_from_type_index(type_index.get())
+        .ok_or(ExecutionImageConstructionError::CompactTypeTagOutOfRange { type_index })
+}
+
+fn validate_compact_type_tags(
+    linked: &LinkedBytecodeCandidate,
+) -> Result<(), ExecutionImageConstructionError> {
+    for linked_type in linked.types() {
+        compact_type_tag(linked_type.index())?;
+    }
+    Ok(())
+}
+
 fn dependency_slots(
     hydrated: &HydratedDeploymentBytecode,
 ) -> Result<BTreeMap<ServiceRequirementKey, ServiceDependencySlot>, DeploymentExecutionImageError> {
@@ -526,4 +547,23 @@ fn dependency_slots(
         }
     }
     Ok(slots)
+}
+
+#[cfg(test)]
+mod type_tag_tests {
+    use skiff_runtime_linked_bytecode::TypeIndex;
+
+    use super::{compact_type_tag, ExecutionImageConstructionError};
+
+    #[test]
+    fn compact_type_tag_boundary_preserves_row_zero_and_rejects_u32_max() {
+        let row_zero = compact_type_tag(TypeIndex::new(0)).expect("row zero must be representable");
+        assert_eq!(row_zero.type_index(), 0);
+        assert_eq!(
+            compact_type_tag(TypeIndex::new(u32::MAX)),
+            Err(ExecutionImageConstructionError::CompactTypeTagOutOfRange {
+                type_index: TypeIndex::new(u32::MAX),
+            })
+        );
+    }
 }

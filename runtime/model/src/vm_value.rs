@@ -1,3 +1,5 @@
+use std::num::NonZeroU32;
+
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ValueKind {
@@ -29,19 +31,52 @@ impl ValueKind {
             _ => None,
         }
     }
+
+    const fn requires_type_tag(self) -> bool {
+        matches!(
+            self,
+            Self::RequestHeapRef
+                | Self::ActorStateRef
+                | Self::ConstRef
+                | Self::ResourceRef
+                | Self::CallbackClosureRef
+        )
+    }
 }
 
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct CompactTypeTag(u32);
+pub struct CompactTypeTag(NonZeroU32);
 
 impl CompactTypeTag {
-    pub const fn new(value: u32) -> Self {
-        Self(value)
+    /// Encodes one exact linked `TypeIndex` as `index + 1`.
+    ///
+    /// Raw zero is reserved for an absent tag on immediate carriers, so the
+    /// largest `u32` cannot be represented and fails closed here.
+    pub const fn try_from_type_index(type_index: u32) -> Option<Self> {
+        let Some(encoded) = type_index.checked_add(1) else {
+            return None;
+        };
+        let Some(encoded) = NonZeroU32::new(encoded) else {
+            return None;
+        };
+        Some(Self(encoded))
     }
 
-    pub const fn get(self) -> u32 {
-        self.0
+    /// Returns the exact logical linked type index carried by this present tag.
+    pub const fn type_index(self) -> u32 {
+        self.0.get() - 1
+    }
+
+    const fn from_encoded(encoded: u32) -> Option<Self> {
+        match NonZeroU32::new(encoded) {
+            Some(encoded) => Some(Self(encoded)),
+            None => None,
+        }
+    }
+
+    const fn encoded(self) -> u32 {
+        self.0.get()
     }
 }
 
@@ -157,15 +192,23 @@ impl ValueSlot {
         if self.metadata & RESERVED_MASK != 0 {
             return None;
         }
-        ValueKind::from_discriminant((self.metadata & KIND_MASK) as u8)
+        let Some(kind) = ValueKind::from_discriminant((self.metadata & KIND_MASK) as u8) else {
+            return None;
+        };
+        if kind.requires_type_tag() != self.compact_type_tag().is_some() {
+            return None;
+        }
+        Some(kind)
     }
 
     pub const fn flags(self) -> ValueFlags {
         ValueFlags::new(((self.metadata & FLAGS_MASK) >> FLAGS_SHIFT) as u8)
     }
 
-    pub const fn compact_type_tag(self) -> CompactTypeTag {
-        CompactTypeTag::new(((self.metadata & TYPE_TAG_MASK) >> TYPE_TAG_SHIFT) as u32)
+    /// Decodes the optional tag field. [`Self::kind`] additionally validates
+    /// that immediate kinds have no tag and reference kinds have one.
+    pub const fn compact_type_tag(self) -> Option<CompactTypeTag> {
+        CompactTypeTag::from_encoded(((self.metadata & TYPE_TAG_MASK) >> TYPE_TAG_SHIFT) as u32)
     }
 
     pub const fn is_null(&self) -> bool {
@@ -249,7 +292,7 @@ impl ValueSlot {
     }
 
     const fn immediate(payload: u64, kind: ValueKind) -> Self {
-        Self::new(payload, kind, CompactTypeTag::new(0), ValueFlags::new(0))
+        Self::new(payload, kind, None, ValueFlags::new(0))
     }
 
     const fn reference(
@@ -258,18 +301,22 @@ impl ValueSlot {
         compact_type_tag: CompactTypeTag,
         flags: ValueFlags,
     ) -> Self {
-        Self::new(handle.get(), kind, compact_type_tag, flags)
+        Self::new(handle.get(), kind, Some(compact_type_tag), flags)
     }
 
     const fn new(
         payload: u64,
         kind: ValueKind,
-        compact_type_tag: CompactTypeTag,
+        compact_type_tag: Option<CompactTypeTag>,
         flags: ValueFlags,
     ) -> Self {
+        let encoded_type_tag = match compact_type_tag {
+            Some(tag) => tag.encoded(),
+            None => 0,
+        };
         let metadata = (kind as u64)
             | ((flags.bits() as u64) << FLAGS_SHIFT)
-            | ((compact_type_tag.get() as u64) << TYPE_TAG_SHIFT);
+            | ((encoded_type_tag as u64) << TYPE_TAG_SHIFT);
         Self { payload, metadata }
     }
 
@@ -295,14 +342,22 @@ impl ValueSlot {
 mod tests {
     use std::mem::{align_of, size_of};
 
-    use super::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot, VmHandle, RESERVED_MASK};
+    use super::{
+        CompactTypeTag, ValueFlags, ValueKind, ValueSlot, VmHandle, RESERVED_MASK, TYPE_TAG_MASK,
+    };
 
     type ReferenceCase = (ValueKind, ValueSlot, fn(&ValueSlot) -> Option<VmHandle>);
+
+    fn tag(type_index: u32) -> CompactTypeTag {
+        CompactTypeTag::try_from_type_index(type_index).expect("type index must fit compact tag")
+    }
 
     #[test]
     fn value_slot_layout_is_two_words() {
         assert_eq!(size_of::<ValueSlot>(), 16);
         assert_eq!(align_of::<ValueSlot>(), 8);
+        assert_eq!(size_of::<CompactTypeTag>(), size_of::<u32>());
+        assert_eq!(size_of::<Option<CompactTypeTag>>(), size_of::<u32>());
     }
 
     #[test]
@@ -325,7 +380,7 @@ mod tests {
         assert_eq!(ValueSlot::integer(i64::MIN).as_integer(), Some(i64::MIN));
         assert_eq!(ValueSlot::date(-1_234_567).as_date(), Some(-1_234_567));
         for slot in immediates {
-            assert_eq!(slot.compact_type_tag(), CompactTypeTag::new(0));
+            assert_eq!(slot.compact_type_tag(), None);
             assert_eq!(slot.flags(), ValueFlags::new(0));
         }
     }
@@ -333,7 +388,7 @@ mod tests {
     #[test]
     fn reference_values_round_trip_kind_handle_tag_and_flags() {
         let handle = VmHandle::new(0xfedc_ba98_7654_3210);
-        let tag = CompactTypeTag::new(0x89ab_cdef);
+        let tag = tag(0x89ab_cdef);
         let flags = ValueFlags::new(0xa5);
         let cases: [ReferenceCase; 5] = [
             (
@@ -367,19 +422,33 @@ mod tests {
             assert_eq!(slot.kind(), Some(kind));
             assert_eq!(slot.as_handle(), Some(handle));
             assert_eq!(read_specific_handle(&slot), Some(handle));
-            assert_eq!(slot.compact_type_tag(), tag);
+            assert_eq!(slot.compact_type_tag(), Some(tag));
             assert_eq!(slot.flags(), flags);
         }
     }
 
     #[test]
+    fn type_index_zero_and_largest_encodable_index_round_trip_without_a_sentinel() {
+        for type_index in [0, u32::MAX - 1] {
+            let tag = tag(type_index);
+            assert_eq!(tag.type_index(), type_index);
+            let slot = ValueSlot::request_heap_ref(VmHandle::new(7), tag, ValueFlags::new(u8::MAX));
+            assert_eq!(slot.kind(), Some(ValueKind::RequestHeapRef));
+            assert_eq!(slot.compact_type_tag(), Some(tag));
+            assert_eq!(
+                slot.compact_type_tag().map(CompactTypeTag::type_index),
+                Some(type_index)
+            );
+        }
+
+        assert_eq!(CompactTypeTag::try_from_type_index(u32::MAX), None);
+    }
+
+    #[test]
     fn mismatched_reads_fail_closed() {
         let number = ValueSlot::number(7.0);
-        let request_ref = ValueSlot::request_heap_ref(
-            VmHandle::new(9),
-            CompactTypeTag::new(10),
-            ValueFlags::new(11),
-        );
+        let request_ref =
+            ValueSlot::request_heap_ref(VmHandle::new(9), tag(10), ValueFlags::new(11));
 
         assert_eq!(number.as_bool(), None);
         assert_eq!(number.as_integer(), None);
@@ -394,6 +463,20 @@ mod tests {
         let invalid_kind = ValueSlot::from_raw_parts_for_test(0, u64::from(u8::MAX));
         assert_eq!(invalid_kind.kind(), None);
         assert_eq!(invalid_kind.as_handle(), None);
+
+        let reference_without_tag =
+            ValueSlot::from_raw_parts_for_test(9, request_ref.metadata_for_test() & !TYPE_TAG_MASK);
+        assert_eq!(reference_without_tag.compact_type_tag(), None);
+        assert_eq!(reference_without_tag.kind(), None);
+        assert_eq!(reference_without_tag.as_request_heap_ref(), None);
+
+        let immediate_with_tag = ValueSlot::from_raw_parts_for_test(
+            ValueSlot::integer(3).payload,
+            ValueSlot::integer(3).metadata_for_test() | (1 << super::TYPE_TAG_SHIFT),
+        );
+        assert_eq!(immediate_with_tag.compact_type_tag(), Some(tag(0)));
+        assert_eq!(immediate_with_tag.kind(), None);
+        assert_eq!(immediate_with_tag.as_integer(), None);
     }
 
     #[test]
@@ -406,27 +489,27 @@ mod tests {
             ValueSlot::date(1),
             ValueSlot::request_heap_ref(
                 VmHandle::new(u64::MAX),
-                CompactTypeTag::new(u32::MAX),
+                tag(u32::MAX - 1),
                 ValueFlags::new(u8::MAX),
             ),
             ValueSlot::actor_state_ref(
                 VmHandle::new(u64::MAX),
-                CompactTypeTag::new(u32::MAX),
+                tag(u32::MAX - 1),
                 ValueFlags::new(u8::MAX),
             ),
             ValueSlot::const_ref(
                 VmHandle::new(u64::MAX),
-                CompactTypeTag::new(u32::MAX),
+                tag(u32::MAX - 1),
                 ValueFlags::new(u8::MAX),
             ),
             ValueSlot::resource_ref(
                 VmHandle::new(u64::MAX),
-                CompactTypeTag::new(u32::MAX),
+                tag(u32::MAX - 1),
                 ValueFlags::new(u8::MAX),
             ),
             ValueSlot::callback_closure_ref(
                 VmHandle::new(u64::MAX),
-                CompactTypeTag::new(u32::MAX),
+                tag(u32::MAX - 1),
                 ValueFlags::new(u8::MAX),
             ),
         ];

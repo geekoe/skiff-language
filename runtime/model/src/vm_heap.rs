@@ -287,7 +287,10 @@ pub enum VmHeapError {
 /// Implementations own stable-handle domain and generation checks. Every
 /// method must fail closed for foreign or stale handles even when bytecode has
 /// already passed semantic verification. An error from a mutating method must
-/// leave logical ownership, liveness, and share state unchanged.
+/// leave logical ownership, liveness, and share state unchanged. Every
+/// `CompactTypeTag` parameter carries one present, exact linked type index;
+/// absence is represented only by an immediate [`ValueSlot`], never by a tag
+/// sentinel.
 pub trait VmHeap {
     /// Validates metadata and the liveness/domain of any referenced handle.
     fn validate_live(&self, value: &ValueSlot) -> Result<(), VmHeapError>;
@@ -407,7 +410,7 @@ pub trait VmHeap {
 
     /// Allocates bytes carrying the exact verified concrete type metadata.
     /// Typed host materialization must use this port instead of relying on the
-    /// legacy type-zero boundary helper.
+    /// untyped boundary helper.
     fn alloc_typed_bytes(
         &mut self,
         _value: Vec<u8>,

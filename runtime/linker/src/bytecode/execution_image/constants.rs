@@ -4,9 +4,9 @@ use skiff_artifact_model::LiteralIr;
 use skiff_runtime_linked_bytecode::{
     ConstantIndex, LinkedBytecodeCandidate, LinkedConstantReference, LinkedFrozenConstantValue,
 };
-use skiff_runtime_model::vm_value::{CompactTypeTag, ValueFlags, ValueSlot, VmHandle};
+use skiff_runtime_model::vm_value::{ValueFlags, ValueSlot, VmHandle};
 
-use super::ExecutionImageConstructionError;
+use super::{compact_type_tag, ExecutionImageConstructionError};
 
 /// Immutable image-local values materialized from the linked frozen-literal table.
 pub struct ExecutionConstantHeap {
@@ -90,7 +90,7 @@ fn materialize_literal(
             .ok_or(ExecutionImageConstructionError::ConstantNumberNotRepresentable { constant }),
         LiteralIr::String { .. } => Ok(ValueSlot::const_ref(
             VmHandle::new(u64::from(node.get())),
-            CompactTypeTag::new(ty.get()),
+            compact_type_tag(ty)?,
             ValueFlags::new(0),
         )),
     }

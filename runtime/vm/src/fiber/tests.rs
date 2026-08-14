@@ -44,9 +44,9 @@ use skiff_runtime_model::vm_heap::{VmHeap, VmHeapError, VmHeapOperation, VmRecor
 use skiff_runtime_model::vm_value::{CompactTypeTag, ValueFlags, ValueSlot, VmHandle};
 
 use super::{
-    allocate_store_string_constant, catch_matches, comparable_equality,
+    allocate_store_string_constant, catch_matches, compact_type_tag, comparable_equality,
     comparable_equality_with_string_resolver, find_exception_region, linked_type_catch_identity,
-    materialize_intrinsic_result, nominal_tag_index, opcode_supported,
+    materialize_intrinsic_result, nominal_type_index, opcode_supported,
     release_intrinsic_argument_window, release_intrinsic_result_after_push_failure,
     runtime_leaf_catch_identity, store_slot_string_constant_authorized,
     transfer_materialized_store_owner, DispatchOutcome, IntrinsicResultPayload, Vm, VmFiber,
@@ -64,6 +64,10 @@ type VmStartFn = fn(
     VmLimits,
     BytecodeExecutionObserver,
 ) -> Result<VmFiber, VmError>;
+
+fn compact_tag(type_index: u32) -> CompactTypeTag {
+    CompactTypeTag::try_from_type_index(type_index).expect("type index must fit compact tag")
+}
 
 #[test]
 fn production_start_signature_requires_the_concrete_pinned_entry() {
@@ -211,14 +215,39 @@ fn catch_all_and_exact_type_matchers_are_closed() {
 
 #[test]
 fn nominal_switch_tag_comes_from_reference_metadata_only() {
-    assert_eq!(nominal_tag_index(&ValueSlot::number(1.0)), 0);
+    assert_eq!(nominal_type_index(&ValueSlot::number(1.0)), None);
     assert_eq!(
-        nominal_tag_index(&ValueSlot::request_heap_ref(
-            skiff_runtime_model::vm_value::VmHandle::new(1),
-            skiff_runtime_model::vm_value::CompactTypeTag::new(42),
-            skiff_runtime_model::vm_value::ValueFlags::new(0),
+        nominal_type_index(&ValueSlot::request_heap_ref(
+            VmHandle::new(1),
+            compact_tag(0),
+            ValueFlags::new(0),
         )),
-        42
+        Some(TypeIndex::new(0))
+    );
+    assert_eq!(
+        nominal_type_index(&ValueSlot::request_heap_ref(
+            VmHandle::new(1),
+            compact_tag(42),
+            ValueFlags::new(0),
+        )),
+        Some(TypeIndex::new(42))
+    );
+}
+
+#[test]
+fn vm_type_tag_construction_preserves_row_zero_and_rejects_u32_max() {
+    let function = FunctionIndex::new(3);
+    let instruction = InstructionIndex::new(5);
+    let row_zero = compact_type_tag(function, instruction, TypeIndex::new(0))
+        .expect("row zero must be representable");
+    assert_eq!(row_zero.type_index(), 0);
+    assert_eq!(
+        compact_type_tag(function, instruction, TypeIndex::new(u32::MAX)),
+        Err(VmError::CompactTypeTagOutOfRange {
+            function,
+            instruction,
+            type_index: TypeIndex::new(u32::MAX),
+        })
     );
 }
 
@@ -267,14 +296,12 @@ fn comparable_equality_matches_same_kind_and_numeric_equality() {
 
 #[test]
 fn comparable_equality_resolves_const_and_request_heap_strings() {
-    let const_left =
-        ValueSlot::const_ref(VmHandle::new(1), CompactTypeTag::new(0), ValueFlags::new(0));
-    let const_right =
-        ValueSlot::const_ref(VmHandle::new(2), CompactTypeTag::new(0), ValueFlags::new(0));
+    let const_left = ValueSlot::const_ref(VmHandle::new(1), compact_tag(0), ValueFlags::new(0));
+    let const_right = ValueSlot::const_ref(VmHandle::new(2), compact_tag(0), ValueFlags::new(0));
     let heap_same =
-        ValueSlot::request_heap_ref(VmHandle::new(3), CompactTypeTag::new(0), ValueFlags::new(0));
+        ValueSlot::request_heap_ref(VmHandle::new(3), compact_tag(0), ValueFlags::new(0));
     let heap_different =
-        ValueSlot::request_heap_ref(VmHandle::new(4), CompactTypeTag::new(0), ValueFlags::new(0));
+        ValueSlot::request_heap_ref(VmHandle::new(4), compact_tag(0), ValueFlags::new(0));
     let resolve_string = |value: &ValueSlot| match value.as_handle()?.get() {
         1 | 2 | 3 => Some("same".to_string()),
         4 => Some("different".to_string()),
@@ -298,8 +325,7 @@ fn comparable_equality_resolves_const_and_request_heap_strings() {
         Some(true)
     );
 
-    let unresolved =
-        ValueSlot::const_ref(VmHandle::new(9), CompactTypeTag::new(0), ValueFlags::new(0));
+    let unresolved = ValueSlot::const_ref(VmHandle::new(9), compact_tag(0), ValueFlags::new(0));
     assert_eq!(
         comparable_equality_with_string_resolver(&const_left, &unresolved, resolve_string),
         None
@@ -311,12 +337,9 @@ fn discriminator_tag_constant_comparison_uses_exact_literal_equality() {
     // `attempt.tag == "ok"` where the union branch tag is "err" must compare
     // false, while `== "err"` compares true. Both sides are image-scoped
     // string constants, which is exactly the Phase 3 §4a discriminator slice.
-    let tag_err =
-        ValueSlot::const_ref(VmHandle::new(1), CompactTypeTag::new(0), ValueFlags::new(0));
-    let literal_ok =
-        ValueSlot::const_ref(VmHandle::new(2), CompactTypeTag::new(0), ValueFlags::new(0));
-    let literal_err =
-        ValueSlot::const_ref(VmHandle::new(3), CompactTypeTag::new(0), ValueFlags::new(0));
+    let tag_err = ValueSlot::const_ref(VmHandle::new(1), compact_tag(0), ValueFlags::new(0));
+    let literal_ok = ValueSlot::const_ref(VmHandle::new(2), compact_tag(0), ValueFlags::new(0));
+    let literal_err = ValueSlot::const_ref(VmHandle::new(3), compact_tag(0), ValueFlags::new(0));
     let resolve_string = |value: &ValueSlot| match value.as_handle()?.get() {
         1 | 3 => Some("err".to_string()),
         2 => Some("ok".to_string()),
@@ -459,7 +482,6 @@ impl VmHeap for StoreStringRecordingHeap {
         compact_type_tag: CompactTypeTag,
         flags: ValueFlags,
     ) -> Result<ValueSlot, VmHeapError> {
-        assert_ne!(compact_type_tag.get(), 0, "owned strings retain exact type");
         assert_eq!(flags, ValueFlags::new(0));
         self.next_handle += 1;
         self.allocations += 1;
@@ -505,7 +527,7 @@ fn store_slot_string_constant_transfers_and_releases_each_owned_cell_once() {
     let materialized = allocate_store_string_constant(
         &mut heap,
         "seed".to_string(),
-        TypeIndex::new(7),
+        compact_tag(7),
         &constant_type,
         &string_type,
         &plan,
@@ -514,7 +536,7 @@ fn store_slot_string_constant_transfers_and_releases_each_owned_cell_once() {
     )
     .unwrap()
     .expect("exact compiler-owned string carrier is materialized");
-    assert_eq!(materialized.compact_type_tag(), CompactTypeTag::new(7));
+    assert_eq!(materialized.compact_type_tag(), Some(compact_tag(7)));
     let mut executor = LifecycleExecutor::new(&mut heap);
     let moved = transfer_materialized_store_owner(
         &mut executor,
@@ -546,7 +568,7 @@ fn store_slot_string_constant_cleans_the_new_owner_when_transfer_fails() {
     let materialized = allocate_store_string_constant(
         &mut heap,
         "seed".to_string(),
-        TypeIndex::new(7),
+        compact_tag(7),
         &constant_type,
         &string_type,
         &plan,
@@ -597,21 +619,13 @@ impl IntrinsicReleaseRecordingHeap {
     fn request(&mut self, handle: u64, tag: u32) -> ValueSlot {
         self.next_handle = self.next_handle.max(handle);
         assert!(self.request_live.insert(handle));
-        ValueSlot::request_heap_ref(
-            VmHandle::new(handle),
-            CompactTypeTag::new(tag),
-            ValueFlags::new(0),
-        )
+        ValueSlot::request_heap_ref(VmHandle::new(handle), compact_tag(tag), ValueFlags::new(0))
     }
 
     fn resource(&mut self, handle: u64, tag: u32) -> ValueSlot {
         self.next_handle = self.next_handle.max(handle);
         assert!(self.resource_live.insert(handle));
-        ValueSlot::resource_ref(
-            VmHandle::new(handle),
-            CompactTypeTag::new(tag),
-            ValueFlags::new(0),
-        )
+        ValueSlot::resource_ref(VmHandle::new(handle), compact_tag(tag), ValueFlags::new(0))
     }
 
     fn allocate_request(
@@ -748,7 +762,7 @@ fn intrinsic_cleanup_releases_heap_arguments_but_never_image_constant_borrows() 
     let mut heap = IntrinsicReleaseRecordingHeap::default();
     let heap_argument = heap.request(10, 7);
     let constant_argument =
-        ValueSlot::const_ref(VmHandle::new(1), CompactTypeTag::new(8), ValueFlags::new(0));
+        ValueSlot::const_ref(VmHandle::new(1), compact_tag(8), ValueFlags::new(0));
     let mut storage = vec![constant_argument, heap_argument];
     let mut live = vec![true, true];
     let values = storage.clone();
@@ -869,6 +883,8 @@ fn intrinsic_cleanup_precedes_result_materialization_failure() {
         executor.heap(),
         IntrinsicResultPayload::String("joined".to_string()),
         TypeIndex::new(9),
+        FunctionIndex::new(1),
+        InstructionIndex::new(2),
     ) {
         Err(error) => error,
         Ok(_) => panic!("injected result allocation failure must reject materialization"),
@@ -894,17 +910,21 @@ fn intrinsic_string_and_bytes_results_keep_the_exact_signature_type() {
         &mut heap,
         IntrinsicResultPayload::String("value".to_string()),
         TypeIndex::new(12),
+        FunctionIndex::new(1),
+        InstructionIndex::new(2),
     )
     .expect("typed string result");
     let bytes = materialize_intrinsic_result(
         &mut heap,
         IntrinsicResultPayload::Bytes(b"value".to_vec()),
         TypeIndex::new(13),
+        FunctionIndex::new(1),
+        InstructionIndex::new(2),
     )
     .expect("typed bytes result");
 
-    assert_eq!(string.compact_type_tag(), CompactTypeTag::new(12));
-    assert_eq!(bytes.compact_type_tag(), CompactTypeTag::new(13));
+    assert_eq!(string.compact_type_tag(), Some(compact_tag(12)));
+    assert_eq!(bytes.compact_type_tag(), Some(compact_tag(13)));
     heap.release_snapshot(&string).unwrap();
     heap.release_snapshot(&bytes).unwrap();
     assert!(heap.request_live.is_empty());
@@ -918,6 +938,8 @@ fn intrinsic_result_push_failure_releases_the_uninstalled_owner_once() {
         &mut heap,
         IntrinsicResultPayload::String("value".to_string()),
         TypeIndex::new(12),
+        FunctionIndex::new(1),
+        InstructionIndex::new(2),
     )
     .expect("typed intrinsic result");
     let primary = VmError::OperandStackOverflow {
@@ -1970,7 +1992,7 @@ impl VmHeap for ResumeHeap {
     }
 
     fn alloc_string(&mut self, _value: String) -> Result<ValueSlot, VmHeapError> {
-        Ok(self.fresh(CompactTypeTag::new(0)))
+        Ok(self.fresh(compact_tag(0)))
     }
 }
 
@@ -2027,7 +2049,7 @@ fn controlled_resume_throw_preserves_the_exact_envelope_into_the_catch_handler()
 
     let payload = ValueSlot::request_heap_ref(
         VmHandle::new(7),
-        CompactTypeTag::new(leaf_type.get()),
+        compact_tag(leaf_type.get()),
         ValueFlags::new(0),
     );
     let identity = runtime_leaf_catch_identity(&fixture.image, &payload)

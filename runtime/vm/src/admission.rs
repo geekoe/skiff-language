@@ -154,9 +154,12 @@ mod tests {
     use super::validate_entry_argument;
     use crate::{VmEntryArgumentRejection, VmError};
 
-    const TAG: CompactTypeTag = CompactTypeTag::new(7);
     const FLAGS: ValueFlags = ValueFlags::new(0);
     const HANDLE: VmHandle = VmHandle::new(11);
+
+    fn tag() -> CompactTypeTag {
+        CompactTypeTag::try_from_type_index(7).expect("test type index must fit compact tag")
+    }
 
     #[test]
     fn external_entry_accepts_only_exact_self_describing_builtin_types() {
@@ -225,7 +228,7 @@ mod tests {
 
     #[test]
     fn external_entry_accepts_heap_refs_with_signature_type() {
-        let argument = ValueSlot::request_heap_ref(HANDLE, TAG, FLAGS);
+        let argument = ValueSlot::request_heap_ref(HANDLE, tag(), FLAGS);
         assert!(validate_entry_argument(
             0,
             &argument,
@@ -238,7 +241,7 @@ mod tests {
 
     #[test]
     fn external_entry_rejects_image_scoped_constant_handles() {
-        let argument = ValueSlot::const_ref(HANDLE, TAG, FLAGS);
+        let argument = ValueSlot::const_ref(HANDLE, tag(), FLAGS);
         let error = validate_entry_argument(
             0,
             &argument,
@@ -261,15 +264,15 @@ mod tests {
     fn external_entry_rejects_internal_and_affine_handles() {
         let cases = [
             (
-                ValueSlot::actor_state_ref(HANDLE, TAG, FLAGS),
+                ValueSlot::actor_state_ref(HANDLE, tag(), FLAGS),
                 VmEntryArgumentRejection::ActorState,
             ),
             (
-                ValueSlot::resource_ref(HANDLE, TAG, FLAGS),
+                ValueSlot::resource_ref(HANDLE, tag(), FLAGS),
                 VmEntryArgumentRejection::AffineResource,
             ),
             (
-                ValueSlot::callback_closure_ref(HANDLE, TAG, FLAGS),
+                ValueSlot::callback_closure_ref(HANDLE, tag(), FLAGS),
                 VmEntryArgumentRejection::CallbackClosure,
             ),
         ];
@@ -294,7 +297,7 @@ mod tests {
 
     #[test]
     fn external_entry_accepts_exact_affine_stream_resource_with_lifecycle_plan() {
-        let argument = ValueSlot::resource_ref(HANDLE, TAG, FLAGS);
+        let argument = ValueSlot::resource_ref(HANDLE, tag(), FLAGS);
         let expected_type = TypeRefIr::Builtin {
             name: "Stream".to_string(),
             args: vec![TypeRefIr::builtin("number")],

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::{
     PinnedWritablePathSegment, VmHandleInvalidReason, VmHeap, VmHeapError, VmHeapOperation,
-    VmHeapPathSegment, WritablePathPreparation,
+    VmHeapPathSegment, VmRecordField, WritablePathPreparation,
 };
 use crate::{
     vm_root::{VmRootSource, VmRootVisitor},
@@ -239,20 +239,16 @@ fn handle(domain: u8, index: u64) -> VmHandle {
     VmHandle::new((u64::from(domain) << 56) | index)
 }
 
+fn tag(type_index: u32) -> CompactTypeTag {
+    CompactTypeTag::try_from_type_index(type_index).expect("type index must fit compact tag")
+}
+
 fn request_ref(domain: u8, index: u64) -> ValueSlot {
-    ValueSlot::request_heap_ref(
-        handle(domain, index),
-        CompactTypeTag::new(17),
-        ValueFlags::new(3),
-    )
+    ValueSlot::request_heap_ref(handle(domain, index), tag(17), ValueFlags::new(3))
 }
 
 fn resource_ref(domain: u8, index: u64) -> ValueSlot {
-    ValueSlot::resource_ref(
-        handle(domain, index),
-        CompactTypeTag::new(21),
-        ValueFlags::new(1),
-    )
+    ValueSlot::resource_ref(handle(domain, index), tag(21), ValueFlags::new(1))
 }
 
 #[test]
@@ -351,7 +347,7 @@ fn snapshot_share_and_transfer_owner_commit_physical_mutations() {
 fn unadapted_heaps_reject_collection_primitives_conservatively() {
     let mut heap = FakeHeap::new(2);
     assert!(matches!(
-        heap.allocate_array(&[], CompactTypeTag::new(1), ValueFlags::new(0)),
+        heap.allocate_array(&[], tag(1), ValueFlags::new(0)),
         Err(VmHeapError::OperationKindMismatch {
             operation: VmHeapOperation::AllocateArray,
             kind: ValueKind::RequestHeapRef,
@@ -364,6 +360,125 @@ fn unadapted_heaps_reject_collection_primitives_conservatively() {
             kind: ValueKind::RequestHeapRef,
         })
     ));
+}
+
+#[derive(Default)]
+struct TypeTagEchoHeap {
+    next_handle: u64,
+}
+
+impl TypeTagEchoHeap {
+    fn request_slot(&mut self, tag: CompactTypeTag, flags: ValueFlags) -> ValueSlot {
+        self.next_handle += 1;
+        ValueSlot::request_heap_ref(VmHandle::new(self.next_handle), tag, flags)
+    }
+}
+
+impl VmHeap for TypeTagEchoHeap {
+    fn validate_live(&self, _value: &ValueSlot) -> Result<(), VmHeapError> {
+        Ok(())
+    }
+
+    fn admit_resource_ref(
+        &mut self,
+        route: VmHandle,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        Ok(ValueSlot::resource_ref(route, compact_type_tag, flags))
+    }
+
+    fn snapshot_share(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        Ok(*source)
+    }
+
+    fn transfer_owner(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        Ok(*source)
+    }
+
+    fn release_snapshot(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
+        Ok(())
+    }
+
+    fn release_resource(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
+        Ok(())
+    }
+
+    fn allocate_array(
+        &mut self,
+        _elements: &[ValueSlot],
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        Ok(self.request_slot(compact_type_tag, flags))
+    }
+
+    fn allocate_record(
+        &mut self,
+        _fields: &[VmRecordField],
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        Ok(self.request_slot(compact_type_tag, flags))
+    }
+
+    fn alloc_typed_bytes(
+        &mut self,
+        _value: Vec<u8>,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        Ok(self.request_slot(compact_type_tag, flags))
+    }
+
+    fn alloc_typed_string(
+        &mut self,
+        _value: String,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        Ok(self.request_slot(compact_type_tag, flags))
+    }
+}
+
+#[test]
+fn heap_typed_construction_preserves_zero_and_largest_encodable_type_indices() {
+    let mut heap = TypeTagEchoHeap::default();
+    let flags = ValueFlags::new(0xa5);
+
+    for type_index in [0, u32::MAX - 1] {
+        let compact_type_tag = tag(type_index);
+        let slots = [
+            heap.alloc_typed_string("value".to_string(), compact_type_tag, flags)
+                .expect("typed string allocation should succeed"),
+            heap.alloc_typed_bytes(vec![1, 2, 3], compact_type_tag, flags)
+                .expect("typed bytes allocation should succeed"),
+            heap.allocate_record(&[], compact_type_tag, flags)
+                .expect("record allocation should succeed"),
+            heap.allocate_array(&[], compact_type_tag, flags)
+                .expect("array allocation should succeed"),
+        ];
+        for slot in slots {
+            assert_eq!(slot.kind(), Some(ValueKind::RequestHeapRef));
+            assert_eq!(slot.flags(), flags);
+            assert_eq!(
+                slot.compact_type_tag().map(CompactTypeTag::type_index),
+                Some(type_index)
+            );
+        }
+
+        let route = VmHandle::new(u64::from(type_index) + 1);
+        let resource = heap
+            .admit_resource_ref(route, compact_type_tag, flags)
+            .expect("resource admission should succeed");
+        assert_eq!(resource.kind(), Some(ValueKind::ResourceRef));
+        assert_eq!(resource.as_resource_ref(), Some(route));
+        assert_eq!(resource.flags(), flags);
+        assert_eq!(
+            resource.compact_type_tag().map(CompactTypeTag::type_index),
+            Some(type_index)
+        );
+    }
 }
 
 #[test]

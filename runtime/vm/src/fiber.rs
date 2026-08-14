@@ -1099,7 +1099,15 @@ impl VmFiber {
         function: FunctionIndex,
         instruction: InstructionIndex,
     ) -> Result<ValueSlot, VmError> {
-        let constant_type = TypeIndex::new(value.compact_type_tag().get());
+        let constant_type = value
+            .compact_type_tag()
+            .map(CompactTypeTag::type_index)
+            .map(TypeIndex::new)
+            .ok_or(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::StoreSlot,
+            })?;
         let constant_type_ref = self
             .execution_image()
             .types()
@@ -1141,7 +1149,7 @@ impl VmFiber {
         let Some(materialized) = allocate_store_string_constant(
             heap,
             string,
-            operand_type,
+            compact_type_tag(function, instruction, operand_type)?,
             constant_type_ref,
             operand_type_ref,
             operand_plan,
@@ -1342,7 +1350,7 @@ impl VmFiber {
             return Err(self.malformed_instruction(function, instruction, decoded));
         };
         let value = self.pop_operands(1, false)?.remove(0);
-        let tag = nominal_tag_index(&value);
+        let tag = nominal_type_index(&value);
         let table = self
             .function(function)?
             .switch_tables()
@@ -1354,7 +1362,7 @@ impl VmFiber {
         let target = table
             .cases()
             .iter()
-            .find(|case| case.tag_type().get() == tag)
+            .find(|case| Some(case.tag_type()) == tag)
             .map(|case| case.target())
             .unwrap_or_else(|| table.default_target());
         self.validate_branch_target(target)?;
@@ -2197,7 +2205,7 @@ impl VmFiber {
             .heap()
             .allocate_record(
                 &fields,
-                CompactTypeTag::new(shape.nominal_type().get()),
+                compact_type_tag(function, instruction, shape.nominal_type())?,
                 ValueFlags::new(0),
             )
             .map_err(VmError::Heap)?;
@@ -2567,7 +2575,7 @@ impl VmFiber {
         let value = heap
             .allocate_array(
                 &[],
-                CompactTypeTag::new(element_type.get()),
+                compact_type_tag(function, instruction, element_type)?,
                 ValueFlags::new(0),
             )
             .map_err(VmError::Heap)?;
@@ -2759,7 +2767,7 @@ impl VmFiber {
         let value = heap
             .allocate_map(
                 &[],
-                CompactTypeTag::new(value_type.get()),
+                compact_type_tag(function, instruction, value_type)?,
                 ValueFlags::new(0),
             )
             .map_err(VmError::Heap)?;
@@ -2987,7 +2995,13 @@ impl VmFiber {
             instruction,
             opcode: Opcode::InvokeIntrinsic,
         })?;
-        let result = materialize_intrinsic_result(executor.heap(), payload, result_type)?;
+        let result = materialize_intrinsic_result(
+            executor.heap(),
+            payload,
+            result_type,
+            function,
+            instruction,
+        )?;
         if let Err(primary) = self.push_operand(result) {
             if let Some(plan) = result_plan {
                 return Err(release_intrinsic_result_after_push_failure(
@@ -4612,7 +4626,19 @@ fn pending_matches(pending: &PendingResume, token: &VmResumeToken) -> bool {
         && pending.authority == token.authority()
 }
 
-fn nominal_tag_index(value: &ValueSlot) -> u32 {
+fn compact_type_tag(
+    function: FunctionIndex,
+    instruction: InstructionIndex,
+    type_index: TypeIndex,
+) -> Result<CompactTypeTag, VmError> {
+    CompactTypeTag::try_from_type_index(type_index.get()).ok_or(VmError::CompactTypeTagOutOfRange {
+        function,
+        instruction,
+        type_index,
+    })
+}
+
+fn nominal_type_index(value: &ValueSlot) -> Option<TypeIndex> {
     match value.kind() {
         Some(
             ValueKind::RequestHeapRef
@@ -4620,8 +4646,11 @@ fn nominal_tag_index(value: &ValueSlot) -> u32 {
             | ValueKind::ConstRef
             | ValueKind::ResourceRef
             | ValueKind::CallbackClosureRef,
-        ) => value.compact_type_tag().get(),
-        _ => 0,
+        ) => value
+            .compact_type_tag()
+            .map(CompactTypeTag::type_index)
+            .map(TypeIndex::new),
+        _ => None,
     }
 }
 
@@ -4629,7 +4658,7 @@ fn nominal_tag_index(value: &ValueSlot) -> u32 {
 fn allocate_store_string_constant(
     heap: &mut dyn VmHeap,
     value: String,
-    operand_type_index: TypeIndex,
+    operand_type_tag: CompactTypeTag,
     constant_type: &TypeRefIr,
     operand_type: &TypeRefIr,
     operand_plan: &LinkedValueTransferPlan,
@@ -4646,12 +4675,8 @@ fn allocate_store_string_constant(
     ) {
         return Ok(None);
     }
-    heap.alloc_typed_string(
-        value,
-        CompactTypeTag::new(operand_type_index.get()),
-        ValueFlags::new(0),
-    )
-    .map(Some)
+    heap.alloc_typed_string(value, operand_type_tag, ValueFlags::new(0))
+        .map(Some)
 }
 
 fn transfer_materialized_store_owner(
@@ -4675,32 +4700,6 @@ fn transfer_materialized_store_owner(
     }
 }
 
-fn allocate_intrinsic_string_result(
-    heap: &mut dyn VmHeap,
-    value: String,
-    result_type: TypeIndex,
-) -> Result<ValueSlot, VmError> {
-    heap.alloc_typed_string(
-        value,
-        CompactTypeTag::new(result_type.get()),
-        ValueFlags::new(0),
-    )
-    .map_err(VmError::Heap)
-}
-
-fn allocate_intrinsic_bytes_result(
-    heap: &mut dyn VmHeap,
-    value: Vec<u8>,
-    result_type: TypeIndex,
-) -> Result<ValueSlot, VmError> {
-    heap.alloc_typed_bytes(
-        value,
-        CompactTypeTag::new(result_type.get()),
-        ValueFlags::new(0),
-    )
-    .map_err(VmError::Heap)
-}
-
 enum IntrinsicResultPayload {
     EmptyArray,
     EmptyMap,
@@ -4712,28 +4711,23 @@ fn materialize_intrinsic_result(
     heap: &mut dyn VmHeap,
     payload: IntrinsicResultPayload,
     result_type: TypeIndex,
+    function: FunctionIndex,
+    instruction: InstructionIndex,
 ) -> Result<ValueSlot, VmError> {
+    let result_type_tag = compact_type_tag(function, instruction, result_type)?;
     match payload {
         IntrinsicResultPayload::EmptyArray => heap
-            .allocate_array(
-                &[],
-                CompactTypeTag::new(result_type.get()),
-                ValueFlags::new(0),
-            )
+            .allocate_array(&[], result_type_tag, ValueFlags::new(0))
             .map_err(VmError::Heap),
         IntrinsicResultPayload::EmptyMap => heap
-            .allocate_map(
-                &[],
-                CompactTypeTag::new(result_type.get()),
-                ValueFlags::new(0),
-            )
+            .allocate_map(&[], result_type_tag, ValueFlags::new(0))
             .map_err(VmError::Heap),
-        IntrinsicResultPayload::String(value) => {
-            allocate_intrinsic_string_result(heap, value, result_type)
-        }
-        IntrinsicResultPayload::Bytes(value) => {
-            allocate_intrinsic_bytes_result(heap, value, result_type)
-        }
+        IntrinsicResultPayload::String(value) => heap
+            .alloc_typed_string(value, result_type_tag, ValueFlags::new(0))
+            .map_err(VmError::Heap),
+        IntrinsicResultPayload::Bytes(value) => heap
+            .alloc_typed_bytes(value, result_type_tag, ValueFlags::new(0))
+            .map_err(VmError::Heap),
     }
 }
 
@@ -4851,9 +4845,10 @@ fn runtime_leaf_catch_identity(
         | ValueKind::ActorStateRef
         | ValueKind::ConstRef
         | ValueKind::ResourceRef
-        | ValueKind::CallbackClosureRef => {
-            linked_type_catch_identity(image, TypeIndex::new(value.compact_type_tag().get()))
-        }
+        | ValueKind::CallbackClosureRef => linked_type_catch_identity(
+            image,
+            TypeIndex::new(value.compact_type_tag()?.type_index()),
+        ),
         _ => None,
     }
 }
@@ -4866,7 +4861,9 @@ fn envelope_leaf_type_index(envelope: &RequestException) -> Option<TypeIndex> {
         | ValueKind::ActorStateRef
         | ValueKind::ConstRef
         | ValueKind::ResourceRef
-        | ValueKind::CallbackClosureRef => Some(TypeIndex::new(slot.compact_type_tag().get())),
+        | ValueKind::CallbackClosureRef => {
+            Some(TypeIndex::new(slot.compact_type_tag()?.type_index()))
+        }
         _ => None,
     }
 }

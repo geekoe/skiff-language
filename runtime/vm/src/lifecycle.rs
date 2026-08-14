@@ -248,12 +248,17 @@ mod tests {
         }
     }
 
+    fn tag(type_index: u32) -> CompactTypeTag {
+        CompactTypeTag::try_from_type_index(type_index)
+            .expect("test type index must fit compact tag")
+    }
+
     fn record() -> ValueSlot {
-        ValueSlot::request_heap_ref(VmHandle::new(1), CompactTypeTag::new(7), ValueFlags::new(0))
+        ValueSlot::request_heap_ref(VmHandle::new(1), tag(7), ValueFlags::new(0))
     }
 
     fn resource() -> ValueSlot {
-        ValueSlot::resource_ref(VmHandle::new(2), CompactTypeTag::new(8), ValueFlags::new(0))
+        ValueSlot::resource_ref(VmHandle::new(2), tag(8), ValueFlags::new(0))
     }
 
     #[test]
