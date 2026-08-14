@@ -244,8 +244,11 @@ async function main() {
     if (mongo !== undefined) await mongo.cleanup().catch((error) => cleanupErrors.push(error));
     if (lease !== undefined) await lease.release().catch((error) => cleanupErrors.push(error));
     await rm(tempRoot, { recursive: true, force: true }).catch((error) => cleanupErrors.push(error));
-    if (primaryError === undefined && cleanupErrors.length > 0) {
-      throw new AggregateError(cleanupErrors, 'Phase 5 Router proof cleanup failed');
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        primaryError === undefined ? cleanupErrors : [primaryError, ...cleanupErrors],
+        'Phase 5 Router proof or cleanup failed',
+      );
     }
   }
 }
