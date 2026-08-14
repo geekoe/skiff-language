@@ -3,13 +3,13 @@ use std::collections::BTreeSet;
 use skiff_artifact_model::{
     bytecode::{BytecodeFunctionOrigin, BytecodeRelocation, ValueDropPlan, ValueTransferPlan},
     BytecodePoolEntry, HostEffectExecutorIdentity, Opcode, PackageExecutableCoordinate,
-    PrivilegedAffineCompositeIdentity, ResourceDropPlan,
+    PrivilegedAffineCompositeIdentity, ResourceDropPlan, TypeRefIr,
 };
 use skiff_runtime_linked_bytecode::{
     InstructionIndex, LinkedInstructionTarget, LinkedResourceDropPlan, LinkedValueDropPlan,
-    LinkedValueTransferPlan,
+    LinkedValueTransferPlan, TypeIndex,
 };
-use skiff_runtime_linker::ExecutionResumeKind;
+use skiff_runtime_linker::{DeploymentExecutionImage, ExecutionResumeKind};
 
 use super::fixture::{BuildOutcome, FixtureSpec, PublishedFixture};
 
@@ -388,19 +388,47 @@ fn phase_5_stage_sentinel_atomic_link_to_image() {
     );
     for (ordinal, take) in body_takes {
         assert_eq!(take.operands()[1], 0, "body is exact dense ordinal zero");
-        assert!(take.resolved_operands().iter().any(|operand| {
-            operand.target() == LinkedInstructionTarget::Shape(privileged_shape.index())
-        }));
+        let resolved_shapes = take
+            .resolved_operands()
+            .iter()
+            .filter_map(|operand| match operand.target() {
+                LinkedInstructionTarget::Shape(shape) => Some(shape),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            resolved_shapes,
+            [privileged_shape.index()],
+            "TakeDenseField must reference the one exact privileged shape S"
+        );
         let [root] = function.stack_map().entries()[ordinal].stack_before() else {
             panic!("TakeDenseField must consume exactly one aggregate root")
         };
-        assert_eq!(root.ty(), privileged_shape.nominal_type());
-        assert!(matches!(
-            root.plan(),
-            LinkedValueTransferPlan::MoveOnly {
-                drop: LinkedValueDropPlan::RecursiveShape { shape },
-            } if *shape == privileged_shape.index()
-        ));
+        let root_type = exact_linked_type_ref(&image, root.ty(), "TakeDenseField stack root");
+        let shape_type = exact_linked_type_ref(
+            &image,
+            privileged_shape.nominal_type(),
+            "privileged shape nominal",
+        );
+        assert_eq!(
+            root_type, shape_type,
+            "specialized stack root and privileged shape may use distinct TypeIndex rows but must retain one exact TypeRef/ABI"
+        );
+        assert_eq!(
+            exact_package_abi(root_type, "TakeDenseField stack root"),
+            exact_package_abi(shape_type, "privileged shape nominal"),
+            "specialization must preserve the exact package ABI"
+        );
+        let LinkedValueTransferPlan::MoveOnly {
+            drop: LinkedValueDropPlan::RecursiveShape { shape: root_shape },
+        } = root.plan()
+        else {
+            panic!("TakeDenseField stack root must carry its recursive privileged-shape plan")
+        };
+        assert_eq!(
+            *root_shape, resolved_shapes[0],
+            "the stack root plan and instruction must reference the same privileged shape S"
+        );
         let body = function.stack_map().entries()[ordinal + 1]
             .stack_before()
             .last()
@@ -432,6 +460,30 @@ fn phase_5_stage_sentinel_atomic_link_to_image() {
         2,
         "the atomic image retains two exact recursive remainder-drop plans"
     );
+}
+
+fn exact_linked_type_ref<'a>(
+    image: &'a DeploymentExecutionImage,
+    ty: TypeIndex,
+    label: &str,
+) -> &'a TypeRefIr {
+    image
+        .types()
+        .get(ty.get() as usize)
+        .filter(|entry| entry.index() == ty)
+        .map(|entry| entry.type_ref())
+        .unwrap_or_else(|| panic!("{label} references missing linked type {}", ty.get()))
+}
+
+fn exact_package_abi<'a>(ty: &'a TypeRefIr, label: &str) -> &'a str {
+    let TypeRefIr::PackageSymbol { symbol } = ty else {
+        panic!("{label} must retain an exact package-symbol TypeRef")
+    };
+    symbol
+        .abi_expectation
+        .as_deref()
+        .filter(|abi| !abi.is_empty())
+        .unwrap_or_else(|| panic!("{label} must retain its exact non-empty package ABI"))
 }
 
 fn gateway_artifact_function<'a>(
