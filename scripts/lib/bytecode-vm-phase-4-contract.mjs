@@ -29,12 +29,12 @@ const HOST_PHASE4_SENTINEL_ADMISSION =
   'host::request_entry::phase_4_vcp_tests::phase_4_stage_sentinel_source_to_admission';
 const HOST_PHASE4_SENTINEL_EMISSION =
   'host::request_entry::phase_4_vcp_tests::phase_4_stage_sentinel_admission_to_emission';
-const HOST_PHASE4_SENTINEL_LINK =
-  'host::request_entry::phase_4_vcp_tests::phase_4_stage_sentinel_emission_to_link';
-const HOST_PHASE4_SENTINEL_VERIFY =
-  'host::request_entry::phase_4_vcp_tests::phase_4_stage_sentinel_link_to_verify';
+const HOST_PHASE4_SENTINEL_ATOMIC_LINK_INPUT =
+  'host::request_entry::phase_4_vcp_tests::phase_4_stage_sentinel_emission_to_atomic_link_input';
+const HOST_PHASE4_SENTINEL_IMAGE =
+  'host::request_entry::phase_4_vcp_tests::phase_4_stage_sentinel_atomic_link_to_image';
 const HOST_PHASE4_SENTINEL_SCHEDULER =
-  'host::request_entry::phase_4_vcp_tests::phase_4_stage_sentinel_verify_to_scheduler';
+  'host::request_entry::phase_4_vcp_tests::phase_4_stage_sentinel_image_to_scheduler';
 const HOST_PHASE4_SENTINEL_RESPONSE =
   'host::request_entry::phase_4_vcp_tests::phase_4_stage_sentinel_scheduler_to_request_response';
 const HOST_PHASE4_NEGATIVE_CANCEL =
@@ -70,9 +70,9 @@ export const PHASE4_REQUIRED_LANES = Object.freeze([
 //   publish/wake/claim-once, park/resume, duplicate-drop, and terminal-race
 //   authority and must keep matching exactly those invariants after the
 //   Phase 4 kernel lands.
-// - V4 linker/verifier: both crates must land focused tests whose names
-//   contain `host_effect` (typed pinned-registry entry; ActualWithResume
-//   HostEffect pending contract).
+// - V4 linker/image: the production linker owns the typed pinned-registry
+//   entry and exact HostEffect pending/resume structure. The Gate must select
+//   linker/image-owned structural tests and never rebuild compiler semantics.
 // - C4 emission: `skiff-compiler-emission` must land focused admission tests
 //   whose names contain `phase_4_admission` (mirroring the accepted
 //   `phase_3_admission` convention) admitting `std.time.sleep` alone.
@@ -98,15 +98,16 @@ export function phase4ScenarioSpecs(root) {
       'test', '--manifest-path', 'runtime/host/Cargo.toml', '--lib', HOST_PHASE4_SENTINEL_EMISSION,
       '--', '--exact', '--nocapture',
     ], 'rust-exact', ['SENTINEL', 'C4']),
-    spec(root, 'phase-4-stage-sentinel-emission-to-link', 'cargo', [
-      'test', '--manifest-path', 'runtime/host/Cargo.toml', '--lib', HOST_PHASE4_SENTINEL_LINK,
+    spec(root, 'phase-4-stage-sentinel-emission-to-atomic-link-input', 'cargo', [
+      'test', '--manifest-path', 'runtime/host/Cargo.toml', '--lib',
+      HOST_PHASE4_SENTINEL_ATOMIC_LINK_INPUT,
       '--', '--exact', '--nocapture',
     ], 'rust-exact', ['SENTINEL', 'V4']),
-    spec(root, 'phase-4-stage-sentinel-link-to-verify', 'cargo', [
-      'test', '--manifest-path', 'runtime/host/Cargo.toml', '--lib', HOST_PHASE4_SENTINEL_VERIFY,
+    spec(root, 'phase-4-stage-sentinel-atomic-link-to-image', 'cargo', [
+      'test', '--manifest-path', 'runtime/host/Cargo.toml', '--lib', HOST_PHASE4_SENTINEL_IMAGE,
       '--', '--exact', '--nocapture',
     ], 'rust-exact', ['SENTINEL', 'V4']),
-    spec(root, 'phase-4-stage-sentinel-verify-to-scheduler', 'cargo', [
+    spec(root, 'phase-4-stage-sentinel-image-to-scheduler', 'cargo', [
       'test', '--manifest-path', 'runtime/host/Cargo.toml', '--lib', HOST_PHASE4_SENTINEL_SCHEDULER,
       '--', '--exact', '--nocapture',
     ], 'rust-exact', ['SENTINEL', 'K4']),
@@ -144,9 +145,6 @@ export function phase4ScenarioSpecs(root) {
     ], 'rust-suite', ['K4']),
     spec(root, 'v4-linker-typed-host-entry', 'cargo', [
       'test', '-p', 'skiff-runtime-linker', '--lib', 'host_effect',
-    ], 'rust-suite', ['V4']),
-    spec(root, 'v4-verifier-pending-contract', 'cargo', [
-      'test', '-p', 'skiff-runtime-bytecode-verifier', '--lib', 'host_effect',
     ], 'rust-suite', ['V4']),
     spec(root, 'c4-emission-host-effect-admission', 'cargo', [
       'test', '-p', 'skiff-compiler-emission', '--lib', 'phase_4_admission',

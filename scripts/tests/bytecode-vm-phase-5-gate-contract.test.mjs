@@ -23,18 +23,18 @@ import { buildVerifyPlan, PUBLIC_SELECTORS } from '../lib/verify-plan.mjs';
 const ROOT = '/candidate';
 const REPOSITORY = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
-test('r1 schemas cannot accept a receipt from the interrupted Phase 5 epoch', () => {
-  assert.equal(PHASE5_COMMAND_SCHEMA, 'skiff-bytecode-vm-phase-5-command-r1-v1');
-  assert.equal(PHASE5_MANIFEST_SCHEMA, 'skiff-bytecode-vm-phase-5-gate-r1-v1');
+test('r1-v2 schemas cannot accept pre-r2 Phase 5 receipts', () => {
+  assert.equal(PHASE5_COMMAND_SCHEMA, 'skiff-bytecode-vm-phase-5-command-r1-v2');
+  assert.equal(PHASE5_MANIFEST_SCHEMA, 'skiff-bytecode-vm-phase-5-gate-r1-v2');
   assert.equal(PHASE5_DIRECTORY_IDENTITY_SCHEMA,
-    'skiff-bytecode-vm-phase-5-directory-identity-r1-v1');
-  assert.equal(PHASE5_DIRECTORY_IDENTITY_FILE, 'phase-5-r1-directory-identities.json');
+    'skiff-bytecode-vm-phase-5-directory-identity-r1-v2');
+  assert.equal(PHASE5_DIRECTORY_IDENTITY_FILE, 'phase-5-r1-v2-directory-identities.json');
 });
 
 test('r1 matrix names all G1-G10 owners and uses only executable commands', () => {
   const scenarios = phase5ScenarioSpecs(ROOT);
   const workloads = phase5WorkloadSpecs(ROOT);
-  assert.equal(scenarios.length, 44);
+  assert.equal(scenarios.length, 41);
   assert.doesNotThrow(() => assertPhase5LaneCoverage(workloads));
   const observed = new Set(workloads.flatMap(({ lanes }) => lanes));
   for (const lane of PHASE5_REQUIRED_LANES) {
@@ -49,6 +49,14 @@ test('six sentinels select six independent integration tests with nonzero accoun
     .filter(({ id }) => /^phase-5-s[1-6]-/.test(id));
   assert.equal(sentinels.length, 6);
   assert.equal(new Set(sentinels.map(({ args }) => args.at(-4))).size, 6);
+  assert.deepEqual(sentinels.map(({ args }) => args.at(-4)), [
+    'phase_5_stage_sentinel_source_to_admission',
+    'stages::phase_5_stage_sentinel_admission_to_emission',
+    'stages::phase_5_stage_sentinel_emission_to_atomic_link_input',
+    'stages::phase_5_stage_sentinel_atomic_link_to_image',
+    'phase_5_stage_sentinel_image_to_scheduler',
+    'phase_5_stage_sentinel_scheduler_to_request_response',
+  ]);
   for (const sentinel of sentinels) {
     assert.equal(sentinel.command, 'cargo');
     assert.equal(sentinel.testFormat, 'rust-exact');
@@ -101,7 +109,7 @@ test('G5/G8 include the gated TCP upstream and single-worker canary', () => {
   assert.equal(byId['phase-5-lifecycle-race-matrix'].lanes.includes('G8'), true);
 });
 
-test('A5/C5/V5 focused joins pin every typed positive and fail-closed companion', () => {
+test('A5/C5/V5R focused joins pin compiler authority and production image structure', () => {
   const byId = Object.fromEntries(phase5ScenarioSpecs(ROOT).map((entry) => [entry.id, entry]));
   assert.equal(byId['a5-exact-executor-registry'].args.includes('executor_identit'), true);
   assert.equal(byId['a5-exact-executor-registry'].expectedTests, 2);
@@ -117,22 +125,28 @@ test('A5/C5/V5 focused joins pin every typed positive and fail-closed companion'
     'a_second_real_source_body_take_fails_before_emission'), true);
   assert.equal(byId['c5-production-affine-publication'].args.includes(
     'production_authoring_publishes_exact_affine_http_stream_bytecode'), true);
-  assert.equal(byId['v5-production-affine-image'].args.includes(
+  assert.equal(byId['v5r-production-affine-image'].args.includes(
     'production_stream_image_proves_exact_privileged_shape_and_affine_body_take'), true);
-  assert.equal(byId['v5-linker-stream-dual-resume'].args.includes(
+  assert.equal(byId['v5r-linker-stream-dual-resume'].args.includes(
     'backend_links_stream_next_dual_resume_successors'), true);
-  assert.equal(byId['v5-stream-read-resume-certificates'].args.includes('stream_read'), true);
-  assert.equal(byId['v5-swapped-resume-target-rejection'].args.includes(
-    'swapped_resume_targets_fail_at_exact_hydration_binding'), true);
-  assert.equal(byId['v5-verifier-executor-identity-rejections'].expectedTests, 2);
-  assert.equal(byId['v5-affine-take-proof'].args.includes('affine_take_tests'), true);
-  assert.equal(byId['v5-affine-take-proof'].expectedTests, 6);
-  assert.equal(byId['v5-privileged-sibling-read-verifier-rejections'].args.includes(
-    'get_dense_field_cannot_read_privileged_'), true);
-  assert.equal(byId['v5-privileged-sibling-read-verifier-rejections'].expectedTests, 2);
-  assert.equal(byId['v5-privileged-sibling-read-linker-rejection'].args.includes(
-    'privileged_headers_and_status_dense_reads_fail_closed'), true);
-  assert.equal(byId['v5-privileged-sibling-read-linker-rejection'].expectedTests, 1);
+  assert.equal(byId['v5r-registry-executor-identity-closure'].expectedTests, 3);
+  assert.equal(byId['v5r-atomic-image-runtime-views'].args.includes(
+    'atomic_image_exposes_image_owned_runtime_views_without_effect_certificate'), true);
+  assert.equal(byId['v5r-atomic-image-runtime-views'].expectedTests, 1);
+  assert.equal(byId['v5r-swapped-resume-descriptor-rejection'].args.includes(
+    'atomic_image_resume_view_rejects_swapped_descriptor_with_typed_construction_error'), true);
+  assert.equal(byId['v5r-swapped-resume-descriptor-rejection'].expectedTests, 1);
+  assert.equal(byId['v5r-missing-statement-fact-rejection'].args.includes(
+    'atomic_image_statement_view_rejects_missing_required_fact_with_typed_construction_error'), true);
+  assert.equal(byId['v5r-missing-statement-fact-rejection'].expectedTests, 1);
+  const v5r = phase5ScenarioSpecs(ROOT).filter(({ lanes }) => lanes.includes('V5R'));
+  assert.equal(v5r.every(({ id }) => id.startsWith('phase-5-') || id.startsWith('v5r-')), true);
+  assert.deepEqual(
+    [...new Set(v5r
+      .filter(({ id }) => id.startsWith('v5r-'))
+      .map(({ args }) => args[args.indexOf('-p') + 1]))],
+    ['skiff-runtime-linker'],
+  );
   assert.equal(byId['h5-production-bytecode-http-composition'].args.includes(
     'phase_5_bytecode_http'), true);
   assert.equal(byId['h5-production-bytecode-http-composition'].expectedTests, 3);
@@ -156,7 +170,7 @@ test('every Rust proof command is serial-friendly and no-fail-fast', () => {
 test('the accepted Phase 4 matrix is reused verbatim as the Phase 1-4 regression', () => {
   const regression = phase5WorkloadSpecs(ROOT)
     .filter(({ id }) => id.startsWith('phase-4-regression-'));
-  assert.equal(regression.length, 55);
+  assert.equal(regression.length, 54);
   assert.equal(regression.every(({ lanes }) => lanes.includes('phase-4-regression')), true);
   assert.deepEqual(regression.find(({ id }) => id.endsWith('-phase-4-gate-self-tests')).args, [
     '--test', '--test-reporter=tap',
@@ -166,8 +180,8 @@ test('the accepted Phase 4 matrix is reused verbatim as the Phase 1-4 regression
 
 test('candidate closure and command count are frozen by the matrix', () => {
   assert.equal(phase5CandidateSpecs(ROOT).length, 12);
-  assert.equal(phase5WorkloadSpecs(ROOT).length, 99);
-  assert.equal(phase5CandidateSpecs(ROOT).length + phase5WorkloadSpecs(ROOT).length, 111);
+  assert.equal(phase5WorkloadSpecs(ROOT).length, 95);
+  assert.equal(phase5CandidateSpecs(ROOT).length + phase5WorkloadSpecs(ROOT).length, 107);
   assert.deepEqual(phase5CandidateSpecs(ROOT).slice(-3).map(({ id }) => id), [
     'fresh-head', 'fresh-tree', 'fresh-status',
   ]);

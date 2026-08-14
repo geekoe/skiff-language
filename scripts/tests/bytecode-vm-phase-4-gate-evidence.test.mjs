@@ -10,10 +10,10 @@ import {
   withPhase4EvidenceBundle,
 } from './bytecode-vm-phase-4-gate-fixture.mjs';
 
-test('checker accepts exactly sixty-seven receipts on one clean candidate', async () => {
+test('checker accepts exactly sixty-six receipts on one clean candidate', async () => {
   await withPhase4EvidenceBundle({}, async (bundle) => {
     assert.equal(bundle.manifest.verdict, 'PASS');
-    assert.deepEqual(bundle.manifest.counts.commands, { total: 67, passed: 67, failed: 0 });
+    assert.deepEqual(bundle.manifest.counts.commands, { total: 66, passed: 66, failed: 0 });
     assert.equal(bundle.manifest.counts.tests.declared > 0, true);
     assert.equal((await check(bundle)).verdict, 'PASS');
   });

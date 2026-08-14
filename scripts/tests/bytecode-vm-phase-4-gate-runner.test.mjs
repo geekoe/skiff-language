@@ -60,7 +60,7 @@ test('runner rejects each missing caller input before capturing any command', as
   }
 });
 
-test('runner receipts all sixty-seven commands and freezes the actual environment', async () => {
+test('runner receipts all sixty-six commands and freezes the actual environment', async () => {
   const created = await mkdtemp(join(tmpdir(), 'skiff-phase4-runner-'));
   const temp = await realpath(created);
   const repoRoot = join(temp, 'repo');
@@ -86,13 +86,13 @@ test('runner receipts all sixty-seven commands and freezes the actual environmen
     });
     assert.equal(result.manifest.verdict, 'PASS');
     assert.equal(result.checkerError, null);
-    assert.deepEqual(result.manifest.counts.commands, { total: 67, passed: 67, failed: 0 });
+    assert.deepEqual(result.manifest.counts.commands, { total: 66, passed: 66, failed: 0 });
     const regression = result.manifest.commands.filter(({ id }) => id.startsWith('phase-3-regression-'));
     const phase4 = result.manifest.commands.filter(({ id }) => !id.startsWith('phase-3-regression-'));
     assert.equal(regression.length, 34);
-    assert.equal(phase4.length, 33);
+    assert.equal(phase4.length, 32);
     assert.equal(regression.every(({ status }) => status === 'PASS'), true);
-    assert.equal(observed.length, 67);
+    assert.equal(observed.length, 66);
     assert.equal(observed.every((value) => value === 'before'), true);
     const receipt = JSON.parse(await readFile(
       join(outputDir, 'commands', 'phase-4-gate-self-tests.receipt.json'),

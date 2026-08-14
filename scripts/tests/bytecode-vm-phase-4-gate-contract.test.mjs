@@ -28,9 +28,9 @@ test('Phase 4 schemas are independent from the accepted Phase 0/1/2/3 epochs', (
   assert.equal(PHASE4_DIRECTORY_IDENTITY_FILE, 'phase-4-directory-identities.json');
 });
 
-test('day-one matrix contains twenty-one Phase 4 scenarios and every required lane', () => {
+test('retired-stage matrix contains twenty Phase 4 scenarios and every required lane', () => {
   const specs = phase4ScenarioSpecs(ROOT);
-  assert.equal(specs.length, 21);
+  assert.equal(specs.length, 20);
   assert.doesNotThrow(() => assertPhase4LaneCoverage(phase4WorkloadSpecs(ROOT)));
   const observed = new Set(phase4WorkloadSpecs(ROOT).flatMap(({ lanes }) => lanes));
   for (const lane of PHASE4_REQUIRED_LANES) {
@@ -50,6 +50,19 @@ test('day-one matrix contains twenty-one Phase 4 scenarios and every required la
     lanes: Object.freeze(['VCP', 'K4', 'V4', 'C4']),
   });
   assert.equal(specs.filter(({ lanes }) => lanes.includes('SENTINEL')).length, 6);
+  assert.deepEqual(
+    specs
+      .filter(({ lanes }) => lanes.includes('SENTINEL'))
+      .map(({ args }) => args.at(-4)),
+    [
+      'host::request_entry::phase_4_vcp_tests::phase_4_stage_sentinel_source_to_admission',
+      'host::request_entry::phase_4_vcp_tests::phase_4_stage_sentinel_admission_to_emission',
+      'host::request_entry::phase_4_vcp_tests::phase_4_stage_sentinel_emission_to_atomic_link_input',
+      'host::request_entry::phase_4_vcp_tests::phase_4_stage_sentinel_atomic_link_to_image',
+      'host::request_entry::phase_4_vcp_tests::phase_4_stage_sentinel_image_to_scheduler',
+      'host::request_entry::phase_4_vcp_tests::phase_4_stage_sentinel_scheduler_to_request_response',
+    ],
+  );
   assert.equal(specs.filter(({ lanes }) => lanes.includes('NEG')).length, 4);
   assert.equal(specs.filter(({ lanes }) => lanes.includes('K4')).length >= 10, true);
   assert.equal(specs.filter(({ lanes }) => lanes.includes('V4')).length >= 4, true);
@@ -73,6 +86,12 @@ test('day-one matrix contains twenty-one Phase 4 scenarios and every required la
   assert.deepEqual(byId['v4-linker-typed-host-entry'].args, [
     'test', '-p', 'skiff-runtime-linker', '--lib', 'host_effect',
   ]);
+  assert.deepEqual(
+    [...new Set(specs
+      .filter(({ id }) => id.startsWith('v4-'))
+      .map(({ args }) => args[args.indexOf('-p') + 1]))],
+    ['skiff-runtime-linker'],
+  );
   assert.deepEqual(byId['c4-emission-host-effect-admission'].args, [
     'test', '-p', 'skiff-compiler-emission', '--lib', 'phase_4_admission',
   ]);
@@ -113,9 +132,9 @@ test('the accepted Phase 3 matrix is reused verbatim as the full Phase 1/2/3 reg
   assert.equal(p2Regression.length, 9);
 });
 
-test('workload count is fifty-five on top of the twelve candidate probes', () => {
+test('workload count is fifty-four on top of the twelve candidate probes', () => {
   assert.equal(phase4CandidateSpecs(ROOT).length, 12);
-  assert.equal(phase4WorkloadSpecs(ROOT).length, 55);
+  assert.equal(phase4WorkloadSpecs(ROOT).length, 54);
 });
 
 test('candidate closure fixes four receipt-backed identity snapshots', () => {
