@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     num::{NonZeroU32, NonZeroUsize},
     path::PathBuf,
     sync::{
@@ -25,8 +25,8 @@ use skiff_compiler::{
 };
 use skiff_runtime_linked_bytecode::{
     FrameSlotIndex, FunctionIndex, InstructionBoundaryIndex, InstructionIndex, LinkedCatchMatcher,
-    LinkedExceptionRegion, LinkedValueDropPlan, LinkedValueTransferPlan, ResumeSiteIndex,
-    TypeIndex,
+    LinkedExceptionRegion, LinkedResourceDropPlan, LinkedValueDropPlan, LinkedValueTransferPlan,
+    ResumeSiteIndex, TypeIndex,
 };
 use skiff_runtime_linker::{
     link_deployment_execution_image, DeploymentExecutionEntry, DeploymentExecutionImage, LinkLimits,
@@ -44,12 +44,12 @@ use skiff_runtime_model::vm_heap::{VmHeap, VmHeapError, VmHeapOperation, VmRecor
 use skiff_runtime_model::vm_value::{CompactTypeTag, ValueFlags, ValueSlot, VmHandle};
 
 use super::{
-    allocate_intrinsic_bytes_result, allocate_intrinsic_string_result,
     allocate_store_string_constant, catch_matches, comparable_equality,
-    comparable_equality_with_string_resolver, find_exception_region,
-    finish_borrowing_intrinsic_result, linked_type_catch_identity, nominal_tag_index,
-    opcode_supported, runtime_leaf_catch_identity, store_slot_string_constant_authorized,
-    transfer_materialized_store_owner, DispatchOutcome, Vm, VmFiber,
+    comparable_equality_with_string_resolver, find_exception_region, linked_type_catch_identity,
+    materialize_intrinsic_result, nominal_tag_index, opcode_supported,
+    release_intrinsic_argument_window, release_intrinsic_result_after_push_failure,
+    runtime_leaf_catch_identity, store_slot_string_constant_authorized,
+    transfer_materialized_store_owner, DispatchOutcome, IntrinsicResultPayload, Vm, VmFiber,
 };
 use crate::control::VmResumeAuthority;
 use crate::lifecycle::LifecycleExecutor;
@@ -581,77 +581,297 @@ fn store_slot_string_constant_cleans_the_new_owner_when_transfer_fails() {
     assert!(heap.live.is_empty());
 }
 
-#[test]
-fn intrinsic_cleanup_releases_heap_arguments_but_never_image_constant_borrows() {
-    let plan = LinkedValueTransferPlan::SnapshotShare {
-        drop: LinkedValueDropPlan::SnapshotRelease,
-    };
-    let mut heap = StoreStringRecordingHeap {
-        next_handle: 10,
-        ..StoreStringRecordingHeap::default()
-    };
-    heap.live.insert(10, CompactTypeTag::new(7));
-    let heap_argument = ValueSlot::request_heap_ref(
-        VmHandle::new(10),
-        CompactTypeTag::new(7),
-        ValueFlags::new(0),
-    );
-    let constant_argument =
-        ValueSlot::const_ref(VmHandle::new(1), CompactTypeTag::new(8), ValueFlags::new(0));
-    let result =
-        allocate_intrinsic_string_result(&mut heap, "joined".to_string(), TypeIndex::new(9))
-            .expect("typed intrinsic result allocation");
-    let mut executor = LifecycleExecutor::new(&mut heap);
-    let result = finish_borrowing_intrinsic_result(
-        &mut executor,
-        &[constant_argument, heap_argument],
-        &[plan.clone(), plan.clone()],
-        Ok(result),
-        Some(&plan),
-        FunctionIndex::new(1),
-        InstructionIndex::new(2),
-    )
-    .expect("borrowed intrinsic arguments clean up before returning the result");
-    drop(executor);
+#[derive(Default)]
+struct IntrinsicReleaseRecordingHeap {
+    next_handle: u64,
+    request_live: BTreeSet<u64>,
+    resource_live: BTreeSet<u64>,
+    release_attempts: usize,
+    snapshot_releases: usize,
+    resource_releases: usize,
+    fail_release_at: Option<usize>,
+    fail_next_allocation: bool,
+}
 
-    assert_eq!(heap.snapshot_releases, 1);
-    assert_eq!(heap.live.len(), 1, "only the result owner remains live");
-    assert_eq!(result.compact_type_tag(), CompactTypeTag::new(9));
-    let mut executor = LifecycleExecutor::new(&mut heap);
-    assert!(executor.release(&result, &plan).is_ok());
-    drop(executor);
-    assert_eq!(heap.snapshot_releases, 2);
-    assert!(heap.live.is_empty());
+impl IntrinsicReleaseRecordingHeap {
+    fn request(&mut self, handle: u64, tag: u32) -> ValueSlot {
+        self.next_handle = self.next_handle.max(handle);
+        assert!(self.request_live.insert(handle));
+        ValueSlot::request_heap_ref(
+            VmHandle::new(handle),
+            CompactTypeTag::new(tag),
+            ValueFlags::new(0),
+        )
+    }
+
+    fn resource(&mut self, handle: u64, tag: u32) -> ValueSlot {
+        self.next_handle = self.next_handle.max(handle);
+        assert!(self.resource_live.insert(handle));
+        ValueSlot::resource_ref(
+            VmHandle::new(handle),
+            CompactTypeTag::new(tag),
+            ValueFlags::new(0),
+        )
+    }
+
+    fn allocate_request(
+        &mut self,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        if std::mem::take(&mut self.fail_next_allocation) {
+            return Err(VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::AllocateRepresentation,
+                message: "injected intrinsic allocation failure".to_string(),
+            });
+        }
+        self.next_handle += 1;
+        let handle = self.next_handle;
+        assert!(self.request_live.insert(handle));
+        Ok(ValueSlot::request_heap_ref(
+            VmHandle::new(handle),
+            compact_type_tag,
+            flags,
+        ))
+    }
+
+    fn should_fail_release(&mut self) -> bool {
+        self.release_attempts += 1;
+        self.fail_release_at == Some(self.release_attempts)
+    }
+}
+
+impl VmHeap for IntrinsicReleaseRecordingHeap {
+    fn validate_live(&self, value: &ValueSlot) -> Result<(), VmHeapError> {
+        match value.kind() {
+            Some(
+                skiff_runtime_model::vm_value::ValueKind::Null
+                | skiff_runtime_model::vm_value::ValueKind::Bool
+                | skiff_runtime_model::vm_value::ValueKind::Number
+                | skiff_runtime_model::vm_value::ValueKind::Integer
+                | skiff_runtime_model::vm_value::ValueKind::Date,
+            ) => Ok(()),
+            Some(skiff_runtime_model::vm_value::ValueKind::RequestHeapRef)
+                if value
+                    .as_handle()
+                    .is_some_and(|handle| self.request_live.contains(&handle.get())) =>
+            {
+                Ok(())
+            }
+            Some(skiff_runtime_model::vm_value::ValueKind::ResourceRef)
+                if value
+                    .as_handle()
+                    .is_some_and(|handle| self.resource_live.contains(&handle.get())) =>
+            {
+                Ok(())
+            }
+            _ => Err(VmHeapError::InvalidValueMetadata),
+        }
+    }
+
+    fn snapshot_share(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        self.validate_live(source)?;
+        Ok(*source)
+    }
+
+    fn transfer_owner(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        self.validate_live(source)?;
+        Ok(*source)
+    }
+
+    fn release_snapshot(&mut self, owner: &ValueSlot) -> Result<(), VmHeapError> {
+        if self.should_fail_release() {
+            return Err(VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::ReleaseSnapshot,
+                message: "injected snapshot release failure".to_string(),
+            });
+        }
+        let handle = owner.as_handle().ok_or(VmHeapError::InvalidValueMetadata)?;
+        self.request_live
+            .remove(&handle.get())
+            .then_some(())
+            .ok_or(VmHeapError::InvalidValueMetadata)?;
+        self.snapshot_releases += 1;
+        Ok(())
+    }
+
+    fn release_resource(&mut self, owner: &ValueSlot) -> Result<(), VmHeapError> {
+        if self.should_fail_release() {
+            return Err(VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::ReleaseResource,
+                message: "injected resource release failure".to_string(),
+            });
+        }
+        let handle = owner.as_handle().ok_or(VmHeapError::InvalidValueMetadata)?;
+        self.resource_live
+            .remove(&handle.get())
+            .then_some(())
+            .ok_or(VmHeapError::InvalidValueMetadata)?;
+        self.resource_releases += 1;
+        Ok(())
+    }
+
+    fn alloc_typed_string(
+        &mut self,
+        _value: String,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        self.allocate_request(compact_type_tag, flags)
+    }
+
+    fn alloc_typed_bytes(
+        &mut self,
+        _value: Vec<u8>,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        self.allocate_request(compact_type_tag, flags)
+    }
+}
+
+fn intrinsic_snapshot_plan() -> LinkedValueTransferPlan {
+    LinkedValueTransferPlan::SnapshotShare {
+        drop: LinkedValueDropPlan::SnapshotRelease,
+    }
+}
+
+fn intrinsic_resource_plan() -> LinkedValueTransferPlan {
+    LinkedValueTransferPlan::AffineResource {
+        drop: LinkedResourceDropPlan::ResourceTableRelease,
+    }
 }
 
 #[test]
-fn intrinsic_cleanup_releases_arguments_when_result_materialization_fails() {
-    let plan = LinkedValueTransferPlan::SnapshotShare {
-        drop: LinkedValueDropPlan::SnapshotRelease,
-    };
-    let mut heap = StoreStringRecordingHeap {
-        next_handle: 4,
-        ..StoreStringRecordingHeap::default()
-    };
-    heap.live.insert(4, CompactTypeTag::new(7));
-    let argument =
-        ValueSlot::request_heap_ref(VmHandle::new(4), CompactTypeTag::new(7), ValueFlags::new(0));
-    let primary = VmError::Heap(VmHeapError::HeapOperationFailed {
-        operation: VmHeapOperation::AllocateRepresentation,
-        message: "injected intrinsic allocation failure".to_string(),
-    });
+fn intrinsic_cleanup_releases_heap_arguments_but_never_image_constant_borrows() {
+    let plan = intrinsic_snapshot_plan();
+    let mut heap = IntrinsicReleaseRecordingHeap::default();
+    let heap_argument = heap.request(10, 7);
+    let constant_argument =
+        ValueSlot::const_ref(VmHandle::new(1), CompactTypeTag::new(8), ValueFlags::new(0));
+    let mut storage = vec![constant_argument, heap_argument];
+    let mut live = vec![true, true];
+    let values = storage.clone();
     let mut executor = LifecycleExecutor::new(&mut heap);
-    let error = match finish_borrowing_intrinsic_result(
+    release_intrinsic_argument_window(
+        &mut executor,
+        &values,
+        &[plan.clone(), plan],
+        &mut storage,
+        &mut live,
+        0,
+        FunctionIndex::new(1),
+        InstructionIndex::new(2),
+    )
+    .expect("borrowed intrinsic arguments clean up in place");
+    drop(executor);
+
+    assert_eq!(live, [false, false]);
+    assert!(storage.iter().all(ValueSlot::is_null));
+    assert_eq!(heap.snapshot_releases, 1);
+    assert!(heap.request_live.is_empty());
+}
+
+#[test]
+fn intrinsic_cleanup_failure_keeps_the_failing_and_later_owners_rooted() {
+    for (fail_release_at, expected_operation, expected_live) in [
+        (2, VmHeapOperation::ReleaseResource, [false, true, true]),
+        (3, VmHeapOperation::ReleaseSnapshot, [false, false, true]),
+    ] {
+        let mut heap = IntrinsicReleaseRecordingHeap {
+            fail_release_at: Some(fail_release_at),
+            ..IntrinsicReleaseRecordingHeap::default()
+        };
+        let first = heap.request(1, 7);
+        let second = heap.resource(2, 8);
+        let third = heap.request(3, 9);
+        let mut storage = vec![first, second, third];
+        let mut live = vec![true, true, true];
+        let values = storage.clone();
+        let plans = [
+            intrinsic_snapshot_plan(),
+            intrinsic_resource_plan(),
+            intrinsic_snapshot_plan(),
+        ];
+        let mut executor = LifecycleExecutor::new(&mut heap);
+        let error = release_intrinsic_argument_window(
+            &mut executor,
+            &values,
+            &plans,
+            &mut storage,
+            &mut live,
+            0,
+            FunctionIndex::new(1),
+            InstructionIndex::new(2),
+        )
+        .expect_err("the injected nth release must fail closed");
+        drop(executor);
+
+        assert!(matches!(
+            error,
+            VmError::Heap(VmHeapError::HeapOperationFailed { operation, .. })
+                if operation == expected_operation
+        ));
+        assert_eq!(live, expected_live);
+        for (index, expected) in expected_live.into_iter().enumerate() {
+            assert_eq!(storage[index] == values[index], expected);
+        }
+        assert_eq!(heap.request_live.contains(&3), expected_live[2]);
+        assert_eq!(heap.resource_live.contains(&2), expected_live[1]);
+
+        heap.fail_release_at = None;
+        let first_live = live.iter().position(|slot| *slot).unwrap();
+        let retry_values = storage[first_live..].to_vec();
+        let mut executor = LifecycleExecutor::new(&mut heap);
+        release_intrinsic_argument_window(
+            &mut executor,
+            &retry_values,
+            &plans[first_live..],
+            &mut storage,
+            &mut live,
+            first_live,
+            FunctionIndex::new(1),
+            InstructionIndex::new(2),
+        )
+        .expect("retained suffix owners remain available for terminal cleanup");
+        drop(executor);
+        assert!(live.iter().all(|slot| !slot));
+        assert_eq!(heap.snapshot_releases, 2);
+        assert_eq!(heap.resource_releases, 1);
+        assert!(heap.request_live.is_empty());
+        assert!(heap.resource_live.is_empty());
+    }
+}
+
+#[test]
+fn intrinsic_cleanup_precedes_result_materialization_failure() {
+    let plan = intrinsic_snapshot_plan();
+    let mut heap = IntrinsicReleaseRecordingHeap {
+        fail_next_allocation: true,
+        ..IntrinsicReleaseRecordingHeap::default()
+    };
+    let argument = heap.request(4, 7);
+    let mut storage = vec![argument];
+    let mut live = vec![true];
+    let mut executor = LifecycleExecutor::new(&mut heap);
+    release_intrinsic_argument_window(
         &mut executor,
         &[argument],
         std::slice::from_ref(&plan),
-        Err(primary),
-        Some(&plan),
+        &mut storage,
+        &mut live,
+        0,
         FunctionIndex::new(1),
         InstructionIndex::new(2),
+    )
+    .expect("input owner cleanup");
+    let error = match materialize_intrinsic_result(
+        executor.heap(),
+        IntrinsicResultPayload::String("joined".to_string()),
+        TypeIndex::new(9),
     ) {
         Err(error) => error,
-        Ok(_) => panic!("failed intrinsic result must not produce a value"),
+        Ok(_) => panic!("injected result allocation failure must reject materialization"),
     };
     drop(executor);
 
@@ -662,24 +882,65 @@ fn intrinsic_cleanup_releases_arguments_when_result_materialization_fails() {
             ..
         })
     ));
+    assert_eq!(live, [false]);
     assert_eq!(heap.snapshot_releases, 1);
-    assert!(heap.live.is_empty());
+    assert!(heap.request_live.is_empty());
 }
 
 #[test]
 fn intrinsic_string_and_bytes_results_keep_the_exact_signature_type() {
-    let mut heap = StoreStringRecordingHeap::default();
-    let string =
-        allocate_intrinsic_string_result(&mut heap, "value".to_string(), TypeIndex::new(12))
-            .expect("typed string result");
-    let bytes = allocate_intrinsic_bytes_result(&mut heap, b"value".to_vec(), TypeIndex::new(13))
-        .expect("typed bytes result");
+    let mut heap = IntrinsicReleaseRecordingHeap::default();
+    let string = materialize_intrinsic_result(
+        &mut heap,
+        IntrinsicResultPayload::String("value".to_string()),
+        TypeIndex::new(12),
+    )
+    .expect("typed string result");
+    let bytes = materialize_intrinsic_result(
+        &mut heap,
+        IntrinsicResultPayload::Bytes(b"value".to_vec()),
+        TypeIndex::new(13),
+    )
+    .expect("typed bytes result");
 
     assert_eq!(string.compact_type_tag(), CompactTypeTag::new(12));
     assert_eq!(bytes.compact_type_tag(), CompactTypeTag::new(13));
     heap.release_snapshot(&string).unwrap();
     heap.release_snapshot(&bytes).unwrap();
-    assert!(heap.live.is_empty());
+    assert!(heap.request_live.is_empty());
+}
+
+#[test]
+fn intrinsic_result_push_failure_releases_the_uninstalled_owner_once() {
+    let plan = intrinsic_snapshot_plan();
+    let mut heap = IntrinsicReleaseRecordingHeap::default();
+    let result = materialize_intrinsic_result(
+        &mut heap,
+        IntrinsicResultPayload::String("value".to_string()),
+        TypeIndex::new(12),
+    )
+    .expect("typed intrinsic result");
+    let primary = VmError::OperandStackOverflow {
+        function: FunctionIndex::new(1),
+        capacity: 0,
+    };
+    let mut executor = LifecycleExecutor::new(&mut heap);
+    let error = release_intrinsic_result_after_push_failure(
+        &mut executor,
+        &result,
+        &plan,
+        primary,
+        FunctionIndex::new(1),
+        InstructionIndex::new(2),
+    );
+    drop(executor);
+
+    assert!(matches!(
+        error,
+        VmError::OperandStackOverflow { capacity: 0, .. }
+    ));
+    assert_eq!(heap.snapshot_releases, 1);
+    assert!(heap.request_live.is_empty());
 }
 
 // ---------------------------------------------------------------------------
