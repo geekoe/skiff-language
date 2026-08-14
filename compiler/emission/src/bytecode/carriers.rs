@@ -128,10 +128,6 @@ impl PackageMachineCarrierFacts {
     pub(crate) fn function(&self, function_key: &str) -> Option<&FunctionMachineCarrierFacts> {
         self.functions.get(function_key)
     }
-
-    pub(crate) fn functions(&self) -> &BTreeMap<String, FunctionMachineCarrierFacts> {
-        &self.functions
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -249,7 +245,10 @@ impl<'a> Analyzer<'a> {
                 let key = canonical_function_key(&unit.module_path, &function.symbol)?;
                 let mut expressions = Vec::with_capacity(function.expressions.len());
                 for expression in &function.expressions {
-                    let role = if matches!(expression.expression, ExprIr::Construct { .. }) {
+                    let role = if matches!(
+                        expression.expression,
+                        ExprIr::Construct { .. } | ExprIr::Catch { .. }
+                    ) {
                         SemanticRole::ConstructExpression
                     } else {
                         SemanticRole::Expression
@@ -1238,16 +1237,23 @@ fn semantic_accepts_carrier(semantic: &TypeRefIr, carrier: &TypeRefIr, role: Sem
                 })
         }
         TypeRefIr::Record { fields } => {
-            if matches!(role, SemanticRole::ConstructExpression)
-                && matches!(
-                    carrier,
-                    TypeRefIr::LocalType { .. }
-                        | TypeRefIr::PublicationType { .. }
-                        | TypeRefIr::ServiceSymbol { .. }
-                        | TypeRefIr::PackageSymbol { .. }
-                        | TypeRefIr::PackageSchema { .. }
-                        | TypeRefIr::DbObjectSymbol { .. }
-                )
+            let explicit_nominal = matches!(
+                carrier,
+                TypeRefIr::LocalType { .. }
+                    | TypeRefIr::PublicationType { .. }
+                    | TypeRefIr::ServiceSymbol { .. }
+                    | TypeRefIr::PackageSymbol { .. }
+                    | TypeRefIr::PackageSchema { .. }
+                    | TypeRefIr::DbObjectSymbol { .. }
+            );
+            let generated_record = matches!(
+                carrier,
+                TypeRefIr::Builtin { name, args }
+                    if matches!(name.as_str(), "CatchResult" | "Exception")
+                        && !args.is_empty()
+            );
+            if (matches!(role, SemanticRole::ConstructExpression) && explicit_nominal)
+                || generated_record
             {
                 // The explicit Construct.type_ref is the runtime nominal
                 // identity.  Its separately checked exact field graph is the
@@ -1286,15 +1292,13 @@ fn semantic_accepts_carrier(semantic: &TypeRefIr, carrier: &TypeRefIr, role: Sem
             }
             collapsed.as_ref() == Some(carrier)
         }
-        TypeRefIr::Nullable { .. }
-            if matches!(role, SemanticRole::ShapeField)
-                && carrier == &TypeRefIr::builtin("null") =>
-        {
+        TypeRefIr::Nullable { inner } if matches!(role, SemanticRole::ShapeField) => {
             // A concrete record construction publishes its physical null
-            // field row and plan.  Nullable frame/call/return positions do
-            // not take this path and remain fail closed without an explicit
-            // representation fact.
-            true
+            // or inner field row and plan. Nullable frame/call/return
+            // positions do not take this path and remain fail closed without
+            // an explicit representation fact.
+            carrier == &TypeRefIr::builtin("null")
+                || semantic_accepts_carrier(inner, carrier, SemanticRole::Position)
         }
         // Nullable/nominal/representation identity is never implicitly
         // replaced by a concrete branch or payload.

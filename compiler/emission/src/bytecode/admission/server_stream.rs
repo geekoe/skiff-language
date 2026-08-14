@@ -1040,8 +1040,8 @@ pub(super) mod tests {
     };
 
     use super::{
-        canonical_response_stream_schema, ServerStreamAdmissions, ServerStreamEmitFact,
-        ServerStreamGatewayAuthority, HTTP_BOUNDARY_PACKAGE_ID, HTTP_RESPONSE_STREAM_EVENT_TYPE,
+        canonical_response_stream_schema, ServerStreamEmitFact, ServerStreamGatewayAuthority,
+        HTTP_BOUNDARY_PACKAGE_ID, HTTP_RESPONSE_STREAM_EVENT_TYPE,
     };
 
     const SOURCE: &str = r#"

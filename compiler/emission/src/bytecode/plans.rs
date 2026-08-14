@@ -61,13 +61,18 @@ fn derive_bytecode_value_transfer_plans_with_carriers(
                     .slot(slot.slot)
                     .map(|carrier| carrier.ty())
                     .ok_or_else(|| unsupported_slot_type(&function_key, slot))?;
-                slot_plans.push(exact_source_plan(
+                let planned = (*carriers
+                    .slot(slot.slot)
+                    .expect("slot carrier was checked above"))
+                .clone()
+                .with_plan(exact_source_plan(
                     &plan_for,
                     &unit.module_path,
                     &function_key,
                     &format!("slot `{}`", slot.name),
                     ty,
                 )?);
+                slot_plans.push(planned.plan().clone());
             }
             let result_plans = if is_void(&function.return_type) || function.stream_result.is_some()
             {
@@ -80,13 +85,14 @@ fn derive_bytecode_value_transfer_plans_with_carriers(
                         location: " non-void function result carrier is absent".to_string(),
                     }
                 })?;
-                vec![exact_source_plan(
+                let planned = result_ty.clone().with_plan(exact_source_plan(
                     &plan_for,
                     &unit.module_path,
                     &function_key,
                     "return value",
                     result_ty.ty(),
-                )?]
+                )?);
+                vec![planned.plan().clone()]
             };
             functions.insert(
                 function_key,

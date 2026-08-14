@@ -59,7 +59,7 @@ type LeafB {
   owner: Array<number>,
 }
 
-function innerThrow(leaf: LeafA | LeafB) -> void {
+function innerThrow(leaf: LeafA) -> void {
   final cleanupOwner = [7]
   throw leaf
 }
@@ -74,7 +74,7 @@ function direct(seed: number) -> number {
 
 function rethrowing(seed: number) -> number {
   if seed == 1 {
-    final leaf: LeafA | LeafB = LeafA { marker: seed, owner: [seed] }
+    final leaf = LeafA { marker: seed, owner: [seed] }
     final inner = catch<LeafA>(innerThrow(leaf))
     if inner.tag == "err" {
       final exception = inner.exception
@@ -511,6 +511,63 @@ fn production_authoring_publishes_direct_throw_and_rethrow_catch_discriminators(
     }));
 
     std::fs::remove_dir_all(temp).expect("remove diverging catch fixture tree");
+}
+
+#[test]
+fn production_multi_carrier_union_frame_fails_before_publication() {
+    let package_id = "test.skiff/multi-carrier-union-frame";
+    let (platform, package_root, artifact_root, temp) = production_fixture(package_id, None);
+    std::fs::write(
+        package_root.join("main.skiff"),
+        r#"
+type LeafA { marker: number }
+type LeafB { marker: number }
+
+function consume(value: LeafA | LeafB) -> void {
+  throw value
+}
+
+function run(seed: number) -> void {
+  final value: LeafA | LeafB = LeafA { marker: seed }
+  consume(value)
+}
+"#,
+    )
+    .expect("write multi-carrier union fixture");
+
+    let error = crate::authoring::build_authoring_object(
+        &platform,
+        crate::authoring::AuthoringObject::Package,
+        &package_root,
+        &artifact_root,
+        "skiff-test",
+        true,
+    )
+    .expect_err("a union frame without one exact physical carrier must fail closed");
+    let service_typed = error.downcast_ref::<crate::ServicePackageCompileError>();
+    let package_typed = error.downcast_ref::<PackageCompileError>();
+    assert!(
+        service_typed.is_some_and(|typed| matches!(
+            typed,
+            crate::ServicePackageCompileError::Package(PackageCompileError::BytecodeEmission {
+                source: skiff_compiler_emission::BytecodeEmissionError::UnsupportedConstruct {
+                    construct: "exact machine carrier facts",
+                    ..
+                }
+            })
+        )) || package_typed.is_some_and(|typed| matches!(
+            typed,
+            PackageCompileError::BytecodeEmission {
+                source: skiff_compiler_emission::BytecodeEmissionError::UnsupportedConstruct {
+                    construct: "exact machine carrier facts",
+                    ..
+                }
+            }
+        )),
+        "expected exact machine-carrier rejection, got: {error:?}"
+    );
+    assert_no_publication_pointers(&artifact_root, package_id);
+    std::fs::remove_dir_all(temp).expect("remove multi-carrier union fixture tree");
 }
 
 #[test]
