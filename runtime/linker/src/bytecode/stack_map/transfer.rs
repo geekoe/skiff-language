@@ -1,5 +1,5 @@
 use skiff_artifact_model::{
-    Arity, SlotAction, SlotContract, TypedStackGroup, TypedTransition, ValueSource,
+    Arity, SlotAction, SlotContract, TypeRefIr, TypedStackGroup, TypedTransition, ValueSource,
 };
 use skiff_runtime_linked_bytecode::{
     LinkedFrameLayout, LinkedInstruction, LinkedSlotState, LinkedStackValue,
@@ -223,11 +223,11 @@ fn validate_input_group(
 ) -> Result<(), BytecodeLinkError> {
     match source {
         ValueSource::AnyStackValue | ValueSource::TaggedValue => return Ok(()),
-        ValueSource::ArrayValue | ValueSource::MapValue => {
-            return Err(BytecodeLinkError::ImplementationUnavailable {
-                obligation: BytecodeLinkObligation::ControlFlowAndStackMap,
-                location,
-            });
+        ValueSource::ArrayValue => {
+            return validate_exact_container_value(context, actual, "Array", 1, location);
+        }
+        ValueSource::MapValue => {
+            return validate_exact_container_value(context, actual, "Map", 2, location);
         }
         ValueSource::ComparablePair => {
             if matches!(actual, [left, right] if linked_value_matches(left, right)) {
@@ -255,6 +255,67 @@ fn validate_input_group(
         ));
     }
     Ok(())
+}
+
+fn validate_exact_container_value(
+    context: &StackMapContext<'_, '_>,
+    actual: &[LinkedStackValue],
+    expected_name: &str,
+    expected_arity: usize,
+    location: BytecodeLinkLocation,
+) -> Result<(), BytecodeLinkError> {
+    let [value] = actual else {
+        return Err(obligation_error(
+            location,
+            format!(
+                "{expected_name} input requires exactly one linked stack value, found {}",
+                actual.len()
+            ),
+        ));
+    };
+    let ty = context
+        .type_linker
+        .linked_type_ref(value.ty())
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                format!("linked container type {} is absent", value.ty().get()),
+            )
+        })?;
+    let plan = context
+        .type_linker
+        .linked_type_plan(value.ty())
+        .ok_or_else(|| BytecodeLinkError::ImplementationUnavailable {
+            obligation: BytecodeLinkObligation::ControlFlowAndStackMap,
+            location: location.clone(),
+        })?;
+    if !is_exact_container_type(ty, expected_name, expected_arity) {
+        return Err(obligation_error(
+            location.clone(),
+            format!(
+                "linked stack value {} is not exact {expected_name}<{expected_arity}>",
+                value.ty().get()
+            ),
+        ));
+    }
+    if value.plan() != plan {
+        return Err(obligation_error(
+            location,
+            format!(
+                "linked {expected_name} value {} does not carry its exact type-row plan",
+                value.ty().get()
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn is_exact_container_type(ty: &TypeRefIr, expected_name: &str, expected_arity: usize) -> bool {
+    matches!(
+        ty,
+        TypeRefIr::Builtin { name, args }
+            if name == expected_name && args.len() == expected_arity
+    )
 }
 
 fn linked_values_match(expected: &[LinkedStackValue], actual: &[LinkedStackValue]) -> bool {
@@ -482,11 +543,12 @@ fn resolve_arity(
 
 #[cfg(test)]
 mod tests {
+    use skiff_artifact_model::TypeRefIr;
     use skiff_runtime_linked_bytecode::{
         LinkedStackValue, LinkedValueDropPlan, LinkedValueTransferPlan, TypeIndex,
     };
 
-    use super::linked_value_matches;
+    use super::{is_exact_container_type, linked_value_matches};
 
     fn snapshot() -> LinkedValueTransferPlan {
         LinkedValueTransferPlan::SnapshotShare {
@@ -511,5 +573,34 @@ mod tests {
         assert!(!linked_value_matches(&snapshot_value, &trivial_value));
         assert!(!linked_value_matches(&trivial_value, &snapshot_value));
         assert!(!linked_value_matches(&snapshot_value, &other_type));
+    }
+
+    #[test]
+    fn container_categories_require_exact_builtin_name_and_canonical_arity() {
+        let number = TypeRefIr::builtin("number");
+        let string = TypeRefIr::builtin("string");
+        let array = TypeRefIr::Builtin {
+            name: "Array".to_string(),
+            args: vec![number.clone()],
+        };
+        let map = TypeRefIr::Builtin {
+            name: "Map".to_string(),
+            args: vec![string, number.clone()],
+        };
+        let malformed_array = TypeRefIr::Builtin {
+            name: "Array".to_string(),
+            args: vec![number.clone(), number.clone()],
+        };
+        let malformed_map = TypeRefIr::Builtin {
+            name: "Map".to_string(),
+            args: vec![number],
+        };
+
+        assert!(is_exact_container_type(&array, "Array", 1));
+        assert!(is_exact_container_type(&map, "Map", 2));
+        assert!(!is_exact_container_type(&array, "Map", 2));
+        assert!(!is_exact_container_type(&map, "Array", 1));
+        assert!(!is_exact_container_type(&malformed_array, "Array", 1));
+        assert!(!is_exact_container_type(&malformed_map, "Map", 2));
     }
 }

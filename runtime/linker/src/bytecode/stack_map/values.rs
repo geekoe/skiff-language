@@ -372,12 +372,13 @@ pub(super) fn source_values(
         ValueSource::ArrayBuilder { element_type } => {
             container_builder(context, instruction, element_type, "Array", 0, location)
         }
-        ValueSource::ArrayValue | ValueSource::MapValue => {
-            Err(BytecodeLinkError::ImplementationUnavailable {
-                obligation: BytecodeLinkObligation::ControlFlowAndStackMap,
-                location,
-            })
-        }
+        ValueSource::ArrayValue | ValueSource::MapValue => Err(obligation_error(
+            location,
+            format!(
+                "input-only value source {} cannot establish a stack output",
+                source.name()
+            ),
+        )),
         ValueSource::ArrayFromBuilder { builder_input } => {
             container_from_builder(context, inputs, builder_input, "Array", location)
         }
