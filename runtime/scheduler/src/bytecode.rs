@@ -894,6 +894,7 @@ impl<U> BytecodeScheduler<U>
 where
     U: BytecodeUnit + VmRootSource + 'static,
 {
+    #[cfg(test)]
     pub(crate) fn new(
         root: U,
         ports: BytecodeSchedulerPorts<U>,

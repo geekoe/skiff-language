@@ -255,8 +255,13 @@ pub(crate) struct ResourceOwnerRegistration(Arc<InventoryShared>);
 #[derive(Clone)]
 pub(crate) struct ChildOwnerRegistration(Arc<InventoryShared>);
 
+// These tuple fields are intentionally never read: holding the RAII lease
+// until the wrapper drops is the complete ownership protocol.
+#[allow(dead_code)]
 pub(crate) struct PendingOwnerLease(OwnerLease);
+#[allow(dead_code)]
 pub(crate) struct ResourceOwnerLease(OwnerLease);
+#[allow(dead_code)]
 pub(crate) struct ChildOwnerLease(OwnerLease);
 
 #[must_use = "a pending creation guard must be committed or explicitly aborted"]

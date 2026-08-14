@@ -236,10 +236,6 @@ pub(crate) struct MappedPendingResumeFailure<R, S, O, E> {
 }
 
 impl<R, S, O, E> MappedPendingResumeFailure<R, S, O, E> {
-    pub(crate) const fn error(&self) -> &E {
-        &self.error
-    }
-
     pub(crate) fn into_parts(self) -> (E, MappedPendingWakeGuard<R, S, O>) {
         (self.error, self.guard)
     }
@@ -2210,7 +2206,6 @@ mod tests {
             )
             .unwrap_err();
 
-        assert_eq!(failure.error(), &"resume rejected");
         let mut visitor = CountingVisitor::default();
         failure.visit_roots(&mut visitor).unwrap();
         assert_eq!(visitor.0, 2);
@@ -2275,7 +2270,6 @@ mod tests {
             )
             .unwrap_err();
 
-        assert_eq!(failure.error(), &"terminal resume");
         let mut visitor = CountingVisitor::default();
         failure.visit_roots(&mut visitor).unwrap();
         assert_eq!(visitor.0, 2);
