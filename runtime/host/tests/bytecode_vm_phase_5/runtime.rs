@@ -3,6 +3,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
+    thread,
     time::{Duration, Instant},
 };
 
@@ -328,13 +329,29 @@ async fn early_break_releases_body_before_late_chunk() {
     );
 }
 
-async fn assert_canary_advances(ticks: &AtomicU64, phase: &str) {
+async fn assert_canary_advances(ticks: &Arc<AtomicU64>, phase: &str) {
     let before = ticks.load(Ordering::Relaxed);
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    let after = ticks.load(Ordering::Relaxed);
+    let sampled_ticks = Arc::clone(ticks);
+    let (sampled, observation) = tokio::sync::oneshot::channel();
+    // This thread is a wall-clock observer only. It never polls the request,
+    // provider, or canary, so it cannot manufacture progress for the sole
+    // Tokio worker under test.
+    let observer = thread::Builder::new()
+        .name("phase-5-canary-observer".to_string())
+        .spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            let _ = sampled.send(sampled_ticks.load(Ordering::Relaxed));
+        })
+        .expect("spawn Phase 5 canary wall-clock observer");
+    let after = observation
+        .await
+        .expect("Phase 5 canary wall-clock observer exited without sampling");
+    observer
+        .join()
+        .expect("join Phase 5 canary wall-clock observer");
     assert!(
         after >= before.saturating_add(8),
-        "the single Tokio worker stopped advancing during {phase}: {before} -> {after}"
+        "the single Tokio worker did not advance during the closed 50ms {phase} gate: {before} -> {after}"
     );
 }
 
