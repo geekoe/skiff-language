@@ -1,5 +1,7 @@
 #[path = "bytecode_vm_phase_5/fixture.rs"]
 mod fixture;
+#[path = "bytecode_vm_phase_5/runtime.rs"]
+mod runtime;
 #[path = "bytecode_vm_phase_5/stages.rs"]
 mod stages;
 #[path = "bytecode_vm_phase_5/tcp_server.rs"]
@@ -46,6 +48,11 @@ fn phase_5_stage_sentinel_source_to_admission() {
         "S1 production carrier failures:\n- {}",
         failures.join("\n- ")
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn phase_5_stage_sentinel_verify_to_scheduler() {
+    runtime::verify_to_scheduler().await;
 }
 
 fn assert_exact_rejection(

@@ -110,6 +110,38 @@ impl Phase5TcpServer {
         }
     }
 
+    /// Waits without parking the Tokio worker that owns the runtime under
+    /// test. The Condvar variant above remains useful to the server's own
+    /// blocking-thread self-test; Phase 5 runtime tests use this async view.
+    pub async fn wait_for_path_async(&self, path: &str, timeout: Duration) -> bool {
+        self.wait_for_observation_async(timeout, |entry| entry.path == path)
+            .await
+    }
+
+    pub async fn wait_for_response_head_async(&self, path: &str, timeout: Duration) -> bool {
+        self.wait_for_observation_async(timeout, |entry| {
+            entry.path == path && entry.response_head_sent
+        })
+        .await
+    }
+
+    async fn wait_for_observation_async(
+        &self,
+        timeout: Duration,
+        predicate: impl Fn(&RequestObservation) -> bool,
+    ) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.snapshot().iter().any(&predicate) {
+                return true;
+            }
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            tokio::time::sleep(remaining.min(Duration::from_millis(1))).await;
+        }
+    }
+
     pub fn snapshot(&self) -> Vec<RequestObservation> {
         self.shared
             .state
