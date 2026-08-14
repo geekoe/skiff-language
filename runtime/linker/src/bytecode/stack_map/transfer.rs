@@ -230,7 +230,7 @@ fn validate_input_group(
             return validate_exact_container_value(context, actual, "Map", 2, location);
         }
         ValueSource::ComparablePair => {
-            if matches!(actual, [left, right] if linked_value_matches(left, right)) {
+            if matches!(actual, [left, right] if linked_value_matches(context, left, right)) {
                 return Ok(());
             }
             return Err(obligation_error(
@@ -245,11 +245,19 @@ fn validate_input_group(
     if expected.len() == 1 && actual.len() > 1 {
         expected = actual.iter().map(|_| expected[0].clone()).collect();
     }
-    if !linked_values_match(&expected, actual) {
+    if !linked_values_match(context, &expected, actual) {
+        let expected_types = expected
+            .iter()
+            .map(|value| context.type_linker.linked_type_ref(value.ty()))
+            .collect::<Vec<_>>();
+        let actual_types = actual
+            .iter()
+            .map(|value| context.type_linker.linked_type_ref(value.ty()))
+            .collect::<Vec<_>>();
         return Err(obligation_error(
             location,
             format!(
-                "typed stack input {} differs from its exact concrete source: expected {expected:?}, actual {actual:?}",
+                "typed stack input {} differs from its exact concrete source: expected {expected:?} with types {expected_types:?}, actual {actual:?} with types {actual_types:?}",
                 source.name(),
             ),
         ));
@@ -318,16 +326,57 @@ fn is_exact_container_type(ty: &TypeRefIr, expected_name: &str, expected_arity: 
     )
 }
 
-fn linked_values_match(expected: &[LinkedStackValue], actual: &[LinkedStackValue]) -> bool {
+fn linked_values_match(
+    context: &StackMapContext<'_, '_>,
+    expected: &[LinkedStackValue],
+    actual: &[LinkedStackValue],
+) -> bool {
     expected.len() == actual.len()
         && expected
             .iter()
             .zip(actual)
-            .all(|(expected, actual)| linked_value_matches(expected, actual))
+            .all(|(expected, actual)| linked_value_matches(context, expected, actual))
 }
 
-fn linked_value_matches(expected: &LinkedStackValue, actual: &LinkedStackValue) -> bool {
-    expected == actual
+fn linked_value_matches(
+    context: &StackMapContext<'_, '_>,
+    expected: &LinkedStackValue,
+    actual: &LinkedStackValue,
+) -> bool {
+    let Some(expected_type) = context.type_linker.linked_type_ref(expected.ty()) else {
+        return false;
+    };
+    let Some(actual_type) = context.type_linker.linked_type_ref(actual.ty()) else {
+        return false;
+    };
+    let Some(expected_row_plan) = context.type_linker.linked_type_plan(expected.ty()) else {
+        return false;
+    };
+    let Some(actual_row_plan) = context.type_linker.linked_type_plan(actual.ty()) else {
+        return false;
+    };
+    exact_linked_value_facts_match(
+        expected,
+        expected_type,
+        expected_row_plan,
+        actual,
+        actual_type,
+        actual_row_plan,
+    )
+}
+
+fn exact_linked_value_facts_match(
+    expected: &LinkedStackValue,
+    expected_type: &TypeRefIr,
+    expected_row_plan: &skiff_runtime_linked_bytecode::LinkedValueTransferPlan,
+    actual: &LinkedStackValue,
+    actual_type: &TypeRefIr,
+    actual_row_plan: &skiff_runtime_linked_bytecode::LinkedValueTransferPlan,
+) -> bool {
+    expected.plan() == expected_row_plan
+        && actual.plan() == actual_row_plan
+        && expected_type == actual_type
+        && expected.plan() == actual.plan()
 }
 
 fn apply_stack_outputs(
@@ -507,7 +556,7 @@ fn validate_slot_write(
             )
         })?;
     let expected = LinkedStackValue::new(expected_type, expected_plan);
-    if !linked_value_matches(&expected, value) {
+    if !linked_value_matches(context, &expected, value) {
         let expected_type = context.type_linker.linked_type_ref(expected.ty());
         let actual_type = context.type_linker.linked_type_ref(value.ty());
         return Err(obligation_error(
@@ -548,7 +597,7 @@ mod tests {
         LinkedStackValue, LinkedValueDropPlan, LinkedValueTransferPlan, TypeIndex,
     };
 
-    use super::{is_exact_container_type, linked_value_matches};
+    use super::{exact_linked_value_facts_match, is_exact_container_type};
 
     fn snapshot() -> LinkedValueTransferPlan {
         LinkedValueTransferPlan::SnapshotShare {
@@ -563,16 +612,53 @@ mod tests {
     }
 
     #[test]
-    fn transfer_requires_exact_type_index_and_lifecycle_plan() {
+    fn transfer_requires_exact_type_abi_and_each_rows_lifecycle_plan() {
         let snapshot_value = LinkedStackValue::new(TypeIndex::new(7), snapshot());
-        let same_snapshot_value = LinkedStackValue::new(TypeIndex::new(7), snapshot());
+        let duplicate_snapshot_value = LinkedStackValue::new(TypeIndex::new(8), snapshot());
         let trivial_value = LinkedStackValue::new(TypeIndex::new(7), trivial());
-        let other_type = LinkedStackValue::new(TypeIndex::new(8), snapshot());
+        let number = TypeRefIr::builtin("number");
+        let string = TypeRefIr::builtin("string");
 
-        assert!(linked_value_matches(&snapshot_value, &same_snapshot_value));
-        assert!(!linked_value_matches(&snapshot_value, &trivial_value));
-        assert!(!linked_value_matches(&trivial_value, &snapshot_value));
-        assert!(!linked_value_matches(&snapshot_value, &other_type));
+        assert!(exact_linked_value_facts_match(
+            &snapshot_value,
+            &number,
+            &snapshot(),
+            &duplicate_snapshot_value,
+            &number,
+            &snapshot(),
+        ));
+        assert!(!exact_linked_value_facts_match(
+            &snapshot_value,
+            &number,
+            &snapshot(),
+            &trivial_value,
+            &number,
+            &trivial(),
+        ));
+        assert!(!exact_linked_value_facts_match(
+            &trivial_value,
+            &number,
+            &trivial(),
+            &snapshot_value,
+            &number,
+            &snapshot(),
+        ));
+        assert!(!exact_linked_value_facts_match(
+            &snapshot_value,
+            &number,
+            &snapshot(),
+            &duplicate_snapshot_value,
+            &string,
+            &snapshot(),
+        ));
+        assert!(!exact_linked_value_facts_match(
+            &snapshot_value,
+            &number,
+            &trivial(),
+            &duplicate_snapshot_value,
+            &number,
+            &snapshot(),
+        ));
     }
 
     #[test]

@@ -80,7 +80,7 @@ pub(super) enum RootProgram {
     StreamNext,
     StreamNextLoop,
     StreamProducer,
-    ReorderedInterfaceResumePool,
+    ReorderedStreamNextResumePool,
     ReorderedStreamResumePool,
     Constant(ConstantProgram),
 }
@@ -94,7 +94,7 @@ impl RootProgram {
                 | Self::StreamNext
                 | Self::StreamNextLoop
                 | Self::StreamProducer
-                | Self::ReorderedInterfaceResumePool
+                | Self::ReorderedStreamNextResumePool
                 | Self::ReorderedStreamResumePool
         )
     }
@@ -161,8 +161,8 @@ impl Fixture {
         Self::new(RootProgram::StreamProducer, false)
     }
 
-    pub(super) fn reordered_interface_resume_pool() -> Self {
-        Self::new(RootProgram::ReorderedInterfaceResumePool, false)
+    pub(super) fn reordered_stream_next_resume_pool() -> Self {
+        Self::new(RootProgram::ReorderedStreamNextResumePool, false)
     }
 
     pub(super) fn reordered_stream_resume_pool() -> Self {

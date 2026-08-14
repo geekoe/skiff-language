@@ -663,8 +663,8 @@ fn reordered_emit_stream_resume_pool_preserves_exact_site_shape_facts() {
 }
 
 #[test]
-fn reordered_ordinary_result_resume_pool_preserves_exact_site_facts() {
-    let fixture = Fixture::reordered_interface_resume_pool();
+fn reordered_stream_next_result_pool_preserves_exact_site_facts() {
+    let fixture = Fixture::reordered_stream_next_resume_pool();
     let hydrated = fixture.hydrate();
     let validated = hydrated
         .packages()
@@ -695,7 +695,7 @@ fn reordered_ordinary_result_resume_pool_preserves_exact_site_facts() {
         .instructions()
         .iter()
         .enumerate()
-        .filter(|(_, instruction)| instruction.opcode() == Opcode::CallInterface)
+        .filter(|(_, instruction)| instruction.opcode() == Opcode::StreamNext)
         .collect::<Vec<_>>();
     assert_eq!(pending.len(), 2);
     for (ordinal, instruction) in pending {
@@ -706,7 +706,7 @@ fn reordered_ordinary_result_resume_pool_preserves_exact_site_facts() {
                 LinkedInstructionTarget::ResumeSite(index) => Some(index),
                 _ => None,
             })
-            .expect("CallInterface retains one exact resume target");
+            .expect("StreamNext retains one exact resume target");
         let resume = candidate
             .resume_sites()
             .get(resume_index.get() as usize)
@@ -1021,21 +1021,16 @@ fn production_entry_prunes_unreachable_private_interface_and_callback_authority(
 }
 
 #[test]
-fn production_entry_links_interface_requirement_target_at_exact_pc() {
+fn production_entry_fails_closed_for_reachable_interface_without_compiler_target_facts() {
     let fixture = Fixture::interface();
     let hydrated = fixture.hydrate();
-    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
-    assert_eq!(candidate.interface_tables().len(), 1);
-    let root = function(&candidate, ROOT_FUNCTION);
-    let interface_call = root
-        .instructions()
-        .iter()
-        .find(|instruction| instruction.artifact_pc() == 2)
-        .expect("fixture retains the exact interface call pc");
-    assert!(interface_call
-        .resolved_operands()
-        .iter()
-        .any(|operand| { matches!(operand.target(), LinkedInstructionTarget::InterfaceTable(_)) }));
+    assert!(matches!(
+        link_deployment(&hydrated, &generous_limits()),
+        Err(BytecodeLinkError::ImplementationUnavailable {
+            obligation: BytecodeLinkObligation::ConcreteTargetTables,
+            location: BytecodeLinkLocation::Instruction { artifact_pc: 2, .. },
+        })
+    ));
 }
 
 #[test]

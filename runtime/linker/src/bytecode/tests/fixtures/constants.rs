@@ -90,7 +90,7 @@ pub(super) fn populate_bytecode(artifact: &mut BytecodeArtifact, program: Consta
                 vec![FrozenConstantNode::Literal { literal }],
                 0,
                 ty.clone(),
-                ValueTransferPlan::FromType { ty },
+                exact_fixture_plan(&ty),
             )
         }
         ConstantProgram::LiteralMismatch => {
@@ -107,7 +107,7 @@ pub(super) fn populate_bytecode(artifact: &mut BytecodeArtifact, program: Consta
                 }],
                 0,
                 ty.clone(),
-                ValueTransferPlan::FromType { ty },
+                exact_fixture_plan(&ty),
             )
         }
         ConstantProgram::Array => {
@@ -126,7 +126,7 @@ pub(super) fn populate_bytecode(artifact: &mut BytecodeArtifact, program: Consta
                 ],
                 1,
                 ty.clone(),
-                ValueTransferPlan::FromType { ty },
+                exact_fixture_plan(&ty),
             )
         }
         ConstantProgram::Record => composite_parts(
@@ -202,21 +202,7 @@ pub(super) fn populate_bytecode(artifact: &mut BytecodeArtifact, program: Consta
         ),
     };
 
-    let type_plan = match &ty {
-        TypeRefIr::Builtin { name, .. }
-            if matches!(
-                name.as_str(),
-                "null" | "bool" | "number" | "integer" | "Date"
-            ) =>
-        {
-            ValueTransferPlan::SnapshotShare {
-                drop: ValueDropPlan::Trivial,
-            }
-        }
-        _ => ValueTransferPlan::SnapshotShare {
-            drop: ValueDropPlan::SnapshotRelease,
-        },
-    };
+    let type_plan = exact_fixture_plan(&ty);
     artifact.image.pools.types = vec![BytecodePoolEntry::TypeRef {
         ty,
         plan: type_plan,
@@ -296,6 +282,24 @@ pub(super) fn implementation_symbols(
         .collect()
 }
 
+fn exact_fixture_plan(ty: &TypeRefIr) -> ValueTransferPlan {
+    match ty {
+        TypeRefIr::Builtin { name, .. }
+            if matches!(
+                name.as_str(),
+                "null" | "bool" | "number" | "integer" | "Date"
+            ) =>
+        {
+            ValueTransferPlan::SnapshotShare {
+                drop: ValueDropPlan::Trivial,
+            }
+        }
+        _ => ValueTransferPlan::SnapshotShare {
+            drop: ValueDropPlan::SnapshotRelease,
+        },
+    }
+}
+
 fn literal_parts(
     literal: LiteralIr,
     ty: TypeRefIr,
@@ -304,7 +308,7 @@ fn literal_parts(
         vec![FrozenConstantNode::Literal { literal }],
         0,
         ty.clone(),
-        ValueTransferPlan::FromType { ty },
+        exact_fixture_plan(&ty),
     )
 }
 
@@ -313,7 +317,7 @@ fn composite_parts(
     root: u32,
 ) -> (Vec<FrozenConstantNode>, u32, TypeRefIr, ValueTransferPlan) {
     let ty = TypeRefIr::builtin("number");
-    (nodes, root, ty.clone(), ValueTransferPlan::FromType { ty })
+    (nodes, root, ty.clone(), exact_fixture_plan(&ty))
 }
 
 fn number_node() -> FrozenConstantNode {
