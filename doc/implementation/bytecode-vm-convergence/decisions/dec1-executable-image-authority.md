@@ -467,6 +467,11 @@ verifier, the `skiff-runtime-bytecode-verifier` crate, `ExecutableFacts`,
 historical decision record; none of those superseded names or boundaries is a
 compatibility commitment.
 
+The canonical long-term boundary is
+[`doc/architecture/bytecode-vm.md` §2.4 and §4](../../../architecture/bytecode-vm.md#24-responsibility-split);
+this amendment and the active Phase Contract are its implementation decisions,
+not a competing architecture source.
+
 ### Authority split
 
 The compiler is the sole source-semantics authority. It decides and emits the

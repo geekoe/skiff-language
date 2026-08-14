@@ -161,6 +161,8 @@ identity或affine lifecycle 无法从真实 producer运输到 consumer；或任�
 
 本 Amendment 落实
 [`DEC1 Amendment r2`](../decisions/dec1-executable-image-authority.md#amendment-r2-2026-08-14-retire-the-independent-production-verifier)。
+canonical long-term authority以
+[`doc/architecture/bytecode-vm.md` §2.4/§4](../../../architecture/bytecode-vm.md#24-responsibility-split)为准。
 它只替换上文关于独立 verifier、`ExecutableFacts`、`verify_executable_facts`、verifier-owned `Verified*` facts 和
 `link→verify→scheduler` production stage 的描述；r1 的 exact binding、affine lifecycle、ResourceTable、Pending、
 真实 HTTP、backpressure 与 Router full-chain义务保持不变。
