@@ -405,8 +405,36 @@ pub trait VmHeap {
         })
     }
 
+    /// Allocates bytes carrying the exact verified concrete type metadata.
+    /// Typed host materialization must use this port instead of relying on the
+    /// legacy type-zero boundary helper.
+    fn alloc_typed_bytes(
+        &mut self,
+        _value: Vec<u8>,
+        _compact_type_tag: CompactTypeTag,
+        _flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::AllocateArray,
+            kind: ValueKind::RequestHeapRef,
+        })
+    }
+
     /// Allocates a request-local string carrier cell.
     fn alloc_string(&mut self, _value: String) -> Result<ValueSlot, VmHeapError> {
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::AllocateRepresentation,
+            kind: ValueKind::RequestHeapRef,
+        })
+    }
+
+    /// Allocates a string carrying the exact verified concrete type metadata.
+    fn alloc_typed_string(
+        &mut self,
+        _value: String,
+        _compact_type_tag: CompactTypeTag,
+        _flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
         Err(VmHeapError::OperationKindMismatch {
             operation: VmHeapOperation::AllocateRepresentation,
             kind: ValueKind::RequestHeapRef,

@@ -5,7 +5,8 @@ use skiff_runtime_linked_bytecode::{
     ActiveRegionIndex, CandidateTable, FrameSlotIndex, FunctionIndex, InstructionIndex, TypeIndex,
 };
 use skiff_runtime_model::{
-    service_error::RequestException, vm_heap::VmHeapError, vm_value::ValueKind,
+    error::RuntimeErrorPayload, service_error::RequestException, vm_heap::VmHeapError,
+    vm_value::ValueKind,
 };
 
 use crate::{fiber::VmFiberState, VmBudgetClosed, VmInternalTerminal};
@@ -139,6 +140,9 @@ pub enum VmError {
         actual: ActiveRegionIndex,
     },
     InternalTerminal(VmInternalTerminal),
+    /// Typed host execution failed with an ordinary wire payload. This is not
+    /// a cancellation terminal and never participates in executor dispatch.
+    HostEffectFailure(RuntimeErrorPayload),
     InstructionPointerOutOfBounds {
         function: FunctionIndex,
         instruction: InstructionIndex,
@@ -358,6 +362,7 @@ impl fmt::Display for VmError {
             Self::InternalTerminal(reason) => {
                 write!(formatter, "VM continuation terminated internally: {reason:?}")
             }
+            Self::HostEffectFailure(payload) => payload.fmt(formatter),
             Self::InstructionPointerOutOfBounds {
                 function,
                 instruction,

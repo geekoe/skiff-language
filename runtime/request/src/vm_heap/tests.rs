@@ -99,7 +99,7 @@ fn take_dense_field_physically_detaches_field_and_consumes_record_remainder() {
         .expect("stream-handle-shaped record");
     let physical = heap.live_entry(&record).expect("live record").heap_handle;
 
-    assert_eq!(heap.take_dense_field(&record, 0), Ok(taken_child));
+    assert!(heap.take_dense_field(&record, 0) == Ok(taken_child));
     assert_eq!(heap.validate_live(&taken_child), Ok(()));
     assert!(matches!(
         heap.validate_live(&record),
@@ -159,7 +159,7 @@ fn take_dense_field_rejects_alias_and_bad_ordinal_without_mutation() {
         heap.take_dense_field(&record, 0),
         Err(VmHeapError::OwnershipViolation { .. })
     ));
-    assert_eq!(heap.get_dense_field(&record, 0), Ok(ValueSlot::integer(1)));
+    assert!(heap.get_dense_field(&record, 0) == Ok(ValueSlot::integer(1)));
     heap.release_snapshot(&alias).expect("release alias");
 
     assert!(matches!(
@@ -169,8 +169,8 @@ fn take_dense_field_rejects_alias_and_bad_ordinal_without_mutation() {
             ..
         })
     ));
-    assert_eq!(heap.get_dense_field(&record, 0), Ok(ValueSlot::integer(1)));
-    assert_eq!(heap.take_dense_field(&record, 0), Ok(ValueSlot::integer(1)));
+    assert!(heap.get_dense_field(&record, 0) == Ok(ValueSlot::integer(1)));
+    assert!(heap.take_dense_field(&record, 0) == Ok(ValueSlot::integer(1)));
 }
 
 #[test]
@@ -215,7 +215,7 @@ fn take_dense_field_rejects_invalid_remainder_before_physical_detach() {
         Err(VmHeapError::OwnershipViolation { .. })
     ));
     assert_eq!(heap.validate_live(&record), Ok(()));
-    assert_eq!(heap.get_dense_field(&record, 0), Ok(ValueSlot::integer(1)));
+    assert!(heap.get_dense_field(&record, 0) == Ok(ValueSlot::integer(1)));
     assert!(
         heap.request_heap()
             .object_field_carrier(physical, "body")
@@ -748,7 +748,7 @@ fn phase_5_resource_request_heap_admits_validates_moves_and_drops_exact_route() 
         .unwrap();
 
     assert_eq!(heap.validate_live(&slot), Ok(()));
-    assert_eq!(heap.transfer_owner(&slot), Ok(slot));
+    assert!(heap.transfer_owner(&slot) == Ok(slot));
     let forged = ValueSlot::resource_ref(
         handle.vm_handle(),
         CompactTypeTag::new(RESOURCE_TAG.get() + 1),
@@ -768,6 +768,46 @@ fn phase_5_resource_request_heap_admits_validates_moves_and_drops_exact_route() 
 
     let snapshot = context.into_not_started();
     assert_eq!(snapshot.resource.current, 0);
+}
+
+#[test]
+fn phase_5_first_poll_typed_host_carriers_keep_nonzero_verified_metadata() {
+    let mut heap = heap();
+    let bytes_tag = CompactTypeTag::new(71);
+    let string_tag = CompactTypeTag::new(72);
+    let flags = ValueFlags::new(5);
+    let bytes = heap
+        .alloc_typed_bytes(b"typed".to_vec(), bytes_tag, flags)
+        .unwrap();
+    let string = heap
+        .alloc_typed_string("header".to_string(), string_tag, flags)
+        .unwrap();
+
+    assert_eq!(bytes.compact_type_tag(), bytes_tag);
+    assert_eq!(bytes.flags(), flags);
+    assert_eq!(heap.bytes_value(&bytes).unwrap(), b"typed");
+    assert_eq!(string.compact_type_tag(), string_tag);
+    assert_eq!(string.flags(), flags);
+    assert_eq!(heap.string_value(&string).unwrap(), "header");
+
+    let drifted_bytes = ValueSlot::request_heap_ref(
+        bytes.as_request_heap_ref().unwrap(),
+        CompactTypeTag::new(bytes_tag.get() + 1),
+        flags,
+    );
+    let drifted_string = ValueSlot::request_heap_ref(
+        string.as_request_heap_ref().unwrap(),
+        string_tag,
+        ValueFlags::new(flags.bits() + 1),
+    );
+    assert_eq!(
+        heap.bytes_value(&drifted_bytes),
+        Err(VmHeapError::InvalidValueMetadata)
+    );
+    assert_eq!(
+        heap.string_value(&drifted_string),
+        Err(VmHeapError::InvalidValueMetadata)
+    );
 }
 
 #[test]
@@ -810,7 +850,7 @@ fn phase_5_resource_take_dense_field_preflights_and_drops_only_the_remainder_rou
         )
         .unwrap();
 
-    assert_eq!(heap.take_dense_field(&record, 0), Ok(selected));
+    assert!(heap.take_dense_field(&record, 0) == Ok(selected));
     assert_eq!(heap.validate_live(&selected), Ok(()));
     assert!(heap.validate_live(&remainder).is_err());
     assert!(selected_terminations.lock().unwrap().is_empty());

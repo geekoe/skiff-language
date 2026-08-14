@@ -41,7 +41,9 @@ pub struct BytecodeHttpRequest {
     pub method: String,
     pub url: String,
     pub headers: Vec<HttpNameValue>,
-    pub body: Vec<u8>,
+    /// Preserves the language ABI distinction between nullable body absence
+    /// and a present zero-length bytes payload.
+    pub body: Option<Vec<u8>>,
     pub timeout_ms: Option<u64>,
 }
 

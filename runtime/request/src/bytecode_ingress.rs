@@ -1,18 +1,24 @@
 use std::{
+    future::Future,
     num::{NonZeroU32, NonZeroUsize},
+    pin::Pin,
     sync::{mpsc, Arc, Mutex},
-    time::Duration,
+    task::{Context, Poll, Wake, Waker},
 };
 
 use skiff_artifact_model::{HostEffectExecutorIdentity, TypeRefIr};
 use skiff_runtime_boundary::http::HttpBoundaryNameValue;
 use skiff_runtime_capability_context::{CancellationToken, ExecutionBudgetReason};
-use skiff_runtime_linked_bytecode::{LinkedValueDropPlan, LinkedValueTransferPlan};
-use skiff_runtime_linker::DeploymentExecutionEntry;
+use skiff_runtime_linked_bytecode::{
+    LinkedNativeCallableSignature, LinkedShapeEntry, LinkedValueDropPlan, LinkedValueTransferPlan,
+    TypeIndex,
+};
+use skiff_runtime_linker::{DeploymentExecutionEntry, DeploymentExecutionImage};
 use skiff_runtime_model::{
     bytecode_execution_observation::{
         BytecodeExecutionObserver, RequestExecutionOwnerInventorySnapshot,
     },
+    error::RuntimeErrorPayload,
     request_heap::RequestHeapLimits,
     service_error::{ErrorCorrelation, RequestException},
     vm_heap::{VmContainerShape, VmHeap, VmHeapError, VmRecordField},
@@ -20,18 +26,24 @@ use skiff_runtime_model::{
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot},
 };
 use skiff_runtime_scheduler::{
-    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeScheduler,
-    BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts, PendingWakeQueue,
-    RequestExecutionContext, RequestResourceTermination, RootDisposition, RootEscrow,
-    RootEscrowBacking, SuspendedTrampoline, VmCompletionHandle, VmPendingRegistry, VmPendingWake,
+    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeHandoff,
+    BytecodeScheduler, BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts,
+    BytecodeStreamHandoff, CompletionHandle, PendingRegistry, PendingWake, PendingWakeQueue,
+    RequestByteStreamFailure, RequestExecutionContext, RequestResourceFinishReason,
+    RequestResourceHandle, RequestResourceTable, RequestResourceTermination, RootDisposition,
+    RootEscrow, RootEscrowBacking, SuspendedTrampoline,
 };
 use skiff_runtime_vm::{
-    AdapterInvocation, PendingOperation, ResumeOutcome, Vm, VmBudget, VmBudgetClosed,
-    VmBudgetTerminal, VmError, VmFiber, VmInternalTerminal, VmLimits, VmResult, VmResumeToken,
+    AdapterInvocation, ChildInvocation, PendingOperation, ResumeOutcome, Vm, VmBudget,
+    VmBudgetClosed, VmBudgetTerminal, VmError, VmFiber, VmInternalTerminal, VmLimits,
+    VmOwnedValues, VmResult, VmResumeToken,
 };
 
 use crate::{
-    bytecode_host_effects::{BytecodeHttpStreamRegistrar, SharedBytecodeHttpClientPort},
+    bytecode_host_effects::{
+        BytecodeHttpFailure, BytecodeHttpRequest, BytecodeHttpResponse,
+        BytecodeHttpStreamRegistrar, BytecodeHttpStreamResponse, SharedBytecodeHttpClientPort,
+    },
     execution_budget::{ExecutionWinner, RequestPendingSink},
     vm_heap::RequestVmHeap,
     BinaryHttpRequest, BoundaryResponse, ExecutionBudget, ExecutionControl, GatewayAdapterSource,
@@ -116,7 +128,10 @@ struct BytecodeStart {
     execution_control: crate::OwnedExecutionControl,
 }
 
-fn start_bytecode_request(input: BytecodeRequestExecutionInput) -> RequestResult<BytecodeStart> {
+fn start_bytecode_request(
+    input: BytecodeRequestExecutionInput,
+    resources: RequestResourceTable,
+) -> RequestResult<BytecodeStart> {
     let BytecodeRequestExecutionInput {
         target,
         request,
@@ -141,7 +156,10 @@ fn start_bytecode_request(input: BytecodeRequestExecutionInput) -> RequestResult
     let execution_control = execution_control.owned();
     let mut heap: Box<dyn VmHeap + Send> = match injected_heap {
         Some(heap) => heap,
-        None => Box::new(RequestVmHeap::new(handles.request_heap_limits)),
+        None => Box::new(RequestVmHeap::for_execution(
+            resources,
+            handles.request_heap_limits,
+        )),
     };
     let arguments = gateway_entry_arguments(&request, &target, &mut *heap)?;
     let mut fiber = Vm::start(target, arguments.into_boxed_slice(), vm_limits(), observer)
@@ -186,11 +204,9 @@ pub fn drive_runtime_bytecode_request(
 /// Async production driver for the Phase 4 pending lane.
 ///
 /// The controlled driver still owns park/publish/wake/claim/resume. This
-/// wrapper waits for the request's budget terminal or the pinned sleep
-/// duration, whichever is the single winner, instead of synchronously
-/// completing every parked effect. That keeps cancel/deadline/session-stop
-/// races observable while a successful sleep still resumes on its
-/// deterministic timer.
+/// wrapper waits only for the request's shared runnable queue. Each typed
+/// executor owns and settles its real future; the outer driver never guesses
+/// that an arbitrary `Parked` operation is a sleep or injects an empty result.
 pub async fn drive_runtime_bytecode_request_async(
     input: BytecodeRequestExecutionInput,
 ) -> DrivenBytecodeRequest {
@@ -199,37 +215,8 @@ pub async fn drive_runtime_bytecode_request_async(
         match drive {
             ControlledBytecodeDrive::Complete(driven) => return driven,
             ControlledBytecodeDrive::Parked(parked) => {
-                let sleep_millis = parked.sleep_millis();
-                let sleep = tokio::time::sleep(Duration::from_millis(sleep_millis));
-                tokio::pin!(sleep);
-                loop {
-                    let _ = parked
-                        .pending_completion()
-                        .runtime
-                        .budget
-                        .pending_terminal_winner();
-                    match parked.wake_receiver.try_recv() {
-                        Ok(()) => {
-                            drive = parked.resume_with_claimed_signal();
-                            break;
-                        }
-                        Err(mpsc::TryRecvError::Empty) => {}
-                        Err(mpsc::TryRecvError::Disconnected) => {
-                            drive = parked.terminal(BytecodeSchedulerError::Port(
-                                "pending wake queue disconnected before terminal".to_string(),
-                            ));
-                            break;
-                        }
-                    }
-                    tokio::select! {
-                        _ = &mut sleep => {
-                            parked.pending_completion().complete();
-                            drive = parked.resume();
-                            break;
-                        }
-                        _ = tokio::time::sleep(Duration::from_millis(1)) => {}
-                    }
-                }
+                parked.wait_for_pending_wake().await;
+                drive = parked.resume_with_claimed_signal();
             }
         }
     }
@@ -257,7 +244,7 @@ pub fn drive_runtime_bytecode_request_controlled(
     input: BytecodeRequestExecutionInput,
 ) -> ControlledBytecodeDrive {
     let context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
-    let start = match start_bytecode_request(input) {
+    let start = match start_bytecode_request(input, context.resource_table()) {
         Ok(start) => start,
         Err(error) => {
             return ControlledBytecodeDrive::Complete(DrivenBytecodeRequest {
@@ -274,16 +261,17 @@ pub fn drive_runtime_bytecode_request_controlled(
     };
 
     let (wake_queue, wake_receiver) = RequestPendingWakeQueue::new();
-    let stream_registrar = BytecodeHttpStreamRegistrar::new(context.resource_table());
+    let resources = context.resource_table();
+    let stream_registrar = BytecodeHttpStreamRegistrar::new(resources.clone());
     let runtime = Arc::new(RequestPendingRuntime {
-        registry: Arc::new(VmPendingRegistry::new(context.pending_registration())),
+        registry: Arc::new(RequestPendingRegistry::new(context.pending_registration())),
         wake_queue,
         budget: Arc::clone(&start.execution_budget),
+        resources,
         http_client: start.http_client.clone(),
         execution_control: start.execution_control.clone(),
         stream_registrar,
-        completion: Mutex::new(None),
-        sleep_millis: Mutex::new(None),
+        manual_sleep_completion: Mutex::new(None),
     });
     let mut context = context.with_ports(BytecodeSchedulerPorts {
         child_executor: Some(Arc::new(BytecodeHostExecutor {
@@ -324,9 +312,9 @@ pub fn drive_runtime_bytecode_request_controlled(
 /// terminal path can "restore" them back into a live owner. The escrow keeps
 /// them enumerable during a safepoint walk; the request heap releases their
 /// storage at boundary teardown.
-struct SleepArgumentRoots(Vec<ValueSlot>);
+struct HostEffectArgumentRoots(Vec<ValueSlot>);
 
-impl VmRootSource for SleepArgumentRoots {
+impl VmRootSource for HostEffectArgumentRoots {
     fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
         for root in &self.0 {
             visitor.visit_root(root)?;
@@ -335,7 +323,7 @@ impl VmRootSource for SleepArgumentRoots {
     }
 }
 
-impl RootEscrowBacking for SleepArgumentRoots {
+impl RootEscrowBacking for HostEffectArgumentRoots {
     fn root_count(&self) -> usize {
         self.0.len()
     }
@@ -345,13 +333,54 @@ impl RootEscrowBacking for SleepArgumentRoots {
     fn drop_roots(self: Box<Self>, _disposition: RootDisposition) {}
 }
 
+#[derive(Clone, Copy, Debug)]
+struct HttpResultLayout {
+    root: TypeIndex,
+    headers: TypeIndex,
+    header: TypeIndex,
+    header_name: TypeIndex,
+    header_value: TypeIndex,
+    body: TypeIndex,
+}
+
+enum RequestPendingOutcome {
+    Vm(ResumeOutcome),
+    HttpRequest {
+        layout: HttpResultLayout,
+        result: Result<BytecodeHttpResponse, BytecodeHttpFailure>,
+    },
+    HttpStream {
+        layout: HttpResultLayout,
+        result: Result<BytecodeHttpStreamResponse, BytecodeHttpFailure>,
+    },
+    StreamNext {
+        handle: RequestResourceHandle,
+        item_type: TypeIndex,
+        result: Result<Option<Vec<u8>>, RequestByteStreamFailure>,
+    },
+}
+
+impl VmRootSource for RequestPendingOutcome {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        match self {
+            Self::Vm(outcome) => outcome.visit_roots(visitor),
+            Self::HttpRequest { .. } | Self::HttpStream { .. } | Self::StreamNext { .. } => Ok(()),
+        }
+    }
+}
+
+type RequestPendingRegistry = PendingRegistry<VmResumeToken, VmSuspended, RequestPendingOutcome>;
+type RequestCompletionHandle = CompletionHandle<VmResumeToken, VmSuspended, RequestPendingOutcome>;
+type RequestPendingWake = PendingWake<VmResumeToken, VmSuspended, RequestPendingOutcome>;
+
 /// Runtime-neutral runnable queue for claimed pending wakes.
 ///
 /// Every wake stays root-enumerable while queued; `enqueue` also signals the
 /// single parked-request receiver so a resume can drain exactly one wake.
 struct RequestPendingWakeQueue {
-    wakes: Mutex<Vec<VmPendingWake<VmSuspended>>>,
+    wakes: Mutex<Vec<RequestPendingWake>>,
     signal: mpsc::Sender<()>,
+    async_signal: tokio::sync::Semaphore,
 }
 
 impl RequestPendingWakeQueue {
@@ -361,26 +390,44 @@ impl RequestPendingWakeQueue {
             Arc::new(Self {
                 wakes: Mutex::new(Vec::new()),
                 signal,
+                async_signal: tokio::sync::Semaphore::new(0),
             }),
             receiver,
         )
     }
 
-    fn pop(&self) -> Option<VmPendingWake<VmSuspended>> {
+    fn pop(&self) -> Option<RequestPendingWake> {
         self.wakes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .pop()
     }
+
+    async fn wait(&self) {
+        self.async_signal
+            .acquire()
+            .await
+            .expect("the request wake queue semaphore is never closed")
+            .forget();
+    }
+
+    fn consume_async_signal_if_present(&self) {
+        if let Ok(permit) = self.async_signal.try_acquire() {
+            permit.forget();
+        }
+    }
 }
 
-impl PendingWakeQueue<VmResumeToken, VmSuspended, ResumeOutcome> for RequestPendingWakeQueue {
-    fn enqueue(&self, wake: VmPendingWake<VmSuspended>) {
+impl PendingWakeQueue<VmResumeToken, VmSuspended, RequestPendingOutcome>
+    for RequestPendingWakeQueue
+{
+    fn enqueue(&self, wake: RequestPendingWake) {
         self.wakes
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(wake);
         let _ = self.signal.send(());
+        self.async_signal.add_permits(1);
     }
 }
 
@@ -401,40 +448,26 @@ impl VmRootSource for RequestPendingWakeQueue {
 /// Shared pending state of one request: the registry, the wake queue, the
 /// authoritative budget and the most recently parked completion cell.
 struct RequestPendingRuntime {
-    registry: Arc<VmPendingRegistry<VmSuspended>>,
+    registry: Arc<RequestPendingRegistry>,
     wake_queue: Arc<RequestPendingWakeQueue>,
     budget: Arc<ExecutionBudget>,
+    resources: RequestResourceTable,
     http_client: Option<SharedBytecodeHttpClientPort>,
     #[allow(dead_code)]
     execution_control: crate::OwnedExecutionControl,
     #[allow(dead_code)]
     stream_registrar: BytecodeHttpStreamRegistrar,
-    completion: Mutex<Option<VmCompletionHandle<VmSuspended>>>,
-    sleep_millis: Mutex<Option<u64>>,
+    /// Deterministic Phase 4 regression authority. Only typed Sleep may
+    /// install a handle here; HTTP and StreamNext are host-owned futures and
+    /// can never accept an injected empty result.
+    manual_sleep_completion: Mutex<Option<RequestCompletionHandle>>,
 }
 
 /// Converts the budget's single authoritative winner into the exact pending
 /// cell settlement. The cell arbiter drops every duplicate, so this path can
 /// never produce a second terminal.
-fn complete_cell_from_winner(
-    completion: &VmCompletionHandle<VmSuspended>,
-    winner: ExecutionWinner,
-) {
-    let outcome = ResumeOutcome::InternalTerminal(match winner {
-        ExecutionWinner::DeadlineExceeded => {
-            VmInternalTerminal::Budget(VmBudgetClosed::DeadlineExceeded)
-        }
-        ExecutionWinner::InstructionLimitExceeded => {
-            VmInternalTerminal::Budget(VmBudgetClosed::InstructionLimitExceeded)
-        }
-        ExecutionWinner::AccountingFailure => {
-            VmInternalTerminal::Budget(VmBudgetClosed::AccountingFailure)
-        }
-        ExecutionWinner::Cancelled
-        | ExecutionWinner::InternalStop
-        | ExecutionWinner::Succeeded
-        | ExecutionWinner::Failed => VmInternalTerminal::OwnerStopped,
-    });
+fn complete_cell_from_winner(completion: &RequestCompletionHandle, winner: ExecutionWinner) {
+    let outcome = RequestPendingOutcome::Vm(resume_outcome_from_winner(winner));
     match winner {
         ExecutionWinner::DeadlineExceeded => {
             let _ = completion.deadline(outcome);
@@ -448,8 +481,26 @@ fn complete_cell_from_winner(
     }
 }
 
+fn resume_outcome_from_winner(winner: ExecutionWinner) -> ResumeOutcome {
+    ResumeOutcome::InternalTerminal(match winner {
+        ExecutionWinner::DeadlineExceeded => {
+            VmInternalTerminal::Budget(VmBudgetClosed::DeadlineExceeded)
+        }
+        ExecutionWinner::InstructionLimitExceeded => {
+            VmInternalTerminal::Budget(VmBudgetClosed::InstructionLimitExceeded)
+        }
+        ExecutionWinner::AccountingFailure => {
+            VmInternalTerminal::Budget(VmBudgetClosed::AccountingFailure)
+        }
+        ExecutionWinner::Cancelled
+        | ExecutionWinner::InternalStop
+        | ExecutionWinner::Succeeded
+        | ExecutionWinner::Failed => VmInternalTerminal::OwnerStopped,
+    })
+}
+
 struct PendingCellSink {
-    completion: VmCompletionHandle<VmSuspended>,
+    completion: RequestCompletionHandle,
 }
 
 impl RequestPendingSink for PendingCellSink {
@@ -458,12 +509,140 @@ impl RequestPendingSink for PendingCellSink {
     }
 }
 
+#[derive(Debug)]
+struct FirstPollWake;
+
+impl Wake for FirstPollWake {
+    fn wake(self: Arc<Self>) {}
+}
+
+fn poll_future_once<F>(future: Pin<&mut F>) -> Poll<F::Output>
+where
+    F: Future + ?Sized,
+{
+    let waker = Waker::from(Arc::new(FirstPollWake));
+    let mut context = Context::from_waker(&waker);
+    future.poll(&mut context)
+}
+
 /// Exhaustive executor over the closed linked host-effect identity set.
-///
-/// The typed HTTP branches stay fail-closed until the following first-poll
-/// slice wires their owned futures into the shared pending registry.
 struct BytecodeHostExecutor {
     runtime: Arc<RequestPendingRuntime>,
+}
+
+impl BytecodeHostExecutor {
+    fn begin_pending<T, F, M>(
+        &self,
+        roots: Vec<ValueSlot>,
+        resume: VmResumeToken,
+        future: Pin<Box<F>>,
+        allow_manual_sleep_completion: bool,
+        map: M,
+    ) -> Result<PendingOperation, BytecodeSchedulerError>
+    where
+        T: Send + 'static,
+        F: Future<Output = T> + Send + 'static + ?Sized,
+        M: FnOnce(T) -> RequestPendingOutcome + Send + 'static,
+    {
+        let spawner = tokio::runtime::Handle::try_current().map_err(|_| {
+            BytecodeSchedulerError::Port(
+                "actual-Pending host effect requires the current request Tokio runtime".to_string(),
+            )
+        })?;
+        let escrow = RootEscrow::new(Box::new(HostEffectArgumentRoots(roots)));
+        let completion = self
+            .runtime
+            .registry
+            .begin(escrow)
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        let sink: Arc<dyn RequestPendingSink> = Arc::new(PendingCellSink {
+            completion: completion.clone(),
+        });
+        let winner = self.runtime.budget.register_pending_sink(sink);
+        *self
+            .runtime
+            .manual_sleep_completion
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            allow_manual_sleep_completion.then(|| completion.clone());
+        if let Some(winner) = winner {
+            complete_cell_from_winner(&completion, winner);
+            drop(future);
+        } else {
+            let budget = Arc::clone(&self.runtime.budget);
+            let execution_control = self.runtime.execution_control.clone();
+            let completion_for_task = completion.clone();
+            spawner.spawn(async move {
+                let cancellation = execution_control.cancellation_token();
+                let deadline = execution_control.deadline();
+                let deadline_wait = async move {
+                    match deadline {
+                        Some(deadline) => {
+                            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline))
+                                .await;
+                        }
+                        None => std::future::pending::<()>().await,
+                    }
+                };
+                tokio::pin!(deadline_wait);
+                let output = tokio::select! {
+                    output = future => Some(output),
+                    _ = cancellation.wait_cancelled() => {
+                        let _ = budget.request_cancel();
+                        None
+                    }
+                    _ = &mut deadline_wait => {
+                        let _ = budget.pending_terminal_winner();
+                        None
+                    }
+                };
+                let Some(output) = output else {
+                    return;
+                };
+                let outcome = map(output);
+                if request_pending_outcome_is_cancelled(&outcome) {
+                    let _ = budget.request_cancel();
+                    drop(outcome);
+                } else {
+                    if execution_control
+                        .cancelled()
+                        .load(std::sync::atomic::Ordering::Acquire)
+                    {
+                        let _ = budget.request_cancel();
+                    }
+                    if let Some(winner) = budget.pending_terminal_winner() {
+                        complete_cell_from_winner(&completion_for_task, winner);
+                        drop(outcome);
+                    } else {
+                        let _ = completion_for_task.complete(outcome);
+                    }
+                }
+            });
+        }
+        Ok(resume.into_pending(completion.ticket()))
+    }
+
+    fn ready_adapter(
+        resume: VmResumeToken,
+        outcome: ResumeOutcome,
+    ) -> BytecodeAdapterHandoff<VmFiber> {
+        BytecodeAdapterHandoff::Ready(BytecodeHandoff { resume, outcome })
+    }
+
+    fn ready_terminal(&self) -> Option<ResumeOutcome> {
+        if self
+            .runtime
+            .execution_control
+            .cancelled()
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            let _ = self.runtime.budget.request_cancel();
+        }
+        self.runtime
+            .budget
+            .pending_terminal_winner()
+            .map(resume_outcome_from_winner)
+    }
 }
 
 impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
@@ -479,76 +658,116 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
     fn execute_adapter(
         &self,
         invocation: AdapterInvocation,
-        _heap: &mut dyn VmHeap,
+        heap: &mut dyn VmHeap,
         _budget: &mut dyn VmBudget,
     ) -> Result<BytecodeAdapterHandoff<VmFiber>, BytecodeSchedulerError> {
         let adapter_index = invocation.adapter();
-        let image = invocation.resume().image();
-        let identity = image
-            .host_effect_target(adapter_index)
-            .ok_or_else(|| {
-                BytecodeSchedulerError::Port(
-                    "pending host effect adapter row is absent from the pinned image".to_string(),
-                )
-            })?
-            .executor_identity();
+        let image = Arc::clone(invocation.resume().image());
+        let target = image.host_effect_target(adapter_index).ok_or_else(|| {
+            BytecodeSchedulerError::Port(
+                "pending host effect adapter row is absent from the pinned image".to_string(),
+            )
+        })?;
+        let identity = target.executor_identity();
+        let signature = target.signature().clone();
+        let (_adapter, arguments, resume) = invocation.into_parts();
+        let roots = arguments.values().to_vec();
         match identity {
-            HostEffectExecutorIdentity::Sleep => {}
-            HostEffectExecutorIdentity::HttpClientRequest
-            | HostEffectExecutorIdentity::HttpClientStream => {
-                if self.runtime.http_client.is_none() {
-                    return Err(BytecodeSchedulerError::Port(
-                        "typed bytecode HTTP provider is unavailable".to_string(),
-                    ));
+            HostEffectExecutorIdentity::Sleep => {
+                validate_native_arity(&signature, 1, 0)?;
+                let argument = arguments.values().first().ok_or_else(|| {
+                    BytecodeSchedulerError::Port(
+                        "typed sleep invocation is missing its duration".to_string(),
+                    )
+                })?;
+                let millis = heap
+                    .representation_payload(argument)
+                    .and_then(|payload| {
+                        payload
+                            .as_integer()
+                            .ok_or(VmHeapError::InvalidValueMetadata)
+                    })
+                    .and_then(|millis| {
+                        u64::try_from(millis).map_err(|_| VmHeapError::InvalidValueMetadata)
+                    })
+                    .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+                tokio::runtime::Handle::try_current().map_err(|_| {
+                    BytecodeSchedulerError::Port(
+                        "typed sleep requires the current request Tokio runtime".to_string(),
+                    )
+                })?;
+                let mut future: Pin<Box<dyn Future<Output = ()> + Send>> = Box::pin(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(millis)).await;
+                });
+                match poll_future_once(future.as_mut()) {
+                    Poll::Ready(()) => Ok(Self::ready_adapter(
+                        resume,
+                        self.ready_terminal().unwrap_or(ResumeOutcome::Empty),
+                    )),
+                    Poll::Pending => self
+                        .begin_pending(roots, resume, future, true, |_| {
+                            RequestPendingOutcome::Vm(ResumeOutcome::Empty)
+                        })
+                        .map(BytecodeAdapterHandoff::Pending),
                 }
-                return Err(BytecodeSchedulerError::UnsupportedAdapter);
+            }
+            HostEffectExecutorIdentity::HttpClientRequest => {
+                let provider = self.runtime.http_client.clone().ok_or_else(|| {
+                    BytecodeSchedulerError::Port(
+                        "typed bytecode HTTP provider is unavailable".to_string(),
+                    )
+                })?;
+                let request = decode_http_request(&image, &signature, arguments.values(), heap)?;
+                let layout = http_result_layout(&image, &signature, false)?;
+                let mut future = provider.request(request, self.runtime.execution_control.clone());
+                match poll_future_once(future.as_mut()) {
+                    Poll::Ready(result) => {
+                        if matches!(&result, Err(BytecodeHttpFailure::Cancelled)) {
+                            let _ = self.runtime.budget.request_cancel();
+                        }
+                        let outcome = self.ready_terminal().unwrap_or_else(|| {
+                            materialize_http_request_outcome(&image, layout, result, heap)
+                        });
+                        Ok(Self::ready_adapter(resume, outcome))
+                    }
+                    Poll::Pending => self
+                        .begin_pending(roots, resume, future, false, move |result| {
+                            RequestPendingOutcome::HttpRequest { layout, result }
+                        })
+                        .map(BytecodeAdapterHandoff::Pending),
+                }
+            }
+            HostEffectExecutorIdentity::HttpClientStream => {
+                let provider = self.runtime.http_client.clone().ok_or_else(|| {
+                    BytecodeSchedulerError::Port(
+                        "typed bytecode HTTP provider is unavailable".to_string(),
+                    )
+                })?;
+                let request = decode_http_request(&image, &signature, arguments.values(), heap)?;
+                let layout = http_result_layout(&image, &signature, true)?;
+                let mut future = provider.stream(
+                    request,
+                    self.runtime.execution_control.clone(),
+                    self.runtime.stream_registrar.clone(),
+                );
+                match poll_future_once(future.as_mut()) {
+                    Poll::Ready(result) => {
+                        if matches!(&result, Err(BytecodeHttpFailure::Cancelled)) {
+                            let _ = self.runtime.budget.request_cancel();
+                        }
+                        let outcome = self.ready_terminal().unwrap_or_else(|| {
+                            materialize_http_stream_outcome(&image, layout, result, heap)
+                        });
+                        Ok(Self::ready_adapter(resume, outcome))
+                    }
+                    Poll::Pending => self
+                        .begin_pending(roots, resume, future, false, move |result| {
+                            RequestPendingOutcome::HttpStream { layout, result }
+                        })
+                        .map(BytecodeAdapterHandoff::Pending),
+                }
             }
         }
-        let (_adapter, arguments, resume) = invocation.into_parts();
-        let sleep_millis = arguments
-            .values()
-            .first()
-            .and_then(|value| {
-                if let Some(millis) = value.as_integer() {
-                    u64::try_from(millis).ok()
-                } else {
-                    let number = value.as_number()?;
-                    if !number.is_finite()
-                        || number < 0.0
-                        || number.fract() != 0.0
-                        || number > u64::MAX as f64
-                    {
-                        return None;
-                    }
-                    Some(number as u64)
-                }
-            })
-            .unwrap_or(0);
-        *self
-            .runtime
-            .sleep_millis
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sleep_millis);
-        let escrow = RootEscrow::new(Box::new(SleepArgumentRoots(arguments.values().to_vec())));
-        let completion = self
-            .runtime
-            .registry
-            .begin(escrow)
-            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
-        let sink: Arc<dyn RequestPendingSink> = Arc::new(PendingCellSink {
-            completion: completion.clone(),
-        });
-        if let Some(winner) = self.runtime.budget.register_pending_sink(sink) {
-            complete_cell_from_winner(&completion, winner);
-        }
-        *self
-            .runtime
-            .completion
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(completion.clone());
-        Ok(BytecodeAdapterHandoff::Pending(
-            resume.into_pending(completion.ticket()),
-        ))
     }
 
     fn park_adapter(
@@ -558,13 +777,661 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
         _heap: &mut dyn VmHeap,
         _budget: &mut dyn VmBudget,
     ) -> Result<(), BytecodeSchedulerError> {
-        let queue: Arc<dyn PendingWakeQueue<VmResumeToken, VmSuspended, ResumeOutcome>> =
+        let queue: Arc<dyn PendingWakeQueue<VmResumeToken, VmSuspended, RequestPendingOutcome>> =
             self.runtime.wake_queue.clone();
         self.runtime
             .registry
             .publish_operation(operation, suspended, queue)
             .map(|_| ())
             .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))
+    }
+
+    fn execute_stream_next(
+        &self,
+        invocation: ChildInvocation,
+        heap: &mut dyn VmHeap,
+        _budget: &mut dyn VmBudget,
+    ) -> Result<BytecodeStreamHandoff<VmFiber>, BytecodeSchedulerError> {
+        let (_target, arguments, endpoint, resume) = invocation.into_parts();
+        let endpoint = endpoint.ok_or_else(|| {
+            BytecodeSchedulerError::Port(
+                "StreamNext invocation is missing its exact endpoint route".to_string(),
+            )
+        })?;
+        let handle = self
+            .runtime
+            .resources
+            .validate_vm_route(endpoint.route())
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        let item_type = stream_next_item_type(&resume)?;
+        let mut future = self
+            .runtime
+            .resources
+            .start_byte_stream_pull(&handle)
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        match poll_future_once(future.as_mut()) {
+            Poll::Ready(result) => {
+                if matches!(&result, Err(RequestByteStreamFailure::Cancelled)) {
+                    let _ = self.runtime.budget.request_cancel();
+                }
+                let outcome = self.ready_terminal().unwrap_or_else(|| {
+                    materialize_stream_next_outcome(
+                        resume.image(),
+                        &self.runtime.resources,
+                        handle,
+                        item_type,
+                        result,
+                        heap,
+                    )
+                });
+                Ok(BytecodeStreamHandoff::Ready(BytecodeHandoff {
+                    outcome,
+                    resume,
+                }))
+            }
+            Poll::Pending => self
+                .begin_pending(
+                    arguments.values().to_vec(),
+                    resume,
+                    future,
+                    false,
+                    move |result| RequestPendingOutcome::StreamNext {
+                        handle,
+                        item_type,
+                        result,
+                    },
+                )
+                .map(BytecodeStreamHandoff::Pending),
+        }
+    }
+
+    fn park_stream_next(
+        &self,
+        operation: PendingOperation,
+        suspended: VmSuspended,
+        _heap: &mut dyn VmHeap,
+        _budget: &mut dyn VmBudget,
+    ) -> Result<(), BytecodeSchedulerError> {
+        let queue: Arc<dyn PendingWakeQueue<VmResumeToken, VmSuspended, RequestPendingOutcome>> =
+            self.runtime.wake_queue.clone();
+        self.runtime
+            .registry
+            .publish_operation(operation, suspended, queue)
+            .map(|_| ())
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))
+    }
+}
+
+fn request_pending_outcome_is_cancelled(outcome: &RequestPendingOutcome) -> bool {
+    matches!(
+        outcome,
+        RequestPendingOutcome::HttpRequest {
+            result: Err(BytecodeHttpFailure::Cancelled),
+            ..
+        } | RequestPendingOutcome::HttpStream {
+            result: Err(BytecodeHttpFailure::Cancelled),
+            ..
+        } | RequestPendingOutcome::StreamNext {
+            result: Err(RequestByteStreamFailure::Cancelled),
+            ..
+        }
+    )
+}
+
+fn validate_native_arity(
+    signature: &LinkedNativeCallableSignature,
+    parameters: usize,
+    results: usize,
+) -> Result<(), BytecodeSchedulerError> {
+    if signature.parameter_types().len() != parameters || signature.result_types().len() != results
+    {
+        return Err(BytecodeSchedulerError::Port(format!(
+            "typed host signature has {} parameters and {} results; expected {parameters} and {results}",
+            signature.parameter_types().len(),
+            signature.result_types().len(),
+        )));
+    }
+    Ok(())
+}
+
+fn exact_shape(
+    image: &DeploymentExecutionImage,
+    ty: TypeIndex,
+) -> Result<&LinkedShapeEntry, BytecodeSchedulerError> {
+    let mut matches = image
+        .shapes()
+        .iter()
+        .filter(|shape| shape.nominal_type() == ty);
+    let shape = matches.next().ok_or_else(|| {
+        BytecodeSchedulerError::Port(format!(
+            "typed host value type {} has no verified dense shape",
+            ty.get()
+        ))
+    })?;
+    if matches.next().is_some() {
+        return Err(BytecodeSchedulerError::Port(format!(
+            "typed host value type {} has more than one dense shape",
+            ty.get()
+        )));
+    }
+    Ok(shape)
+}
+
+fn validate_shape_fields(
+    shape: &LinkedShapeEntry,
+    expected: &[&str],
+) -> Result<(), BytecodeSchedulerError> {
+    if shape.fields().len() != expected.len()
+        || !shape
+            .fields()
+            .iter()
+            .zip(expected)
+            .all(|(field, expected)| field.name() == *expected)
+    {
+        return Err(BytecodeSchedulerError::Port(
+            "typed host value does not match its exact verified dense field layout".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn shape_field_type(
+    shape: &LinkedShapeEntry,
+    name: &str,
+) -> Result<TypeIndex, BytecodeSchedulerError> {
+    shape
+        .fields()
+        .iter()
+        .find(|field| field.name() == name)
+        .map(|field| field.ty())
+        .ok_or_else(|| {
+            BytecodeSchedulerError::Port(format!(
+                "typed host value is missing verified field {name:?}"
+            ))
+        })
+}
+
+fn array_element_type(
+    image: &DeploymentExecutionImage,
+    array_type: TypeIndex,
+) -> Result<TypeIndex, BytecodeSchedulerError> {
+    image
+        .types()
+        .get(array_type.get() as usize)
+        .filter(|entry| entry.index() == array_type)
+        .and_then(|entry| entry.container_layout())
+        .and_then(|layout| layout.element())
+        .map(|element| element.ty())
+        .ok_or_else(|| {
+            BytecodeSchedulerError::Port(format!(
+                "typed host array type {} has no verified element layout",
+                array_type.get()
+            ))
+        })
+}
+
+fn validate_builtin_type(
+    image: &DeploymentExecutionImage,
+    ty: TypeIndex,
+    expected: &str,
+) -> Result<(), BytecodeSchedulerError> {
+    let entry = image
+        .types()
+        .get(ty.get() as usize)
+        .filter(|entry| entry.index() == ty)
+        .ok_or_else(|| {
+            BytecodeSchedulerError::Port(format!(
+                "typed host value type {} is absent from the verified image",
+                ty.get()
+            ))
+        })?;
+    if !matches!(
+        entry.type_ref(),
+        TypeRefIr::Builtin { name, args } if name == expected && args.is_empty()
+    ) {
+        return Err(BytecodeSchedulerError::Port(format!(
+            "typed host value type {} is not exact builtin {expected:?}",
+            ty.get()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_byte_stream_type(
+    image: &DeploymentExecutionImage,
+    ty: TypeIndex,
+) -> Result<(), BytecodeSchedulerError> {
+    let entry = image
+        .types()
+        .get(ty.get() as usize)
+        .filter(|entry| entry.index() == ty)
+        .ok_or_else(|| {
+            BytecodeSchedulerError::Port(format!(
+                "typed host stream type {} is absent from the verified image",
+                ty.get()
+            ))
+        })?;
+    if !matches!(
+        entry.type_ref(),
+        TypeRefIr::Builtin { name, args }
+            if name == "Stream"
+                && matches!(
+                    args.as_slice(),
+                    [TypeRefIr::Builtin { name, args }]
+                        if name == "bytes" && args.is_empty()
+                )
+    ) {
+        return Err(BytecodeSchedulerError::Port(format!(
+            "typed host stream type {} is not exact Stream<bytes>",
+            ty.get()
+        )));
+    }
+    Ok(())
+}
+
+fn stream_next_item_type(resume: &VmResumeToken) -> Result<TypeIndex, BytecodeSchedulerError> {
+    let certificate = resume
+        .image()
+        .resume_sites()
+        .get(resume.resume_site())
+        .filter(|certificate| {
+            certificate.function() == resume.function()
+                && certificate.site() == resume.instruction()
+        })
+        .ok_or_else(|| {
+            BytecodeSchedulerError::Port(
+                "StreamNext resume token has no matching verified certificate".to_string(),
+            )
+        })?;
+    let [item_type] = certificate.result_types() else {
+        return Err(BytecodeSchedulerError::Port(
+            "StreamNext verified certificate does not carry exactly one item type".to_string(),
+        ));
+    };
+    validate_builtin_type(resume.image(), *item_type, "bytes")?;
+    Ok(*item_type)
+}
+
+fn decode_optional_http_body(
+    heap: &mut dyn VmHeap,
+    body: &ValueSlot,
+) -> Result<Option<Vec<u8>>, BytecodeSchedulerError> {
+    if body.is_null() {
+        Ok(None)
+    } else {
+        heap.bytes_value(body)
+            .map(Some)
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))
+    }
+}
+
+fn decode_http_request(
+    image: &DeploymentExecutionImage,
+    signature: &LinkedNativeCallableSignature,
+    arguments: &[ValueSlot],
+    heap: &mut dyn VmHeap,
+) -> Result<BytecodeHttpRequest, BytecodeSchedulerError> {
+    validate_native_arity(signature, 1, 1)?;
+    let request_type = signature.parameter_types()[0];
+    let shape = exact_shape(image, request_type)?;
+    validate_shape_fields(shape, &["body", "headers", "method", "timeoutMs", "url"])?;
+    let request = arguments.first().ok_or_else(|| {
+        BytecodeSchedulerError::Port("typed HTTP invocation is missing its request".to_string())
+    })?;
+    if request.compact_type_tag().get() != request_type.get() {
+        return Err(BytecodeSchedulerError::Port(
+            "typed HTTP request does not carry its verified concrete type".to_string(),
+        ));
+    }
+    let method = heap
+        .record_field(request, "method")
+        .and_then(|value| heap.string_value(&value))
+        .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+    let url = heap
+        .record_field(request, "url")
+        .and_then(|value| heap.string_value(&value))
+        .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+    let headers_value = heap
+        .record_field(request, "headers")
+        .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+    let headers_type = shape_field_type(shape, "headers")?;
+    let header_type = array_element_type(image, headers_type)?;
+    let header_shape = exact_shape(image, header_type)?;
+    validate_shape_fields(header_shape, &["name", "value"])?;
+    let header_count = heap
+        .array_len(&headers_value)
+        .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+    let mut headers = Vec::with_capacity(header_count);
+    for index in 0..header_count {
+        let header = heap
+            .array_get(&headers_value, index)
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        if header.compact_type_tag().get() != header_type.get() {
+            return Err(BytecodeSchedulerError::Port(
+                "typed HTTP header does not carry its verified concrete type".to_string(),
+            ));
+        }
+        let name = heap
+            .record_field(&header, "name")
+            .and_then(|value| heap.string_value(&value))
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        let value = heap
+            .record_field(&header, "value")
+            .and_then(|value| heap.string_value(&value))
+            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        headers.push(HttpNameValue { name, value });
+    }
+    let body_value = heap
+        .record_field(request, "body")
+        .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+    let body = decode_optional_http_body(heap, &body_value)?;
+    let timeout_value = heap
+        .record_field(request, "timeoutMs")
+        .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+    let timeout_ms = if timeout_value.is_null() {
+        None
+    } else {
+        Some(
+            timeout_value
+                .as_integer()
+                .and_then(|value| u64::try_from(value).ok())
+                .ok_or_else(|| {
+                    BytecodeSchedulerError::Port(
+                        "typed HTTP timeoutMs is not a non-negative integer".to_string(),
+                    )
+                })?,
+        )
+    };
+    Ok(BytecodeHttpRequest {
+        method,
+        url,
+        headers,
+        body,
+        timeout_ms,
+    })
+}
+
+fn http_result_layout(
+    image: &DeploymentExecutionImage,
+    signature: &LinkedNativeCallableSignature,
+    stream: bool,
+) -> Result<HttpResultLayout, BytecodeSchedulerError> {
+    validate_native_arity(signature, 1, 1)?;
+    let root = signature.result_types()[0];
+    let shape = exact_shape(image, root)?;
+    validate_shape_fields(shape, &["body", "headers", "status"])?;
+    let headers = shape_field_type(shape, "headers")?;
+    let header = array_element_type(image, headers)?;
+    let header_shape = exact_shape(image, header)?;
+    validate_shape_fields(header_shape, &["name", "value"])?;
+    let header_name = shape_field_type(header_shape, "name")?;
+    let header_value = shape_field_type(header_shape, "value")?;
+    validate_builtin_type(image, header_name, "string")?;
+    validate_builtin_type(image, header_value, "string")?;
+    let body = shape_field_type(shape, "body")?;
+    if stream {
+        validate_byte_stream_type(image, body)?;
+    } else {
+        validate_builtin_type(image, body, "bytes")?;
+    }
+    if stream && signature.result_plans().len() != 1 {
+        return Err(BytecodeSchedulerError::Port(
+            "typed HTTP stream has no exact result lifecycle plan".to_string(),
+        ));
+    }
+    Ok(HttpResultLayout {
+        root,
+        headers,
+        header,
+        header_name,
+        header_value,
+        body,
+    })
+}
+
+fn allocate_http_headers(
+    heap: &mut dyn VmHeap,
+    layout: HttpResultLayout,
+    headers: Vec<HttpNameValue>,
+) -> Result<ValueSlot, VmHeapError> {
+    let mut values = Vec::with_capacity(headers.len());
+    for header in headers {
+        let name = heap.alloc_typed_string(
+            header.name,
+            CompactTypeTag::new(layout.header_name.get()),
+            ValueFlags::new(0),
+        )?;
+        let value = heap.alloc_typed_string(
+            header.value,
+            CompactTypeTag::new(layout.header_value.get()),
+            ValueFlags::new(0),
+        )?;
+        values.push(heap.allocate_record(
+            &[
+                VmRecordField {
+                    name: "name".to_string(),
+                    value: name,
+                },
+                VmRecordField {
+                    name: "value".to_string(),
+                    value,
+                },
+            ],
+            CompactTypeTag::new(layout.header.get()),
+            ValueFlags::new(0),
+        )?);
+    }
+    heap.allocate_array(
+        &values,
+        CompactTypeTag::new(layout.headers.get()),
+        ValueFlags::new(0),
+    )
+}
+
+fn materialize_http_request_outcome(
+    image: &Arc<DeploymentExecutionImage>,
+    layout: HttpResultLayout,
+    result: Result<BytecodeHttpResponse, BytecodeHttpFailure>,
+    heap: &mut dyn VmHeap,
+) -> ResumeOutcome {
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => return http_failure_outcome(error),
+    };
+    let materialized = (|| {
+        let headers = allocate_http_headers(heap, layout, result.headers)?;
+        let body = heap.alloc_typed_bytes(
+            result.body,
+            CompactTypeTag::new(layout.body.get()),
+            ValueFlags::new(0),
+        )?;
+        heap.allocate_record(
+            &[
+                VmRecordField {
+                    name: "body".to_string(),
+                    value: body,
+                },
+                VmRecordField {
+                    name: "headers".to_string(),
+                    value: headers,
+                },
+                VmRecordField {
+                    name: "status".to_string(),
+                    value: ValueSlot::integer(i64::from(result.status)),
+                },
+            ],
+            CompactTypeTag::new(layout.root.get()),
+            ValueFlags::new(0),
+        )
+    })();
+    match materialized {
+        Ok(value) => ResumeOutcome::Values(VmOwnedValues::from_values(
+            Arc::clone(image),
+            vec![value].into_boxed_slice(),
+        )),
+        Err(error) => ResumeOutcome::Failure(VmError::Heap(error)),
+    }
+}
+
+fn materialize_http_stream_outcome(
+    image: &Arc<DeploymentExecutionImage>,
+    layout: HttpResultLayout,
+    result: Result<BytecodeHttpStreamResponse, BytecodeHttpFailure>,
+    heap: &mut dyn VmHeap,
+) -> ResumeOutcome {
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => return http_failure_outcome(error),
+    };
+    let materialized = (|| {
+        let headers = allocate_http_headers(heap, layout, result.headers)?;
+        let body = heap.admit_resource_ref(
+            result.body.vm_handle(),
+            CompactTypeTag::new(layout.body.get()),
+            ValueFlags::new(0),
+        )?;
+        heap.allocate_record(
+            &[
+                VmRecordField {
+                    name: "body".to_string(),
+                    value: body,
+                },
+                VmRecordField {
+                    name: "headers".to_string(),
+                    value: headers,
+                },
+                VmRecordField {
+                    name: "status".to_string(),
+                    value: ValueSlot::integer(i64::from(result.status)),
+                },
+            ],
+            CompactTypeTag::new(layout.root.get()),
+            ValueFlags::new(0),
+        )
+    })();
+    match materialized {
+        Ok(value) => ResumeOutcome::Values(VmOwnedValues::from_values(
+            Arc::clone(image),
+            vec![value].into_boxed_slice(),
+        )),
+        Err(error) => ResumeOutcome::Failure(VmError::Heap(error)),
+    }
+}
+
+fn http_failure_outcome(error: BytecodeHttpFailure) -> ResumeOutcome {
+    match error {
+        BytecodeHttpFailure::Cancelled => {
+            ResumeOutcome::InternalTerminal(VmInternalTerminal::OwnerStopped)
+        }
+        BytecodeHttpFailure::DeadlineExceeded => {
+            ResumeOutcome::Failure(VmError::HostEffectFailure(RuntimeErrorPayload {
+                code: "TimeoutError".to_string(),
+                message: "HTTP request deadline exceeded".to_string(),
+                status: None,
+                details: None,
+            }))
+        }
+        BytecodeHttpFailure::ResponseLimitExceeded {
+            limit_bytes,
+            received_bytes,
+        } => ResumeOutcome::Failure(VmError::HostEffectFailure(RuntimeErrorPayload {
+            code: "ResponseLimitExceeded".to_string(),
+            message: "HTTP response exceeded the request response limit".to_string(),
+            status: None,
+            details: Some(serde_json::json!({
+                "limitBytes": limit_bytes,
+                "receivedBytes": received_bytes,
+            })),
+        })),
+        BytecodeHttpFailure::Transport(error) | BytecodeHttpFailure::InvalidInput(error) => {
+            ResumeOutcome::Failure(VmError::HostEffectFailure(error.payload()))
+        }
+        BytecodeHttpFailure::InvalidProviderContract(message) => {
+            ResumeOutcome::Failure(VmError::HostEffectFailure(RuntimeErrorPayload {
+                code: "InternalError".to_string(),
+                message,
+                status: None,
+                details: None,
+            }))
+        }
+    }
+}
+
+fn materialize_stream_next_outcome(
+    image: &Arc<DeploymentExecutionImage>,
+    resources: &RequestResourceTable,
+    handle: RequestResourceHandle,
+    item_type: TypeIndex,
+    result: Result<Option<Vec<u8>>, RequestByteStreamFailure>,
+    heap: &mut dyn VmHeap,
+) -> ResumeOutcome {
+    match result {
+        Ok(Some(bytes)) => match heap.alloc_typed_bytes(
+            bytes,
+            CompactTypeTag::new(item_type.get()),
+            ValueFlags::new(0),
+        ) {
+            Ok(value) => ResumeOutcome::Values(VmOwnedValues::from_values(
+                Arc::clone(image),
+                vec![value].into_boxed_slice(),
+            )),
+            Err(error) => ResumeOutcome::Failure(VmError::Heap(error)),
+        },
+        Ok(None) => match resources.finish(&handle, RequestResourceFinishReason::Exhausted) {
+            Ok(_) => ResumeOutcome::StreamEnd,
+            Err(error) => resource_failure_outcome(error.to_string()),
+        },
+        Err(RequestByteStreamFailure::Cancelled) => {
+            match resources.terminate(&handle, RequestResourceTermination::Cancelled) {
+                Ok(_) => ResumeOutcome::InternalTerminal(VmInternalTerminal::OwnerStopped),
+                Err(error) => resource_failure_outcome(error.to_string()),
+            }
+        }
+        Err(RequestByteStreamFailure::Ordinary(error)) => {
+            let outcome = ResumeOutcome::Failure(VmError::HostEffectFailure(error.payload()));
+            match resources.finish(&handle, RequestResourceFinishReason::HostError) {
+                Ok(_) => outcome,
+                Err(error) => resource_failure_outcome(error.to_string()),
+            }
+        }
+        Err(RequestByteStreamFailure::InvalidProviderContract(message)) => {
+            let outcome = resource_failure_outcome(message);
+            match resources.finish(&handle, RequestResourceFinishReason::HostError) {
+                Ok(_) => outcome,
+                Err(error) => resource_failure_outcome(error.to_string()),
+            }
+        }
+    }
+}
+
+fn resource_failure_outcome(message: String) -> ResumeOutcome {
+    ResumeOutcome::Failure(VmError::HostEffectFailure(RuntimeErrorPayload {
+        code: "InternalError".to_string(),
+        message,
+        status: None,
+        details: None,
+    }))
+}
+
+fn materialize_request_pending_outcome(
+    image: &Arc<DeploymentExecutionImage>,
+    resources: &RequestResourceTable,
+    outcome: RequestPendingOutcome,
+    heap: &mut dyn VmHeap,
+) -> ResumeOutcome {
+    match outcome {
+        RequestPendingOutcome::Vm(outcome) => outcome,
+        RequestPendingOutcome::HttpRequest { layout, result } => {
+            materialize_http_request_outcome(image, layout, result, heap)
+        }
+        RequestPendingOutcome::HttpStream { layout, result } => {
+            materialize_http_stream_outcome(image, layout, result, heap)
+        }
+        RequestPendingOutcome::StreamNext {
+            handle,
+            item_type,
+            result,
+        } => materialize_stream_next_outcome(image, resources, handle, item_type, result, heap),
     }
 }
 
@@ -586,7 +1453,7 @@ impl RequestPendingCompletion {
     pub fn complete(&self) -> bool {
         let Some(completion) = self
             .runtime
-            .completion
+            .manual_sleep_completion
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
@@ -599,7 +1466,7 @@ impl RequestPendingCompletion {
         }
         match self.runtime.budget.pending_terminal_winner() {
             None => {
-                let _ = completion.complete(ResumeOutcome::Empty);
+                let _ = completion.complete(RequestPendingOutcome::Vm(ResumeOutcome::Empty));
             }
             Some(winner) => complete_cell_from_winner(&completion, winner),
         }
@@ -632,24 +1499,45 @@ impl ParkedBytecodeRequest {
         }
     }
 
-    /// Deterministic sleep duration for the currently parked effect.
-    fn sleep_millis(&self) -> u64 {
-        self.runtime
-            .sleep_millis
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .unwrap_or(0)
+    async fn wait_for_pending_wake(&self) {
+        let cancellation = self.runtime.execution_control.cancellation_token();
+        let deadline = self.runtime.execution_control.deadline();
+        let deadline_wait = async move {
+            match deadline {
+                Some(deadline) => {
+                    tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
+                }
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::pin!(deadline_wait);
+        tokio::select! {
+            _ = self.runtime.wake_queue.wait() => return,
+            _ = cancellation.wait_cancelled() => {
+                let _ = self.runtime.budget.request_cancel();
+            }
+            _ = &mut deadline_wait => {
+                let _ = self.runtime.budget.pending_terminal_winner();
+            }
+        }
+        self.runtime.wake_queue.wait().await;
     }
 
     /// Completes the parked effect deterministically and resumes the request.
     pub fn complete_and_resume(self) -> ControlledBytecodeDrive {
         let parked = self;
-        parked.pending_completion().complete();
+        if !parked.pending_completion().complete() {
+            // The synchronous legacy seam has no authority to fabricate an
+            // HTTP/stream value. Stop the shared terminal cell instead of
+            // injecting `Empty`; production uses the async queue driver.
+            let _ = parked.runtime.budget.request_internal_stop();
+        }
         parked.resume()
     }
 
     /// Resumes after the caller has already claimed the wake signal.
     fn resume_with_claimed_signal(self) -> ControlledBytecodeDrive {
+        let _ = self.wake_receiver.try_recv();
         let wake = self
             .runtime
             .wake_queue
@@ -666,6 +1554,7 @@ impl ParkedBytecodeRequest {
         self.wake_receiver
             .recv()
             .expect("a parked bytecode request must be completed before resume");
+        self.runtime.wake_queue.consume_async_signal_if_present();
         let wake = self
             .runtime
             .wake_queue
@@ -674,8 +1563,21 @@ impl ParkedBytecodeRequest {
         self.resume_wake(wake)
     }
 
-    fn resume_wake(mut self, wake: VmPendingWake<VmSuspended>) -> ControlledBytecodeDrive {
-        match BytecodeScheduler::<VmFiber>::resume_from_pending_wake(wake, self.context.ports()) {
+    fn resume_wake(mut self, wake: RequestPendingWake) -> ControlledBytecodeDrive {
+        let resources = self.runtime.resources.clone();
+        let resumed = BytecodeScheduler::<VmFiber>::resume_from_pending_wake_with(
+            wake,
+            self.context.ports(),
+            |resume, outcome| {
+                materialize_request_pending_outcome(
+                    resume.image(),
+                    &resources,
+                    outcome,
+                    &mut *self.heap,
+                )
+            },
+        );
+        match resumed {
             Ok(scheduler) => {
                 let outcome =
                     self.context
@@ -1222,6 +2124,12 @@ fn vm_error_to_request_error(execution_budget: &ExecutionBudget, error: VmError)
             vm_budget_closed_to_request_error(execution_budget, error)
         }
         VmError::InternalTerminal(VmInternalTerminal::OwnerStopped) => RequestError::Cancelled,
+        VmError::HostEffectFailure(payload) => RequestError::ExternalErrorPayload {
+            code: payload.code,
+            message: payload.message,
+            status: payload.status,
+            details: payload.details,
+        },
         // A root throw is intercepted by the scheduler outcome before this
         // projection; reaching here means the envelope cannot be materialized
         // on this lane, so the canonical user error is projected without a
@@ -1337,6 +2245,139 @@ mod tests {
         BinaryHttpRequest, BinaryHttpRequestMetadata, HttpAdapter, HttpAdapterCallable,
         HttpAdapterKind, RequestEnvelope, ResponseEnd, ResponseEvent,
     };
+
+    fn test_pending_runtime(
+        budget: Arc<ExecutionBudget>,
+        cancellation: CancellationToken,
+    ) -> (Arc<RequestPendingRuntime>, RequestExecutionContext<VmFiber>) {
+        let context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
+        let (wake_queue, _wake_receiver) = RequestPendingWakeQueue::new();
+        let resources = context.resource_table();
+        let runtime = Arc::new(RequestPendingRuntime {
+            registry: Arc::new(RequestPendingRegistry::new(context.pending_registration())),
+            wake_queue,
+            budget: Arc::clone(&budget),
+            resources: resources.clone(),
+            http_client: None,
+            execution_control: ExecutionControl::new(cancellation, &budget).owned(),
+            stream_registrar: BytecodeHttpStreamRegistrar::new(resources),
+            manual_sleep_completion: Mutex::new(None),
+        });
+        (runtime, context)
+    }
+
+    #[test]
+    fn phase_5_first_poll_ready_bypasses_pending_owner() {
+        let context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
+        let registry =
+            PendingRegistry::<u8, &'static str, &'static str>::new(context.pending_registration());
+        let mut future = Box::pin(std::future::ready("ready"));
+
+        assert_eq!(poll_future_once(future.as_mut()), Poll::Ready("ready"));
+        assert_eq!(registry.live_count(), 0);
+        drop(registry);
+        let snapshot = context.into_not_started();
+        assert_eq!(snapshot.pending.current, 0);
+        assert!(!snapshot.pending.ever_created);
+    }
+
+    #[test]
+    fn phase_5_first_poll_already_cancelled_ready_is_terminal_before_materialization() {
+        let budget = Arc::new(ExecutionBudget::for_runtime_request(None));
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let (runtime, context) = test_pending_runtime(Arc::clone(&budget), cancellation);
+        let executor = BytecodeHostExecutor {
+            runtime: Arc::clone(&runtime),
+        };
+
+        assert!(matches!(
+            executor.ready_terminal(),
+            Some(ResumeOutcome::InternalTerminal(
+                VmInternalTerminal::OwnerStopped
+            ))
+        ));
+        assert_eq!(
+            budget.settlement().unwrap().winner(),
+            ExecutionWinner::Cancelled
+        );
+        drop(executor);
+        drop(runtime);
+        assert_eq!(context.into_not_started().pending.current, 0);
+    }
+
+    #[test]
+    fn phase_5_first_poll_already_due_ready_uses_budget_terminal() {
+        let now = std::time::Instant::now();
+        let deadline = crate::execution_budget::AdmittedRequestDeadline::new(
+            now.checked_sub(std::time::Duration::from_millis(1))
+                .unwrap(),
+        );
+        let budget = Arc::new(ExecutionBudget::for_runtime_request(Some(deadline)));
+        let (runtime, context) =
+            test_pending_runtime(Arc::clone(&budget), CancellationToken::new());
+        let executor = BytecodeHostExecutor {
+            runtime: Arc::clone(&runtime),
+        };
+
+        assert!(matches!(
+            executor.ready_terminal(),
+            Some(ResumeOutcome::InternalTerminal(VmInternalTerminal::Budget(
+                VmBudgetClosed::DeadlineExceeded
+            )))
+        ));
+        assert_eq!(
+            budget.settlement().unwrap().winner(),
+            ExecutionWinner::DeadlineExceeded
+        );
+        drop(executor);
+        drop(runtime);
+        assert_eq!(context.into_not_started().pending.current, 0);
+    }
+
+    #[test]
+    fn phase_5_first_poll_non_sleep_manual_completion_cannot_inject_empty() {
+        let budget = Arc::new(ExecutionBudget::for_runtime_request(None));
+        let (runtime, _context) =
+            test_pending_runtime(Arc::clone(&budget), CancellationToken::new());
+        let completion = runtime
+            .registry
+            .begin(RootEscrow::new(Box::new(HostEffectArgumentRoots(
+                Vec::new(),
+            ))))
+            .unwrap();
+        let sink: Arc<dyn RequestPendingSink> = Arc::new(PendingCellSink {
+            completion: completion.clone(),
+        });
+        assert_eq!(budget.register_pending_sink(sink), None);
+        let authority = RequestPendingCompletion {
+            runtime: Arc::clone(&runtime),
+        };
+
+        assert!(!authority.complete());
+        assert_eq!(
+            completion.state(),
+            skiff_runtime_scheduler::PendingCellState::Open
+        );
+        let _ = budget.request_internal_stop();
+        assert_eq!(
+            completion.state(),
+            skiff_runtime_scheduler::PendingCellState::Settled
+        );
+        assert!(runtime.registry.abandon(completion.ticket()));
+    }
+
+    #[test]
+    fn phase_5_first_poll_http_body_preserves_null_and_present_empty() {
+        let mut heap = RequestVmHeap::new(RequestHeapLimits::default());
+        let null = decode_optional_http_body(&mut heap, &ValueSlot::null()).unwrap();
+        let empty_slot = heap.alloc_bytes(Vec::new()).unwrap();
+        let present_empty = decode_optional_http_body(&mut heap, &empty_slot).unwrap();
+
+        assert_eq!(null, None);
+        assert_eq!(present_empty, Some(Vec::new()));
+        assert_ne!(null, present_empty);
+    }
 
     #[test]
     fn user_throw_and_envelope_vm_failure_project_distinct_codes() {
@@ -1609,12 +2650,9 @@ mod tests {
         }
     }
 
-    fn pending_registry() -> (
-        VmPendingRegistry<VmSuspended>,
-        RequestExecutionContext<VmFiber>,
-    ) {
+    fn pending_registry() -> (RequestPendingRegistry, RequestExecutionContext<VmFiber>) {
         let context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
-        let registry = VmPendingRegistry::new(context.pending_registration());
+        let registry = RequestPendingRegistry::new(context.pending_registration());
         (registry, context)
     }
 
@@ -1623,7 +2661,9 @@ mod tests {
         let budget = Arc::new(ExecutionBudget::for_runtime_request(None));
         let (registry, _context) = pending_registry();
         let completion = registry
-            .begin(RootEscrow::new(Box::new(SleepArgumentRoots(Vec::new()))))
+            .begin(RootEscrow::new(Box::new(HostEffectArgumentRoots(
+                Vec::new(),
+            ))))
             .unwrap();
         let sink: Arc<dyn RequestPendingSink> = Arc::new(PendingCellSink {
             completion: completion.clone(),
@@ -1659,7 +2699,9 @@ mod tests {
         let budget = Arc::new(ExecutionBudget::for_runtime_request(Some(deadline)));
         let (registry, _context) = pending_registry();
         let completion = registry
-            .begin(RootEscrow::new(Box::new(SleepArgumentRoots(Vec::new()))))
+            .begin(RootEscrow::new(Box::new(HostEffectArgumentRoots(
+                Vec::new(),
+            ))))
             .unwrap();
         let sink: Arc<dyn RequestPendingSink> = Arc::new(PendingCellSink {
             completion: completion.clone(),
@@ -1684,15 +2726,20 @@ mod tests {
         let budget = Arc::new(ExecutionBudget::for_runtime_request(None));
         let (registry, _context) = pending_registry();
         let completion = registry
-            .begin(RootEscrow::new(Box::new(SleepArgumentRoots(Vec::new()))))
+            .begin(RootEscrow::new(Box::new(HostEffectArgumentRoots(
+                Vec::new(),
+            ))))
             .unwrap();
         let (wake_queue, _wake_receiver) = RequestPendingWakeQueue::new();
         let runtime = Arc::new(RequestPendingRuntime {
             registry: Arc::new(registry),
             wake_queue,
             budget: Arc::clone(&budget),
-            completion: Mutex::new(Some(completion.clone())),
-            sleep_millis: Mutex::new(None),
+            resources: _context.resource_table(),
+            http_client: None,
+            execution_control: ExecutionControl::new(CancellationToken::new(), &budget).owned(),
+            stream_registrar: BytecodeHttpStreamRegistrar::new(_context.resource_table()),
+            manual_sleep_completion: Mutex::new(Some(completion.clone())),
         });
         let authority = RequestPendingCompletion {
             runtime: Arc::clone(&runtime),

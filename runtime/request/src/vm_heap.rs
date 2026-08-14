@@ -203,13 +203,37 @@ impl RequestVmHeap {
     /// them as request-local carrier cells. This is also the representation
     /// payload path used by string representation map keys.
     pub fn alloc_string(&mut self, value: impl Into<String>) -> Result<ValueSlot, VmHeapError> {
+        self.alloc_string_with_metadata(value.into(), CompactTypeTag::new(0), ValueFlags::new(0))
+    }
+
+    fn alloc_string_with_metadata(
+        &mut self,
+        value: String,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
         let carrier = RuntimeValueCarrier::unidentified(RuntimeValue::String(value.into()));
         self.ensure_serial_available(VmHeapOperation::AllocateRepresentation)?;
         let handle = self
             .heap
             .alloc_local_carrier_cell(carrier)
             .map_err(|error| self.map_error(error, VmHeapOperation::AllocateRepresentation))?;
-        self.register_handle(handle, CompactTypeTag::new(0), ValueFlags::new(0))
+        self.register_handle(handle, compact_type_tag, flags)
+    }
+
+    fn alloc_bytes_with_metadata(
+        &mut self,
+        value: Vec<u8>,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        let operation = VmHeapOperation::AllocateArray;
+        self.ensure_serial_available(operation)?;
+        let handle = self
+            .heap
+            .alloc_bytes(value)
+            .map_err(|error| self.map_error(error, operation))?;
+        self.register_handle(handle, compact_type_tag, flags)
     }
 
     fn ensure_serial_available(&self, operation: VmHeapOperation) -> Result<(), VmHeapError> {
@@ -1257,24 +1281,29 @@ impl VmHeap for RequestVmHeap {
     }
 
     fn alloc_bytes(&mut self, value: Vec<u8>) -> Result<ValueSlot, VmHeapError> {
-        let operation = VmHeapOperation::AllocateArray;
-        self.ensure_serial_available(operation)?;
-        let handle = self
-            .heap
-            .alloc_bytes(value)
-            .map_err(|error| self.map_error(error, operation))?;
-        self.register_handle(handle, CompactTypeTag::new(0), ValueFlags::new(0))
+        self.alloc_bytes_with_metadata(value, CompactTypeTag::new(0), ValueFlags::new(0))
+    }
+
+    fn alloc_typed_bytes(
+        &mut self,
+        value: Vec<u8>,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        self.alloc_bytes_with_metadata(value, compact_type_tag, flags)
     }
 
     fn alloc_string(&mut self, value: String) -> Result<ValueSlot, VmHeapError> {
-        let carrier = RuntimeValueCarrier::unidentified(RuntimeValue::String(value));
-        let operation = VmHeapOperation::AllocateRepresentation;
-        self.ensure_serial_available(operation)?;
-        let heap_handle = self
-            .heap
-            .alloc_local_carrier_cell(carrier)
-            .map_err(|error| self.map_error(error, operation))?;
-        self.register_handle(heap_handle, CompactTypeTag::new(0), ValueFlags::new(0))
+        self.alloc_string_with_metadata(value, CompactTypeTag::new(0), ValueFlags::new(0))
+    }
+
+    fn alloc_typed_string(
+        &mut self,
+        value: String,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        self.alloc_string_with_metadata(value, compact_type_tag, flags)
     }
 
     fn string_value(&self, value: &ValueSlot) -> Result<String, VmHeapError> {

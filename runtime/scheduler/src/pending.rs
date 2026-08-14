@@ -89,7 +89,7 @@ impl<R, S> PendingOwner<R, S> {
         &self.roots
     }
 
-    pub fn into_parts(self) -> (R, S, RootEscrow, Option<PendingOwnerLease>) {
+    pub(crate) fn into_parts(self) -> (R, S, RootEscrow, Option<PendingOwnerLease>) {
         (self.resume, self.suspended, self.roots, self.owner_lease)
     }
 }
@@ -570,13 +570,13 @@ pub struct PendingRegistry<R, S, O> {
 }
 
 /// Pending registry specialized to the VM's non-forgeable resume envelope.
-pub type VmPendingRegistry<S> = PendingRegistry<VmResumeToken, S, ResumeOutcome>;
+pub type VmPendingRegistry<S, O = ResumeOutcome> = PendingRegistry<VmResumeToken, S, O>;
 
 /// Host completion authority paired with a [`VmPendingRegistry`].
-pub type VmCompletionHandle<S> = CompletionHandle<VmResumeToken, S, ResumeOutcome>;
+pub type VmCompletionHandle<S, O = ResumeOutcome> = CompletionHandle<VmResumeToken, S, O>;
 
 /// Claimed VM wake ready for a runtime-neutral runnable queue.
-pub type VmPendingWake<S> = PendingWake<VmResumeToken, S, ResumeOutcome>;
+pub type VmPendingWake<S, O = ResumeOutcome> = PendingWake<VmResumeToken, S, O>;
 
 /// The unique parked VM owner after a successful publication.
 pub type VmPendingOwner<S> = PendingOwner<VmResumeToken, S>;
@@ -716,9 +716,10 @@ where
     }
 }
 
-impl<S> PendingRegistry<VmResumeToken, S, ResumeOutcome>
+impl<S, O> PendingRegistry<VmResumeToken, S, O>
 where
     S: Send + 'static,
+    O: Send + 'static,
 {
     /// Publishes the VM's actual-`Pending` envelope without exposing a seam
     /// that can exchange its ticket and unique resume token independently.
@@ -751,7 +752,7 @@ where
         &self,
         operation: PendingOperation,
         suspended: S,
-        queue: Arc<dyn PendingWakeQueue<VmResumeToken, S, ResumeOutcome>>,
+        queue: Arc<dyn PendingWakeQueue<VmResumeToken, S, O>>,
     ) -> Result<PendingPublication, PendingPublicationError<VmResumeToken, S>> {
         let (ticket, resume) = operation.into_parts();
         self.publish(ticket, PendingOwnerDraft::new(resume, suspended), queue)
@@ -1088,7 +1089,7 @@ mod tests {
     }
 
     #[test]
-    fn completion_before_publication_claims_and_enqueues_once() {
+    fn phase_5_first_poll_wake_before_publication_claims_and_enqueues_once() {
         let registry = Registry::new(pending_registration());
         let queue = Arc::new(RecordingQueue::default());
         let (completion, roots) = begin(&registry);

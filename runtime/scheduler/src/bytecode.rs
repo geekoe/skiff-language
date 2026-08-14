@@ -484,15 +484,25 @@ where
         wake: PendingWake<U::ResumeToken, SuspendedTrampoline<U, U::ResumeToken>, U::ResumeOutcome>,
         ports: BytecodeSchedulerPorts<U>,
     ) -> Result<Self, BytecodeSchedulerError> {
+        Self::resume_from_pending_wake_with(wake, ports, |_, outcome| outcome)
+    }
+
+    /// Restores a scheduler from a claimed wake whose heap-free settlement
+    /// must first be materialized on the request resume thread.
+    ///
+    /// The pending owner lease stays inside scheduler authority until after
+    /// the mapped outcome has restored the original VM site. The mapper may
+    /// inspect the non-forgeable resume token but cannot access or duplicate
+    /// the private inventory lease.
+    pub fn resume_from_pending_wake_with<O>(
+        wake: PendingWake<U::ResumeToken, SuspendedTrampoline<U, U::ResumeToken>, O>,
+        ports: BytecodeSchedulerPorts<U>,
+        map: impl FnOnce(&U::ResumeToken, O) -> U::ResumeOutcome,
+    ) -> Result<Self, BytecodeSchedulerError> {
         let (owner, settlement) = wake.into_parts();
         let (resume, suspended, escrow, pending_owner) = owner.into_parts();
-        let resumed = Self::resume_from_suspended(
-            suspended,
-            resume,
-            settlement.into_outcome(),
-            escrow,
-            ports,
-        );
+        let outcome = map(&resume, settlement.into_outcome());
+        let resumed = Self::resume_from_suspended(suspended, resume, outcome, escrow, ports);
         drop(pending_owner);
         resumed
     }
