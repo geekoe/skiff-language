@@ -221,6 +221,25 @@ impl VmHeap for RecordingVmHeap {
             .allocate_representation(payload, identity, compact_type_tag, flags)
     }
 
+    fn alloc_typed_bytes(
+        &mut self,
+        value: Vec<u8>,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        self.inner.alloc_typed_bytes(value, compact_type_tag, flags)
+    }
+
+    fn alloc_typed_string(
+        &mut self,
+        value: String,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        self.inner
+            .alloc_typed_string(value, compact_type_tag, flags)
+    }
+
     fn string_value(&self, value: &ValueSlot) -> Result<String, VmHeapError> {
         self.inner.string_value(value)
     }
@@ -320,6 +339,54 @@ impl VmHeap for RecordingVmHeap {
         container: &ValueSlot,
     ) -> Result<VmContainerElements, VmHeapError> {
         self.inner.container_elements(container)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typed_string_and_bytes_forward_through_the_trait_object_with_exact_metadata() {
+        let trace = HeapSpyTrace::default();
+        let mut recording = RecordingVmHeap::new(RequestHeapLimits::default(), trace.clone());
+        let string_tag =
+            CompactTypeTag::try_from_type_index(37).expect("string type index fits compact tag");
+        let bytes_tag =
+            CompactTypeTag::try_from_type_index(41).expect("bytes type index fits compact tag");
+        let string_flags = ValueFlags::new(3);
+        let bytes_flags = ValueFlags::new(5);
+
+        let heap: &mut dyn VmHeap = &mut recording;
+        let string = heap
+            .alloc_typed_string("err".to_string(), string_tag, string_flags)
+            .expect("recording heap forwards typed string allocation");
+        let bytes = heap
+            .alloc_typed_bytes(vec![1, 2, 3], bytes_tag, bytes_flags)
+            .expect("recording heap forwards typed bytes allocation");
+
+        assert_eq!(string.compact_type_tag(), Some(string_tag));
+        assert_eq!(string.flags(), string_flags);
+        assert_eq!(heap.string_value(&string).unwrap(), "err");
+        assert_eq!(bytes.compact_type_tag(), Some(bytes_tag));
+        assert_eq!(bytes.flags(), bytes_flags);
+        assert_eq!(heap.bytes_value(&bytes).unwrap(), vec![1, 2, 3]);
+
+        heap.release_snapshot(&string).unwrap();
+        heap.release_snapshot(&bytes).unwrap();
+        let live_inventory = [string, bytes]
+            .iter()
+            .filter(|value| heap.validate_live(value).is_ok())
+            .count();
+        assert_eq!(live_inventory, 0, "released typed owners remain live");
+        assert_eq!(
+            trace
+                .events()
+                .iter()
+                .filter(|event| matches!(event, HeapSpyEvent::ReleaseSnapshot { .. }))
+                .count(),
+            2
+        );
     }
 }
 
