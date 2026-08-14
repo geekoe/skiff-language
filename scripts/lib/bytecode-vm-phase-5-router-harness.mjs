@@ -69,6 +69,7 @@ async function main() {
   const [httpPort, runtimePort, relayPort] = lease.ports;
   const upstream = await createGatedUpstream();
   const disconnectUpstream = await createGatedUpstream();
+  const timeoutUpstream = await createGatedUpstream();
   const mongo = await MongodLiveHarness.create({ repoRoot: repository });
   let router;
   let runtime;
@@ -87,7 +88,7 @@ async function main() {
       httpPort,
       runtimePort,
       mongoUrl: mongo.mongoUrl,
-      requestTimeoutMs: 15_000,
+      requestTimeoutMs: 4_000,
       httpMaxRequestBytes: 65_536,
       httpMaxResponseBytes: 65_536,
       runtimeMaxConcurrency: 1,
@@ -117,6 +118,11 @@ async function main() {
     });
     await waitForHandshakeAfter(relay, 0);
 
+    const timeout = await exerciseRequestTimeout({
+      relay,
+      httpPort,
+      upstream: timeoutUpstream,
+    });
     const disconnect = await exerciseClientDisconnect({
       relay,
       httpPort,
@@ -186,6 +192,8 @@ async function main() {
       (counters) => exactObject(counters, ZERO_COUNTERS),
       'zero RuntimeHost inventory after the external response terminal',
     );
+    assertCancelledRequestStayedTerminal(relay.records, timeout);
+    assertCancelledRequestStayedTerminal(relay.records, disconnect);
 
     process.stdout.write(`${JSON.stringify({
       schemaVersion: 'skiff-bytecode-vm-phase-5-router-proof-r1',
@@ -205,6 +213,7 @@ async function main() {
         pending: nonzeroHealth.counters,
         terminal: zeroHealth.counters,
       },
+      timeout,
       disconnect,
     })}\n`);
   } catch (error) {
@@ -213,12 +222,14 @@ async function main() {
   } finally {
     upstream.releaseBodies();
     disconnectUpstream.releaseBodies();
+    timeoutUpstream.releaseBodies();
     const cleanupErrors = [];
     await cleanupProcess(router, 'Phase 5 Router', 'SIGTERM', cleanupErrors);
     await cleanupProcess(runtime, 'Phase 5 Runtime', 'SIGINT', cleanupErrors);
     if (relay !== undefined) await relay.close().catch((error) => cleanupErrors.push(error));
     await upstream.close().catch((error) => cleanupErrors.push(error));
     await disconnectUpstream.close().catch((error) => cleanupErrors.push(error));
+    await timeoutUpstream.close().catch((error) => cleanupErrors.push(error));
     await mongo.cleanup().catch((error) => cleanupErrors.push(error));
     await lease.release().catch((error) => cleanupErrors.push(error));
     await rm(tempRoot, { recursive: true, force: true }).catch((error) => cleanupErrors.push(error));
@@ -226,6 +237,80 @@ async function main() {
       throw new AggregateError(cleanupErrors, 'Phase 5 Router proof cleanup failed');
     }
   }
+}
+
+async function exerciseRequestTimeout({ relay, httpPort, upstream }) {
+  const fromIndex = relay.records.length;
+  const external = requestFull({
+    port: httpPort,
+    method: 'POST',
+    path: '/phase-5/vcp',
+    headers: selectorHeaders({ service: SERVICE_ID, version: VERSION }),
+    body: Buffer.from(upstream.baseUrl, 'utf8'),
+    timeoutMs: 10_000,
+  }).then(
+    (value) => ({ value }),
+    (error) => ({ error }),
+  );
+  try {
+    await upstream.waitForTwoOpenStreams();
+  } catch (error) {
+    const early = await Promise.race([
+      external,
+      delay(100).then(() => ({ pending: true })),
+    ]);
+    const frames = relay.records.slice(fromIndex).map((record) => ({
+      direction: record.direction,
+      type: record.type,
+      requestId: record.header?.requestId,
+    }));
+    throw new Error(
+      `${error.message}; external=${JSON.stringify(summarizeOutcome(early))}; relay=${JSON.stringify(frames)}`,
+    );
+  }
+  const activeHealth = await waitForHealth(relay, fromIndex, (counters) => (
+    counters?.outboundStreamLeasesActive === 2
+    && counters?.streamRuntimeStreamsActive === 0
+  ), 'two table-backed streams before the Router request timeout');
+  const starts = relay.records.slice(fromIndex).filter(({ type }) => type === 'request.start');
+  assert.equal(starts.length, 1, 'timeout case must dispatch exactly one production request');
+  const requestId = assertExactRequestStart(starts[0]);
+
+  const outcome = await external;
+  if (outcome.error !== undefined) throw outcome.error;
+  const response = outcome.value;
+  assert.equal(response.aborted, false, 'Router timeout must have one clean external terminal');
+  assert.equal(response.status, 504);
+  const body = JSON.parse(response.body.toString('utf8'));
+  assert.equal(body?.error?.code, 'TimeoutError');
+
+  const cancel = await waitForRecord(relay, activeHealth.index + 1, (record) => (
+    record.type === 'request.cancel'
+    && record.header?.requestId === requestId
+  ), 'Router timeout request.cancel');
+  assert.equal(cancel.record.direction, 'ToRuntime');
+  const evidence = { requestId, cancelReason: 'timeout' };
+  assertCancelledRequestStayedTerminal(relay.records, evidence);
+  await upstream.waitForTwoClosedStreams('Router timeout');
+  const terminalHealth = await waitForHealth(
+    relay,
+    cancel.index + 1,
+    (counters) => exactObject(counters, ZERO_COUNTERS),
+    'zero RuntimeHost inventory after Router request timeout',
+  );
+  assert.deepEqual(upstream.routes, [
+    { method: 'GET', path: '/request' },
+    { method: 'GET', path: '/stream/left' },
+    { method: 'GET', path: '/stream/right' },
+  ]);
+  upstream.releaseBodies();
+  return {
+    ...evidence,
+    status: response.status,
+    errorCode: body.error.code,
+    providerStreamsClosed: true,
+    terminalHealth: terminalHealth.counters,
+  };
 }
 
 async function exerciseClientDisconnect({ relay, httpPort, upstream }) {
@@ -259,20 +344,14 @@ async function exerciseClientDisconnect({ relay, httpPort, upstream }) {
   ), 'two table-backed streams before external client disconnect');
   const starts = relay.records.slice(fromIndex).filter(({ type }) => type === 'request.start');
   assert.equal(starts.length, 1, 'disconnect case must dispatch exactly one production request');
-  const start = starts[0];
-  assert.equal(start.direction, 'ToRuntime');
-  assert.equal(start.header?.mode, 'serverStream');
-  assert.equal(start.header?.routing?.deployment?.serviceId, SERVICE_ID);
-  assert.equal(start.header?.routing?.deployment?.contractVersion, VERSION);
-  assert.equal(start.header?.routing?.ingress?.path, '/phase-5/vcp');
-  const requestId = start.header?.requestId;
-  assert.equal(typeof requestId, 'string');
+  const requestId = assertExactRequestStart(starts[0]);
 
   external.destroy();
   const cancel = await waitForRecord(relay, activeHealth.index + 1, (record) => (
     record.type === 'request.cancel'
     && record.header?.requestId === requestId
   ), 'Router client_disconnect request.cancel');
+  assert.equal(cancel.record.direction, 'ToRuntime');
   const cancels = relay.records.slice(fromIndex).filter((record) => (
     record.type === 'request.cancel' && record.header?.requestId === requestId
   ));
@@ -281,7 +360,7 @@ async function exerciseClientDisconnect({ relay, httpPort, upstream }) {
     ['client_disconnect'],
     'the real external disconnect must have one exact Router terminal',
   );
-  await upstream.waitForTwoClosedStreams();
+  await upstream.waitForTwoClosedStreams('client disconnect');
   const terminalHealth = await waitForHealth(
     relay,
     cancel.index + 1,
@@ -299,6 +378,46 @@ async function exerciseClientDisconnect({ relay, httpPort, upstream }) {
     cancelReason: cancels[0].header.reason,
     providerStreamsClosed: true,
     terminalHealth: terminalHealth.counters,
+  };
+}
+
+function assertExactRequestStart(start) {
+  assert.equal(start.direction, 'ToRuntime');
+  assert.equal(start.header?.mode, 'serverStream');
+  assert.equal(start.header?.routing?.deployment?.serviceId, SERVICE_ID);
+  assert.equal(start.header?.routing?.deployment?.contractVersion, VERSION);
+  assert.equal(start.header?.routing?.ingress?.path, '/phase-5/vcp');
+  const requestId = start.header?.requestId;
+  assert.equal(typeof requestId, 'string');
+  return requestId;
+}
+
+function assertCancelledRequestStayedTerminal(records, { requestId, cancelReason }) {
+  const cancels = records.filter((record) => (
+    record.type === 'request.cancel' && record.header?.requestId === requestId
+  ));
+  assert.deepEqual(
+    cancels.map(({ direction, header }) => ({ direction, reason: header?.reason })),
+    [{ direction: 'ToRuntime', reason: cancelReason }],
+    `cancelled request ${requestId} must retain exactly one ${cancelReason} winner`,
+  );
+  assert.deepEqual(
+    records.filter((record) => (
+      record.header?.requestId === requestId
+      && ['response.start', 'response.chunk', 'response.end', 'response.error'].includes(record.type)
+    )),
+    [],
+    `late completion must not revive cancelled request ${requestId}`,
+  );
+}
+
+function summarizeOutcome(outcome) {
+  if (outcome.pending === true) return outcome;
+  if (outcome.error !== undefined) return { error: outcome.error?.message ?? String(outcome.error) };
+  return {
+    status: outcome.value.status,
+    aborted: outcome.value.aborted,
+    body: outcome.value.body.toString('utf8'),
   };
 }
 
@@ -481,14 +600,14 @@ async function createGatedUpstream() {
       }
       throw new Error(`two outbound stream heads did not coexist; routes=${JSON.stringify(routes)}`);
     },
-    async waitForTwoClosedStreams() {
+    async waitForTwoClosedStreams(terminal) {
       const deadline = Date.now() + 7_000;
       while (Date.now() < deadline) {
         if (closedStreams.has('/stream/left') && closedStreams.has('/stream/right')) return;
         await delay(10);
       }
       throw new Error(
-        `client disconnect did not close both provider streams; closed=${JSON.stringify([...closedStreams])}`,
+        `${terminal} did not close both provider streams; closed=${JSON.stringify([...closedStreams])}`,
       );
     },
     releaseBodies() {
