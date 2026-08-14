@@ -9,7 +9,7 @@
    atomic-link→image、image→scheduler、scheduler→request→response 每个阶段边界各挂一个独立 test case；
    atomic-link input与image是同一constructor的输入/完成态sentinel，不是两个production API；哨兵输入必须是上一阶段
    真实生产边界的产出，不能 hand-build；首日全部 expected-red（真实断言，非 skip），一次 `--no-fail-fast`
-   并行暴露所有已到达层的红。
+   并行暴露所有已到达层的红。closure-only 且没有 production producer 的 Phase 按第 5 步的受控红例外执行。
 2. **执行地图**：`tasks/phase-N-execution-map.md` 一张表：lane / worktree / 写集 / join 顺序 / Gate 矩阵。
    这是写集的唯一权威，任何其它载体不重复文件清单。
 3. **派发**：把本 Phase 写面拆成互不重叠的 lane，能拆几个就并行几个，**不设固定数量和固定角色模板**
@@ -26,6 +26,11 @@
    新矩阵**（本 Phase 场景 + 上一 Phase 的 Gate 作为回归子集）写完后、producer 未 join 时先完整跑一遍，
    留 expected-red baseline（非 zero/skip/ignore），证明矩阵可执行且覆盖契约全部 required scenario；这不是
    重跑上一 Phase 的 Gate，后续用它区分新旧红。
+   唯一例外是 Phase Contract 明确声明 **closure-only 且没有 production producer join**：不得为了满足流程故意
+   破坏 production 制造红；Proof Line 必须用受控 command failure、missing receipt 或 tamper self-test 证明 Gate
+   nonzero FAIL、证据检查 fail closed，且早期红不截断所有后续可达命令。真实 whole-system baseline 可以直接 green；
+   一旦新增 production observability 或 enforcement producer，与该 producer关联的真实场景仍必须在 join 前留下
+   nonzero/non-skip expected-red。
 6. **Gate**：merged preflight 全绿 → freeze（exact commit/tree）→ 新建 detached acceptance worktree。
 7. **Frozen candidate semantic review**（全新只读 agent）：只判实际代码/测试——核心契约落实、已接受 Phase
    不变式、假绿/第二权威/fallback、fail-closed。不审查 architecture 文档完备性，不因外围文档措辞漂移 FAIL；
