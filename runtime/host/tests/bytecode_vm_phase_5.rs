@@ -1,5 +1,7 @@
 #[path = "bytecode_vm_phase_5/fixture.rs"]
 mod fixture;
+#[path = "bytecode_vm_phase_5/host_chain.rs"]
+mod host_chain;
 #[path = "bytecode_vm_phase_5/runtime.rs"]
 mod runtime;
 #[path = "bytecode_vm_phase_5/stages.rs"]
@@ -53,6 +55,16 @@ fn phase_5_stage_sentinel_source_to_admission() {
 #[tokio::test(flavor = "current_thread")]
 async fn phase_5_stage_sentinel_verify_to_scheduler() {
     runtime::verify_to_scheduler().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn phase_5_stage_sentinel_scheduler_to_request_response() {
+    host_chain::scheduler_to_request_response().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn phase_5_vcp_production_composition() {
+    host_chain::vcp_production_composition().await;
 }
 
 fn assert_exact_rejection(
