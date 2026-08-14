@@ -44,6 +44,7 @@ static NEXT_RUNTIME_HOME: AtomicU64 = AtomicU64::new(0);
 /// transport encoders over the production WebSocket session.
 pub(super) struct RuntimeHostHarness {
     fixture: PublishedFixture,
+    listener: TcpListener,
     websocket: WebSocketStream<TcpStream>,
     _host_task: AbortOnDrop,
     _runtime_home: RuntimeHome,
@@ -80,66 +81,11 @@ impl RuntimeHostHarness {
                 .expect("production RuntimeHost run loop")
         })));
 
-        let (socket, _) = tokio::time::timeout(IO_TIMEOUT, listener.accept())
-            .await
-            .expect("RuntimeHost did not connect to its Router peer")
-            .expect("accept RuntimeHost TCP connection");
-        let mut websocket = accept_async(socket)
-            .await
-            .expect("accept RuntimeHost WebSocket");
-        websocket
-            .send(Message::Binary(
-                encode_router_bootstrap_frame(&RouterBootstrapFrameHeader {
-                    schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-                    envelope_type: "router.bootstrap".to_string(),
-                    artifacts_path: fixture.artifact_root.display().to_string(),
-                    service_db: RouterBootstrapServiceDbFrameHeader {
-                        mongo_url: "mongodb://127.0.0.1:1/phase5-proof".to_string(),
-                    },
-                    http: RouterBootstrapHttpFrameHeader {
-                        max_response_bytes: 64 * 1024,
-                    },
-                    activation: RouterBootstrapActivationFrameHeader {
-                        profile: "skiff-test".to_string(),
-                    },
-                })
-                .expect("encode production router.bootstrap")
-                .into(),
-            ))
-            .await
-            .expect("send router.bootstrap");
-
-        let deadline = Instant::now() + IO_TIMEOUT;
-        let capabilities_bytes =
-            next_binary_of_type(&mut websocket, "runtime.capabilities", deadline).await;
-        let capabilities = decode_runtime_capabilities_frame(&capabilities_bytes)
-            .expect("decode production runtime.capabilities");
-        let canonical_artifact_root = fs::canonicalize(&fixture.artifact_root)
-            .expect("canonicalize published Phase 5 artifact root");
-        assert_eq!(
-            capabilities.capabilities.artifact_root.as_deref(),
-            Some(canonical_artifact_root.to_string_lossy().as_ref())
-        );
-        assert!(capabilities.capabilities.lazy_load);
-        assert!(capabilities
-            .capabilities
-            .dispatch_modes
-            .contains(&RuntimeDispatchModeCapability::ServerStream));
-        websocket
-            .send(Message::Binary(
-                encode_runtime_registered_frame(&RuntimeRegisteredFrameHeader {
-                    schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-                    envelope_type: "runtime.registered".to_string(),
-                    runtime_id: capabilities.runtime_id,
-                })
-                .expect("encode production runtime.registered")
-                .into(),
-            ))
-            .await
-            .expect("send runtime.registered");
+        let websocket = accept_registered_session(&listener, &fixture).await;
 
         let mut harness = Self {
             fixture,
+            listener,
             websocket,
             _host_task: host_task,
             _runtime_home: runtime_home,
@@ -152,6 +98,18 @@ impl RuntimeHostHarness {
             "RuntimeHost registration began with residual authority: {initial:?}"
         );
         harness
+    }
+
+    /// Drops the current Router session, accepts the RuntimeHost reconnect,
+    /// and completes the canonical bootstrap again. This keeps the same Host
+    /// process and request supervisor, so the new session can prove that the
+    /// disconnected request's owner inventory returned to zero.
+    pub async fn disconnect_and_reconnect(&mut self) {
+        self.websocket
+            .close(None)
+            .await
+            .expect("close Phase 5 Router peer session");
+        self.websocket = accept_registered_session(&self.listener, &self.fixture).await;
     }
 
     pub async fn send_http_request(
@@ -278,6 +236,19 @@ impl RuntimeHostHarness {
     }
 
     pub async fn response(&mut self, request_id: &str) -> HostResponse {
+        self.response_with_chunk_requirement(request_id, true).await
+    }
+
+    pub async fn response_allowing_empty(&mut self, request_id: &str) -> HostResponse {
+        self.response_with_chunk_requirement(request_id, false)
+            .await
+    }
+
+    async fn response_with_chunk_requirement(
+        &mut self,
+        request_id: &str,
+        require_chunk: bool,
+    ) -> HostResponse {
         let deadline = Instant::now() + IO_TIMEOUT;
         let start_bytes =
             next_binary_of_type(&mut self.websocket, "response.start", deadline).await;
@@ -312,7 +283,9 @@ impl RuntimeHostHarness {
                 other => panic!("unexpected RuntimeHost response frame {other}"),
             }
         }
-        assert!(expected_seq > 0, "serverStream emitted no chunks");
+        if require_chunk {
+            assert!(expected_seq > 0, "serverStream emitted no chunks");
+        }
         HostResponse {
             status: start.http_response.status,
             headers: start
@@ -346,6 +319,70 @@ impl RuntimeHostHarness {
             .expect("close RuntimeHost peer");
         self._host_task.stop().await;
     }
+}
+
+async fn accept_registered_session(
+    listener: &TcpListener,
+    fixture: &PublishedFixture,
+) -> WebSocketStream<TcpStream> {
+    let (socket, _) = tokio::time::timeout(IO_TIMEOUT, listener.accept())
+        .await
+        .expect("RuntimeHost did not connect to its Router peer")
+        .expect("accept RuntimeHost TCP connection");
+    let mut websocket = accept_async(socket)
+        .await
+        .expect("accept RuntimeHost WebSocket");
+    websocket
+        .send(Message::Binary(
+            encode_router_bootstrap_frame(&RouterBootstrapFrameHeader {
+                schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+                envelope_type: "router.bootstrap".to_string(),
+                artifacts_path: fixture.artifact_root.display().to_string(),
+                service_db: RouterBootstrapServiceDbFrameHeader {
+                    mongo_url: "mongodb://127.0.0.1:1/phase5-proof".to_string(),
+                },
+                http: RouterBootstrapHttpFrameHeader {
+                    max_response_bytes: 64 * 1024,
+                },
+                activation: RouterBootstrapActivationFrameHeader {
+                    profile: "skiff-test".to_string(),
+                },
+            })
+            .expect("encode production router.bootstrap")
+            .into(),
+        ))
+        .await
+        .expect("send router.bootstrap");
+
+    let deadline = Instant::now() + IO_TIMEOUT;
+    let capabilities_bytes =
+        next_binary_of_type(&mut websocket, "runtime.capabilities", deadline).await;
+    let capabilities = decode_runtime_capabilities_frame(&capabilities_bytes)
+        .expect("decode production runtime.capabilities");
+    let canonical_artifact_root = fs::canonicalize(&fixture.artifact_root)
+        .expect("canonicalize published Phase 5 artifact root");
+    assert_eq!(
+        capabilities.capabilities.artifact_root.as_deref(),
+        Some(canonical_artifact_root.to_string_lossy().as_ref())
+    );
+    assert!(capabilities.capabilities.lazy_load);
+    assert!(capabilities
+        .capabilities
+        .dispatch_modes
+        .contains(&RuntimeDispatchModeCapability::ServerStream));
+    websocket
+        .send(Message::Binary(
+            encode_runtime_registered_frame(&RuntimeRegisteredFrameHeader {
+                schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+                envelope_type: "runtime.registered".to_string(),
+                runtime_id: capabilities.runtime_id,
+            })
+            .expect("encode production runtime.registered")
+            .into(),
+        ))
+        .await
+        .expect("send runtime.registered");
+    websocket
 }
 
 pub(super) fn health_counters_all_zero(counters: &RuntimeHealthCountersFrameHeader) -> bool {

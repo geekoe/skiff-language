@@ -14,3 +14,35 @@ drop-left:
   adapterArgs:
     - param: request
       source: { kind: http.request }
+end-then-emit:
+  method: POST
+  path: /phase-5/end-then-emit
+  kind: rawHttp
+  handler: main.endThenEmit
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+end-then-throw:
+  method: POST
+  path: /phase-5/end-then-throw
+  kind: rawHttp
+  handler: main.endThenThrow
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+end-then-wait:
+  method: POST
+  path: /phase-5/end-then-wait
+  kind: rawHttp
+  handler: main.endThenWait
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }
+pre-end-wait:
+  method: POST
+  path: /phase-5/pre-end-wait
+  kind: rawHttp
+  handler: main.preEndWait
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }

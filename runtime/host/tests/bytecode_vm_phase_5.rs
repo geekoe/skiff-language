@@ -10,6 +10,8 @@ mod runtime;
 mod stages;
 #[path = "bytecode_vm_phase_5/tcp_server.rs"]
 mod tcp_server;
+#[path = "bytecode_vm_phase_5/terminal.rs"]
+mod terminal;
 
 use skiff_compiler::Phase1UnsupportedCapability;
 
@@ -70,6 +72,11 @@ async fn phase_5_stage_sentinel_scheduler_to_request_response() {
 #[tokio::test(flavor = "current_thread")]
 async fn phase_5_vcp_production_composition() {
     host_chain::vcp_production_composition().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn phase_5_terminal_arbiter_production_matrix() {
+    terminal::production_terminal_arbiter_matrix().await;
 }
 
 #[tokio::test(flavor = "current_thread")]

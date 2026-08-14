@@ -39,7 +39,11 @@ fn writer() -> (
 ) {
     let (sender, receiver) = mpsc::unbounded_channel();
     (
-        ProductionBytecodeServerStreamWriter::new("request-stream-42".to_string(), sender),
+        ProductionBytecodeServerStreamWriter::new(
+            "request-stream-42".to_string(),
+            sender,
+            Arc::new(HttpGatewayTerminalArbiter::new()),
+        ),
         receiver,
     )
 }
@@ -114,6 +118,15 @@ async fn phase_5_bytecode_http_server_stream_maps_start_chunk_end_in_order() {
             .await
             .expect("writer task joins")
             .expect("flush succeeds");
+        assert_eq!(
+            writer.terminal.state(),
+            if ordinal == 2 {
+                HttpGatewayTerminalState::EndCommitted
+            } else {
+                HttpGatewayTerminalState::Available
+            },
+            "Start/Chunk must not claim the terminal; an acknowledged End must commit it"
+        );
     }
 }
 
@@ -133,6 +146,10 @@ async fn phase_5_bytecode_http_server_stream_backpressures_until_flush_ack() {
     })
     .await;
     let (_, flush_ack) = next_stream_frame(&mut receiver).await;
+    assert_eq!(
+        writer.terminal.state(),
+        HttpGatewayTerminalState::EndAcceptedOrInFlight
+    );
     poll_fn(|context| {
         assert!(flush.as_mut().poll(context).is_pending());
         Poll::Ready(())
@@ -161,6 +178,22 @@ async fn phase_5_bytecode_http_server_stream_maps_websocket_flush_failure() {
             "injected WebSocket failure".to_string()
         ))
     );
+    assert_eq!(
+        writer.terminal.state(),
+        HttpGatewayTerminalState::EndAcceptedOrInFlight,
+        "an accepted End cannot surrender terminal ownership after ACK failure"
+    );
+    assert!(
+        !writer.terminal.enqueue_ordinary_terminal(
+            &writer.sender,
+            RouterWriterMessage::Binary(vec![0xde, 0xad]),
+        ),
+        "ACK failure must not permit a second ordinary terminal"
+    );
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
 }
 
 #[tokio::test]
@@ -175,6 +208,11 @@ async fn phase_5_bytecode_http_server_stream_completes_when_session_drops_frame(
         flush.await.expect("writer task joins"),
         Err(BytecodeServerStreamWriteFailure::RouterDisconnected)
     );
+    assert_eq!(
+        writer.terminal.state(),
+        HttpGatewayTerminalState::EndAcceptedOrInFlight,
+        "dropping an accepted End retains its irreversible terminal claim"
+    );
 }
 
 #[tokio::test]
@@ -188,6 +226,11 @@ async fn phase_5_bytecode_http_server_stream_completes_when_router_sender_is_clo
             .flush(BytecodeServerStreamFrame::End, execution)
             .await,
         Err(BytecodeServerStreamWriteFailure::RouterDisconnected)
+    );
+    assert_eq!(
+        writer.terminal.state(),
+        HttpGatewayTerminalState::Available,
+        "pre-enqueue failure must leave ordinary terminal authority available"
     );
 }
 
@@ -209,6 +252,10 @@ async fn phase_5_bytecode_http_server_stream_awaits_late_ack_after_cancellation(
         .await
         .expect("writer task joins")
         .expect("late ack wins");
+    assert_eq!(
+        writer.terminal.state(),
+        HttpGatewayTerminalState::EndCommitted
+    );
 }
 
 #[tokio::test]
@@ -227,6 +274,7 @@ async fn phase_5_bytecode_http_server_stream_cancel_fails_before_enqueue() {
         receiver.try_recv(),
         Err(mpsc::error::TryRecvError::Empty)
     ));
+    assert_eq!(writer.terminal.state(), HttpGatewayTerminalState::Available);
 }
 
 #[tokio::test]
@@ -239,6 +287,28 @@ async fn phase_5_bytecode_http_server_stream_deadline_fails_before_enqueue() {
             .await,
         Err(BytecodeServerStreamWriteFailure::DeadlineExceeded)
     );
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+    assert_eq!(writer.terminal.state(), HttpGatewayTerminalState::Available);
+}
+
+#[test]
+fn phase_5_pre_enqueue_failure_allows_one_ordinary_terminal() {
+    let terminal = HttpGatewayTerminalArbiter::new();
+    let (sender, mut receiver) = mpsc::unbounded_channel();
+
+    assert!(
+        terminal.enqueue_ordinary_terminal(&sender, RouterWriterMessage::Binary(vec![0xca, 0xfe]),)
+    );
+    assert_eq!(terminal.state(), HttpGatewayTerminalState::OrdinaryTerminal);
+    assert!(matches!(
+        receiver.try_recv(),
+        Ok(RouterWriterMessage::Binary(bytes)) if bytes == vec![0xca, 0xfe]
+    ));
+    assert!(!terminal
+        .enqueue_ordinary_terminal(&sender, RouterWriterMessage::Binary(vec![0xba, 0xbe]),));
     assert!(matches!(
         receiver.try_recv(),
         Err(mpsc::error::TryRecvError::Empty)
@@ -259,6 +329,7 @@ fn phase_5_bytecode_http_writer_is_injected_only_for_exact_raw_http_server_strea
             mode,
             adapter_kind,
             sender,
+            Arc::new(HttpGatewayTerminalArbiter::new()),
         );
         assert_eq!(
             writer.is_some(),

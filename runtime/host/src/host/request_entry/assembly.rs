@@ -1,7 +1,4 @@
-use std::{
-    num::NonZeroUsize,
-    sync::{Arc, Mutex},
-};
+use std::{num::NonZeroUsize, sync::Arc};
 
 use skiff_artifact_model::{IngressProtocol, IngressSelector};
 use skiff_runtime_request::{
@@ -31,7 +28,9 @@ use super::{
 use crate::{
     error::RuntimeError,
     host::{
-        bytecode_server_stream_writer::production_bytecode_server_stream_writer_for_entry,
+        bytecode_server_stream_writer::{
+            production_bytecode_server_stream_writer_for_entry, HttpGatewayTerminalArbiter,
+        },
         request_supervisor::{
             ActivationOutcome, CleanupPermit, CompletionTrace, RequestReservation,
             SupervisedRequest,
@@ -92,6 +91,7 @@ impl RuntimeHost {
             Some(self.bytecode_http_client_port(cancellation.clone(), http_response_max_bytes));
         let execution_budget = supervised_request.execution_budget();
         let handles = bytecode_request_execution_handles(self, http_response_max_bytes);
+        let response_terminal = Arc::new(HttpGatewayTerminalArbiter::new());
         let server_stream_writer = production_bytecode_server_stream_writer_for_entry(
             request_envelope.request_id.clone(),
             &request_envelope.mode,
@@ -100,8 +100,12 @@ impl RuntimeHost {
                 .as_ref()
                 .map(|adapter| adapter.kind),
             sender.clone(),
+            Arc::clone(&response_terminal),
         );
-        let response_sink = Arc::new(HostHttpGatewayResponseSink::new(sender.clone()));
+        let response_sink = Arc::new(HostHttpGatewayResponseSink::new(
+            sender.clone(),
+            response_terminal,
+        ));
         let request_id = header.request_id.clone();
         let host = self.clone();
         tokio::spawn(async move {
@@ -132,7 +136,6 @@ impl RuntimeHost {
                     owner_inventory,
                     http_response_max_bytes,
                     &response_sink,
-                    &sender,
                 )
                 .await;
             drop(retention);
@@ -423,7 +426,6 @@ impl RuntimeHost {
         owner_inventory: RequestExecutionOwnerInventorySnapshot,
         http_response_max_bytes: usize,
         response_sink: &HostHttpGatewayResponseSink,
-        sender: &mpsc::UnboundedSender<RouterWriterMessage>,
     ) -> Option<CleanupPermit> {
         match result {
             Ok(response) => {
@@ -467,7 +469,7 @@ impl RuntimeHost {
                 }
                 match response_into_transport_message(request_id.to_string(), response) {
                     Ok(Some(message)) => {
-                        let _ = sender.send(message);
+                        response_sink.send_encoded_terminal(message);
                     }
                     Ok(None) => {}
                     Err(error) => {
@@ -1002,33 +1004,30 @@ fn bytecode_deadline_extra(
 
 struct HostHttpGatewayResponseSink {
     sender: mpsc::UnboundedSender<RouterWriterMessage>,
-    terminal_settled: Mutex<bool>,
+    terminal: Arc<HttpGatewayTerminalArbiter>,
 }
 
 impl HostHttpGatewayResponseSink {
-    fn new(sender: mpsc::UnboundedSender<RouterWriterMessage>) -> Self {
-        Self {
-            sender,
-            terminal_settled: Mutex::new(false),
-        }
+    fn new(
+        sender: mpsc::UnboundedSender<RouterWriterMessage>,
+        terminal: Arc<HttpGatewayTerminalArbiter>,
+    ) -> Self {
+        Self { sender, terminal }
     }
 
     fn send_terminal_response(&self, request_id: &str, event: OrdinaryResponseEvent) {
-        let Ok(mut terminal_settled) = self.terminal_settled.lock() else {
-            return;
-        };
-        if *terminal_settled {
-            return;
-        }
-        *terminal_settled = true;
         if let Ok(message) = response_event_into_transport_message(request_id.to_string(), event) {
-            let _ = self.sender.send(message);
+            self.send_encoded_terminal(message);
         }
     }
 
+    fn send_encoded_terminal(&self, message: RouterWriterMessage) {
+        let _ = self
+            .terminal
+            .enqueue_ordinary_terminal(&self.sender, message);
+    }
+
     fn cancel_without_response(&self) {
-        if let Ok(mut terminal_settled) = self.terminal_settled.lock() {
-            *terminal_settled = true;
-        }
+        self.terminal.settle_without_response();
     }
 }

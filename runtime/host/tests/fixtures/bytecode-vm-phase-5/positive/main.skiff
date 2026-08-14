@@ -1,5 +1,9 @@
 import std
 
+type TerminalFailure {
+  marker: number,
+}
+
 function headers() -> Array<std.http.HttpHeader> {
   return []
 }
@@ -56,6 +60,33 @@ function dropLeft(request: std.http.HttpRequest) -> Stream<std.http.HttpResponse
   emit({ tag: "start", status: 208, headers: [] })
   emit({ tag: "chunk", value: bytes.fromUtf8("A=".concat(firstLeft)) })
   emit({ tag: "chunk", value: bytes.fromUtf8("|B=".concat(rightBody)) })
+  emit({ tag: "end" })
+  return null
+}
+
+function endThenEmit(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  emit({ tag: "start", status: 209, headers: [] })
+  emit({ tag: "end" })
+  emit({ tag: "end" })
+  return null
+}
+
+function endThenThrow(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  emit({ tag: "start", status: 210, headers: [] })
+  emit({ tag: "end" })
+  throw TerminalFailure { marker: 7 }
+}
+
+function endThenWait(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  emit({ tag: "start", status: 211, headers: [] })
+  emit({ tag: "end" })
+  std.time.sleep(Duration.milliseconds(10000))
+  return null
+}
+
+function preEndWait(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  std.time.sleep(Duration.milliseconds(10000))
+  emit({ tag: "start", status: 212, headers: [] })
   emit({ tag: "end" })
   return null
 }
