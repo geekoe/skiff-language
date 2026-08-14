@@ -31,6 +31,7 @@ fn stream_producer_artifact() -> BytecodeArtifact {
             expected_stack_height_before_result: 0,
             result_type_refs: Vec::new(),
             result_plans: Vec::new(),
+            result_materializations: Vec::new(),
             error_mode: ResumeErrorMode::RaiseAtSite,
         }));
 
@@ -85,6 +86,7 @@ fn stream_consumer_artifact() -> BytecodeArtifact {
             expected_stack_height_before_result: 0,
             result_type_refs: vec![0],
             result_plans: vec![snapshot_share()],
+            result_materializations: vec![None],
             error_mode: ResumeErrorMode::RaiseAtSite,
         }));
 

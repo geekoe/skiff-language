@@ -38,11 +38,11 @@ use super::fixtures::{
 };
 
 #[test]
-fn package_provenance_retains_v9_header_identity_and_five_authority_pins() {
+fn package_provenance_retains_v10_header_identity_and_five_authority_pins() {
     let package = package(0, build_id());
 
     assert_eq!(package.package_build_id(), &build_id());
-    assert_eq!(package.schema_version(), "skiff-bytecode-v9");
+    assert_eq!(package.schema_version(), "skiff-bytecode-v10");
     assert_eq!(package.isa_version(), "skiff-bytecode-isa-v5");
     assert_eq!(
         package.opcode_table_fingerprint(),
@@ -122,7 +122,7 @@ fn package_provenance_rejects_header_reference_identity_mismatch() {
         BytecodeArtifactRef::new("bytecode:referenced"),
         "bytecode:declared",
         "skiff-bytecode",
-        "skiff-bytecode-v9",
+        "skiff-bytecode-v10",
         "skiff-bytecode-isa-v5",
         "opcode-table-fingerprint:fixture",
         authority_pins(),
@@ -153,7 +153,7 @@ fn package_provenance_rejects_artifact_locator_paths() {
         artifact_ref,
         "bytecode:fixture",
         "skiff-bytecode",
-        "skiff-bytecode-v9",
+        "skiff-bytecode-v10",
         "skiff-bytecode-isa-v5",
         "opcode-table-fingerprint:fixture",
         authority_pins(),
@@ -945,6 +945,7 @@ fn candidate_with_nominal_data_resume_and_root_facts() -> LinkedBytecodeCandidat
             0,
             Box::new([TypeIndex::new(0)]),
             Box::new([snapshot_plan()]),
+            Box::new([None]),
             ResumeErrorMode::RaiseAtSite,
         )
         .expect("fixture resume result types and plans align"),
@@ -978,7 +979,7 @@ fn candidate_getters_retain_nominal_data_resume_and_root_facts() {
 
     assert_eq!(
         candidate.packages()[0].schema_version(),
-        "skiff-bytecode-v9"
+        "skiff-bytecode-v10"
     );
     assert_eq!(candidate.functions().len(), 1);
     assert_eq!(candidate.operation_entries().len(), 1);
@@ -1280,6 +1281,7 @@ fn parts_with_stream_next_resume(
             0,
             Box::new([TypeIndex::new(0)]),
             Box::new([snapshot_plan()]),
+            Box::new([None]),
             ResumeErrorMode::RaiseAtSite,
         )
         .expect("fixture resume result types and plans align"),
@@ -1424,6 +1426,7 @@ fn candidate_rejects_end_resume_on_non_stream_resume_site() {
             InstructionIndex::new(0),
             Some(InstructionIndex::new(0)),
             0,
+            Box::new([]),
             Box::new([]),
             Box::new([]),
             ResumeErrorMode::RaiseAtSite,

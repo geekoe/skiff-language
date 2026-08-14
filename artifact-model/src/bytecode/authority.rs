@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::TypeRefIr;
 
-use super::dto::{BytecodeIntrinsicRef, ResumeErrorMode, ValueTransferPlan};
+use super::dto::{
+    BytecodeIntrinsicRef, ResumeErrorMode, ResumeResultMaterialization, ValueTransferPlan,
+};
 
 /// Exact authority for a function that produces `Stream<T>`.
 ///
@@ -97,6 +99,7 @@ pub struct ValidatedResumeResultAuthority {
     pub expected_stack_height_before_result: u32,
     pub result_type_refs: Vec<u32>,
     pub result_plans: Vec<ValueTransferPlan>,
+    pub result_materializations: Vec<Option<ResumeResultMaterialization>>,
     pub error_mode: ResumeErrorMode,
     pub stream_item: Option<FunctionStreamItemAuthority>,
 }

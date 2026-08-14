@@ -9,9 +9,9 @@ use skiff_artifact_model::{
     IntrinsicReference, LiteralIr, LocalInterfaceMethod, LocalInterfaceRef, NativeTarget, Opcode,
     ParamModeIr, ParameterSlotDecl, PatternIr, PrivilegedAffineFieldAccess,
     RelocatableBytecodeFunction, RemoteInterfaceMethod, RemoteInterfaceRef, ResumeDescriptor,
-    ResumeErrorMode, SourceMapEntry, StatementAttributionId, StatementEntry,
-    SyntheticInstructionSiteReason, TrapFailureKind, TypeRefIr, ValueDropPlan, ValueTransferPlan,
-    WritablePathSegment,
+    ResumeErrorMode, ResumeResultMaterialization, SourceMapEntry, StatementAttributionId,
+    StatementEntry, SyntheticInstructionSiteReason, TrapFailureKind, TypeRefIr, ValueDropPlan,
+    ValueTransferPlan, WritablePathSegment,
 };
 use skiff_compiler_lowering::mir::{
     MirCallArgument, MirDirectCallFacts, MirEmissionAnchor, MirExpression, MirForInItemKind,
@@ -116,6 +116,7 @@ struct PendingResume {
     operand: usize,
     expected_stack_height_before_result: u32,
     result_ty: Option<TypeRefIr>,
+    result_materialization: Option<ResumeResultMaterialization>,
     end_block: Option<u32>,
 }
 
@@ -517,6 +518,7 @@ impl<'a> FunctionEmitter<'a> {
             expected_stack_height_before_result: u32::try_from(expected_stack_height_before_result)
                 .map_err(|_| arithmetic(&self.key, "DbOperation resume stack height conversion"))?,
             result_ty: Some(expression.ty.clone()),
+            result_materialization: None,
             end_block: None,
         });
         Ok(())
@@ -1282,6 +1284,7 @@ impl<'a> FunctionEmitter<'a> {
                 "expression is not a call",
             ));
         };
+        let result_materialization = self.host_result_materialization(expression, &relocation)?;
         let relocation_index = u32::try_from(self.relocations.len())
             .map_err(|_| arithmetic(self.key.as_str(), "relocation index conversion"))?;
         self.relocations.push(relocation);
@@ -1350,11 +1353,41 @@ impl<'a> FunctionEmitter<'a> {
                 } else {
                     Some(expression.ty.clone())
                 },
+                result_materialization,
                 end_block: None,
             });
         }
         self.map_call_event(expression.index);
         Ok(())
+    }
+
+    fn host_result_materialization(
+        &mut self,
+        expression: &MirExpression,
+        relocation: &BytecodeRelocation,
+    ) -> Result<Option<ResumeResultMaterialization>, BytecodeEmissionError> {
+        let BytecodeRelocation::HostEffectRef(effect) = relocation else {
+            return Ok(None);
+        };
+        if effect.target.binding_key.as_deref() != Some("std.http.client.request") {
+            return Ok(None);
+        }
+        if is_void(&expression.ty) {
+            return Err(unsupported(
+                &self.key,
+                "std.http.request result materialization",
+                "the canonical HTTP client request result must not be void",
+            ));
+        }
+        let fields =
+            self.record_shape_fields(&expression.ty, "std.http.request result materialization")?;
+        let shape_ref = self.image.intern_shape(
+            self.unit.module_path.as_str(),
+            &expression.ty,
+            &fields,
+            &format!("std.http.request result materialization in `{}`", self.key),
+        )?;
+        Ok(Some(ResumeResultMaterialization::DenseRecord { shape_ref }))
     }
 
     fn intern_signature_types(
@@ -1734,6 +1767,7 @@ impl<'a> FunctionEmitter<'a> {
             expected_stack_height_before_result: u32::try_from(expected_stack_height_before_result)
                 .map_err(|_| arithmetic(&self.key, "EmitStream stack height conversion"))?,
             result_ty: None,
+            result_materialization: None,
             end_block: None,
         });
         Ok(instruction)
@@ -1799,6 +1833,7 @@ impl<'a> FunctionEmitter<'a> {
             expected_stack_height_before_result: u32::try_from(expected_stack_height_before_result)
                 .map_err(|_| arithmetic(&self.key, "StreamNext stack height conversion"))?,
             result_ty: Some(item_type.clone()),
+            result_materialization: None,
             end_block,
         });
         Ok(())
@@ -3785,6 +3820,19 @@ impl<'a> FunctionEmitter<'a> {
                     )
                 })
                 .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
+            let result_materializations = match &pending.result_ty {
+                Some(_) => vec![pending.result_materialization],
+                None => {
+                    if pending.result_materialization.is_some() {
+                        return Err(unsupported(
+                            &self.key,
+                            "resume result materialization",
+                            "a zero-result resume cannot carry a materialization fact",
+                        ));
+                    }
+                    Vec::new()
+                }
+            };
             let end_resume_pc = if let Some(end_block) = pending.end_block {
                 let ordinal = usize::try_from(end_block)
                     .map_err(|_| arithmetic(&self.key, "resume end block ordinal"))?;
@@ -3815,6 +3863,7 @@ impl<'a> FunctionEmitter<'a> {
                 expected_stack_height_before_result: pending.expected_stack_height_before_result,
                 result_type_refs,
                 result_plans,
+                result_materializations,
                 error_mode: ResumeErrorMode::RaiseAtSite,
             })?;
             self.instructions[pending.instruction].operands[pending.operand] = pool_index;

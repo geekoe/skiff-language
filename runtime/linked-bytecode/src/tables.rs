@@ -175,7 +175,13 @@ pub struct LinkedResumeSite {
     expected_stack_height_before_result: u32,
     result_types: Box<[TypeIndex]>,
     result_plans: Box<[LinkedValueTransferPlan]>,
+    result_materializations: Box<[Option<LinkedResumeResultMaterialization>]>,
     error_mode: ResumeErrorMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkedResumeResultMaterialization {
+    DenseRecord { shape: ShapeIndex },
 }
 
 impl LinkedResumeSite {
@@ -192,12 +198,19 @@ impl LinkedResumeSite {
         expected_stack_height_before_result: u32,
         result_types: Box<[TypeIndex]>,
         result_plans: Box<[LinkedValueTransferPlan]>,
+        result_materializations: Box<[Option<LinkedResumeResultMaterialization>]>,
         error_mode: ResumeErrorMode,
     ) -> Result<Self, LinkedResumeSiteError> {
         if result_types.len() != result_plans.len() {
             return Err(LinkedResumeSiteError::ResultPlanCountMismatch {
                 result_type_count: result_types.len(),
                 result_plan_count: result_plans.len(),
+            });
+        }
+        if result_types.len() != result_materializations.len() {
+            return Err(LinkedResumeSiteError::ResultMaterializationCountMismatch {
+                result_type_count: result_types.len(),
+                result_materialization_count: result_materializations.len(),
             });
         }
         Ok(Self {
@@ -209,6 +222,7 @@ impl LinkedResumeSite {
             expected_stack_height_before_result,
             result_types,
             result_plans,
+            result_materializations,
             error_mode,
         })
     }
@@ -245,6 +259,10 @@ impl LinkedResumeSite {
         &self.result_plans
     }
 
+    pub fn result_materializations(&self) -> &[Option<LinkedResumeResultMaterialization>] {
+        &self.result_materializations
+    }
+
     pub const fn error_mode(&self) -> ResumeErrorMode {
         self.error_mode
     }
@@ -255,6 +273,10 @@ pub enum LinkedResumeSiteError {
     ResultPlanCountMismatch {
         result_type_count: usize,
         result_plan_count: usize,
+    },
+    ResultMaterializationCountMismatch {
+        result_type_count: usize,
+        result_materialization_count: usize,
     },
 }
 
@@ -267,6 +289,13 @@ impl fmt::Display for LinkedResumeSiteError {
             } => write!(
                 formatter,
                 "resume site has {result_type_count} result types but {result_plan_count} result plans"
+            ),
+            Self::ResultMaterializationCountMismatch {
+                result_type_count,
+                result_materialization_count,
+            } => write!(
+                formatter,
+                "resume site has {result_type_count} result types but {result_materialization_count} result materializations"
             ),
         }
     }

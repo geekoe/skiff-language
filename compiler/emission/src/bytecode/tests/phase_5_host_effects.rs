@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use skiff_artifact_model::{
     bytecode::BoundedDecoder, BytecodePoolEntry, BytecodeRelocation, CallableEffectSummary,
     HostEffectExecutorIdentity, Opcode, PendingEffectCategory, PrivilegedAffineCompositeIdentity,
-    ResourceDropPlan, ValueDropPlan, ValueTransferPlan,
+    ResourceDropPlan, ResumeResultMaterialization, ValueDropPlan, ValueTransferPlan,
 };
 use skiff_compiler_lowering::{
     mir::source_program::{lower_single_source_program, SingleSourceProgram},
@@ -149,9 +149,32 @@ function stream(input: std.http.HttpClientRequest) -> void {
     let admitted = admit_phase_1_bytecode_mir(lowered.mir_units())
         .expect("the three registry-owned executor identities are admitted");
     let plans = derive_bytecode_value_transfer_plans(&admitted, |_module_path, ty| {
-        Ok(ValueTransferPlan::FromType { ty: ty.clone() })
+        let trivial = matches!(
+            ty,
+            skiff_artifact_model::TypeRefIr::Builtin { name, args }
+                if args.is_empty()
+                    && matches!(name.as_str(), "bool" | "integer" | "null" | "number")
+        ) || matches!(
+            ty,
+            skiff_artifact_model::TypeRefIr::PackageSymbol { symbol }
+                if symbol.symbol_path == "std.time.Duration"
+        );
+        if matches!(
+            ty,
+            skiff_artifact_model::TypeRefIr::PackageSymbol { symbol }
+                if symbol.symbol_path == "std.http.HttpClientStreamHandle"
+        ) {
+            return Ok(ValueTransferPlan::FromType { ty: ty.clone() });
+        }
+        Ok(ValueTransferPlan::SnapshotShare {
+            drop: if trivial {
+                ValueDropPlan::Trivial
+            } else {
+                ValueDropPlan::SnapshotRelease
+            },
+        })
     })
-    .expect("the public plan boundary receives exact source types");
+    .expect("the injected source authority covers every materialized HTTP result field");
     let bundles = lowered
         .file_ir_units()
         .iter()
@@ -227,6 +250,64 @@ function stream(input: std.http.HttpClientRequest) -> void {
             .count(),
         3
     );
+
+    let request_function = artifact
+        .image
+        .functions
+        .get("main::request")
+        .expect("ignored unary response still emits one request function");
+    let decoded_request = BoundedDecoder::new()
+        .decode_function(&request_function.words)
+        .expect("request function remains decodable");
+    assert!(decoded_request
+        .instructions
+        .iter()
+        .all(|instruction| instruction.descriptor.kind != Opcode::GetDenseField));
+    let request_resume = artifact
+        .image
+        .pools
+        .resume
+        .iter()
+        .find_map(|entry| match entry {
+            BytecodePoolEntry::ResumeDescriptor(descriptor)
+                if descriptor.function_key == "main::request" =>
+            {
+                Some(descriptor)
+            }
+            _ => None,
+        })
+        .expect("request call owns one exact resume descriptor");
+    let [Some(ResumeResultMaterialization::DenseRecord { shape_ref })] =
+        request_resume.result_materializations.as_slice()
+    else {
+        panic!("ignored unary response must still carry one exact dense materialization shape")
+    };
+    let BytecodePoolEntry::ShapeRef { shape } = &artifact.image.pools.shapes[*shape_ref as usize]
+    else {
+        panic!("dense result materialization must reference a shape row")
+    };
+    let result_type = request_resume.result_type_refs[0];
+    let BytecodePoolEntry::TypeRef { ty: result_ty } =
+        &artifact.image.pools.types[result_type as usize]
+    else {
+        panic!("resume result must reference a type row")
+    };
+    let BytecodePoolEntry::TypeRef { ty: nominal_ty } =
+        &artifact.image.pools.types[shape.type_ref as usize]
+    else {
+        panic!("materialization shape must reference a nominal type row")
+    };
+    assert_eq!(result_ty, nominal_ty);
+    assert_eq!(
+        shape
+            .fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["body", "headers", "status"]
+    );
+    assert_eq!(shape.plan, request_resume.result_plans[0]);
+    assert!(shape.privileged_affine_composite.is_none());
 }
 
 #[test]

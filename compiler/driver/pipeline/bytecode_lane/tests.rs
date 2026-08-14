@@ -132,7 +132,7 @@ fn enabled_lane_attaches_exact_handoff_ref_and_manifest_to_a_new_projection() {
         .reference()
         .bytecode_identity
         .starts_with("skiff-bytecode-image-v5:sha256:"));
-    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v9");
+    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v10");
     assert_eq!(
         BYTECODE_IDENTITY_SCHEMA_MARKER,
         "skiff-bytecode-artifact-v5"

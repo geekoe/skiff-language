@@ -157,6 +157,7 @@ pub(super) fn validate_resume_sites(
                 expected_stack_height_before_result: resume.expected_stack_height_before_result,
                 result_type_refs: resume.result_type_refs.clone(),
                 result_plans: resume.result_plans.clone(),
+                result_materializations: resume.result_materializations.clone(),
                 error_mode: resume.error_mode,
                 stream_item,
             });

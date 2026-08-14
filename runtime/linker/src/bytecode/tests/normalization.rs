@@ -4,7 +4,10 @@ use skiff_artifact_model::{
     BytecodePoolEntry, FunctionTypeParamIr, InterfaceInstantiationRef, NominalTypeRefBaseIr,
     PackageCallableId, PackageRefIr, PackageSymbolRef, ServiceSymbolRef, TypeRefIr,
 };
-use skiff_runtime_linked_bytecode::{ArtifactFunctionKey, SpecializationKey};
+use skiff_runtime_linked_bytecode::{
+    ArtifactFunctionKey, LinkedShapeEntry, LinkedShapeField, LinkedValueDropPlan,
+    LinkedValueTransferPlan, SpecializationKey,
+};
 use skiff_runtime_loader::{
     DeploymentBytecodeHydrationError, HydratedBytecodePackage, HydratedDeploymentBytecode,
 };
@@ -67,6 +70,160 @@ fn type_linker_interns_only_the_owner_complete_type() {
         entry.type_ref(),
         &exact_type(package, OWNER_IMPLEMENTATION_PATH)
     );
+}
+
+#[test]
+fn dense_result_materialization_rejects_wrong_nominal_abi_plan_privilege_and_fields() {
+    let hydrated = Fixture::record_shape().hydrate();
+    let package = implementation_package(&hydrated);
+    let specialization = SpecializationKey::new(
+        package.reference().package_build_id.clone(),
+        ArtifactFunctionKey::parse("fixture::root").unwrap(),
+        PackageCallableId::new(ROOT_CALLABLE),
+        Box::new([]),
+        None,
+    );
+    let location = package_location(package);
+    let limits = generous_limits();
+    let mut linker = TypeLinker::new(&hydrated, &limits);
+    let shape_index = linker
+        .intern_pool_shape(
+            package,
+            &specialization,
+            0,
+            &BTreeMap::new(),
+            location.clone(),
+        )
+        .unwrap();
+    let emitted_shape = linker.shape(shape_index).unwrap().clone();
+    let field_type = linker
+        .linked_type_ref(emitted_shape.fields()[0].ty())
+        .unwrap()
+        .clone();
+    let exact_field_plan = linker
+        .plan_for_concrete_type(&field_type, location.clone())
+        .unwrap();
+    let shape = LinkedShapeEntry::new(
+        emitted_shape.index(),
+        emitted_shape.origin().clone(),
+        emitted_shape.nominal_type(),
+        emitted_shape.plan().clone(),
+        None,
+        Box::new([
+            LinkedShapeField::new("name", emitted_shape.fields()[0].ty(), exact_field_plan)
+                .unwrap(),
+        ]),
+    )
+    .unwrap();
+    let snapshot_plan = LinkedValueTransferPlan::SnapshotShare {
+        drop: LinkedValueDropPlan::SnapshotRelease,
+    };
+    linker
+        .validate_dense_result_materialization(
+            shape.nominal_type(),
+            &snapshot_plan,
+            &shape,
+            location.clone(),
+        )
+        .expect("the compiler-emitted structural record closes exactly");
+
+    let wrong_nominal = linker
+        .validate_dense_result_materialization(
+            shape.fields()[0].ty(),
+            &snapshot_plan,
+            &shape,
+            location.clone(),
+        )
+        .expect_err("a field TypeIndex cannot stand in for the result nominal type");
+    assert!(matches!(
+        wrong_nominal,
+        BytecodeLinkError::UnsatisfiedObligation {
+            obligation: BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+            ref detail,
+            ..
+        } if detail.contains("TypeRef/ABI")
+    ));
+
+    let wrong_plan = linker
+        .validate_dense_result_materialization(
+            shape.nominal_type(),
+            &LinkedValueTransferPlan::SnapshotShare {
+                drop: LinkedValueDropPlan::Trivial,
+            },
+            &shape,
+            location.clone(),
+        )
+        .expect_err("dense materialization cannot weaken the exact snapshot drop");
+    assert!(matches!(
+        wrong_plan,
+        BytecodeLinkError::UnsatisfiedObligation {
+            obligation: BytecodeLinkObligation::FrameAndValueTransferPlan,
+            ..
+        }
+    ));
+
+    let wrong_fields = LinkedShapeEntry::new(
+        shape.index(),
+        shape.origin().clone(),
+        shape.nominal_type(),
+        shape.plan().clone(),
+        None,
+        Box::new([LinkedShapeField::new(
+            "wrong",
+            shape.fields()[0].ty(),
+            shape.fields()[0].plan().clone(),
+        )
+        .unwrap()]),
+    )
+    .unwrap();
+    let wrong_fields = linker
+        .validate_dense_result_materialization(
+            shape.nominal_type(),
+            &snapshot_plan,
+            &wrong_fields,
+            location.clone(),
+        )
+        .expect_err("artifact field drift cannot replace the exact record descriptor");
+    assert!(matches!(
+        wrong_fields,
+        BytecodeLinkError::UnsatisfiedObligation {
+            obligation: BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+            ref detail,
+            ..
+        } if detail.contains("field 0")
+    ));
+
+    let privileged = LinkedShapeEntry::new(
+        shape.index(),
+        shape.origin().clone(),
+        shape.nominal_type(),
+        shape.plan().clone(),
+        Some(skiff_artifact_model::PrivilegedAffineCompositeIdentity::HttpClientStreamHandle),
+        shape.fields().into(),
+    )
+    .unwrap();
+    assert!(linker
+        .validate_dense_result_materialization(
+            shape.nominal_type(),
+            &snapshot_plan,
+            &privileged,
+            location.clone(),
+        )
+        .is_err());
+
+    assert!(matches!(
+        normalize_type(
+            &hydrated,
+            package,
+            &self_type(OWNER_PUBLIC_PATH, Some("abi:wrong")),
+            &location,
+        ),
+        Err(BytecodeLinkError::UnsatisfiedObligation {
+            obligation: BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+            detail,
+            ..
+        }) if detail.contains("ABI expectation")
+    ));
 }
 
 #[test]

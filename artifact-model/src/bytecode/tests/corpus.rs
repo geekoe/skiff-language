@@ -1,4 +1,4 @@
-//! Focused malformed corpus for the v7 schema / ISA v4 contract. Every case is a
+//! Focused malformed corpus for the v10 schema / ISA v5 contract. Every case is a
 //! hand-written corruption of the canonical fixture and must fail closed.
 
 use crate::bytecode::dto::{
@@ -265,6 +265,7 @@ fn corpus_validates_resume_site_bijection_and_result_facts() {
             expected_stack_height_before_result: 0,
             result_type_refs: Vec::new(),
             result_plans: Vec::new(),
+            result_materializations: Vec::new(),
             error_mode: ResumeErrorMode::RaiseAtSite,
         }));
     assert!(assert_rejected(&unused)
@@ -289,9 +290,34 @@ fn corpus_validates_resume_site_bijection_and_result_facts() {
     };
     descriptor.result_type_refs.clear();
     descriptor.result_plans.clear();
+    descriptor.result_materializations.clear();
     assert!(assert_rejected(&mismatched_result)
         .to_string()
         .contains("result arity"));
+
+    let mut mismatched_materializations = canonical_artifact();
+    let BytecodePoolEntry::ResumeDescriptor(descriptor) =
+        &mut mismatched_materializations.image.pools.resume[0]
+    else {
+        unreachable!();
+    };
+    descriptor.result_materializations.clear();
+    assert!(assert_rejected(&mismatched_materializations)
+        .to_string()
+        .contains("resultMaterializations"));
+
+    let mut out_of_range_materialization = canonical_artifact();
+    let BytecodePoolEntry::ResumeDescriptor(descriptor) =
+        &mut out_of_range_materialization.image.pools.resume[0]
+    else {
+        unreachable!();
+    };
+    descriptor.result_materializations = vec![Some(ResumeResultMaterialization::DenseRecord {
+        shape_ref: u32::MAX,
+    })];
+    assert!(assert_rejected(&out_of_range_materialization)
+        .to_string()
+        .contains("resultMaterializations[0].shapeRef"));
 }
 
 #[test]

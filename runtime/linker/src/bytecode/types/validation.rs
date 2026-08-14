@@ -10,8 +10,8 @@ use skiff_artifact_model::{
     ValueLifecyclePolicyBudget, ValueLifecycleResolverError, ValueTransferPlan,
 };
 use skiff_runtime_linked_bytecode::{
-    LinkedResourceDropPlan, LinkedShapeField, LinkedValueDropPlan, LinkedValueTransferPlan,
-    ShapeIndex, SpecializationKey,
+    LinkedResourceDropPlan, LinkedShapeEntry, LinkedShapeField, LinkedValueDropPlan,
+    LinkedValueTransferPlan, ShapeIndex, SpecializationKey, TypeIndex,
 };
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
@@ -286,6 +286,171 @@ impl TypeLinker<'_> {
             }
         }
         Ok(())
+    }
+
+    pub(in crate::bytecode) fn validate_dense_result_materialization(
+        &self,
+        result_type: TypeIndex,
+        result_plan: &LinkedValueTransferPlan,
+        shape: &LinkedShapeEntry,
+        location: BytecodeLinkLocation,
+    ) -> Result<(), BytecodeLinkError> {
+        let snapshot_plan = LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::SnapshotRelease,
+        };
+        if result_plan != &snapshot_plan || shape.plan() != &snapshot_plan {
+            return Err(obligation_error(
+                BytecodeLinkObligation::FrameAndValueTransferPlan,
+                location,
+                "dense result materialization requires exact SnapshotShare/SnapshotRelease result and shape plans"
+                    .to_string(),
+            ));
+        }
+        if shape.privileged_affine_composite().is_some() {
+            return Err(obligation_error(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location,
+                "dense result materialization cannot reference a privileged affine shape"
+                    .to_string(),
+            ));
+        }
+        let result_type_ref = self.linked_type_ref(result_type).ok_or_else(|| {
+            obligation_error(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location.clone(),
+                format!(
+                    "dense materialization result type {} is absent",
+                    result_type.get()
+                ),
+            )
+        })?;
+        let nominal_type_ref = self.linked_type_ref(shape.nominal_type()).ok_or_else(|| {
+            obligation_error(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location.clone(),
+                format!(
+                    "dense materialization shape {} nominal type is absent",
+                    shape.index().get()
+                ),
+            )
+        })?;
+        if result_type_ref != nominal_type_ref {
+            return Err(obligation_error(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location,
+                "dense materialization shape nominal TypeRef/ABI differs from its exact resume result"
+                    .to_string(),
+            ));
+        }
+        let expected_fields = self.dense_record_fields(result_type_ref, location.clone())?;
+        if shape.fields().len() != expected_fields.len() {
+            return Err(obligation_error(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location,
+                "dense materialization shape field count differs from its exact ABI descriptor"
+                    .to_string(),
+            ));
+        }
+        for (ordinal, (field, (expected_name, expected_type))) in shape
+            .fields()
+            .iter()
+            .zip(expected_fields.iter())
+            .enumerate()
+        {
+            let actual_type = self.linked_type_ref(field.ty()).ok_or_else(|| {
+                obligation_error(
+                    BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                    location.clone(),
+                    format!("dense materialization field {ordinal} type is absent"),
+                )
+            })?;
+            let expected_plan = self.plan_for_concrete_type(expected_type, location.clone())?;
+            if field.name() != expected_name
+                || actual_type != expected_type
+                || field.plan() != &expected_plan
+            {
+                return Err(obligation_error(
+                    BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                    location,
+                    format!(
+                        "dense materialization field {ordinal} differs from its exact ABI name/type/lifecycle"
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn dense_record_fields(
+        &self,
+        nominal: &TypeRefIr,
+        location: BytecodeLinkLocation,
+    ) -> Result<BTreeMap<String, TypeRefIr>, BytecodeLinkError> {
+        if let TypeRefIr::Record { fields } = nominal {
+            return Ok(fields.clone());
+        }
+        let TypeRefIr::PackageSymbol { symbol } = nominal else {
+            return Err(obligation_error(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location,
+                "dense result materialization nominal type is not an exact record".to_string(),
+            ));
+        };
+        let PackageRefIr::PackageId { package_id } = &symbol.package else {
+            return Err(obligation_error(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location,
+                "dense result materialization retains an unresolved dependency alias".to_string(),
+            ));
+        };
+        let mut owners = self
+            .deployment()
+            .packages()
+            .values()
+            .filter(|package| package.reference().package_id == *package_id);
+        let owner = owners.next().ok_or_else(|| {
+            obligation_error(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location.clone(),
+                format!("dense result materialization package owner {package_id:?} is absent"),
+            )
+        })?;
+        if owners.next().is_some()
+            || symbol.abi_expectation.as_deref()
+                != Some(owner.reference().package_local_abi_identity.as_str())
+        {
+            return Err(obligation_error(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location,
+                "dense result materialization package owner/ABI is not exact".to_string(),
+            ));
+        }
+        let mut resolver = ValidationLifecycleResolver::new(self.deployment(), owner);
+        let resolved = resolver.resolve_package_symbol(symbol).map_err(|error| {
+            obligation_error(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location.clone(),
+                format!(
+                    "dense result materialization type cannot be resolved by {}: {}",
+                    error.authority, error.message
+                ),
+            )
+        })?;
+        if !resolved.type_parameters.is_empty() {
+            return Err(obligation_error(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location,
+                "generic dense result materialization lacks exact type arguments".to_string(),
+            ));
+        }
+        let TypeDescriptorIr::Record { fields } = resolved.descriptor else {
+            return Err(obligation_error(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location,
+                "dense result materialization ABI descriptor is not a record".to_string(),
+            ));
+        };
+        Ok(fields)
     }
 
     fn require_privileged_root_shape(

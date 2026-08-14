@@ -25,8 +25,8 @@ use skiff_compiler::{
 use skiff_runtime_linked_bytecode::{
     HostEffectAdapterIndex, InstructionIndex, LinkedBytecodeCandidate,
     LinkedBytecodeCandidateParts, LinkedContainerLayoutKind, LinkedFunction, LinkedFunctionTables,
-    LinkedInstructionTarget, LinkedPackageBytecodeProvenance, LinkedResumeSite, LinkedSlotState,
-    LinkedValueDropPlan, LinkedValueTransferPlan,
+    LinkedInstructionTarget, LinkedPackageBytecodeProvenance, LinkedResumeResultMaterialization,
+    LinkedResumeSite, LinkedSlotState, LinkedValueDropPlan, LinkedValueTransferPlan,
 };
 use skiff_runtime_loader::{
     DeploymentBytecodeLoader, FilesystemDeploymentBytecodeContentResolver, HydratedBytecodePackage,
@@ -159,6 +159,7 @@ fn atomic_image_resume_view_rejects_swapped_descriptor_with_typed_construction_e
         original.expected_stack_height_before_result(),
         original.result_types().into(),
         original.result_plans().into(),
+        original.result_materializations().into(),
         original.error_mode(),
     )
     .unwrap();
@@ -455,6 +456,56 @@ fn production_stream_image_proves_exact_privileged_shape_and_affine_body_take() 
 }
 
 #[test]
+fn ignored_unary_http_result_links_one_exact_dense_materialization_shape() {
+    let image = production_execution_image(
+        "runtime/linker/src/bytecode/tests/fixtures/v5-unary-http",
+        "unary-http-result-materialization",
+    );
+    let host_call = image
+        .functions()
+        .iter()
+        .flat_map(|function| function.instructions())
+        .find(|instruction| instruction.opcode() == Opcode::InvokeHost)
+        .expect("ignored unary request still emits one host call");
+    let resume_index = host_call
+        .resolved_operands()
+        .iter()
+        .find_map(|operand| match operand.target() {
+            LinkedInstructionTarget::ResumeSite(index) => Some(index),
+            _ => None,
+        })
+        .expect("unary host call carries one linked resume site");
+    let resume = image
+        .resume_sites()
+        .get(resume_index)
+        .expect("atomic image retains the linked unary resume site");
+    let [Some(LinkedResumeResultMaterialization::DenseRecord { shape })] =
+        resume.result_materializations()
+    else {
+        panic!("unary response must expose one bounded dense materialization shape")
+    };
+    let shape = &image.shapes()[shape.get() as usize];
+    let [result_type] = resume.result_types() else {
+        panic!("unary response must carry exactly one result type")
+    };
+    assert_eq!(
+        image.types()[result_type.get() as usize].type_ref(),
+        image.types()[shape.nominal_type().get() as usize].type_ref(),
+        "materialization closes by exact TypeRef/ABI, not numeric TypeIndex equality"
+    );
+    assert_eq!(
+        shape
+            .fields()
+            .iter()
+            .map(|field| field.name())
+            .collect::<Vec<_>>(),
+        vec!["body", "headers", "status"]
+    );
+    assert_eq!(shape.plan(), &resume.result_plans()[0]);
+    assert!(shape.privileged_affine_composite().is_none());
+}
+
+#[test]
 fn production_entry_links_exact_ordinary_root_local_call_and_return() {
     let fixture = Fixture::exact_local();
     let hydrated = fixture.hydrate();
@@ -475,7 +526,7 @@ fn production_entry_links_exact_ordinary_root_local_call_and_return() {
         .packages()
         .get(&fixture.package_reference.package_build_id)
         .unwrap();
-    assert_exact_v9_provenance(provenance, hydrated_package);
+    assert_exact_v10_provenance(provenance, hydrated_package);
     // The loader is the only safe hydrated-deployment constructor, so its
     // mixed-registry negative tests own impossible receipt construction. The
     // linker tests prove that the opaque joined receipt survives unchanged.
@@ -950,7 +1001,7 @@ fn source_site(source_id: u64) -> InstructionSourceSite {
     }
 }
 
-fn assert_exact_v9_provenance(
+fn assert_exact_v10_provenance(
     provenance: &LinkedPackageBytecodeProvenance,
     package: &HydratedBytecodePackage,
 ) {
@@ -958,7 +1009,7 @@ fn assert_exact_v9_provenance(
     let view = admitted.view();
 
     assert_eq!(provenance.magic(), "skiff-bytecode");
-    assert_eq!(provenance.schema_version(), "skiff-bytecode-v9");
+    assert_eq!(provenance.schema_version(), "skiff-bytecode-v10");
     assert_eq!(provenance.isa_version(), "skiff-bytecode-isa-v5");
     assert_eq!(provenance.schema_version(), view.schema_version());
     assert_eq!(provenance.isa_version(), view.isa_version());

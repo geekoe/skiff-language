@@ -187,6 +187,7 @@ pub struct ValidatedResumeSite {
     pub expected_stack_height_before_result: u32,
     pub result_type_refs: Vec<u32>,
     pub result_plans: Vec<crate::bytecode::dto::ValueTransferPlan>,
+    pub result_materializations: Vec<Option<crate::bytecode::dto::ResumeResultMaterialization>>,
     pub error_mode: crate::bytecode::dto::ResumeErrorMode,
     pub stream_item: Option<FunctionStreamItemAuthority>,
 }
@@ -200,6 +201,7 @@ impl ValidatedResumeSite {
             expected_stack_height_before_result: self.expected_stack_height_before_result,
             result_type_refs: self.result_type_refs.clone(),
             result_plans: self.result_plans.clone(),
+            result_materializations: self.result_materializations.clone(),
             error_mode: self.error_mode,
             stream_item: self.stream_item.clone(),
         }
@@ -637,11 +639,14 @@ fn validate_pool_entry_references(
         let BytecodePoolEntry::ResumeDescriptor(descriptor) = entry else {
             continue;
         };
-        if descriptor.result_type_refs.len() != descriptor.result_plans.len() {
+        if descriptor.result_type_refs.len() != descriptor.result_plans.len()
+            || descriptor.result_type_refs.len() != descriptor.result_materializations.len()
+        {
             return Err(header_error(format!(
-                "image.pools.resume[{index}] resultTypeRefs len {} does not match resultPlans len {}",
+                "image.pools.resume[{index}] resultTypeRefs len {} does not match resultPlans len {} and resultMaterializations len {}",
                 descriptor.result_type_refs.len(),
-                descriptor.result_plans.len()
+                descriptor.result_plans.len(),
+                descriptor.result_materializations.len()
             )));
         }
         if descriptor.result_type_refs.len() as u64 > limits::MAX_RESULTS_PER_CALL {
@@ -664,6 +669,21 @@ fn validate_pool_entry_references(
                 None,
                 &format!("image.pools.resume[{index}].resultPlans[{result_index}]"),
             )?;
+            if let Some(crate::bytecode::dto::ResumeResultMaterialization::DenseRecord {
+                shape_ref,
+            }) = descriptor.result_materializations[result_index]
+            {
+                let Some(BytecodePoolEntry::ShapeRef { .. }) = pools.shapes.get(shape_ref as usize)
+                else {
+                    return Err(index_out_of_bounds(
+                        "shapes pool",
+                        shape_ref,
+                        &format!(
+                            "image.pools.resume[{index}].resultMaterializations[{result_index}].shapeRef"
+                        ),
+                    ));
+                };
+            }
         }
     }
 

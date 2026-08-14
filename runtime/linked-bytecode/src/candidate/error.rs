@@ -351,6 +351,11 @@ pub enum LinkedBytecodeCandidateError {
         resume: crate::InstructionIndex,
         end_resume: crate::InstructionIndex,
     },
+    ResumeResultMaterializationMismatch {
+        resume_site: u32,
+        result_index: usize,
+        detail: &'static str,
+    },
     EmptyLifecycleAdapterBindingKey {
         location: CandidateLocation,
     },

@@ -5,9 +5,9 @@ use skiff_runtime_linked_bytecode::{
     ArtifactCallbackCaptureIndex, ArtifactShapeIndex, ArtifactTypeIndex, ArtifactWritablePathIndex,
     CallbackCaptureLayoutIndex, FunctionIndex, InstructionIndex, LinkedArtifactPoolOrigin,
     LinkedCallbackCapture, LinkedCallbackCaptureLayout, LinkedContainerLayout,
-    LinkedContainerPosition, LinkedResumeSite, LinkedShapeEntry, LinkedShapeField, LinkedTypeEntry,
-    LinkedWritablePathEntry, LinkedWritablePathSegment, ResumeSiteIndex, ShapeIndex,
-    SpecializationKey, TypeIndex, WritablePathIndex,
+    LinkedContainerPosition, LinkedResumeResultMaterialization, LinkedResumeSite, LinkedShapeEntry,
+    LinkedShapeField, LinkedTypeEntry, LinkedWritablePathEntry, LinkedWritablePathSegment,
+    ResumeSiteIndex, ShapeIndex, SpecializationKey, TypeIndex, WritablePathIndex,
 };
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
@@ -847,6 +847,7 @@ impl<'a> TypeLinker<'a> {
             expected_stack_height_before_result: descriptor.expected_stack_height_before_result,
             result_type_refs: descriptor.result_type_refs.clone(),
             result_plans: descriptor.result_plans.clone(),
+            result_materializations: descriptor.result_materializations.clone(),
             error_mode: descriptor.error_mode,
         };
         self.link_resume_site(package, &descriptor, specialization, function, location)
@@ -904,6 +905,55 @@ impl<'a> TypeLinker<'a> {
                 location.clone(),
             )?);
         }
+        let mut result_materializations =
+            Vec::with_capacity(descriptor.result_materializations.len());
+        for (result_index, materialization) in descriptor.result_materializations.iter().enumerate()
+        {
+            let linked = match materialization {
+                None => None,
+                Some(skiff_artifact_model::ResumeResultMaterialization::DenseRecord {
+                    shape_ref,
+                }) => {
+                    let shape = self.intern_pool_shape(
+                        package,
+                        specialization,
+                        *shape_ref,
+                        &BTreeMap::new(),
+                        location.clone(),
+                    )?;
+                    let shape_entry = self.shape(shape).cloned().ok_or_else(|| {
+                        obligation_error(
+                            location.clone(),
+                            format!("linked resume result shape {} is absent", shape.get()),
+                        )
+                    })?;
+                    let result_type = result_types.get(result_index).copied().ok_or_else(|| {
+                        obligation_error(
+                            location.clone(),
+                            format!(
+                                "resume result materialization {result_index} has no result type"
+                            ),
+                        )
+                    })?;
+                    let result_plan = result_plans.get(result_index).ok_or_else(|| {
+                        obligation_error(
+                            location.clone(),
+                            format!(
+                                "resume result materialization {result_index} has no result plan"
+                            ),
+                        )
+                    })?;
+                    self.validate_dense_result_materialization(
+                        result_type,
+                        result_plan,
+                        &shape_entry,
+                        location.clone(),
+                    )?;
+                    Some(LinkedResumeResultMaterialization::DenseRecord { shape })
+                }
+            };
+            result_materializations.push(linked);
+        }
         let origin_key = (
             package.reference().package_build_id.clone(),
             descriptor_index(package, descriptor, location.clone())?,
@@ -925,6 +975,7 @@ impl<'a> TypeLinker<'a> {
                 descriptor.expected_stack_height_before_result,
                 result_types.into_boxed_slice(),
                 result_plans.into_boxed_slice(),
+                result_materializations.into_boxed_slice(),
                 descriptor.error_mode,
             )
             .map_err(|error| obligation_error(location.clone(), error.to_string()))?,
@@ -1296,6 +1347,7 @@ fn descriptor_index(
                 && site.end_resume_pc == descriptor.end_resume_pc
                 && site.result_type_refs == descriptor.result_type_refs
                 && site.result_plans == descriptor.result_plans
+                && site.result_materializations == descriptor.result_materializations
                 && site.error_mode == descriptor.error_mode
         })
         .and_then(|index| u32::try_from(index).ok())

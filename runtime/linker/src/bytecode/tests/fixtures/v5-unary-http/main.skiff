@@ -1,0 +1,6 @@
+import std
+
+function ignored(input: std.http.HttpClientRequest) -> bool {
+  std.http.request(input)
+  return true
+}

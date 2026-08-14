@@ -1,0 +1,8 @@
+ignored:
+  method: POST
+  path: /phase-5/unary
+  kind: typedJson
+  handler: main.ignored
+  adapterArgs:
+    - param: input
+      source: { kind: http.body }

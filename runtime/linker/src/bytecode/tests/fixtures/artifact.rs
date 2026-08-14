@@ -659,6 +659,7 @@ fn interface_resume_descriptor(function_key: &str) -> ResumeDescriptor {
         expected_stack_height_before_result: 0,
         result_type_refs: vec![0],
         result_plans: vec![snapshot_plan()],
+        result_materializations: vec![None],
         error_mode: ResumeErrorMode::RaiseAtSite,
     }
 }
@@ -672,6 +673,7 @@ fn host_resume_descriptor() -> ResumeDescriptor {
         expected_stack_height_before_result: 0,
         result_type_refs: vec![0],
         result_plans: vec![snapshot_plan()],
+        result_materializations: vec![None],
         error_mode: ResumeErrorMode::RaiseAtSite,
     }
 }
@@ -685,6 +687,7 @@ fn stream_next_resume_descriptor() -> ResumeDescriptor {
         expected_stack_height_before_result: 0,
         result_type_refs: vec![1],
         result_plans: vec![stream_item_plan()],
+        result_materializations: vec![None],
         error_mode: ResumeErrorMode::RaiseAtSite,
     }
 }
@@ -698,6 +701,7 @@ fn stream_next_loop_resume_descriptor() -> ResumeDescriptor {
         expected_stack_height_before_result: 0,
         result_type_refs: vec![1],
         result_plans: vec![snapshot_plan()],
+        result_materializations: vec![None],
         error_mode: ResumeErrorMode::RaiseAtSite,
     }
 }
@@ -711,6 +715,7 @@ fn stream_producer_resume_descriptor() -> ResumeDescriptor {
         expected_stack_height_before_result: 0,
         result_type_refs: Vec::new(),
         result_plans: Vec::new(),
+        result_materializations: Vec::new(),
         error_mode: ResumeErrorMode::RaiseAtSite,
     }
 }

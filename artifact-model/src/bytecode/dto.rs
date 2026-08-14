@@ -62,7 +62,7 @@ pub mod limits {
 /// defined here so the Phase 1 bytecode module owns its version surface.
 /// The artifact record is still canonical JSON (D8).
 pub const BYTECODE_MAGIC: &str = "skiff-bytecode";
-pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v9";
+pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v10";
 pub const BYTECODE_ISA_VERSION: &str = "skiff-bytecode-isa-v5";
 
 /// Root bytecode artifact record (D11: one image per package).
@@ -892,7 +892,23 @@ pub struct ResumeDescriptor {
     /// zero results.
     pub result_type_refs: Vec<u32>,
     pub result_plans: Vec<ValueTransferPlan>,
+    /// Exact compiler-owned runtime construction fact for each resumed result.
+    /// `null` means the result is already a complete VM value. A dense-record
+    /// row names one exact shape pool entry; consumers must never recover it by
+    /// scanning nominal types or assuming the result TypeRef row is a shape.
+    pub result_materializations: Vec<Option<ResumeResultMaterialization>>,
     pub error_mode: ResumeErrorMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ResumeResultMaterialization {
+    DenseRecord { shape_ref: u32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

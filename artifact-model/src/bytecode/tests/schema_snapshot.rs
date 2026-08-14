@@ -1,11 +1,11 @@
-//! Frozen v9 wire-shape snapshot and fail-closed serde tests.
+//! Frozen v10 wire-shape snapshot and fail-closed serde tests.
 
 use super::*;
 
-/// Compact golden projection: it freezes every v9 seam that downstream
+/// Compact golden projection: it freezes every v10 seam that downstream
 /// emission/linking consumes without duplicating the canonical fixture's
 /// large literal payload.
-const GOLDEN_V9_SHAPE: &str = r#"{
+const GOLDEN_V10_SHAPE: &str = r#"{
   "artifact":["bytecodeIdentity","hostEffectRegistry","image","intrinsicRegistry","isaVersion","magic","nativeValueLifecycleRegistry","opcodeTableFingerprint","platformErrorProjectionRegistry","schemaVersion","valueLifecyclePolicy"],
   "image":["constantRoots","debugTable","frozenConstantGraph","functions","pools"],
   "function":["activeRegions","callLoanLayouts","effectSummaryRef","exceptionRegions","frameLayout","functionKey","maxOperandDepth","origin","relocations","selfTypeRef","sourceMap","statementEntries","switchTables","words"],
@@ -18,7 +18,7 @@ const GOLDEN_V9_SHAPE: &str = r#"{
   "statementAttributionId":["expressionIndex","kind","occurrenceOrdinal"],
   "constantEntry":["kind","plan","reference","typeRef"],
   "shape":["fields","plan","typeRef"],
-  "resume":["endResumePc","errorMode","expectedStackHeightBeforeResult","functionKey","kind","resultPlans","resultTypeRefs","resumePc","sitePc"]
+  "resume":["endResumePc","errorMode","expectedStackHeightBeforeResult","functionKey","kind","resultMaterializations","resultPlans","resultTypeRefs","resumePc","sitePc"]
 }"#;
 
 fn sorted_keys(value: &serde_json::Value) -> Vec<String> {
@@ -33,7 +33,7 @@ fn sorted_keys(value: &serde_json::Value) -> Vec<String> {
 }
 
 #[test]
-fn canonical_fixture_matches_v9_wire_shape_snapshot() {
+fn canonical_fixture_matches_v10_wire_shape_snapshot() {
     let value = serde_json::to_value(canonical_artifact()).expect("fixture JSON");
     let main = &value["image"]["functions"]["module::main"];
     let projection = serde_json::json!({
@@ -51,10 +51,10 @@ fn canonical_fixture_matches_v9_wire_shape_snapshot() {
         "shape": sorted_keys(&value["image"]["pools"]["shapes"][0]["shape"]),
         "resume": sorted_keys(&value["image"]["pools"]["resume"][0]),
     });
-    let golden: serde_json::Value = serde_json::from_str(GOLDEN_V9_SHAPE).expect("golden JSON");
+    let golden: serde_json::Value = serde_json::from_str(GOLDEN_V10_SHAPE).expect("golden JSON");
     assert_eq!(projection, golden);
 
-    assert_eq!(value["schemaVersion"], "skiff-bytecode-v9");
+    assert_eq!(value["schemaVersion"], "skiff-bytecode-v10");
     assert_eq!(value["isaVersion"], "skiff-bytecode-isa-v5");
     assert_eq!(
         value["nativeValueLifecycleRegistry"]["fingerprint"],
@@ -224,6 +224,16 @@ fn schema_rejects_missing_required_header_image_and_frame_fields() {
         .to_string();
     assert!(error.contains("missing field"), "{error}");
 
+    let mut missing_result_materializations = value.clone();
+    missing_result_materializations["image"]["pools"]["resume"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("resultMaterializations");
+    let error = serde_json::from_value::<BytecodeArtifact>(missing_result_materializations)
+        .expect_err("resultMaterializations must be required on the wire")
+        .to_string();
+    assert!(error.contains("missing field"), "{error}");
+
     for field in ["origin", "selfTypeRef", "callLoanLayouts"] {
         let mut missing = value.clone();
         missing["image"]["functions"]["module::main"]
@@ -316,9 +326,23 @@ fn schema_rejects_unknown_tagged_enum_variants() {
 }
 
 #[test]
-fn version_constants_freeze_schema_v9_and_isa_v5() {
+fn dense_resume_result_materialization_round_trips_as_an_exact_shape_ref() {
+    let materialization = ResumeResultMaterialization::DenseRecord { shape_ref: 7 };
+    let value = serde_json::to_value(materialization).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({"kind": "denseRecord", "shapeRef": 7})
+    );
+    assert_eq!(
+        serde_json::from_value::<ResumeResultMaterialization>(value).unwrap(),
+        materialization
+    );
+}
+
+#[test]
+fn version_constants_freeze_schema_v10_and_isa_v5() {
     assert_eq!(BYTECODE_MAGIC, "skiff-bytecode");
-    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v9");
+    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v10");
     assert_eq!(BYTECODE_ISA_VERSION, "skiff-bytecode-isa-v5");
 }
 
