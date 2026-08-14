@@ -3,7 +3,9 @@ use std::collections::HashSet;
 use futures_util::{Sink, SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
-use skiff_runtime_capability_context::{ConnectionRequestSession, ConnectionRequestTerminal};
+use skiff_runtime_capability_context::{
+    ConnectionRequestSession, ConnectionRequestTerminal, RouterWriteFailure,
+};
 use skiff_runtime_request::{OutboundResponse, ResponseError};
 #[cfg(test)]
 use skiff_runtime_transport::protocol::RouterControlEnvelope;
@@ -995,6 +997,9 @@ fn response_error_from_frame(error: RuntimeErrorFramePayload) -> ResponseError {
 fn encode_writer_message(message: super::RouterWriterMessage) -> Result<Message> {
     match message {
         super::RouterWriterMessage::Binary(bytes) => Ok(Message::Binary(bytes.into())),
+        super::RouterWriterMessage::StreamFrame { .. } => Err(RuntimeError::Decode(
+            "server-stream frames require the flush-aware WebSocket writer path".to_string(),
+        )),
         super::RouterWriterMessage::TaskSubmit(message) => {
             encode_task_submit_wire_message(message).map(|bytes| Message::Binary(bytes.into()))
         }
@@ -1013,6 +1018,21 @@ async fn send_writer_message<S>(writer: &mut S, message: super::RouterWriterMess
 where
     S: Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
 {
+    if let super::RouterWriterMessage::StreamFrame { bytes, flush_ack } = message {
+        return match writer.send(Message::Binary(bytes.into())).await {
+            Ok(()) => {
+                let _ = flush_ack.send(Ok(()));
+                Ok(())
+            }
+            Err(error) => {
+                let message = format!("router write failed: {error}");
+                let _ = flush_ack.send(Err(RouterWriteFailure::WebSocketWrite {
+                    message: message.clone(),
+                }));
+                Err(RuntimeError::Decode(message))
+            }
+        };
+    }
     let message = encode_writer_message(message)?;
     writer
         .send(message)

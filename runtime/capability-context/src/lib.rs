@@ -77,11 +77,12 @@ pub use outbound_control::{
     ActorFindControlRequest, ActorGetOrCreateControlRequest, ActorKeyControlMetadata,
     ActorMethodTaskTargetControl, ActorRemoveControlRequest, ActorReplaceControlRequest,
     ConnectionRequestCancelControl, ConnectionRequestControl, ConnectionSendControl,
-    OutboundControlMessage, RequestCancelControl, RouterWriterMessage, RuntimeClientSessionControl,
-    RuntimeDeadlineControl, TaskCallerKind, TaskCancelControlRequest, TaskCancelControlResponse,
-    TaskStatusControlRequest, TaskStatusControlResponse, TaskSubmitControlMessage,
-    TaskSubmitControlRequest, TaskSubmitResponseControl, TaskSubmitTimingControl,
-    WebSocketConnectionPolicyControl, WebSocketConnectionPolicyOverflowControl,
+    OutboundControlMessage, RequestCancelControl, RouterStreamFrameFlush, RouterWriteFailure,
+    RouterWriterMessage, RuntimeClientSessionControl, RuntimeDeadlineControl, TaskCallerKind,
+    TaskCancelControlRequest, TaskCancelControlResponse, TaskStatusControlRequest,
+    TaskStatusControlResponse, TaskSubmitControlMessage, TaskSubmitControlRequest,
+    TaskSubmitResponseControl, TaskSubmitTimingControl, WebSocketConnectionPolicyControl,
+    WebSocketConnectionPolicyOverflowControl,
 };
 pub use outbound_response::{
     OutboundRequestCancelSendError, OutboundRequestCancelSender, OutboundRequestLease,

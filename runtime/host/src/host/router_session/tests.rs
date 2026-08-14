@@ -58,6 +58,7 @@ async fn connection_request_response_demux_uses_exact_router_session() {
 
 mod control_response_lifecycle;
 mod h_task_parent_cut;
+mod stream_flush_ack;
 
 #[derive(Clone)]
 struct TestDbCapabilityFactory;
