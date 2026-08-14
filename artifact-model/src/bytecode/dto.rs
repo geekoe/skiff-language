@@ -62,7 +62,7 @@ pub mod limits {
 /// defined here so the Phase 1 bytecode module owns its version surface.
 /// The artifact record is still canonical JSON (D8).
 pub const BYTECODE_MAGIC: &str = "skiff-bytecode";
-pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v11";
+pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v12";
 pub const BYTECODE_ISA_VERSION: &str = "skiff-bytecode-isa-v5";
 
 /// Root bytecode artifact record (D11: one image per package).
@@ -366,6 +366,10 @@ pub struct ParameterSlotDecl {
     /// InOut must never be inferred from MoveOnly or vice versa.
     pub mode: crate::ParamModeIr,
     pub plan: ValueTransferPlan,
+    /// Compiler-owned exact dense materialization layout for this parameter.
+    /// Required on the wire and `null` for parameters without such authority.
+    #[serde(deserialize_with = "deserialize_required_option")]
+    pub dense_record_shape_ref: Option<u32>,
 }
 
 /// Schema declaration of the value-transfer plan attached to a parameter,

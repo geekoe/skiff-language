@@ -3,7 +3,7 @@ use std::fmt;
 
 use skiff_artifact_model::ParamModeIr;
 
-use crate::{FrameSlotIndex, LinkedValueTransferPlan, TypeIndex};
+use crate::{FrameSlotIndex, LinkedValueTransferPlan, ShapeIndex, TypeIndex};
 
 /// One parameter's exact frame slot, calling mode and concrete lifecycle plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,11 +11,22 @@ pub struct LinkedParameterSlot {
     slot: FrameSlotIndex,
     mode: ParamModeIr,
     plan: LinkedValueTransferPlan,
+    dense_record_shape: Option<ShapeIndex>,
 }
 
 impl LinkedParameterSlot {
-    pub fn new(slot: FrameSlotIndex, mode: ParamModeIr, plan: LinkedValueTransferPlan) -> Self {
-        Self { slot, mode, plan }
+    pub fn new(
+        slot: FrameSlotIndex,
+        mode: ParamModeIr,
+        plan: LinkedValueTransferPlan,
+        dense_record_shape: Option<ShapeIndex>,
+    ) -> Self {
+        Self {
+            slot,
+            mode,
+            plan,
+            dense_record_shape,
+        }
     }
 
     pub const fn slot(&self) -> FrameSlotIndex {
@@ -28,6 +39,10 @@ impl LinkedParameterSlot {
 
     pub const fn plan(&self) -> &LinkedValueTransferPlan {
         &self.plan
+    }
+
+    pub const fn dense_record_shape(&self) -> Option<ShapeIndex> {
+        self.dense_record_shape
     }
 }
 

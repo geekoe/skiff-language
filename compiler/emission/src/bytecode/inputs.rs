@@ -6,7 +6,10 @@ use skiff_compiler_lowering::{
     FrozenConstantBundle,
 };
 
-use super::{BytecodeEmissionError, BytecodeValueTransferPlans, FunctionValueTransferPlans};
+use super::{
+    admission::DenseParameterMaterializationFact, BytecodeEmissionError,
+    BytecodeValueTransferPlans, FunctionValueTransferPlans,
+};
 
 pub(crate) struct ValidatedEmissionInputs<'a> {
     pub(crate) constants: BTreeMap<String, ValidatedConstant<'a>>,
@@ -14,6 +17,8 @@ pub(crate) struct ValidatedEmissionInputs<'a> {
     pub(crate) function_plans: BTreeMap<String, &'a FunctionValueTransferPlans>,
     pub(crate) transfer_plans: &'a BytecodeValueTransferPlans,
     pub(crate) units: BTreeMap<String, &'a MirUnit>,
+    pub(crate) dense_parameter_materializations:
+        &'a BTreeMap<String, DenseParameterMaterializationFact>,
 }
 
 pub(crate) struct ValidatedConstant<'a> {
@@ -29,6 +34,7 @@ impl<'a> ValidatedEmissionInputs<'a> {
         units: &'a [MirUnit],
         bundles: &'a [FrozenConstantBundle],
         transfer_plans: &'a BytecodeValueTransferPlans,
+        dense_parameter_materializations: &'a BTreeMap<String, DenseParameterMaterializationFact>,
     ) -> Result<Self, BytecodeEmissionError> {
         let mut units_by_module = BTreeMap::new();
         for unit in units {
@@ -161,6 +167,7 @@ impl<'a> ValidatedEmissionInputs<'a> {
             function_plans,
             transfer_plans,
             units: units_by_module,
+            dense_parameter_materializations,
         })
     }
 }

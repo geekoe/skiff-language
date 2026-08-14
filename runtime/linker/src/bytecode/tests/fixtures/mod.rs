@@ -189,6 +189,106 @@ impl Fixture {
         Self::new_gateway(GatewayDispatchMode::Unary, false, true)
     }
 
+    pub(super) fn raw_http_dense_parameter(present: bool) -> Self {
+        let mut artifact = artifact::bytecode_artifact(RootProgram::RecordShape);
+        let root = artifact.image.functions.get_mut(ROOT_FUNCTION).unwrap();
+        root.words = vec![0x25];
+        root.frame_layout.slot_type_refs = vec![1];
+        let dense_plan = skiff_artifact_model::ValueTransferPlan::SnapshotShare {
+            drop: skiff_artifact_model::ValueDropPlan::SnapshotRelease,
+        };
+        root.frame_layout.slot_plans[0] = dense_plan.clone();
+        root.frame_layout.parameter_slots[0].plan = dense_plan.clone();
+        root.frame_layout.parameter_slots[0].dense_record_shape_ref = present.then_some(0);
+        root.frame_layout.result_count = 0;
+        root.frame_layout.result_type_refs.clear();
+        root.frame_layout.result_plans.clear();
+        root.max_operand_depth = 0;
+        root.statement_entries.clear();
+        root.source_map.clear();
+        let BytecodePoolEntry::ShapeRef { shape } = &mut artifact.image.pools.shapes[0] else {
+            unreachable!()
+        };
+        shape.fields[0].plan = dense_plan;
+        skiff_artifact_identity::assign_bytecode_identity(&mut artifact).unwrap();
+        let bytecode = Arc::new(ValidatedBytecodeArtifact::admit(artifact).unwrap());
+        let package = package::package(&bytecode, RootProgram::RecordShape, None, false, false);
+        let package_reference = records::package_reference(&package);
+        let (contract, contract_reference, operation) =
+            records::contract("example.bytecode-link-service", "run", true);
+        let (deployment, _) = records::deployment(
+            package_reference.clone(),
+            contract_reference.clone(),
+            operation.clone(),
+            PackageCallableId::new(ROOT_CALLABLE),
+            None,
+            Vec::new(),
+        );
+        let mut deployment = deployment.as_ref().clone();
+        let key = GatewayEntryKey::parse("raw").unwrap();
+        let protocol_surface = GatewayEntryProtocolSurface {
+            protocol: GatewayProtocolSurface::Http(GatewayHttpProtocolSurface {
+                adapter_kind: GatewayAdapterKind::RawHttp,
+                dispatch_mode: GatewayDispatchMode::Unary,
+                external_sources: vec![GatewayAdapterSource::HttpRequest],
+                request_body_schema: None,
+                response_schema: None,
+                stream_item_schema: None,
+            }),
+            external_error_projection: GatewayExternalErrorProjection::FIXED_V1,
+        };
+        deployment.gateway_entries.insert(
+            key.clone(),
+            DeploymentGatewayEntry {
+                gateway_entry_identity: gateway_entry_identity(&protocol_surface).unwrap(),
+                protocol_surface,
+                handler: Some(PackageCallableId::new(ROOT_CALLABLE)),
+                pre: None,
+                guard: None,
+                adapter_plan: GatewayAdapterPlan {
+                    kind: GatewayAdapterKind::RawHttp,
+                    args: vec![GatewayAdapterArg {
+                        param: "request".to_string(),
+                        source: GatewayAdapterSource::HttpRequest,
+                    }],
+                },
+                close_handler: None,
+                close_adapter_plan: None,
+            },
+        );
+        deployment.ingress.push(DeploymentIngressBinding {
+            selector: IngressSelector {
+                protocol: IngressProtocol::Http,
+                method: Some("POST".to_string()),
+                path: "/raw".to_string(),
+            },
+            gateway_entry_key: key,
+        });
+        assign_service_deployment_identity(&mut deployment).unwrap();
+        let deployment = Arc::new(deployment);
+        let deployment_reference = service_deployment_ref(&deployment);
+        let bytecode_reference = bytecode.reference().clone();
+        Self {
+            resolver: InMemoryResolver {
+                deployment_reference: deployment_reference.clone(),
+                deployment,
+                contracts: BTreeMap::from([(contract_reference, contract)]),
+                packages: BTreeMap::from([(package_reference.clone(), Arc::new(package))]),
+                bytecodes: BTreeMap::from([(
+                    (
+                        package_reference.clone(),
+                        bytecode_reference.bytecode_identity.clone(),
+                    ),
+                    bytecode,
+                )]),
+            },
+            deployment_reference,
+            package_reference,
+            bytecode_reference,
+            operation,
+        }
+    }
+
     pub(super) fn normalization() -> Self {
         Self::normalization_with(DependencyBuildPin::Exact, None, false)
     }

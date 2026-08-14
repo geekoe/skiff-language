@@ -33,6 +33,7 @@ pub fn emit_bytecode_artifact(
         admitted.units(),
         constants,
         transfer_plans,
+        admitted.dense_parameter_materializations(),
         SourceAttributionMode::AdmittedPhase1,
     )
 }
@@ -50,6 +51,7 @@ pub(super) fn emit_bytecode_artifact_unchecked(
         units,
         constants,
         transfer_plans,
+        &Default::default(),
         SourceAttributionMode::PrivateBackend,
     )
 }
@@ -58,9 +60,18 @@ fn emit_bytecode_artifact_with_mode(
     units: &[MirUnit],
     constants: &[FrozenConstantBundle],
     transfer_plans: &BytecodeValueTransferPlans,
+    dense_parameter_materializations: &std::collections::BTreeMap<
+        String,
+        super::admission::DenseParameterMaterializationFact,
+    >,
     source_attribution: SourceAttributionMode,
 ) -> Result<BytecodeArtifact, BytecodeEmissionError> {
-    let inputs = ValidatedEmissionInputs::validate(units, constants, transfer_plans)?;
+    let inputs = ValidatedEmissionInputs::validate(
+        units,
+        constants,
+        transfer_plans,
+        dense_parameter_materializations,
+    )?;
 
     let mut constants = build_constant_image(&inputs)?;
     let emitted_functions = emit_functions(&inputs, &mut constants, source_attribution)?;
@@ -127,7 +138,7 @@ mod tests {
         let artifact =
             emit_bytecode_artifact(&admitted, &[], &BytecodeValueTransferPlans::empty()).unwrap();
 
-        assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v11");
+        assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v12");
         assert_eq!(BYTECODE_ISA_VERSION, "skiff-bytecode-isa-v5");
         assert_eq!(BYTECODE_IDENTITY_PREFIX, "skiff-bytecode-image-v5:sha256");
         assert_eq!(artifact.magic, BYTECODE_MAGIC);

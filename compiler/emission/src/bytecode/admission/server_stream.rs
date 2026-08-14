@@ -58,6 +58,10 @@ impl ServerStreamGatewayAuthority {
     pub fn handler(&self) -> Option<&PackageCallableId> {
         self.entry.handler.as_ref()
     }
+
+    pub fn entry(&self) -> &DeploymentGatewayEntry {
+        &self.entry
+    }
 }
 
 pub(super) fn validate_authority_coverage(
@@ -872,7 +876,11 @@ fn canonical_response_stream_schema() -> Result<GatewayExternalSchema, String> {
     .map_err(|error| error.to_string())
 }
 
-fn exact_std_symbol_abi(unit: &MirUnit, ty: &TypeRefIr, path: &str) -> Result<String, String> {
+pub(super) fn exact_std_symbol_abi(
+    unit: &MirUnit,
+    ty: &TypeRefIr,
+    path: &str,
+) -> Result<String, String> {
     let TypeRefIr::PackageSymbol { symbol } = ty else {
         return Err(format!("{path} uses a non-package type form"));
     };
@@ -911,7 +919,7 @@ fn exact_std_symbol_abi(unit: &MirUnit, ty: &TypeRefIr, path: &str) -> Result<St
     Ok(abi.to_string())
 }
 
-fn exact_http_request_fields(
+pub(super) fn exact_http_request_fields(
     unit: &MirUnit,
     abi: &str,
 ) -> Result<BTreeMap<String, TypeRefIr>, String> {
@@ -1035,7 +1043,7 @@ fn validate_response_branch(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::path::PathBuf;
 
     use skiff_artifact_identity::{
@@ -1363,7 +1371,9 @@ function outbound(url: string) -> std.http.HttpClientRequest {
         fixture_for_source(SOURCE)
     }
 
-    fn fixture_for_source(source: &str) -> (Vec<MirUnit>, ServerStreamGatewayAuthority) {
+    pub(in crate::bytecode::admission) fn fixture_for_source(
+        source: &str,
+    ) -> (Vec<MirUnit>, ServerStreamGatewayAuthority) {
         let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let lowered = lower_single_source_program(SingleSourceProgram {
             platform_root: &platform_root,

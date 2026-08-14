@@ -38,6 +38,14 @@ pub(super) fn validate_function(
     }
     for parameter in function.frame().parameters() {
         validate_plan(parameter.plan(), function_location, parts)?;
+        if let Some(shape) = parameter.dense_record_shape() {
+            check_index(
+                function_location,
+                CandidateReferenceKind::Shape,
+                shape.get(),
+                parts.shapes.len(),
+            )?;
+        }
     }
     validate_stream_producer_authority(function, parts, function_location)?;
 

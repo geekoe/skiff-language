@@ -1635,6 +1635,18 @@ fn validate_function_limits(
                 ),
             ));
         }
+        if let Some(shape_ref) = parameter.dense_record_shape_ref {
+            let Some(BytecodePoolEntry::ShapeRef { .. }) = pools.shapes.get(shape_ref as usize)
+            else {
+                return Err(index_out_of_bounds(
+                    "shapes pool",
+                    shape_ref,
+                    &location(&format!(
+                        "frameLayout.parameterSlots[{index}].denseRecordShapeRef"
+                    )),
+                ));
+            };
+        }
     }
     validate_writable_locals_and_loans(key, function, pools)?;
     if function.max_operand_depth as u64 > limits::MAX_OPERAND_DEPTH {

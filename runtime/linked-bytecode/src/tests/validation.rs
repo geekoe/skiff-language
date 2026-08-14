@@ -38,11 +38,11 @@ use super::fixtures::{
 };
 
 #[test]
-fn package_provenance_retains_v11_header_identity_and_five_authority_pins() {
+fn package_provenance_retains_v12_header_identity_and_five_authority_pins() {
     let package = package(0, build_id());
 
     assert_eq!(package.package_build_id(), &build_id());
-    assert_eq!(package.schema_version(), "skiff-bytecode-v11");
+    assert_eq!(package.schema_version(), "skiff-bytecode-v12");
     assert_eq!(package.isa_version(), "skiff-bytecode-isa-v5");
     assert_eq!(
         package.opcode_table_fingerprint(),
@@ -122,7 +122,7 @@ fn package_provenance_rejects_header_reference_identity_mismatch() {
         BytecodeArtifactRef::new("bytecode:referenced"),
         "bytecode:declared",
         "skiff-bytecode",
-        "skiff-bytecode-v11",
+        "skiff-bytecode-v12",
         "skiff-bytecode-isa-v5",
         "opcode-table-fingerprint:fixture",
         authority_pins(),
@@ -153,7 +153,7 @@ fn package_provenance_rejects_artifact_locator_paths() {
         artifact_ref,
         "bytecode:fixture",
         "skiff-bytecode",
-        "skiff-bytecode-v11",
+        "skiff-bytecode-v12",
         "skiff-bytecode-isa-v5",
         "opcode-table-fingerprint:fixture",
         authority_pins(),
@@ -194,6 +194,7 @@ fn frame_rejects_plan_shape_and_parameter_plan_mismatch() {
             LinkedValueTransferPlan::MoveOnly {
                 drop: LinkedValueDropPlan::Trivial,
             },
+            None,
         )]),
         Box::new([]),
         Box::new([]),
@@ -213,6 +214,7 @@ fn frame_rejects_plan_shape_and_parameter_plan_mismatch() {
             FrameSlotIndex::new(0),
             ParamModeIr::Value,
             snapshot_plan(),
+            None,
         )]),
         Box::new([FrameSlotIndex::new(0)]),
         Box::new([]),
@@ -265,6 +267,7 @@ fn candidate_retains_specialization_bound_call_loans() {
             FrameSlotIndex::new(0),
             ParamModeIr::Value,
             plan.clone(),
+            None,
         )]),
         Box::new([FrameSlotIndex::new(1)]),
         Box::new([TypeIndex::new(0)]),
@@ -980,7 +983,7 @@ fn candidate_getters_retain_nominal_data_resume_and_root_facts() {
 
     assert_eq!(
         candidate.packages()[0].schema_version(),
-        "skiff-bytecode-v11"
+        "skiff-bytecode-v12"
     );
     assert_eq!(candidate.functions().len(), 1);
     assert_eq!(candidate.operation_entries().len(), 1);
@@ -1099,6 +1102,7 @@ fn candidate_rejects_wrong_lifecycle_adapter_role() {
             FrameSlotIndex::new(0),
             ParamModeIr::Value,
             plan.clone(),
+            None,
         )]),
         Box::new([]),
         Box::new([]),
@@ -1151,6 +1155,35 @@ fn candidate_reports_out_of_bounds_typed_reference() {
 }
 
 #[test]
+fn candidate_bounds_parameter_dense_record_shape_refs() {
+    let plan = snapshot_plan();
+    let frame = LinkedFrameLayout::new(
+        Box::new([TypeIndex::new(0)]),
+        Box::new([LinkedParameterSlot::new(
+            FrameSlotIndex::new(0),
+            ParamModeIr::Value,
+            plan.clone(),
+            Some(ShapeIndex::new(0)),
+        )]),
+        Box::new([]),
+        Box::new([]),
+        Box::new([plan]),
+        Box::new([]),
+        None,
+    )
+    .unwrap();
+    let function = function_with_frame(frame);
+    assert!(matches!(
+        LinkedBytecodeCandidate::try_from_parts(minimal_parts(vec![function])),
+        Err(LinkedBytecodeCandidateError::ReferenceOutOfBounds {
+            reference: CandidateReferenceKind::Shape,
+            index: 0,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn effect_reference_remains_typed_package_callable_identity() {
     let function = function(0, "root");
     assert_eq!(
@@ -1174,6 +1207,7 @@ fn frame_with_stream_result(
             FrameSlotIndex::new(0),
             ParamModeIr::Value,
             plan.clone(),
+            None,
         )]),
         Box::new([]),
         result_types,

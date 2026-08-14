@@ -1,4 +1,4 @@
-//! Focused malformed corpus for the v11 schema / ISA v5 contract. Every case is a
+//! Focused malformed corpus for the v12 schema / ISA v5 contract. Every case is a
 //! hand-written corruption of the canonical fixture and must fail closed.
 
 use crate::bytecode::dto::{

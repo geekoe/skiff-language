@@ -105,6 +105,7 @@ pub(super) fn frame() -> LinkedFrameLayout {
             FrameSlotIndex::new(0),
             ParamModeIr::Value,
             plan.clone(),
+            None,
         )]),
         Box::new([]),
         Box::new([TypeIndex::new(0)]),

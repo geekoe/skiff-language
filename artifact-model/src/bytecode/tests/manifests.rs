@@ -19,6 +19,7 @@ fn bind_helper_receiver(artifact: &mut BytecodeArtifact) {
         slot: 0,
         mode: crate::ParamModeIr::Value,
         plan: snapshot_share(),
+        dense_record_shape_ref: None,
     }];
 
     let main = artifact
@@ -387,6 +388,39 @@ fn writable_locals_are_canonical_bounded_and_never_parameters() {
     assert!(assert_rejected(&out_of_bounds)
         .to_string()
         .contains("out of bounds"));
+}
+
+#[test]
+fn parameter_dense_record_shape_ref_is_nullable_but_bounded_and_kind_checked() {
+    let mut present = canonical_artifact();
+    present
+        .image
+        .functions
+        .get_mut("module::main")
+        .unwrap()
+        .frame_layout
+        .parameter_slots[0]
+        .dense_record_shape_ref = Some(0);
+    assert_validates(&present);
+
+    let mut out_of_bounds = canonical_artifact();
+    out_of_bounds
+        .image
+        .functions
+        .get_mut("module::main")
+        .unwrap()
+        .frame_layout
+        .parameter_slots[0]
+        .dense_record_shape_ref = Some(u32::MAX);
+    assert!(assert_rejected(&out_of_bounds)
+        .to_string()
+        .contains("denseRecordShapeRef"));
+
+    let mut wrong_kind = present;
+    wrong_kind.image.pools.shapes[0] = BytecodePoolEntry::TypeRef { ty: string_type() };
+    assert!(assert_rejected(&wrong_kind)
+        .to_string()
+        .contains("incompatible entry kind"));
 }
 
 #[test]

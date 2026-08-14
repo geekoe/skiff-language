@@ -9,10 +9,10 @@ use skiff_artifact_model::{
     BytecodeImage, BytecodeIntrinsicRef, BytecodePoolEntry, BytecodePools, BytecodeRelocation,
     BytecodeSpecialization, DebugBinding, DebugTable, FrameLayout, FrozenConstantGraph,
     FrozenConstantNode, HostEffectSignature, IntrinsicReference, LiteralIr, PackageCallableId,
-    PackageExecutableCoordinate, RelocatableBytecodeFunction, ResumeDescriptor, ResumeErrorMode,
-    ResumeResultMaterialization, ShapeDeclaration, SourceMapEntry, StatementAttributionId,
-    StatementEntry, TypeRefIr, ValueDropPlan, ValueTransferPlan, BYTECODE_ISA_VERSION,
-    BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    PackageExecutableCoordinate, ParamModeIr, ParameterSlotDecl, RelocatableBytecodeFunction,
+    ResumeDescriptor, ResumeErrorMode, ResumeResultMaterialization, ShapeDeclaration,
+    SourceMapEntry, StatementAttributionId, StatementEntry, TypeRefIr, ValueDropPlan,
+    ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -740,6 +740,39 @@ fn derived_execution_authorities_participate_in_the_preimage() {
         bytecode_identity(&mutated).unwrap(),
         with_contracts,
         "stream producer item type must participate in bytecode identity"
+    );
+}
+
+#[test]
+fn parameter_dense_record_shape_ref_participates_in_the_preimage() {
+    let mut parameter = fixture();
+    parameter
+        .image
+        .functions
+        .get_mut("module::main")
+        .unwrap()
+        .frame_layout
+        .parameter_slots = vec![ParameterSlotDecl {
+        slot: 0,
+        mode: ParamModeIr::Value,
+        plan: snapshot_share(),
+        dense_record_shape_ref: None,
+    }];
+    let shapeless_identity = bytecode_identity(&parameter).unwrap();
+    parameter
+        .image
+        .functions
+        .get_mut("module::main")
+        .unwrap()
+        .frame_layout
+        .parameter_slots[0]
+        .dense_record_shape_ref = Some(0);
+    skiff_artifact_model::structurally_validate(&parameter)
+        .expect("Some parameter DenseRecord fixture remains structurally valid");
+    assert_ne!(
+        bytecode_identity(&parameter).unwrap(),
+        shapeless_identity,
+        "parameter denseRecordShapeRef None-to-Some must change bytecode identity"
     );
 }
 

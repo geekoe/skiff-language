@@ -16,7 +16,7 @@ use skiff_runtime_linked_bytecode::{
     LinkedFrozenConstantNode, LinkedInterfaceTable, LinkedIntrinsicTarget,
     LinkedPackageBytecodeProvenance, LinkedServiceOperationTarget, LinkedShapeEntry,
     LinkedSyntheticCallbackTarget, LinkedTypeEntry, LinkedWritablePathEntry, ResumeSiteIndex,
-    TypeIndex,
+    ShapeIndex, TypeIndex,
 };
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 use skiff_runtime_model::vm_value::CompactTypeTag;
@@ -62,6 +62,7 @@ struct HttpGatewayEntryFacts {
     function: FunctionIndex,
     signature: LinkedCallableSignature,
     adapter_plan: GatewayAdapterPlan,
+    parameter_dense_record_shape: Option<ShapeIndex>,
 }
 
 /// Opaque, atomic-image-backed execution authority for one indexed host target.
@@ -210,6 +211,7 @@ impl DeploymentExecutionImage {
             },
             function: entry.function,
             signature: entry.signature.clone(),
+            parameter_dense_record_shape: None,
         })
     }
 
@@ -253,6 +255,7 @@ impl DeploymentExecutionImage {
             },
             function: entry.function,
             signature: entry.signature.clone(),
+            parameter_dense_record_shape: entry.parameter_dense_record_shape,
         })
     }
 }
@@ -280,6 +283,7 @@ pub struct DeploymentExecutionEntry {
     _kind: DeploymentExecutionEntryKind,
     function: FunctionIndex,
     signature: LinkedCallableSignature,
+    parameter_dense_record_shape: Option<ShapeIndex>,
 }
 
 impl DeploymentExecutionEntry {
@@ -293,6 +297,12 @@ impl DeploymentExecutionEntry {
 
     pub const fn signature(&self) -> &LinkedCallableSignature {
         &self.signature
+    }
+
+    /// Exact compiler-emitted dense layout for the gateway's parameter, when
+    /// the entry surface admits such materialization.
+    pub const fn parameter_dense_record_shape(&self) -> Option<ShapeIndex> {
+        self.parameter_dense_record_shape
     }
 }
 
@@ -496,6 +506,11 @@ pub fn link_deployment_execution_image(
                         function: handler.function(),
                         signature: handler.signature().clone(),
                         adapter_plan: entry.adapter_plan().clone(),
+                        parameter_dense_record_shape: linked
+                            .functions()
+                            .get(handler.function().get() as usize)
+                            .and_then(|function| function.frame().parameters().first())
+                            .and_then(|parameter| parameter.dense_record_shape()),
                     },
                 )
             })

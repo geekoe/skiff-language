@@ -718,7 +718,7 @@ fn production_entry_links_exact_ordinary_root_local_call_and_return() {
         .packages()
         .get(&fixture.package_reference.package_build_id)
         .unwrap();
-    assert_exact_v11_provenance(provenance, hydrated_package);
+    assert_exact_v12_provenance(provenance, hydrated_package);
     // The loader is the only safe hydrated-deployment constructor, so its
     // mixed-registry negative tests own impossible receipt construction. The
     // linker tests prove that the opaque joined receipt survives unchanged.
@@ -867,6 +867,53 @@ fn production_entry_links_server_stream_gateway_without_rechecking_source_semant
         candidate.gateway_entries()[0].gateway_entry_key().as_str(),
         "phase-1"
     );
+}
+
+#[test]
+fn raw_http_entry_exposes_only_the_exact_linked_parameter_shape() {
+    let fixture = Fixture::raw_http_dense_parameter(true);
+    let hydrated = fixture.hydrate();
+    let ingress = hydrated.deployment().ingress[0].selector.clone();
+    let identity = hydrated
+        .deployment()
+        .gateway_entries
+        .values()
+        .next()
+        .unwrap()
+        .gateway_entry_identity
+        .clone();
+    let image = Arc::new(
+        link_deployment_execution_image(hydrated, &super::generous_execution_limits()).unwrap(),
+    );
+    let entry = image.http_gateway_entry(&ingress, &identity).unwrap();
+    let shape = entry
+        .parameter_dense_record_shape()
+        .expect("rawHttp entry borrows its compiler-owned resolved shape");
+    assert_eq!(
+        image.shapes()[shape.get() as usize]
+            .fields()
+            .iter()
+            .map(|field| field.name())
+            .collect::<Vec<_>>(),
+        ["name"]
+    );
+}
+
+#[test]
+fn raw_http_entry_rejects_a_missing_parameter_materialization_fact() {
+    let error = link_deployment(
+        &Fixture::raw_http_dense_parameter(false).hydrate(),
+        &generous_limits(),
+    )
+    .expect_err("rawHttp cannot recover a missing compiler-owned parameter layout");
+    assert!(matches!(
+        error,
+        BytecodeLinkError::UnsatisfiedObligation {
+            obligation: BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+            detail,
+            ..
+        } if detail.contains("lacks compiler-owned dense materialization")
+    ));
 }
 
 #[test]
@@ -1272,7 +1319,7 @@ fn source_site(source_id: u64) -> InstructionSourceSite {
     }
 }
 
-fn assert_exact_v11_provenance(
+fn assert_exact_v12_provenance(
     provenance: &LinkedPackageBytecodeProvenance,
     package: &HydratedBytecodePackage,
 ) {
@@ -1280,7 +1327,7 @@ fn assert_exact_v11_provenance(
     let view = admitted.view();
 
     assert_eq!(provenance.magic(), "skiff-bytecode");
-    assert_eq!(provenance.schema_version(), "skiff-bytecode-v11");
+    assert_eq!(provenance.schema_version(), "skiff-bytecode-v12");
     assert_eq!(provenance.isa_version(), "skiff-bytecode-isa-v5");
     assert_eq!(provenance.schema_version(), view.schema_version());
     assert_eq!(provenance.isa_version(), view.isa_version());

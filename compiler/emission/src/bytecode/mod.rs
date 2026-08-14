@@ -22,8 +22,9 @@ mod intrinsics;
 mod plans;
 
 pub use admission::{
-    admit_phase_1_bytecode_mir, admit_phase_1_bytecode_mir_with_server_stream_authorities,
-    AdmittedPhase1BytecodeMir, ServerStreamEmitFact, ServerStreamGatewayAuthority,
+    admit_phase_1_bytecode_mir, admit_phase_1_bytecode_mir_with_gateway_authorities,
+    admit_phase_1_bytecode_mir_with_server_stream_authorities, AdmittedPhase1BytecodeMir,
+    GatewayParameterAuthority, ServerStreamEmitFact, ServerStreamGatewayAuthority,
 };
 pub use emitter::emit_bytecode_artifact;
 pub use error::{BytecodeEmissionError, Phase1MirFactMismatch, Phase1UnsupportedCapability};

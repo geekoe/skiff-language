@@ -132,7 +132,7 @@ fn enabled_lane_attaches_exact_handoff_ref_and_manifest_to_a_new_projection() {
         .reference()
         .bytecode_identity
         .starts_with("skiff-bytecode-image-v5:sha256:"));
-    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v11");
+    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v12");
     assert_eq!(
         BYTECODE_IDENTITY_SCHEMA_MARKER,
         "skiff-bytecode-artifact-v5"
@@ -225,6 +225,23 @@ fn production_authoring_publishes_exact_affine_http_stream_bytecode() {
     let decoded = skiff_artifact_model::bytecode::BoundedDecoder::new()
         .decode_function(&function.words)
         .expect("published wordcode decodes");
+    let parameter_shape_ref = function.frame_layout.parameter_slots[0]
+        .dense_record_shape_ref
+        .expect("rawHttp handler carries its exact request materialization layout");
+    let BytecodePoolEntry::ShapeRef {
+        shape: parameter_shape,
+    } = &bytecode.artifact().image.pools.shapes[parameter_shape_ref as usize]
+    else {
+        panic!("rawHttp parameter layout selects a shape")
+    };
+    assert_eq!(
+        parameter_shape
+            .fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["body", "headers", "method", "path", "query", "url"]
+    );
     let mut emit_shapes = decoded
         .instructions
         .iter()
@@ -353,6 +370,70 @@ fn production_authoring_publishes_exact_affine_http_stream_bytecode() {
     assert!(surface.request_body_schema.is_none());
     assert!(surface.response_schema.is_none());
     assert!(surface.stream_item_schema.is_some());
+    std::fs::remove_dir_all(temp).expect("remove production fixture tree");
+}
+
+#[test]
+fn production_raw_http_parameter_shape_does_not_depend_on_field_access() {
+    const SOURCE: &str = r#"import std
+
+function consume(
+  request: std.http.HttpRequest
+) -> Stream<std.http.HttpResponseStreamEvent> {
+  emit({ tag: "end" })
+  return null
+}
+"#;
+    let package_id = "test.skiff/c5-shapeless-request";
+    let http = "consume:\n  method: POST\n  path: /phase-5/shapeless\n  kind: rawHttp\n  handler: main.consume\n  adapterArgs:\n    - param: request\n      source: { kind: http.request }\n";
+    let (platform, package_root, artifact_root, temp) = production_fixture(package_id, Some(http));
+    std::fs::write(package_root.join("main.skiff"), SOURCE).expect("write shapeless source");
+    let receipt = crate::authoring::build_authoring_object(
+        &platform,
+        crate::authoring::AuthoringObject::Package,
+        &package_root,
+        &artifact_root,
+        "skiff-test",
+        true,
+    )
+    .expect("unused canonical HttpRequest still emits its exact layout fact");
+    let package_ref: skiff_artifact_model::PackageArtifactRef =
+        serde_json::from_value(receipt["packageArtifactReceipt"]["artifact"].clone())
+            .expect("authoring receipt carries package ref");
+    let store = skiff_deployment::storage::CanonicalArtifactStore::open(&artifact_root)
+        .expect("open production artifact store");
+    let package = store
+        .read_package_artifact(&package_ref)
+        .expect("read production package artifact");
+    let bytecode = store
+        .read_package_bytecode(&package_ref, package.bytecode.as_ref().unwrap())
+        .expect("read production bytecode");
+    let function = &bytecode.artifact().image.functions["main::consume"];
+    let decoded = skiff_artifact_model::bytecode::BoundedDecoder::new()
+        .decode_function(&function.words)
+        .expect("decode handler");
+    assert!(decoded.instructions.iter().all(|instruction| {
+        !matches!(
+            instruction.descriptor.kind,
+            Opcode::GetDenseField | Opcode::TakeDenseField
+        )
+    }));
+    let shape_ref = function.frame_layout.parameter_slots[0]
+        .dense_record_shape_ref
+        .expect("compiler emits the root shape without field opcodes");
+    let BytecodePoolEntry::ShapeRef { shape } =
+        &bytecode.artifact().image.pools.shapes[shape_ref as usize]
+    else {
+        panic!("parameter fact selects a dense shape")
+    };
+    assert_eq!(
+        shape
+            .fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        ["body", "headers", "method", "path", "query", "url"]
+    );
     std::fs::remove_dir_all(temp).expect("remove production fixture tree");
 }
 

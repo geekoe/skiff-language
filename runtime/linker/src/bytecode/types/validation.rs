@@ -295,33 +295,66 @@ impl TypeLinker<'_> {
         shape: &LinkedShapeEntry,
         location: BytecodeLinkLocation,
     ) -> Result<(), BytecodeLinkError> {
+        self.validate_dense_record_materialization(
+            result_type,
+            result_plan,
+            shape,
+            "dense result materialization",
+            "its exact resume result",
+            location,
+        )
+    }
+
+    pub(in crate::bytecode) fn validate_dense_parameter_materialization(
+        &self,
+        parameter_type: TypeIndex,
+        parameter_plan: &LinkedValueTransferPlan,
+        shape: &LinkedShapeEntry,
+        location: BytecodeLinkLocation,
+    ) -> Result<(), BytecodeLinkError> {
+        self.validate_dense_record_materialization(
+            parameter_type,
+            parameter_plan,
+            shape,
+            "dense parameter materialization",
+            "its exact frame parameter",
+            location,
+        )
+    }
+
+    fn validate_dense_record_materialization(
+        &self,
+        value_type: TypeIndex,
+        value_plan: &LinkedValueTransferPlan,
+        shape: &LinkedShapeEntry,
+        subject: &str,
+        nominal_owner: &str,
+        location: BytecodeLinkLocation,
+    ) -> Result<(), BytecodeLinkError> {
         let snapshot_plan = LinkedValueTransferPlan::SnapshotShare {
             drop: LinkedValueDropPlan::SnapshotRelease,
         };
-        if result_plan != &snapshot_plan || shape.plan() != &snapshot_plan {
+        if value_plan != &snapshot_plan || shape.plan() != &snapshot_plan {
             return Err(obligation_error(
                 BytecodeLinkObligation::FrameAndValueTransferPlan,
                 location,
-                "dense result materialization requires exact SnapshotShare/SnapshotRelease result and shape plans"
-                    .to_string(),
+                format!(
+                    "{subject} requires exact SnapshotShare/SnapshotRelease value and shape plans"
+                ),
             ));
         }
         if shape.privileged_affine_composite().is_some() {
             return Err(obligation_error(
                 BytecodeLinkObligation::ConcreteTypeAndShapeTables,
                 location,
-                "dense result materialization cannot reference a privileged affine shape"
-                    .to_string(),
+                format!("{subject} cannot reference a privileged affine shape"),
             ));
         }
-        let result_type_ref = self.linked_type_ref(result_type).ok_or_else(|| {
+        let value_type_ref = self.linked_type_ref(value_type).ok_or_else(|| {
             obligation_error(
                 BytecodeLinkObligation::ConcreteTypeAndShapeTables,
                 location.clone(),
-                format!(
-                    "dense materialization result type {} is absent",
-                    result_type.get()
-                ),
+                format!("{subject} value type {} is absent", value_type.get()),
             )
         })?;
         let nominal_type_ref = self.linked_type_ref(shape.nominal_type()).ok_or_else(|| {
@@ -329,26 +362,25 @@ impl TypeLinker<'_> {
                 BytecodeLinkObligation::ConcreteTypeAndShapeTables,
                 location.clone(),
                 format!(
-                    "dense materialization shape {} nominal type is absent",
+                    "{subject} shape {} nominal type is absent",
                     shape.index().get()
                 ),
             )
         })?;
-        if result_type_ref != nominal_type_ref {
+        if value_type_ref != nominal_type_ref {
             return Err(obligation_error(
                 BytecodeLinkObligation::ConcreteTypeAndShapeTables,
                 location,
-                "dense materialization shape nominal TypeRef/ABI differs from its exact resume result"
-                    .to_string(),
+                format!("{subject} shape nominal TypeRef/ABI differs from {nominal_owner}"),
             ));
         }
-        let expected_fields = self.dense_record_fields(result_type_ref, location.clone())?;
+        let expected_fields =
+            self.dense_record_fields(value_type_ref, subject, location.clone())?;
         if shape.fields().len() != expected_fields.len() {
             return Err(obligation_error(
                 BytecodeLinkObligation::ConcreteTypeAndShapeTables,
                 location,
-                "dense materialization shape field count differs from its exact ABI descriptor"
-                    .to_string(),
+                format!("{subject} shape field count differs from its exact ABI descriptor"),
             ));
         }
         for (ordinal, (field, (expected_name, expected_type))) in shape
@@ -361,7 +393,7 @@ impl TypeLinker<'_> {
                 obligation_error(
                     BytecodeLinkObligation::ConcreteTypeAndShapeTables,
                     location.clone(),
-                    format!("dense materialization field {ordinal} type is absent"),
+                    format!("{subject} field {ordinal} type is absent"),
                 )
             })?;
             let expected_plan = self.plan_for_concrete_type(expected_type, location.clone())?;
@@ -373,7 +405,7 @@ impl TypeLinker<'_> {
                     BytecodeLinkObligation::ConcreteTypeAndShapeTables,
                     location,
                     format!(
-                        "dense materialization field {ordinal} differs from its exact ABI name/type/lifecycle"
+                        "{subject} field {ordinal} differs from its exact ABI name/type/lifecycle"
                     ),
                 ));
             }
@@ -384,6 +416,7 @@ impl TypeLinker<'_> {
     fn dense_record_fields(
         &self,
         nominal: &TypeRefIr,
+        subject: &str,
         location: BytecodeLinkLocation,
     ) -> Result<BTreeMap<String, TypeRefIr>, BytecodeLinkError> {
         if let TypeRefIr::Record { fields } = nominal {
@@ -393,14 +426,14 @@ impl TypeLinker<'_> {
             return Err(obligation_error(
                 BytecodeLinkObligation::ConcreteTypeAndShapeTables,
                 location,
-                "dense result materialization nominal type is not an exact record".to_string(),
+                format!("{subject} nominal type is not an exact record"),
             ));
         };
         let PackageRefIr::PackageId { package_id } = &symbol.package else {
             return Err(obligation_error(
                 BytecodeLinkObligation::ConcreteTypeAndShapeTables,
                 location,
-                "dense result materialization retains an unresolved dependency alias".to_string(),
+                format!("{subject} retains an unresolved dependency alias"),
             ));
         };
         let mut owners = self
@@ -412,7 +445,7 @@ impl TypeLinker<'_> {
             obligation_error(
                 BytecodeLinkObligation::ConcreteTypeAndShapeTables,
                 location.clone(),
-                format!("dense result materialization package owner {package_id:?} is absent"),
+                format!("{subject} package owner {package_id:?} is absent"),
             )
         })?;
         if owners.next().is_some()
@@ -422,7 +455,7 @@ impl TypeLinker<'_> {
             return Err(obligation_error(
                 BytecodeLinkObligation::ConcreteTypeAndShapeTables,
                 location,
-                "dense result materialization package owner/ABI is not exact".to_string(),
+                format!("{subject} package owner/ABI is not exact"),
             ));
         }
         let mut resolver = ValidationLifecycleResolver::new(self.deployment(), owner);
@@ -431,7 +464,7 @@ impl TypeLinker<'_> {
                 BytecodeLinkObligation::ConcreteTypeAndShapeTables,
                 location.clone(),
                 format!(
-                    "dense result materialization type cannot be resolved by {}: {}",
+                    "{subject} type cannot be resolved by {}: {}",
                     error.authority, error.message
                 ),
             )
@@ -440,14 +473,14 @@ impl TypeLinker<'_> {
             return Err(obligation_error(
                 BytecodeLinkObligation::ConcreteTypeAndShapeTables,
                 location,
-                "generic dense result materialization lacks exact type arguments".to_string(),
+                format!("generic {subject} lacks exact type arguments"),
             ));
         }
         let TypeDescriptorIr::Record { fields } = resolved.descriptor else {
             return Err(obligation_error(
                 BytecodeLinkObligation::ConcreteTypeAndShapeTables,
                 location,
-                "dense result materialization ABI descriptor is not a record".to_string(),
+                format!("{subject} ABI descriptor is not a record"),
             ));
         };
         Ok(fields)

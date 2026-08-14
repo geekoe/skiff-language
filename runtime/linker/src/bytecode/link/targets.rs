@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_model::PackageCallableId;
+use skiff_artifact_model::{GatewayAdapterKind, PackageCallableId};
 use skiff_runtime_linked_bytecode::{
     FunctionIndex, LinkedCallableSignature, LinkedFunction, LinkedGatewayCallable,
     LinkedGatewayCallableRole, LinkedGatewayEntry, LinkedOperationEntry, LinkedParameterSlot,
@@ -189,6 +189,45 @@ impl DeploymentLinker<'_> {
                             self.deployment_location(),
                         )?,
                     ));
+                }
+                if entry.adapter_plan.kind == GatewayAdapterKind::RawHttp {
+                    let handler = callables
+                        .iter()
+                        .find(|callable| callable.role() == LinkedGatewayCallableRole::Handler)
+                        .ok_or_else(|| {
+                            unsatisfied(
+                                BytecodeLinkObligation::CanonicalRootSet,
+                                self.deployment_location(),
+                                "rawHttp gateway lacks an exact linked handler".to_string(),
+                            )
+                        })?;
+                    let handler_function = functions
+                        .get(handler.function().get() as usize)
+                        .ok_or_else(|| {
+                            unsatisfied(
+                                BytecodeLinkObligation::CanonicalRootSet,
+                                self.deployment_location(),
+                                format!(
+                                    "rawHttp handler function {} is out of bounds",
+                                    handler.function().get()
+                                ),
+                            )
+                        })?;
+                    let [parameter] = handler_function.frame().parameters() else {
+                        return Err(unsatisfied(
+                            BytecodeLinkObligation::FrameAndValueTransferPlan,
+                            self.deployment_location(),
+                            "rawHttp handler must retain one exact frame parameter".to_string(),
+                        ));
+                    };
+                    if parameter.dense_record_shape().is_none() {
+                        return Err(unsatisfied(
+                            BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                            self.deployment_location(),
+                            "rawHttp handler parameter lacks compiler-owned dense materialization"
+                                .to_string(),
+                        ));
+                    }
                 }
                 LinkedGatewayEntry::try_new(
                     entry_key.clone(),

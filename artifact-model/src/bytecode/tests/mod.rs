@@ -217,6 +217,7 @@ pub(crate) fn main_function() -> RelocatableBytecodeFunction {
                 slot: 0,
                 mode: crate::ParamModeIr::Value,
                 plan: snapshot_share(),
+                dense_record_shape_ref: None,
             }],
             writable_local_slots: vec![1],
             result_count: 1,

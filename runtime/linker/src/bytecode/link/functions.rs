@@ -95,17 +95,45 @@ impl DeploymentLinker<'_> {
                         format!("frame parameter type {} is absent", ty.get()),
                     )
                 })?;
+                let plan = type_linker.link_plan_for_type_at(
+                    package,
+                    key,
+                    &substitutions,
+                    &parameter.plan,
+                    &concrete,
+                    location.clone(),
+                )?;
+                let dense_record_shape = parameter
+                    .dense_record_shape_ref
+                    .map(|artifact_shape| {
+                        let shape = type_linker.intern_pool_shape(
+                            package,
+                            key,
+                            artifact_shape,
+                            &substitutions,
+                            location.clone(),
+                        )?;
+                        let row = type_linker.shape(shape).cloned().ok_or_else(|| {
+                            unsatisfied(
+                                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                                location.clone(),
+                                format!("dense parameter shape {} is absent", shape.get()),
+                            )
+                        })?;
+                        type_linker.validate_dense_parameter_materialization(
+                            ty,
+                            &plan,
+                            &row,
+                            location.clone(),
+                        )?;
+                        Ok(shape)
+                    })
+                    .transpose()?;
                 Ok(LinkedParameterSlot::new(
                     slot,
                     parameter.mode,
-                    type_linker.link_plan_for_type_at(
-                        package,
-                        key,
-                        &substitutions,
-                        &parameter.plan,
-                        &concrete,
-                        location.clone(),
-                    )?,
+                    plan,
+                    dense_record_shape,
                 ))
             })
             .collect::<Result<Vec<_>, BytecodeLinkError>>()?;

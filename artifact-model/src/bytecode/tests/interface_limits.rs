@@ -46,6 +46,7 @@ fn bind_helper_receiver(artifact: &mut BytecodeArtifact) {
         slot: 0,
         mode: crate::ParamModeIr::Value,
         plan: snapshot_share(),
+        dense_record_shape_ref: None,
     }];
 
     let main = artifact

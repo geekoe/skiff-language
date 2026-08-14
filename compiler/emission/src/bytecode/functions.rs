@@ -4261,6 +4261,33 @@ impl<'a> FunctionEmitter<'a> {
                     &format!("parameter `{name}` has no slot plan", name = parameter.name),
                 )
             })?;
+            let dense_record_shape_ref = self
+                .inputs
+                .dense_parameter_materializations
+                .get(&self.key)
+                .filter(|fact| fact.slot == parameter.slot)
+                .map(|fact| {
+                    if fact.ty != parameter.ty {
+                        return Err(unsupported(
+                            &self.key,
+                            "dense parameter materialization",
+                            &format!(
+                                "parameter `{}` type differs from admitted gateway fact",
+                                parameter.name
+                            ),
+                        ));
+                    }
+                    self.image.intern_shape(
+                        self.unit.module_path.as_str(),
+                        &fact.ty,
+                        &fact.fields,
+                        &format!(
+                            "rawHttp gateway parameter `{}` in `{}`",
+                            parameter.name, self.key
+                        ),
+                    )
+                })
+                .transpose()?;
             parameter_slots.push(ParameterSlotDecl {
                 slot: parameter.slot,
                 mode: match parameter.mode {
@@ -4268,6 +4295,7 @@ impl<'a> FunctionEmitter<'a> {
                     MirParamMode::InOut => ParamModeIr::InOut,
                 },
                 plan,
+                dense_record_shape_ref,
             });
         }
         if let Some(receiver) = &self.function.receiver {
@@ -4287,6 +4315,7 @@ impl<'a> FunctionEmitter<'a> {
                     slot: receiver.slot,
                     mode: ParamModeIr::Value,
                     plan,
+                    dense_record_shape_ref: None,
                 });
             }
         }
@@ -4970,8 +4999,14 @@ mod tests {
         let plans = derive_test_bytecode_value_transfer_plans(&units)
             .expect("the source classifier covers the test MIR");
         let bundles = [bundle];
-        let inputs = ValidatedEmissionInputs::validate(&units, &bundles, &plans)
-            .expect("test inputs validate");
+        let dense_parameter_materializations = BTreeMap::new();
+        let inputs = ValidatedEmissionInputs::validate(
+            &units,
+            &bundles,
+            &plans,
+            &dense_parameter_materializations,
+        )
+        .expect("test inputs validate");
         let mut image = build_constant_image(&inputs).expect("test image builds");
         let unit = inputs.units.get("main").expect("test unit is present");
         let function = unit

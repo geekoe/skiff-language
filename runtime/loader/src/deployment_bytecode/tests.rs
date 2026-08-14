@@ -347,6 +347,7 @@ fn callable_bytecode(
                         slot: 0,
                         mode: skiff_artifact_model::ParamModeIr::Value,
                         plan: plan.clone(),
+                        dense_record_shape_ref: None,
                     })
                     .into_iter()
                     .collect(),

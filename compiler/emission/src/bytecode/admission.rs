@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     AssignTargetIr, BinaryOpIr, CallTargetIr, CallableEffectSummary, ExprIr, ExprRefIr, LiteralIr,
@@ -15,13 +15,16 @@ use super::{
     Phase1UnsupportedCapability,
 };
 
+mod gateway_parameter;
 mod host_effects;
 mod package_type_authority;
 mod server_stream;
 
+pub(crate) use gateway_parameter::DenseParameterMaterializationFact;
 use host_effects::{HostEffectAdmissions, RegistryValueAuthority};
 use server_stream::ServerStreamAdmissions;
 
+pub use gateway_parameter::GatewayParameterAuthority;
 pub use server_stream::{ServerStreamEmitFact, ServerStreamGatewayAuthority};
 
 const CANONICAL_DURATION_MILLISECONDS_BINDING_KEY: &str = "core.duration.milliseconds";
@@ -40,11 +43,18 @@ const CANONICAL_SLEEP_DURATION_NAME: &str = "Duration";
 #[derive(Debug)]
 pub struct AdmittedPhase1BytecodeMir {
     units: Vec<MirUnit>,
+    dense_parameter_materializations: BTreeMap<String, DenseParameterMaterializationFact>,
 }
 
 impl AdmittedPhase1BytecodeMir {
     pub(crate) fn units(&self) -> &[MirUnit] {
         &self.units
+    }
+
+    pub(crate) fn dense_parameter_materializations(
+        &self,
+    ) -> &BTreeMap<String, DenseParameterMaterializationFact> {
+        &self.dense_parameter_materializations
     }
 
     /// Returns the normalized, admitted MIR used to project source-owned
@@ -92,6 +102,22 @@ pub fn admit_phase_1_bytecode_mir_with_server_stream_authorities(
     units: &[MirUnit],
     server_stream_authorities: &[ServerStreamGatewayAuthority],
 ) -> Result<AdmittedPhase1BytecodeMir, BytecodeEmissionError> {
+    let gateway_parameter_authorities = server_stream_authorities
+        .iter()
+        .map(|authority| GatewayParameterAuthority::new(authority.entry().clone()))
+        .collect::<Vec<_>>();
+    admit_phase_1_bytecode_mir_with_gateway_authorities(
+        units,
+        &gateway_parameter_authorities,
+        server_stream_authorities,
+    )
+}
+
+pub fn admit_phase_1_bytecode_mir_with_gateway_authorities(
+    units: &[MirUnit],
+    gateway_parameter_authorities: &[GatewayParameterAuthority],
+    server_stream_authorities: &[ServerStreamGatewayAuthority],
+) -> Result<AdmittedPhase1BytecodeMir, BytecodeEmissionError> {
     let units =
         package_type_authority::normalize_package_type_authorities(units).map_err(|error| {
             rejected(
@@ -100,6 +126,17 @@ pub fn admit_phase_1_bytecode_mir_with_server_stream_authorities(
                 Phase1UnsupportedCapability::ValueShape,
                 &format!("package type authority: {}", error.detail),
             )
+        })?;
+    let dense_parameter_materializations =
+        gateway_parameter::analyze(&units, gateway_parameter_authorities).map_err(|detail| {
+            BytecodeEmissionError::UnsupportedPhase1Capability {
+                capability: Phase1UnsupportedCapability::ValueShape,
+                module_path: units
+                    .first()
+                    .map_or_else(String::new, |unit| unit.module_path.clone()),
+                function_key: None,
+                location: format!("rawHttp gateway parameter authority: {detail}"),
+            }
         })?;
     server_stream::validate_authority_coverage(&units, server_stream_authorities).map_err(
         |detail| BytecodeEmissionError::UnsupportedPhase1Capability {
@@ -170,11 +207,15 @@ pub fn admit_phase_1_bytecode_mir_with_server_stream_authorities(
                 unit,
                 &function_key,
                 function,
+                &dense_parameter_materializations,
                 server_stream_authorities,
             )?;
         }
     }
-    Ok(AdmittedPhase1BytecodeMir { units })
+    Ok(AdmittedPhase1BytecodeMir {
+        units,
+        dense_parameter_materializations,
+    })
 }
 
 fn admit_function(
@@ -182,6 +223,7 @@ fn admit_function(
     unit: &MirUnit,
     function_key: &str,
     function: &MirFunction,
+    dense_parameter_materializations: &BTreeMap<String, DenseParameterMaterializationFact>,
     server_stream_authorities: &[ServerStreamGatewayAuthority],
 ) -> Result<(), BytecodeEmissionError> {
     function.validate_expression_indices()?;
@@ -240,6 +282,7 @@ fn admit_function(
                 &format!("exact server-stream admission: {detail}"),
             )
         })?;
+    let dense_parameter_materialization = dense_parameter_materializations.get(function_key);
     if let Some(stream) = &function.stream_result {
         let TypeRefIr::Builtin { name, args } = &function.return_type else {
             return Err(rejected_function(
@@ -285,7 +328,9 @@ fn admit_function(
                 &format!("parameter {parameter_index}"),
             ));
         }
-        if !server_stream.admits_slot(parameter.slot, &parameter.ty)
+        if !dense_parameter_materialization
+            .is_some_and(|fact| fact.slot == parameter.slot && fact.ty == parameter.ty)
+            && !server_stream.admits_slot(parameter.slot, &parameter.ty)
             && !server_stream.admits_scalar_carrier(&parameter.ty)
             && !server_stream.admits_closure_carrier(&parameter.ty)
         {
@@ -345,7 +390,9 @@ fn admit_function(
                 &format!("slot {} without an exact type", slot.slot),
             ));
         };
-        if !server_stream.admits_slot(slot.slot, ty)
+        if !dense_parameter_materialization
+            .is_some_and(|fact| fact.slot == slot.slot && &fact.ty == ty)
+            && !server_stream.admits_slot(slot.slot, ty)
             && !server_stream.admits_scalar_carrier(ty)
             && !server_stream.admits_closure_carrier(ty)
         {

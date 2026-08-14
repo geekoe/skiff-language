@@ -11,8 +11,8 @@ use skiff_compiler_compiled::{
 };
 use skiff_compiler_contract::ServicePublicInstanceOperationFacts;
 use skiff_compiler_emission::bytecode::{
-    admit_phase_1_bytecode_mir_with_server_stream_authorities,
-    derive_bytecode_value_transfer_plans, emit_bytecode_artifact, ServerStreamEmitFact,
+    admit_phase_1_bytecode_mir_with_gateway_authorities, derive_bytecode_value_transfer_plans,
+    emit_bytecode_artifact, GatewayParameterAuthority, ServerStreamEmitFact,
     ServerStreamGatewayAuthority,
 };
 use skiff_compiler_emission::package_artifact::PublishedPackageArtifact;
@@ -169,8 +169,10 @@ fn emit_enabled_bytecode(
     let units = compiled.lowered().mir_units();
     let server_stream_authorities =
         server_stream_gateway_authorities(projected_gateway, unattached_package, units)?;
-    let admitted = admit_phase_1_bytecode_mir_with_server_stream_authorities(
+    let gateway_parameter_authorities = gateway_parameter_authorities(projected_gateway);
+    let admitted = admit_phase_1_bytecode_mir_with_gateway_authorities(
         units,
+        &gateway_parameter_authorities,
         &server_stream_authorities,
     )?;
     let mut bundles = Vec::new();
@@ -217,6 +219,24 @@ fn emit_enabled_bytecode(
         artifact,
         reference,
     )?)
+}
+
+fn gateway_parameter_authorities(
+    projected: &ProjectedHttpGateway,
+) -> Vec<GatewayParameterAuthority> {
+    projected
+        .gateway_entries
+        .values()
+        .filter(|entry| {
+            matches!(
+                &entry.protocol_surface.protocol,
+                GatewayProtocolSurface::Http(surface)
+                    if surface.adapter_kind == skiff_artifact_model::GatewayAdapterKind::RawHttp
+            )
+        })
+        .cloned()
+        .map(GatewayParameterAuthority::new)
+        .collect()
 }
 
 fn server_stream_gateway_authorities(

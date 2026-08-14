@@ -156,6 +156,7 @@ fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
                         }
                         _ => snapshot_plan(),
                     },
+                    dense_record_shape_ref: None,
                 })
                 .into_iter()
                 .collect(),
@@ -267,6 +268,7 @@ fn private_interface_function() -> RelocatableBytecodeFunction {
                 slot: 0,
                 mode: skiff_artifact_model::ParamModeIr::Value,
                 plan: snapshot_plan(),
+                dense_record_shape_ref: None,
             }],
             writable_local_slots: Vec::new(),
             result_count: 0,

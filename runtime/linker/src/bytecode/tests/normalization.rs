@@ -73,7 +73,7 @@ fn type_linker_interns_only_the_owner_complete_type() {
 }
 
 #[test]
-fn dense_result_materialization_rejects_wrong_nominal_abi_plan_privilege_and_fields() {
+fn dense_result_and_parameter_materialization_reject_wrong_nominal_abi_plan_and_fields() {
     let hydrated = Fixture::record_shape().hydrate();
     let package = implementation_package(&hydrated);
     let specialization = SpecializationKey::new(
@@ -126,9 +126,17 @@ fn dense_result_materialization_rejects_wrong_nominal_abi_plan_privilege_and_fie
             location.clone(),
         )
         .expect("the compiler-emitted structural record closes exactly");
+    linker
+        .validate_dense_parameter_materialization(
+            shape.nominal_type(),
+            &snapshot_plan,
+            &shape,
+            location.clone(),
+        )
+        .expect("the same exact record closes a compiler-owned frame parameter");
 
     let wrong_nominal = linker
-        .validate_dense_result_materialization(
+        .validate_dense_parameter_materialization(
             shape.fields()[0].ty(),
             &snapshot_plan,
             &shape,
@@ -145,7 +153,7 @@ fn dense_result_materialization_rejects_wrong_nominal_abi_plan_privilege_and_fie
     ));
 
     let wrong_plan = linker
-        .validate_dense_result_materialization(
+        .validate_dense_parameter_materialization(
             shape.nominal_type(),
             &LinkedValueTransferPlan::SnapshotShare {
                 drop: LinkedValueDropPlan::Trivial,
@@ -177,7 +185,7 @@ fn dense_result_materialization_rejects_wrong_nominal_abi_plan_privilege_and_fie
     )
     .unwrap();
     let wrong_fields = linker
-        .validate_dense_result_materialization(
+        .validate_dense_parameter_materialization(
             shape.nominal_type(),
             &snapshot_plan,
             &wrong_fields,
@@ -203,7 +211,7 @@ fn dense_result_materialization_rejects_wrong_nominal_abi_plan_privilege_and_fie
     )
     .unwrap();
     assert!(linker
-        .validate_dense_result_materialization(
+        .validate_dense_parameter_materialization(
             shape.nominal_type(),
             &snapshot_plan,
             &privileged,
