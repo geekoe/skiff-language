@@ -64,6 +64,9 @@ test('day-one matrix contains nine Phase 2 scenarios and every required lane', (
   });
   assert.equal(specs.filter(({ lanes }) => lanes.includes('K2')).length >= 4, true);
   assert.equal(specs.filter(({ lanes }) => lanes.includes('C2')).length >= 3, true);
+  assert.deepEqual(byId['k2-linker-record-array-admission'].args, [
+    'test', '-p', 'skiff-runtime-linker', '--lib', 'production_entry_links_',
+  ]);
   assert.deepEqual(byId['phase-2-gate-self-tests'].args, [
     '--test', '--test-reporter=tap',
     'scripts/tests/bytecode-vm-phase-2-gate-*.test.mjs',

@@ -84,7 +84,8 @@ test('retired-stage matrix contains twenty Phase 4 scenarios and every required 
     lanes: Object.freeze(['K4']),
   });
   assert.deepEqual(byId['v4-linker-typed-host-entry'].args, [
-    'test', '-p', 'skiff-runtime-linker', '--lib', 'host_effect',
+    'test', '-p', 'skiff-runtime-linker', '--lib',
+    'production_sleep_image_exposes_only_the_indexed_typed_executor_target',
   ]);
   assert.deepEqual(
     [...new Set(specs

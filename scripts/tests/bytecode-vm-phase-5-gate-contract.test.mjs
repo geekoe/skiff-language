@@ -23,12 +23,12 @@ import { buildVerifyPlan, PUBLIC_SELECTORS } from '../lib/verify-plan.mjs';
 const ROOT = '/candidate';
 const REPOSITORY = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
-test('r1-v2 schemas cannot accept pre-r2 Phase 5 receipts', () => {
-  assert.equal(PHASE5_COMMAND_SCHEMA, 'skiff-bytecode-vm-phase-5-command-r1-v2');
-  assert.equal(PHASE5_MANIFEST_SCHEMA, 'skiff-bytecode-vm-phase-5-gate-r1-v2');
+test('r1-v3 schemas cannot accept earlier Phase 5 receipts', () => {
+  assert.equal(PHASE5_COMMAND_SCHEMA, 'skiff-bytecode-vm-phase-5-command-r1-v3');
+  assert.equal(PHASE5_MANIFEST_SCHEMA, 'skiff-bytecode-vm-phase-5-gate-r1-v3');
   assert.equal(PHASE5_DIRECTORY_IDENTITY_SCHEMA,
-    'skiff-bytecode-vm-phase-5-directory-identity-r1-v2');
-  assert.equal(PHASE5_DIRECTORY_IDENTITY_FILE, 'phase-5-r1-v2-directory-identities.json');
+    'skiff-bytecode-vm-phase-5-directory-identity-r1-v3');
+  assert.equal(PHASE5_DIRECTORY_IDENTITY_FILE, 'phase-5-r1-v3-directory-identities.json');
 });
 
 test('r1 matrix names all G1-G10 owners and uses only executable commands', () => {
@@ -114,7 +114,7 @@ test('A5/C5/V5R focused joins pin compiler authority and production image struct
   assert.equal(byId['a5-exact-executor-registry'].args.includes('executor_identit'), true);
   assert.equal(byId['a5-exact-executor-registry'].expectedTests, 2);
   assert.equal(byId['a5-ordinary-shape-affine-child-rejection'].args.includes(
-    'ordinary_shape_cannot_embed_an_affine_resource_field'), true);
+    'ordinary_shape_fields_require_exact_non_recursive_snapshot_plans'), true);
   assert.equal(byId['c5-exact-registry-source-emission'].args.includes(
     'exact_registry_executors_flow_from_real_source_to_public_emission'), true);
   assert.equal(byId['c5-affine-body-take-emission'].args.includes(
@@ -128,7 +128,7 @@ test('A5/C5/V5R focused joins pin compiler authority and production image struct
   assert.equal(byId['v5r-production-affine-image'].args.includes(
     'production_stream_image_proves_exact_privileged_shape_and_affine_body_take'), true);
   assert.equal(byId['v5r-linker-stream-dual-resume'].args.includes(
-    'backend_links_stream_next_dual_resume_successors'), true);
+    'production_entry_links_stream_next_dual_resume_successors'), true);
   assert.equal(byId['v5r-registry-executor-identity-closure'].expectedTests, 3);
   assert.equal(byId['v5r-atomic-image-runtime-views'].args.includes(
     'atomic_image_exposes_image_owned_runtime_views_without_effect_certificate'), true);
@@ -147,14 +147,24 @@ test('A5/C5/V5R focused joins pin compiler authority and production image struct
       .map(({ args }) => args[args.indexOf('-p') + 1]))],
     ['skiff-runtime-linker'],
   );
-  assert.equal(byId['h5-production-bytecode-http-composition'].args.includes(
-    'phase_5_bytecode_http'), true);
-  assert.equal(byId['h5-production-bytecode-http-composition'].expectedTests, 3);
-  assert.equal(byId['h5-server-stream-flush-ack'].args.includes('stream_flush_ack'), true);
+  assert.deepEqual(byId['phase-5-execution-image-hard-cut'], {
+    id: 'phase-5-execution-image-hard-cut',
+    command: 'node',
+    args: Object.freeze(['scripts/check-runtime-crate-dag.mjs']),
+    cwd: ROOT,
+    testFormat: null,
+    lanes: Object.freeze(['G9', 'G10', 'V5R', 'P5G']),
+  });
+  assert.equal(byId['k5-scheduler-phase-5-ownership'].expectedTests, 18);
+  assert.equal(byId['k5-request-phase-5-library'].expectedTests, 17);
+  assert.deepEqual(byId['k5-request-phase-5-integration'].args, [
+    'test', '--no-fail-fast', '-p', 'skiff-runtime-request',
+    '--test', 'bytecode_request', 'phase_5_', '--', '--nocapture',
+  ]);
+  assert.equal(byId['k5-request-phase-5-integration'].expectedTests, 16);
+  assert.equal(byId['h5-production-bytecode-http-composition'].expectedTests, 15);
   assert.equal(byId['h5-server-stream-flush-ack'].expectedTests, 4);
-  assert.equal(byId['k5-request-resource-materialization'].expectedTests, 2);
-  assert.equal(byId['k5-scheduler-first-poll-publication'].expectedTests, 1);
-  assert.equal(byId['k5-request-first-poll-http-arbitration'].expectedTests, 6);
+  assert.equal(byId['h5-typed-allocation-trait-object'].expectedTests, 1);
   assert.equal(phase5ScenarioSpecs(ROOT).some(({ args }) => (
     args.includes('phase_5_admission') || args.includes('stream_resume')
   )), false);

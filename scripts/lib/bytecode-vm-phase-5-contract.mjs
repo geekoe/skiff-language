@@ -20,8 +20,8 @@ export {
   validSha256,
 };
 
-export const PHASE5_COMMAND_SCHEMA = 'skiff-bytecode-vm-phase-5-command-r1-v2';
-export const PHASE5_MANIFEST_SCHEMA = 'skiff-bytecode-vm-phase-5-gate-r1-v2';
+export const PHASE5_COMMAND_SCHEMA = 'skiff-bytecode-vm-phase-5-command-r1-v3';
+export const PHASE5_MANIFEST_SCHEMA = 'skiff-bytecode-vm-phase-5-gate-r1-v3';
 
 export const PHASE5_REQUIRED_LANES = Object.freeze([
   'G1',
@@ -84,6 +84,9 @@ export function phase5ScenarioSpecs(root) {
       ['G5', 'G8', 'K5', 'H5', 'P5G']),
     hostExact(root, 'phase-5-structural-no-bypass', HOST_TEST.structure,
       ['G9', 'A5', 'V5R', 'K5', 'H5', 'P5G']),
+    spec(root, 'phase-5-execution-image-hard-cut', 'node', [
+      'scripts/check-runtime-crate-dag.mjs',
+    ], null, ['G9', 'G10', 'V5R', 'P5G']),
     spec(root, 'phase-5-runtime-process-binary', 'cargo', [
       'build', '-p', 'runtime', '--bin', 'runtime',
     ], null, ['G7', 'G8', 'H5', 'P5G']),
@@ -95,7 +98,8 @@ export function phase5ScenarioSpecs(root) {
     rustSuite(root, 'a5-affine-take-opcode', 'skiff-artifact-model',
       'take_dense_field_requires_exact_privileged_affine_field', ['G2', 'G4', 'G9', 'A5'], 1),
     rustSuite(root, 'a5-ordinary-shape-affine-child-rejection', 'skiff-artifact-model',
-      'ordinary_shape_cannot_embed_an_affine_resource_field', ['G2', 'G4', 'G9', 'A5'], 1),
+      'ordinary_shape_fields_require_exact_non_recursive_snapshot_plans',
+      ['G2', 'G4', 'G9', 'A5'], 1),
     rustSuite(root, 'c5-exact-registry-source-emission', 'skiff-compiler-emission',
       'exact_registry_executors_flow_from_real_source_to_public_emission',
       ['G1', 'G2', 'G9', 'C5'], 1),
@@ -123,7 +127,8 @@ export function phase5ScenarioSpecs(root) {
     rustSuite(root, 'v5r-host-binding-key-rejections', 'skiff-runtime-linker',
       'binding_key_fails_closed', ['G3', 'G9', 'V5R'], 2),
     rustSuite(root, 'v5r-linker-stream-dual-resume', 'skiff-runtime-linker',
-      'backend_links_stream_next_dual_resume_successors', ['G3', 'G4', 'G9', 'V5R'], 1),
+      'production_entry_links_stream_next_dual_resume_successors',
+      ['G3', 'G4', 'G9', 'V5R'], 1),
     rustSuite(root, 'v5r-atomic-image-runtime-views', 'skiff-runtime-linker',
       'atomic_image_exposes_image_owned_runtime_views_without_effect_certificate',
       ['G4', 'G9', 'V5R'], 1),
@@ -133,20 +138,19 @@ export function phase5ScenarioSpecs(root) {
     rustSuite(root, 'v5r-missing-statement-fact-rejection', 'skiff-runtime-linker',
       'atomic_image_statement_view_rejects_missing_required_fact_with_typed_construction_error',
       ['G4', 'G9', 'V5R'], 1),
-    rustSuite(root, 'k5-scheduler-resource-authority', 'skiff-runtime-scheduler',
-      'phase_5_resource', ['G5', 'G6', 'G8', 'G9', 'K5']),
-    rustSuite(root, 'k5-request-resource-materialization', 'skiff-runtime-request',
-      'phase_5_resource', ['G5', 'G6', 'G8', 'G9', 'K5'], 2),
-    rustSuite(root, 'k5-scheduler-first-poll-publication', 'skiff-runtime-scheduler',
-      'phase_5_first_poll', ['G5', 'G8', 'K5'], 1),
-    rustSuite(root, 'k5-request-first-poll-http-arbitration', 'skiff-runtime-request',
-      'phase_5_first_poll', ['G5', 'G8', 'K5'], 6),
-    rustSuite(root, 'k5-capacity-one-stream-lifecycle', 'skiff-runtime-scheduler',
-      'phase_5_stream', ['G5', 'G6', 'G8', 'K5']),
+    rustSuite(root, 'k5-scheduler-phase-5-ownership', 'skiff-runtime-scheduler',
+      'phase_5_', ['G5', 'G6', 'G8', 'G9', 'K5'], 18),
+    rustSuite(root, 'k5-request-phase-5-library', 'skiff-runtime-request',
+      'phase_5_', ['G5', 'G6', 'G8', 'G9', 'K5'], 17),
+    rustIntegrationSuite(root, 'k5-request-phase-5-integration', 'skiff-runtime-request',
+      'bytecode_request', 'phase_5_', ['G5', 'G6', 'G8', 'G9', 'K5'], 16),
     rustSuite(root, 'h5-production-bytecode-http-composition', 'skiff-runtime-host',
-      'phase_5_bytecode_http', ['G5', 'G6', 'G8', 'G9', 'H5'], 3),
+      'phase_5_bytecode_http', ['G5', 'G6', 'G8', 'G9', 'H5'], 15),
     rustSuite(root, 'h5-server-stream-flush-ack', 'skiff-runtime-host',
       'stream_flush_ack', ['G6', 'G7', 'G8', 'H5'], 4),
+    rustSuite(root, 'h5-typed-allocation-trait-object', 'skiff-runtime-host',
+      'typed_string_and_bytes_forward_through_the_trait_object_with_exact_metadata',
+      ['G5', 'G9', 'H5'], 1),
     spec(root, 'phase-5-fmt-check', 'cargo', [
       'fmt', '--all', '--', '--check',
     ], null, ['G10', 'P5G']),
@@ -203,6 +207,22 @@ function routerExact(cwd, id, testName, lanes) {
 function rustSuite(cwd, id, packageName, filter, lanes, expectedTests = null) {
   const entry = spec(cwd, id, 'cargo', [
     'test', '--no-fail-fast', '-p', packageName, '--lib', filter, '--', '--nocapture',
+  ], 'rust-suite', lanes);
+  return Object.freeze({ ...entry, expectedTests });
+}
+
+function rustIntegrationSuite(
+  cwd,
+  id,
+  packageName,
+  testTarget,
+  filter,
+  lanes,
+  expectedTests,
+) {
+  const entry = spec(cwd, id, 'cargo', [
+    'test', '--no-fail-fast', '-p', packageName,
+    '--test', testTarget, filter, '--', '--nocapture',
   ], 'rust-suite', lanes);
   return Object.freeze({ ...entry, expectedTests });
 }

@@ -67,7 +67,7 @@ export function phase2ScenarioSpecs(root) {
       'test', '-p', 'skiff-runtime-request', '--lib', 'vm_heap',
     ], 'rust-suite', ['K2']),
     spec(root, 'k2-linker-record-array-admission', 'cargo', [
-      'test', '-p', 'skiff-runtime-linker', '--lib', 'capability',
+      'test', '-p', 'skiff-runtime-linker', '--lib', 'production_entry_links_',
     ], 'rust-suite', ['K2']),
     spec(root, 'c2-pipeline-exact-facts', 'cargo', [
       'test', '-p', 'skiff-compiler', '--lib', 'phase_2_bytecode_admission',

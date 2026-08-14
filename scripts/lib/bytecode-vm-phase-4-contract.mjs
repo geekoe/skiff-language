@@ -144,7 +144,8 @@ export function phase4ScenarioSpecs(root) {
       'test', '-p', 'skiff-runtime-scheduler', '--lib', 'concurrent_terminal_race',
     ], 'rust-suite', ['K4']),
     spec(root, 'v4-linker-typed-host-entry', 'cargo', [
-      'test', '-p', 'skiff-runtime-linker', '--lib', 'host_effect',
+      'test', '-p', 'skiff-runtime-linker', '--lib',
+      'production_sleep_image_exposes_only_the_indexed_typed_executor_target',
     ], 'rust-suite', ['V4']),
     spec(root, 'c4-emission-host-effect-admission', 'cargo', [
       'test', '-p', 'skiff-compiler-emission', '--lib', 'phase_4_admission',

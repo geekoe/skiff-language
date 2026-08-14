@@ -94,7 +94,7 @@ export function phase3ScenarioSpecs(root) {
       'test', '-p', 'skiff-runtime-request', '--lib', 'throw',
     ], 'rust-suite', ['K3']),
     spec(root, 'k3-linker-throw-admission', 'cargo', [
-      'test', '-p', 'skiff-runtime-linker', '--lib', 'capability',
+      'test', '-p', 'skiff-runtime-linker', '--lib', 'handler_state_',
     ], 'rust-suite', ['K3']),
     spec(root, 'c3-emission-throw-admission', 'cargo', [
       'test', '-p', 'skiff-compiler-emission', '--lib', 'phase_3_admission',

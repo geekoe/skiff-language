@@ -79,6 +79,9 @@ test('day-one matrix contains thirteen Phase 3 scenarios and every required lane
     testFormat: 'rust-suite',
     lanes: Object.freeze(['K3']),
   });
+  assert.deepEqual(byId['k3-linker-throw-admission'].args, [
+    'test', '-p', 'skiff-runtime-linker', '--lib', 'handler_state_',
+  ]);
   assert.deepEqual(byId['c3-emission-throw-admission'], {
     id: 'c3-emission-throw-admission',
     command: 'cargo',
