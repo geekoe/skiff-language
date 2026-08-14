@@ -21,6 +21,9 @@ use skiff_runtime_model::{
     },
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot, VmHandle},
 };
+use skiff_runtime_scheduler::{
+    RequestResourceHandle, RequestResourceLookupError, RequestResourceTable,
+};
 
 const DOMAIN_SHIFT: u64 = 56;
 const DOMAIN_MASK: u64 = (u8::MAX as u64) << DOMAIN_SHIFT;
@@ -48,10 +51,12 @@ struct LiveEntry {
 struct PreparedOwnerConsume {
     remaining_owners: HashMap<VmHandle, usize>,
     removals: Vec<(VmHandle, HeapHandle)>,
+    resource_releases: Vec<RequestResourceHandle>,
 }
 
 pub struct RequestVmHeap {
     heap: RequestHeap,
+    resources: Option<RequestResourceTable>,
     domain: u8,
     next_serial: u64,
     live: HashMap<VmHandle, LiveEntry>,
@@ -76,8 +81,27 @@ impl RequestVmHeap {
     }
 
     pub fn with_domain(domain: u8, epoch: u32, limits: RequestHeapLimits) -> Self {
+        Self::with_domain_and_resources(domain, epoch, limits, None)
+    }
+
+    /// Constructs the production request heap bound to the exact scheduler
+    /// resource table created by the same request execution context.
+    pub(crate) fn for_execution(
+        resources: RequestResourceTable,
+        limits: RequestHeapLimits,
+    ) -> Self {
+        Self::with_domain_and_resources(next_domain(), 0, limits, Some(resources))
+    }
+
+    fn with_domain_and_resources(
+        domain: u8,
+        epoch: u32,
+        limits: RequestHeapLimits,
+        resources: Option<RequestResourceTable>,
+    ) -> Self {
         Self {
             heap: RequestHeap::new_with_epoch(epoch, limits),
+            resources,
             domain,
             next_serial: 1,
             live: HashMap::new(),
@@ -88,6 +112,47 @@ impl RequestVmHeap {
             map_slots: HashMap::new(),
             representation_slots: HashMap::new(),
         }
+    }
+
+    fn resources(&self, operation: VmHeapOperation) -> Result<&RequestResourceTable, VmHeapError> {
+        self.resources
+            .as_ref()
+            .ok_or(VmHeapError::OperationKindMismatch {
+                operation,
+                kind: ValueKind::ResourceRef,
+            })
+    }
+
+    fn map_resource_lookup(route: VmHandle, error: RequestResourceLookupError) -> VmHeapError {
+        match error {
+            RequestResourceLookupError::WrongOwner => VmHeapError::InvalidHandle {
+                kind: ValueKind::ResourceRef,
+                handle: route,
+                reason: VmHandleInvalidReason::WrongDomain,
+            },
+            RequestResourceLookupError::UnknownSlot
+            | RequestResourceLookupError::StaleGeneration => VmHeapError::InvalidHandle {
+                kind: ValueKind::ResourceRef,
+                handle: route,
+                reason: VmHandleInvalidReason::StaleGenerationOrEpoch,
+            },
+            RequestResourceLookupError::RouteAlreadyClaimed
+            | RequestResourceLookupError::VmRouteAlreadyAdmitted
+            | RequestResourceLookupError::VmMetadataMismatch => VmHeapError::InvalidValueMetadata,
+        }
+    }
+
+    fn validate_resource_slot(
+        &self,
+        value: &ValueSlot,
+        operation: VmHeapOperation,
+    ) -> Result<RequestResourceHandle, VmHeapError> {
+        let route = value
+            .as_resource_ref()
+            .ok_or(VmHeapError::InvalidValueMetadata)?;
+        self.resources(operation)?
+            .validate_vm_route_metadata(route, value.compact_type_tag(), value.flags())
+            .map_err(|error| Self::map_resource_lookup(route, error))
     }
 
     pub fn request_heap(&self) -> &RequestHeap {
@@ -553,6 +618,8 @@ impl RequestVmHeap {
         let operation = VmHeapOperation::TakeDenseField;
         let mut remaining_owners = HashMap::new();
         let mut removals = Vec::new();
+        let mut resource_releases = Vec::new();
+        let mut seen_resources = std::collections::HashSet::new();
         let mut pending = vec![root];
         while let Some(owner) = pending.pop() {
             let Some(kind) = owner.kind() else {
@@ -586,6 +653,19 @@ impl RequestVmHeap {
                         pending.extend(self.container_children_except(heap_handle, excluded));
                     }
                 }
+                ValueKind::ResourceRef => {
+                    let route = owner
+                        .as_resource_ref()
+                        .ok_or(VmHeapError::InvalidValueMetadata)?;
+                    let handle = self.validate_resource_slot(&owner, operation)?;
+                    if !seen_resources.insert(route) {
+                        return Err(VmHeapError::OwnershipViolation {
+                            kind: ValueKind::ResourceRef,
+                            handle: route,
+                        });
+                    }
+                    resource_releases.push(handle);
+                }
                 kind => {
                     return Err(VmHeapError::OperationKindMismatch { operation, kind });
                 }
@@ -594,6 +674,7 @@ impl RequestVmHeap {
         Ok(PreparedOwnerConsume {
             remaining_owners,
             removals,
+            resource_releases,
         })
     }
 
@@ -618,6 +699,17 @@ impl RequestVmHeap {
             drop(self.take_container_children(heap_handle));
             self.handles_by_heap.remove(&heap_handle);
             self.released_heap_handles.insert(heap_handle, handle);
+        }
+        if !prepared.resource_releases.is_empty() {
+            let resources = self
+                .resources
+                .as_ref()
+                .expect("prepared resource releases retain the request table");
+            for handle in prepared.resource_releases {
+                resources
+                    .release(&handle)
+                    .expect("a fully prevalidated exact resource release cannot fail");
+            }
         }
     }
 
@@ -884,6 +976,18 @@ impl RequestVmHeap {
 }
 
 impl VmHeap for RequestVmHeap {
+    fn admit_resource_ref(
+        &mut self,
+        route: VmHandle,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        self.resources(VmHeapOperation::ValidateLive)?
+            .admit_vm_route(route, compact_type_tag, flags)
+            .map_err(|error| Self::map_resource_lookup(route, error))?;
+        Ok(ValueSlot::resource_ref(route, compact_type_tag, flags))
+    }
+
     fn validate_live(&self, value: &ValueSlot) -> Result<(), VmHeapError> {
         let Some(kind) = value.kind() else {
             return Err(VmHeapError::InvalidValueMetadata);
@@ -896,10 +1000,9 @@ impl VmHeap for RequestVmHeap {
                 .ok_or(VmHeapError::InvalidValueMetadata),
             ValueKind::Number | ValueKind::Integer | ValueKind::Date => Ok(()),
             ValueKind::RequestHeapRef => self.live_entry(value).map(|_| ()),
-            ValueKind::ResourceRef => Err(VmHeapError::OperationKindMismatch {
-                operation: VmHeapOperation::ValidateLive,
-                kind: ValueKind::ResourceRef,
-            }),
+            ValueKind::ResourceRef => self
+                .validate_resource_slot(value, VmHeapOperation::ValidateLive)
+                .map(|_| ()),
             kind => Err(VmHeapError::OperationKindMismatch {
                 operation: VmHeapOperation::ValidateLive,
                 kind,
@@ -945,6 +1048,10 @@ impl VmHeap for RequestVmHeap {
             }
             Some(ValueKind::RequestHeapRef) => {
                 self.live_entry_mut(source)?.owner_transfers += 1;
+                Ok(*source)
+            }
+            Some(ValueKind::ResourceRef) => {
+                self.validate_resource_slot(source, VmHeapOperation::TransferOwner)?;
                 Ok(*source)
             }
             Some(kind) => Err(VmHeapError::OperationKindMismatch {
@@ -1019,10 +1126,19 @@ impl VmHeap for RequestVmHeap {
         let Some(kind) = owner.kind() else {
             return Err(VmHeapError::InvalidValueMetadata);
         };
-        Err(VmHeapError::OperationKindMismatch {
-            operation: VmHeapOperation::ReleaseResource,
-            kind,
-        })
+        if kind != ValueKind::ResourceRef {
+            return Err(VmHeapError::OperationKindMismatch {
+                operation: VmHeapOperation::ReleaseResource,
+                kind,
+            });
+        }
+        let route = owner
+            .as_resource_ref()
+            .ok_or(VmHeapError::InvalidValueMetadata)?;
+        self.resources(VmHeapOperation::ReleaseResource)?
+            .release_vm_route_metadata(route, owner.compact_type_tag(), owner.flags())
+            .map_err(|error| Self::map_resource_lookup(route, error))?;
+        Ok(())
     }
 
     fn allocate_array(
@@ -1427,7 +1543,9 @@ impl VmHeap for RequestVmHeap {
                 | ValueKind::Integer
                 | ValueKind::Date,
             ) => self.validate_live(&value)?,
-            Some(ValueKind::ResourceRef) => {}
+            Some(ValueKind::ResourceRef) => {
+                self.validate_resource_slot(&value, operation)?;
+            }
             Some(kind) => {
                 return Err(VmHeapError::OperationKindMismatch { operation, kind });
             }
@@ -1446,7 +1564,7 @@ impl VmHeap for RequestVmHeap {
                 operation,
                 message: format!("record field {field:?} sidecar disappeared"),
             })?;
-        debug_assert_eq!(detached, value);
+        debug_assert!(detached == value);
         let deleted = self
             .heap
             .delete_object_field(heap_handle, &field)

@@ -1,19 +1,22 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fmt,
     future::Future,
     pin::Pin,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex, MutexGuard, Weak,
+        Arc, Mutex, MutexGuard,
     },
 };
+
+#[cfg(test)]
+use std::sync::Weak;
 
 use skiff_runtime_model::{
     error::WirePayload,
     vm_heap::VmHeapError,
     vm_root::{VmRootSource, VmRootVisitor},
-    vm_value::VmHandle,
+    vm_value::{CompactTypeTag, ValueFlags, VmHandle},
 };
 
 use crate::owner_inventory::{OwnerCreationError, ResourceOwnerLease, ResourceOwnerRegistration};
@@ -220,6 +223,8 @@ pub enum RequestResourceLookupError {
     UnknownSlot,
     StaleGeneration,
     RouteAlreadyClaimed,
+    VmRouteAlreadyAdmitted,
+    VmMetadataMismatch,
 }
 
 impl fmt::Display for RequestResourceLookupError {
@@ -229,6 +234,10 @@ impl fmt::Display for RequestResourceLookupError {
             Self::UnknownSlot => "request resource slot is unknown",
             Self::StaleGeneration => "request resource generation is stale",
             Self::RouteAlreadyClaimed => "request resource route was already claimed",
+            Self::VmRouteAlreadyAdmitted => {
+                "request resource route was already admitted into the VM"
+            }
+            Self::VmMetadataMismatch => "request resource VM metadata does not match",
         })
     }
 }
@@ -304,6 +313,7 @@ struct RequestResourceEntry {
     state: Option<Box<dyn RequestResourceState>>,
     owner_lease: Option<ResourceOwnerLease>,
     route_claimed: bool,
+    vm_metadata: Option<(CompactTypeTag, ValueFlags)>,
     terminal: Option<RequestResourceTermination>,
 }
 
@@ -313,6 +323,7 @@ impl RequestResourceEntry {
             state: Some(state),
             owner_lease: None,
             route_claimed: false,
+            vm_metadata: None,
             terminal: None,
         }
     }
@@ -338,6 +349,7 @@ impl RequestResourceEntry {
             state,
             owner_lease,
             route_claimed: _,
+            vm_metadata: _,
             terminal: _,
         } = self;
         if let Some(state) = state {
@@ -400,7 +412,7 @@ struct RequestResourceTableState {
     next_slot: u32,
     free_slots: Vec<RequestResourceSlot>,
     generations: HashMap<RequestResourceSlot, RequestResourceGeneration>,
-    closed: HashSet<RequestResourceKey>,
+    closed: HashMap<RequestResourceKey, Option<(CompactTypeTag, ValueFlags)>>,
     entries: HashMap<RequestResourceSlot, (RequestResourceGeneration, RequestResourceEntry)>,
 }
 
@@ -411,7 +423,7 @@ impl RequestResourceTableState {
             next_slot: 1,
             free_slots: Vec::new(),
             generations: HashMap::new(),
-            closed: HashSet::new(),
+            closed: HashMap::new(),
             entries: HashMap::new(),
         }
     }
@@ -486,11 +498,14 @@ impl RequestResourceTableShared {
         let mut state = self.lock();
         state.phase = RequestResourceTablePhase::Closed;
         let removed: Vec<_> = state.entries.drain().collect();
-        for (slot, (generation, _)) in &removed {
-            state.closed.insert(RequestResourceKey {
-                slot: *slot,
-                generation: *generation,
-            });
+        for (slot, (generation, entry)) in &removed {
+            state.closed.insert(
+                RequestResourceKey {
+                    slot: *slot,
+                    generation: *generation,
+                },
+                entry.vm_metadata,
+            );
             if generation.0 < u16::MAX {
                 state.free_slots.push(*slot);
             }
@@ -661,6 +676,57 @@ impl RequestResourceTable {
         Ok(handle)
     }
 
+    /// Admits one claimed packed route as the sole VM `ResourceRef` owner.
+    ///
+    /// The type tag and flags are recorded on the existing table entry rather
+    /// than in a heap or side registry. Admission is one-shot: constructing a
+    /// second semantic VM owner from the same packed bits fails closed even if
+    /// its metadata is identical.
+    pub fn admit_vm_route(
+        &self,
+        route: VmHandle,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<RequestResourceHandle, RequestResourceLookupError> {
+        let handle = RequestResourceHandle::from_vm_handle(route)
+            .ok_or(RequestResourceLookupError::UnknownSlot)?;
+        let key = self.shared.key_for(handle)?;
+        let mut table = self.shared.lock();
+        table.validate_key(key)?;
+        let (_, entry) = table
+            .entries
+            .get_mut(&key.slot)
+            .expect("a validated resource entry remains installed");
+        if entry.vm_metadata.is_some() {
+            return Err(RequestResourceLookupError::VmRouteAlreadyAdmitted);
+        }
+        entry.vm_metadata = Some((compact_type_tag, flags));
+        Ok(handle)
+    }
+
+    /// Validates the complete fixed-width VM slot against the same table entry
+    /// that owns its provider and inventory lease.
+    pub fn validate_vm_route_metadata(
+        &self,
+        route: VmHandle,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<RequestResourceHandle, RequestResourceLookupError> {
+        let handle = RequestResourceHandle::from_vm_handle(route)
+            .ok_or(RequestResourceLookupError::UnknownSlot)?;
+        let key = self.shared.key_for(handle)?;
+        let table = self.shared.lock();
+        table.validate_key(key)?;
+        let (_, entry) = table
+            .entries
+            .get(&key.slot)
+            .expect("a validated resource entry remains installed");
+        if entry.vm_metadata != Some((compact_type_tag, flags)) {
+            return Err(RequestResourceLookupError::VmMetadataMismatch);
+        }
+        Ok(handle)
+    }
+
     /// Starts one typed pull from the exact live stream entry.
     ///
     /// The table lock is held only while selecting the entry and preparing the
@@ -728,7 +794,7 @@ impl RequestResourceTable {
         let key = self.shared.key_for(*handle)?;
         let entry = {
             let mut table = self.shared.lock();
-            if table.closed.contains(&key) {
+            if table.closed.contains_key(&key) {
                 return Ok(RequestResourceRelease::AlreadyReleased);
             }
             table.validate_key(key)?;
@@ -737,7 +803,7 @@ impl RequestResourceTable {
                 .remove(&key.slot)
                 .expect("a validated resource entry remains live");
             assert_eq!(generation, key.generation);
-            table.closed.insert(key);
+            table.closed.insert(key, entry.vm_metadata);
             if key.generation.0 < u16::MAX {
                 table.free_slots.push(key.slot);
             }
@@ -756,6 +822,50 @@ impl RequestResourceTable {
         let handle = RequestResourceHandle::from_vm_handle(route)
             .ok_or(RequestResourceLookupError::UnknownSlot)?;
         self.release(&handle)
+    }
+
+    /// Atomically validates VM metadata and releases the exact affine route.
+    /// A duplicate release observes the same tombstone and is an idempotent
+    /// no-op; it can never target a later generation reusing the same slot.
+    pub fn release_vm_route_metadata(
+        &self,
+        route: VmHandle,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<RequestResourceRelease, RequestResourceLookupError> {
+        let handle = RequestResourceHandle::from_vm_handle(route)
+            .ok_or(RequestResourceLookupError::UnknownSlot)?;
+        let key = self.shared.key_for(handle)?;
+        let entry = {
+            let mut table = self.shared.lock();
+            if let Some(metadata) = table.closed.get(&key) {
+                return if *metadata == Some((compact_type_tag, flags)) {
+                    Ok(RequestResourceRelease::AlreadyReleased)
+                } else {
+                    Err(RequestResourceLookupError::VmMetadataMismatch)
+                };
+            }
+            table.validate_key(key)?;
+            let (_, current) = table
+                .entries
+                .get(&key.slot)
+                .expect("a validated resource entry remains installed");
+            if current.vm_metadata != Some((compact_type_tag, flags)) {
+                return Err(RequestResourceLookupError::VmMetadataMismatch);
+            }
+            let (generation, entry) = table
+                .entries
+                .remove(&key.slot)
+                .expect("a validated resource entry remains installed");
+            assert_eq!(generation, key.generation);
+            table.closed.insert(key, entry.vm_metadata);
+            if key.generation.0 < u16::MAX {
+                table.free_slots.push(key.slot);
+            }
+            entry
+        };
+        entry.terminate_and_release(RequestResourceTermination::VmDrop);
+        Ok(RequestResourceRelease::Released)
     }
 
     /// Closes the table permanently and terminates every live resource once.
@@ -829,7 +939,7 @@ mod tests {
     use skiff_runtime_model::{
         vm_heap::VmHeapError,
         vm_root::{VmRootSource, VmRootVisitor},
-        vm_value::ValueSlot,
+        vm_value::{CompactTypeTag, ValueFlags, ValueSlot},
     };
 
     use super::*;
@@ -891,6 +1001,7 @@ mod tests {
 
     struct RecordingByteStream {
         events: Arc<Mutex<Vec<Event>>>,
+        bytes: Vec<u8>,
     }
 
     impl VmRootSource for RecordingByteStream {
@@ -903,7 +1014,8 @@ mod tests {
         fn start_pull(
             &self,
         ) -> Result<RequestByteStreamPullFuture, RequestByteStreamPullStartError> {
-            Ok(Box::pin(async { Ok(Some(vec![1, 2, 3])) }))
+            let bytes = self.bytes.clone();
+            Ok(Box::pin(async move { Ok(Some(bytes)) }))
         }
 
         fn terminate(self: Box<Self>, termination: RequestResourceTermination) {
@@ -980,6 +1092,53 @@ mod tests {
         );
 
         table.close_all(RequestResourceTermination::RequestCompleted);
+        assert_eq!(freeze.freeze().resource.current, 0);
+    }
+
+    #[test]
+    fn phase_5_resource_vm_admission_is_one_shot_metadata_bound_and_idempotent_on_drop() {
+        let (table, freeze) = table();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let handle = table.register(resource(&events)).unwrap();
+        let tag = CompactTypeTag::new(17);
+        let flags = ValueFlags::new(3);
+
+        assert_eq!(
+            table.admit_vm_route(handle.vm_handle(), tag, flags),
+            Ok(handle)
+        );
+        assert_eq!(
+            table.admit_vm_route(handle.vm_handle(), tag, flags),
+            Err(RequestResourceLookupError::VmRouteAlreadyAdmitted)
+        );
+        assert_eq!(
+            table.validate_vm_route_metadata(handle.vm_handle(), tag, flags),
+            Ok(handle)
+        );
+        assert_eq!(
+            table.validate_vm_route_metadata(handle.vm_handle(), CompactTypeTag::new(18), flags,),
+            Err(RequestResourceLookupError::VmMetadataMismatch)
+        );
+        assert_eq!(
+            table.release_vm_route_metadata(handle.vm_handle(), tag, flags),
+            Ok(RequestResourceRelease::Released)
+        );
+        assert_eq!(
+            table.release_vm_route_metadata(handle.vm_handle(), tag, flags),
+            Ok(RequestResourceRelease::AlreadyReleased)
+        );
+        assert_eq!(
+            table.release_vm_route_metadata(
+                handle.vm_handle(),
+                CompactTypeTag::new(tag.get() + 1),
+                flags,
+            ),
+            Err(RequestResourceLookupError::VmMetadataMismatch)
+        );
+        assert_eq!(
+            *events.lock().unwrap(),
+            [Event::Terminated(RequestResourceTermination::VmDrop)]
+        );
         assert_eq!(freeze.freeze().resource.current, 0);
     }
 
@@ -1080,6 +1239,7 @@ mod tests {
         let handle = table
             .register_byte_stream(Box::new(RecordingByteStream {
                 events: Arc::clone(&events),
+                bytes: vec![1, 2, 3],
             }))
             .unwrap();
         let mut pull = table.start_byte_stream_pull(&handle).unwrap();
@@ -1109,6 +1269,77 @@ mod tests {
             *events.lock().unwrap(),
             [Event::Terminated(RequestResourceTermination::Exhausted)]
         );
+        assert_eq!(freeze.freeze().resource.current, 0);
+    }
+
+    #[test]
+    fn phase_5_stream_two_exact_handles_route_without_cross_talk() {
+        let (table, freeze) = table();
+        let left_events = Arc::new(Mutex::new(Vec::new()));
+        let right_events = Arc::new(Mutex::new(Vec::new()));
+        let left = table
+            .register_byte_stream(Box::new(RecordingByteStream {
+                events: Arc::clone(&left_events),
+                bytes: b"left".to_vec(),
+            }))
+            .unwrap();
+        let right = table
+            .register_byte_stream(Box::new(RecordingByteStream {
+                events: Arc::clone(&right_events),
+                bytes: b"right".to_vec(),
+            }))
+            .unwrap();
+        let tag = CompactTypeTag::new(21);
+        let flags = ValueFlags::new(0);
+        for handle in [left, right] {
+            assert_eq!(table.claim_vm_route(handle.vm_handle()), Ok(handle));
+            assert_eq!(
+                table.admit_vm_route(handle.vm_handle(), tag, flags),
+                Ok(handle)
+            );
+        }
+
+        let waker = Waker::from(Arc::new(NoopWake));
+        let mut context = Context::from_waker(&waker);
+        let mut left_pull = table.start_byte_stream_pull(&left).unwrap();
+        let mut right_pull = table.start_byte_stream_pull(&right).unwrap();
+        assert!(matches!(
+            left_pull.as_mut().poll(&mut context),
+            Poll::Ready(Ok(Some(bytes))) if bytes == b"left"
+        ));
+        assert!(matches!(
+            right_pull.as_mut().poll(&mut context),
+            Poll::Ready(Ok(Some(bytes))) if bytes == b"right"
+        ));
+
+        assert_eq!(
+            table.release_vm_route_metadata(left.vm_handle(), tag, flags),
+            Ok(RequestResourceRelease::Released)
+        );
+        assert_eq!(
+            table.validate_vm_route_metadata(right.vm_handle(), tag, flags),
+            Ok(right),
+            "dropping the left route must not observe or terminate the right route"
+        );
+        assert!(right_events.lock().unwrap().is_empty());
+
+        assert_eq!(
+            table.finish(&right, RequestResourceFinishReason::Exhausted),
+            Ok(RequestResourceFinish::Finished)
+        );
+        assert_eq!(
+            table.release_vm_route_metadata(right.vm_handle(), tag, flags),
+            Ok(RequestResourceRelease::Released)
+        );
+        assert_eq!(
+            *left_events.lock().unwrap(),
+            [Event::Terminated(RequestResourceTermination::VmDrop)]
+        );
+        assert_eq!(
+            *right_events.lock().unwrap(),
+            [Event::Terminated(RequestResourceTermination::Exhausted)]
+        );
+        assert_eq!(table.snapshot().total(), 0);
         assert_eq!(freeze.freeze().resource.current, 0);
     }
 

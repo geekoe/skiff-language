@@ -755,7 +755,7 @@ mod tests {
         }
     }
 
-    impl crate::RequestResourceState for ContextResource {
+    impl crate::resource::RequestResourceState for ContextResource {
         fn terminate(self: Box<Self>, _termination: RequestResourceTermination) {
             self.0.fetch_add(1, Ordering::Relaxed);
         }

@@ -292,6 +292,23 @@ pub trait VmHeap {
     /// Validates metadata and the liveness/domain of any referenced handle.
     fn validate_live(&self, value: &ValueSlot) -> Result<(), VmHeapError>;
 
+    /// Admits one scheduler-minted opaque route as the sole VM `ResourceRef`.
+    ///
+    /// The neutral heap port carries only fixed-width route metadata. Concrete
+    /// request composition must validate it against the request's single
+    /// scheduler-owned resource authority before returning the slot.
+    fn admit_resource_ref(
+        &mut self,
+        _route: VmHandle,
+        _compact_type_tag: CompactTypeTag,
+        _flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::ValidateLive,
+            kind: ValueKind::ResourceRef,
+        })
+    }
+
     /// Performs the heap-local share transition for an ordinary snapshot.
     ///
     /// The returned slot may have identical bits, but represents a second

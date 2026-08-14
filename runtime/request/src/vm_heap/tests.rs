@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use skiff_runtime_model::{
     addr::{FileAddr, TypeAddr, UnitAddr},
     request_heap::RequestHeapLimits,
@@ -6,8 +8,14 @@ use skiff_runtime_model::{
         VmHandleInvalidReason, VmHeap, VmHeapError, VmHeapOperation, VmHeapPathSegment,
         VmRecordField,
     },
+    vm_root::{VmRootSource, VmRootVisitor},
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot},
 };
+use skiff_runtime_scheduler::{
+    BytecodeSchedulerPorts, RequestByteStreamPullFuture, RequestByteStreamPullStartError,
+    RequestByteStreamSource, RequestExecutionContext, RequestResourceTermination,
+};
+use skiff_runtime_vm::VmFiber;
 
 use super::RequestVmHeap;
 
@@ -26,6 +34,24 @@ fn resource_ref(handle: u64) -> ValueSlot {
         RESOURCE_TAG,
         RESOURCE_FLAGS,
     )
+}
+
+struct RecordingByteStreamSource(Arc<Mutex<Vec<RequestResourceTermination>>>);
+
+impl VmRootSource for RecordingByteStreamSource {
+    fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        Ok(())
+    }
+}
+
+impl RequestByteStreamSource for RecordingByteStreamSource {
+    fn start_pull(&self) -> Result<RequestByteStreamPullFuture, RequestByteStreamPullStartError> {
+        Ok(Box::pin(async { Ok(None) }))
+    }
+
+    fn terminate(self: Box<Self>, termination: RequestResourceTermination) {
+        self.0.lock().unwrap().push(termination);
+    }
 }
 
 #[test]
@@ -704,4 +730,97 @@ fn release_resource_rejects_without_resource_table() {
             kind: ValueKind::ResourceRef,
         })
     ));
+}
+
+#[test]
+fn phase_5_resource_request_heap_admits_validates_moves_and_drops_exact_route() {
+    let context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
+    let table = context.resource_table();
+    let terminations = Arc::new(Mutex::new(Vec::new()));
+    let handle = table
+        .register_byte_stream(Box::new(RecordingByteStreamSource(Arc::clone(
+            &terminations,
+        ))))
+        .unwrap();
+    let mut heap = RequestVmHeap::for_execution(table.clone(), RequestHeapLimits::default());
+    let slot = heap
+        .admit_resource_ref(handle.vm_handle(), RESOURCE_TAG, RESOURCE_FLAGS)
+        .unwrap();
+
+    assert_eq!(heap.validate_live(&slot), Ok(()));
+    assert_eq!(heap.transfer_owner(&slot), Ok(slot));
+    let forged = ValueSlot::resource_ref(
+        handle.vm_handle(),
+        CompactTypeTag::new(RESOURCE_TAG.get() + 1),
+        RESOURCE_FLAGS,
+    );
+    assert_eq!(
+        heap.validate_live(&forged),
+        Err(VmHeapError::InvalidValueMetadata)
+    );
+    heap.release_resource(&slot).unwrap();
+    heap.release_resource(&slot).unwrap();
+    assert_eq!(table.snapshot().total(), 0);
+    assert_eq!(
+        *terminations.lock().unwrap(),
+        [RequestResourceTermination::VmDrop]
+    );
+
+    let snapshot = context.into_not_started();
+    assert_eq!(snapshot.resource.current, 0);
+}
+
+#[test]
+fn phase_5_resource_take_dense_field_preflights_and_drops_only_the_remainder_route() {
+    let context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
+    let table = context.resource_table();
+    let selected_terminations = Arc::new(Mutex::new(Vec::new()));
+    let remainder_terminations = Arc::new(Mutex::new(Vec::new()));
+    let selected_handle = table
+        .register_byte_stream(Box::new(RecordingByteStreamSource(Arc::clone(
+            &selected_terminations,
+        ))))
+        .unwrap();
+    let remainder_handle = table
+        .register_byte_stream(Box::new(RecordingByteStreamSource(Arc::clone(
+            &remainder_terminations,
+        ))))
+        .unwrap();
+    let mut heap = RequestVmHeap::for_execution(table.clone(), RequestHeapLimits::default());
+    let selected = heap
+        .admit_resource_ref(selected_handle.vm_handle(), RESOURCE_TAG, RESOURCE_FLAGS)
+        .unwrap();
+    let remainder = heap
+        .admit_resource_ref(remainder_handle.vm_handle(), RESOURCE_TAG, RESOURCE_FLAGS)
+        .unwrap();
+    let record = heap
+        .allocate_record(
+            &[
+                VmRecordField {
+                    name: "body".to_string(),
+                    value: selected,
+                },
+                VmRecordField {
+                    name: "headers".to_string(),
+                    value: remainder,
+                },
+            ],
+            TAG,
+            FLAGS,
+        )
+        .unwrap();
+
+    assert_eq!(heap.take_dense_field(&record, 0), Ok(selected));
+    assert_eq!(heap.validate_live(&selected), Ok(()));
+    assert!(heap.validate_live(&remainder).is_err());
+    assert!(selected_terminations.lock().unwrap().is_empty());
+    assert_eq!(
+        *remainder_terminations.lock().unwrap(),
+        [RequestResourceTermination::VmDrop]
+    );
+    heap.release_resource(&selected).unwrap();
+    assert_eq!(table.snapshot().total(), 0);
+
+    let snapshot = context.into_not_started();
+    assert_eq!(snapshot.resource.current, 0);
 }
