@@ -5,7 +5,6 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use serde_json::Value;
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
     BoundaryUnavailableReason, GatewayEntryIdentity, IngressProtocol, IngressSelector,
@@ -56,7 +55,6 @@ pub struct PublishedFixture {
     pub artifact_root: PathBuf,
     pub package: PackageArtifactRef,
     pub deployment: ServiceDeploymentRef,
-    pub receipt: Value,
 }
 
 pub struct GatewayFacts {
@@ -115,7 +113,6 @@ impl FixtureSpec {
                 artifact_root,
                 package,
                 deployment,
-                receipt: Value::Null,
             });
         }
         let sources = CompilerPlatformSources::new(&repository)
@@ -166,7 +163,6 @@ impl FixtureSpec {
             artifact_root,
             package,
             deployment,
-            receipt,
         })
     }
 
