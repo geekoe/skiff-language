@@ -18,7 +18,6 @@ const runtimeDag = new Map([
       'skiff-runtime-package-test',
       'skiff-runtime-loader',
       'skiff-runtime-linker',
-      'skiff-runtime-bytecode-verifier',
       'skiff-runtime-deployment-image',
       'skiff-runtime-activation',
       'skiff-runtime-capability-context',
@@ -38,17 +37,8 @@ const runtimeDag = new Map([
     ],
   ],
   [
-    'skiff-runtime-bytecode-verifier',
-    [
-      'skiff-runtime-linked-bytecode',
-      'skiff-runtime-loader',
-      'skiff-runtime-model',
-    ],
-  ],
-  [
     'skiff-runtime-vm',
     [
-      'skiff-runtime-bytecode-verifier',
       'skiff-runtime-deployment-image',
       'skiff-runtime-linker',
       'skiff-runtime-linked-bytecode',
@@ -71,7 +61,6 @@ const runtimeDag = new Map([
     [
       'skiff-runtime-loader',
       'skiff-runtime-linker',
-      'skiff-runtime-bytecode-verifier',
     ],
   ],
   [
@@ -117,7 +106,6 @@ const runtimeDag = new Map([
   [
     'skiff-runtime-linker',
     [
-      'skiff-runtime-bytecode-verifier',
       'skiff-runtime-deployment-image',
       'skiff-runtime-linked-bytecode',
       'skiff-runtime-loader',
@@ -134,7 +122,6 @@ const runtimeDag = new Map([
 const expectedPromotedRuntimePackages = new Set([
   'skiff-runtime-activation',
   'skiff-runtime-boundary',
-  'skiff-runtime-bytecode-verifier',
   'skiff-runtime-capability-context',
   'skiff-runtime-config-snapshot',
   'skiff-runtime-deployment-image',
@@ -167,7 +154,6 @@ const hostBoundaryTarget = {
     'skiff-runtime-package-test',
     'skiff-runtime-loader',
     'skiff-runtime-linker',
-    'skiff-runtime-bytecode-verifier',
     'skiff-runtime-deployment-image',
     'skiff-runtime-activation',
     'skiff-runtime-capability-context',
@@ -196,11 +182,52 @@ const expectedHostBoundaryTargetDebts = [
   'skiff-runtime-native-contract',
 ];
 
-const executableFactsBoundary = {
-  owner: 'runtime/bytecode-verifier/src/verifier.rs',
-  ownerRoot: 'runtime/bytecode-verifier/',
-  consumer: 'runtime/linker/src/bytecode/execution_image.rs',
-  symbols: ['ExecutableFacts', 'verify_executable_facts'],
+const executionImageHardCut = {
+  constructor: 'link_deployment_execution_image',
+  imageType: 'DeploymentExecutionImage',
+  owner: 'runtime/linker/src/bytecode/execution_image.rs',
+  retiredManifestFragments: [
+    'skiff-runtime-bytecode-verifier',
+    'runtime/bytecode-verifier',
+  ],
+  retiredRustIdentifiers: [
+    'skiff_runtime_bytecode_verifier',
+    'ExecutableFacts',
+    'verify_executable_facts',
+    'VerificationError',
+    'VerificationLimit',
+    'VerificationLimits',
+    'VerificationLocation',
+    'VerificationObligation',
+    'VerifiedCallableEffects',
+    'VerifiedConstantHeap',
+    'VerifiedFunctionEffects',
+    'VerifiedResumeKind',
+    'VerifiedResumeSite',
+    'VerifiedResumeSites',
+    'VerifiedStatementEvent',
+    'VerifiedStatementSchedule',
+  ],
+  views: [
+    {
+      type: 'ExecutionConstantHeap',
+      owner: 'runtime/linker/src/bytecode/execution_image/constants.rs',
+      field: 'constant_heap',
+      accessor: 'constant_heap',
+    },
+    {
+      type: 'ExecutionStatementSchedule',
+      owner: 'runtime/linker/src/bytecode/execution_image/statements.rs',
+      field: 'statement_schedule',
+      accessor: 'statement_schedule',
+    },
+    {
+      type: 'ExecutionResumeSites',
+      owner: 'runtime/linker/src/bytecode/execution_image/resume.rs',
+      field: 'resume_sites',
+      accessor: 'resume_sites',
+    },
+  ],
 };
 
 try {
@@ -217,8 +244,11 @@ try {
     const metadata = await cargoMetadata();
     const dagResult = checkRuntimeDag(metadata);
     printRuntimeDagResult(dagResult);
-    const boundaryResult = checkExecutableFactsBoundary(loadRuntimeRustSources());
-    printExecutableFactsBoundaryResult(boundaryResult);
+    const boundaryResult = checkExecutionImageHardCut(
+      loadRuntimeRustSources(),
+      loadCargoManifests(),
+    );
+    printExecutionImageHardCutResult(boundaryResult);
 
     let exitCode = dagResult.violations.length > 0 || boundaryResult.violations.length > 0 ? 1 : 0;
 
@@ -301,159 +331,192 @@ function checkRuntimeDag(metadata) {
   return { promotedRuntimePackages, violations };
 }
 
-function checkExecutableFactsBoundary(sources) {
+function checkExecutionImageHardCut(sources, manifests) {
   const violations = [];
-  const ownerTokens = sourceTokens(sources, executableFactsBoundary.owner, violations);
-  const consumerTokens = sourceTokens(sources, executableFactsBoundary.consumer, violations);
-  if (ownerTokens === null || consumerTokens === null) {
-    return { violations };
-  }
-
-  expectSequenceCount(
-    ownerTokens,
-    ['pub', 'struct', 'ExecutableFacts'],
-    1,
-    `${executableFactsBoundary.owner} public ExecutableFacts declaration`,
-    violations,
+  const tokenizedSources = new Map(
+    [...sources].map(([path, source]) => [path, tokenizeRust(source, path)]),
   );
-  expectSequenceCount(
-    ownerTokens,
-    ['pub', 'fn', 'verify_executable_facts'],
-    1,
-    `${executableFactsBoundary.owner} public verify_executable_facts declaration`,
-    violations,
-  );
-  expectExecutableFactsIntoParts(ownerTokens, violations);
 
-  for (const symbol of executableFactsBoundary.symbols) {
-    const consumers = [...sources]
-      .filter(([path, source]) =>
-        !path.startsWith(executableFactsBoundary.ownerRoot)
-        && tokenizeRust(source, path).includes(symbol))
-      .map(([path]) => path)
-      .sort();
-    if (
-      consumers.length !== 1
-      || consumers[0] !== executableFactsBoundary.consumer
-    ) {
-      violations.push(
-        `${symbol} external source owner must be exactly ${executableFactsBoundary.consumer}; found ${consumers.length === 0 ? '(none)' : consumers.join(', ')}`,
-      );
+  for (const [path, source] of manifests) {
+    const activeSource = stripTomlComments(source);
+    for (const fragment of executionImageHardCut.retiredManifestFragments) {
+      if (activeSource.includes(fragment)) {
+        violations.push(`${path} retains retired verifier manifest reference ${fragment}`);
+      }
     }
   }
 
-  expectConstructionFunctionOwnership(consumerTokens, violations);
+  for (const identifier of executionImageHardCut.retiredRustIdentifiers) {
+    const owners = [...tokenizedSources]
+      .filter(([, tokens]) => tokens.includes(identifier))
+      .map(([path]) => path)
+      .sort();
+    if (owners.length > 0) {
+      violations.push(`retired verifier identifier ${identifier} remains in ${owners.join(', ')}`);
+    }
+  }
+
+  const mintOwners = [...tokenizedSources]
+    .flatMap(([path, tokens]) =>
+      sequenceIndexes(tokens, ['pub', 'fn', executionImageHardCut.constructor])
+        .map(() => path))
+    .sort();
+  if (mintOwners.length !== 1 || mintOwners[0] !== executionImageHardCut.owner) {
+    violations.push(
+      `public ${executionImageHardCut.constructor} mint must exist exactly once in ${executionImageHardCut.owner}; found ${formatPaths(mintOwners)}`,
+    );
+  }
+  const imageDeclarationOwners = publicStructOwners(
+    tokenizedSources,
+    executionImageHardCut.imageType,
+  );
+  if (
+    imageDeclarationOwners.length !== 1
+    || imageDeclarationOwners[0] !== executionImageHardCut.owner
+  ) {
+    violations.push(
+      `public ${executionImageHardCut.imageType} declaration must exist exactly once in ${executionImageHardCut.owner}; found ${formatPaths(imageDeclarationOwners)}`,
+    );
+  }
+
+  const ownerTokens = tokenizedSources.get(executionImageHardCut.owner);
+  if (ownerTokens === undefined) {
+    violations.push(`required execution-image owner source is missing: ${executionImageHardCut.owner}`);
+    return { violations };
+  }
+  const imageBody = publicStructBody(
+    ownerTokens,
+    executionImageHardCut.imageType,
+    executionImageHardCut.owner,
+    violations,
+  );
+  const protectedTypes = [
+    executionImageHardCut.imageType,
+    ...executionImageHardCut.views.map((view) => view.type),
+  ];
+
+  for (const view of executionImageHardCut.views) {
+    const declarationOwners = publicStructOwners(tokenizedSources, view.type);
+    if (declarationOwners.length !== 1 || declarationOwners[0] !== view.owner) {
+      violations.push(
+        `public ${view.type} declaration must exist exactly once in ${view.owner}; found ${formatPaths(declarationOwners)}`,
+      );
+    }
+    const constructionOwners = [...tokenizedSources]
+      .filter(([, tokens]) => structLiteralIndexes(tokens, view.type).length > 0)
+      .map(([path]) => path)
+      .filter((path) => path !== view.owner)
+      .sort();
+    if (constructionOwners.length > 0) {
+      violations.push(`${view.type} is constructed outside its image-owned module: ${constructionOwners.join(', ')}`);
+    }
+    if (imageBody !== null) {
+      expectSequenceCount(
+        imageBody,
+        [view.field, ':', view.type],
+        1,
+        `${executionImageHardCut.imageType}.${view.field} private image-owned field`,
+        violations,
+      );
+    }
+    expectSequenceCount(
+      ownerTokens,
+      ['fn', view.accessor, '(', '&', 'self', ')', '-', '>', '&', view.type],
+      1,
+      `${executionImageHardCut.imageType}::${view.accessor} borrowed view accessor`,
+      violations,
+    );
+  }
+
+  const imageConstructionOwners = [...tokenizedSources]
+    .filter(([, tokens]) =>
+      structLiteralIndexes(tokens, executionImageHardCut.imageType).length > 0)
+    .map(([path]) => path)
+    .filter((path) => path !== executionImageHardCut.owner)
+    .sort();
+  if (imageConstructionOwners.length > 0) {
+    violations.push(
+      `${executionImageHardCut.imageType} is constructed outside its sole mint owner: ${imageConstructionOwners.join(', ')}`,
+    );
+  }
+
+  for (const [path, tokens] of tokenizedSources) {
+    rejectPublicOwnedReturns(path, tokens, protectedTypes, violations);
+    rejectPublicTypeAliases(path, tokens, protectedTypes, violations);
+  }
+
   return { violations };
 }
 
-function sourceTokens(sources, path, violations) {
-  const source = sources.get(path);
-  if (source === undefined) {
-    violations.push(`required executable-facts boundary source is missing: ${path}`);
-    return null;
-  }
-  return tokenizeRust(source, path);
+function publicStructOwners(tokenizedSources, type) {
+  return [...tokenizedSources]
+    .flatMap(([path, tokens]) =>
+      sequenceIndexes(tokens, ['pub', 'struct', type, '{']).map(() => path))
+    .sort();
 }
 
-function expectExecutableFactsIntoParts(tokens, violations) {
-  const implStart = sequenceIndexes(tokens, ['impl', 'ExecutableFacts', '{']);
-  if (implStart.length !== 1) {
-    violations.push(
-      `${executableFactsBoundary.owner} must contain exactly one direct impl ExecutableFacts block; found ${implStart.length}`,
-    );
-    return;
-  }
-  const openBrace = implStart[0] + 2;
+function publicStructBody(tokens, type, owner, violations) {
+  const declarations = sequenceIndexes(tokens, ['pub', 'struct', type, '{']);
+  if (declarations.length !== 1) return null;
+  const openBrace = declarations[0] + 3;
   const closeBrace = matchingTokenBrace(tokens, openBrace);
   if (closeBrace === -1) {
-    violations.push(`${executableFactsBoundary.owner} has an unterminated impl ExecutableFacts block`);
-    return;
-  }
-  expectSequenceCount(
-    tokens.slice(openBrace + 1, closeBrace),
-    ['pub', 'fn', 'into_parts', '('],
-    1,
-    `${executableFactsBoundary.owner} public ExecutableFacts::into_parts declaration`,
-    violations,
-  );
-}
-
-function expectConstructionFunctionOwnership(tokens, violations) {
-  const functionName = 'link_deployment_execution_image';
-  const functionBody = rustFunctionBody(tokens, functionName, violations);
-  if (functionBody === null) return;
-
-  const body = tokens.slice(functionBody.openBrace + 1, functionBody.closeBrace);
-  const outside = [
-    ...tokens.slice(0, functionBody.openBrace + 1),
-    ...tokens.slice(functionBody.closeBrace),
-  ];
-  for (const symbol of executableFactsBoundary.symbols) {
-    expectSequenceCount(
-      body,
-      [symbol],
-      1,
-      `${executableFactsBoundary.consumer} ${functionName} body ${symbol} ownership`,
-      violations,
-    );
-    expectSequenceCount(
-      outside,
-      [symbol],
-      1,
-      `${executableFactsBoundary.consumer} ${symbol} import-only use outside ${functionName}`,
-      violations,
-    );
-  }
-  expectSequenceCount(
-    body,
-    ['verify_executable_facts', '('],
-    1,
-    `${executableFactsBoundary.consumer} ${functionName} verifier call`,
-    violations,
-  );
-  expectSequenceCount(
-    body,
-    ['facts', '.', 'into_parts', '('],
-    1,
-    `${executableFactsBoundary.consumer} ${functionName} ExecutableFacts::into_parts call`,
-    violations,
-  );
-  expectSequenceCount(
-    tokens,
-    ['facts', '.', 'into_parts', '('],
-    1,
-    `${executableFactsBoundary.consumer} ExecutableFacts::into_parts sole consumer`,
-    violations,
-  );
-}
-
-function rustFunctionBody(tokens, name, violations) {
-  const declarations = sequenceIndexes(tokens, ['pub', 'fn', name]);
-  if (declarations.length !== 1) {
-    violations.push(
-      `${executableFactsBoundary.consumer} must define exactly one public ${name}; found ${declarations.length}`,
-    );
+    violations.push(`${owner} has an unterminated public ${type} declaration`);
     return null;
   }
-  const declaration = declarations[0];
-  let openBrace = declaration + 3;
-  while (openBrace < tokens.length && tokens[openBrace] !== '{') {
-    if (tokens[openBrace] === ';') {
-      violations.push(`${executableFactsBoundary.consumer} ${name} has no function body`);
-      return null;
+  return tokens.slice(openBrace + 1, closeBrace);
+}
+
+function rejectPublicOwnedReturns(path, tokens, protectedTypes, violations) {
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (tokens[index] !== 'pub' || tokens[index + 1] === '(') continue;
+    let fnIndex = index + 1;
+    while (['async', 'const', 'unsafe'].includes(tokens[fnIndex])) fnIndex += 1;
+    if (tokens[fnIndex] !== 'fn') continue;
+    const functionName = tokens[fnIndex + 1];
+    let end = fnIndex + 2;
+    while (end < tokens.length && !['{', ';'].includes(tokens[end])) end += 1;
+    const signature = tokens.slice(fnIndex, end);
+    const arrowIndexes = sequenceIndexes(signature, ['-', '>']);
+    if (arrowIndexes.length === 0) continue;
+    const arrow = arrowIndexes[0];
+    for (const type of protectedTypes) {
+      const typeIndex = signature.indexOf(type, arrow + 2);
+      if (typeIndex === -1) continue;
+      const returnPrefix = signature.slice(arrow + 2, typeIndex);
+      if (returnPrefix.includes('&')) continue;
+      if (
+        type === executionImageHardCut.imageType
+        && functionName === executionImageHardCut.constructor
+        && path === executionImageHardCut.owner
+      ) {
+        continue;
+      }
+      violations.push(`${path} publicly returns owned ${type} from ${functionName}; image-owned values must come through the complete image`);
     }
-    openBrace += 1;
   }
-  if (openBrace === tokens.length) {
-    violations.push(`${executableFactsBoundary.consumer} ${name} has no function body`);
-    return null;
+}
+
+function rejectPublicTypeAliases(path, tokens, protectedTypes, violations) {
+  for (const declaration of sequenceIndexes(tokens, ['pub', 'type'])) {
+    let end = declaration + 2;
+    while (end < tokens.length && tokens[end] !== ';') end += 1;
+    const alias = tokens.slice(declaration, end);
+    const protectedType = protectedTypes.find((type) => alias.includes(type));
+    if (protectedType !== undefined) {
+      violations.push(`${path} exposes legacy/alternate alias for ${protectedType}`);
+    }
   }
-  const closeBrace = matchingTokenBrace(tokens, openBrace);
-  if (closeBrace === -1) {
-    violations.push(`${executableFactsBoundary.consumer} ${name} has an unterminated function body`);
-    return null;
-  }
-  return { openBrace, closeBrace };
+}
+
+function formatPaths(paths) {
+  return paths.length === 0 ? '(none)' : paths.join(', ');
+}
+
+function structLiteralIndexes(tokens, type) {
+  return sequenceIndexes(tokens, [type, '{']).filter((index) =>
+    !['&', '->', 'struct', 'impl'].includes(tokens[index - 1])
+    && !(tokens[index - 2] === '-' && tokens[index - 1] === '>'));
 }
 
 function expectSequenceCount(tokens, sequence, expected, label, violations) {
@@ -504,6 +567,61 @@ function loadRuntimeRustSources() {
       }
     }
   }
+}
+
+function loadCargoManifests() {
+  const manifests = new Map();
+  const ignoredDirectories = new Set([
+    '.git', '.skiff-dev', '.stack', 'build', 'node_modules', 'target',
+  ]);
+  visit(root);
+  return manifests;
+
+  function visit(directory) {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isSymbolicLink() || (entry.isDirectory() && ignoredDirectories.has(entry.name))) {
+        continue;
+      }
+      const absolute = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        visit(absolute);
+      } else if (entry.isFile() && ['Cargo.toml', 'Cargo.lock'].includes(entry.name)) {
+        manifests.set(toRepoRelative(absolute), readFileSync(absolute, 'utf8'));
+      }
+    }
+  }
+}
+
+function stripTomlComments(source) {
+  let result = '';
+  let quote = null;
+  let escaped = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (quote !== null) {
+      result += character;
+      if (quote === '"' && character === '\\' && !escaped) {
+        escaped = true;
+      } else {
+        if (character === quote && !escaped) quote = null;
+        escaped = false;
+      }
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      result += character;
+      continue;
+    }
+    if (character === '#') {
+      index = source.indexOf('\n', index);
+      if (index === -1) break;
+      result += '\n';
+      continue;
+    }
+    result += character;
+  }
+  return result;
 }
 
 function tokenizeRust(source, label = '(fixture)') {
@@ -723,14 +841,14 @@ function printRuntimeDagResult(result) {
   );
 }
 
-function printExecutableFactsBoundaryResult(result) {
+function printExecutionImageHardCutResult(result) {
   if (result.violations.length > 0) {
-    console.error('\nExecutable facts source-boundary check failed.\n');
+    console.error('\nExecution-image verifier hard-cut check failed.\n');
     for (const violation of result.violations) console.error(`- ${violation}`);
     return;
   }
   console.log(
-    `Executable facts source-boundary check passed: ${executableFactsBoundary.consumer} is the sole external construction-facts consumer.`,
+    `Execution-image verifier hard-cut check passed: ${executionImageHardCut.owner} owns the sole public image mint and all retired verifier references are absent.`,
   );
 }
 
@@ -995,103 +1113,111 @@ function runSelfTests() {
       },
     },
     {
-      name: 'K1 execution-image edges replace obsolete authority inversions',
+      name: 'verifier crate is absent from the encoded runtime DAG',
       run: () => {
+        assert(!runtimeDag.has('skiff-runtime-bytecode-verifier'), 'retired verifier node remains');
+        for (const [owner, dependencies] of runtimeDag) {
+          assert(
+            !dependencies.includes('skiff-runtime-bytecode-verifier'),
+            `retired verifier edge remains on ${owner}`,
+          );
+        }
         for (const [owner, dependency] of [
-          ['skiff-runtime-linker', 'skiff-runtime-bytecode-verifier'],
           ['skiff-runtime-linker', 'skiff-runtime-deployment-image'],
           ['skiff-runtime-vm', 'skiff-runtime-linker'],
           ['skiff-runtime-request', 'skiff-runtime-linker'],
-          ['skiff-runtime-package-test', 'skiff-runtime-bytecode-verifier'],
         ]) {
           assert(runtimeDag.get(owner).includes(dependency), `expected ${owner} -> ${dependency}`);
         }
-        for (const [owner, dependency] of [
-          ['skiff-runtime-bytecode-verifier', 'skiff-runtime-deployment-image'],
-          ['skiff-runtime-request', 'skiff-runtime-bytecode-verifier'],
-          ['skiff-runtime-request', 'skiff-runtime-deployment-image'],
-        ]) {
-          assert(!runtimeDag.get(owner).includes(dependency), `obsolete edge remains: ${owner} -> ${dependency}`);
-        }
       },
     },
     {
-      name: 'live executable facts boundary has one exact consumer',
+      name: 'execution-image hard-cut fixture passes',
       run: () => {
-        const result = checkExecutableFactsBoundary(loadRuntimeRustSources());
+        const result = checkExecutionImageHardCut(
+          executionImageHardCutFixture(),
+          hardCutManifestFixture(),
+        );
         assert(
           result.violations.length === 0,
-          `expected live source boundary to pass: ${result.violations.join('; ')}`,
+          `expected hard-cut fixture to pass: ${result.violations.join('; ')}`,
         );
       },
     },
     {
-      name: 'executable facts boundary ignores comments and string receipts',
+      name: 'hard-cut scan ignores receipts and unrelated verified names',
       run: () => {
-        const result = checkExecutableFactsBoundary(executableFactsBoundaryFixture());
+        const sources = executionImageHardCutFixture();
+        sources.set('runtime/transport/src/corpus.rs', [
+          '// ExecutableFacts and skiff_runtime_bytecode_verifier are retired.',
+          'const RECEIPT: &str = "VerifiedConstantHeap verify_executable_facts";',
+          'fn transport_corpus_verifier() { verify(); }',
+          'fn allowed(VmVerifiedInvariant: u8, verified_function_index: u8) {}',
+        ].join('\n'));
+        const manifests = hardCutManifestFixture();
+        manifests.set('Cargo.toml', '# skiff-runtime-bytecode-verifier = retired\n[workspace]\nmembers = []');
+        const result = checkExecutionImageHardCut(sources, manifests);
         assert(
           result.violations.length === 0,
-          `lexically inert receipts must not affect ownership: ${result.violations.join('; ')}`,
+          `lexically inert or unrelated names must not fail: ${result.violations.join('; ')}`,
         );
       },
     },
     {
-      name: 'executable facts boundary rejects a second source consumer',
+      name: 'hard-cut scan rejects retired manifest and Rust identifiers',
       run: () => {
-        const sources = executableFactsBoundaryFixture();
+        const sources = executionImageHardCutFixture();
         sources.set(
           'runtime/request/src/bypass.rs',
-          'use verifier::verify_executable_facts; fn bypass() { verify_executable_facts(); }',
+          'use skiff_runtime_bytecode_verifier::{ExecutableFacts, verify_executable_facts};',
         );
-        const result = checkExecutableFactsBoundary(sources);
+        const manifests = hardCutManifestFixture();
+        manifests.set(
+          'runtime/request/Cargo.toml',
+          'skiff-runtime-bytecode-verifier = { path = "../bytecode-verifier" }',
+        );
+        const result = checkExecutionImageHardCut(sources, manifests);
         assert(
-          result.violations.some((violation) =>
-            violation.includes('verify_executable_facts external source owner')
-            && violation.includes('runtime/request/src/bypass.rs')),
-          'expected the second source consumer to be rejected',
+          result.violations.some((violation) => violation.includes('retired verifier manifest reference')),
+          'expected retired manifest reference rejection',
+        );
+        assert(
+          result.violations.some((violation) => violation.includes('retired verifier identifier ExecutableFacts')),
+          'expected retired Rust API rejection',
         );
       },
     },
     {
-      name: 'executable facts boundary rejects a second same-file function consumer',
+      name: 'hard-cut scan rejects a second public image mint',
       run: () => {
-        const sources = executableFactsBoundaryFixture();
+        const sources = executionImageHardCutFixture();
         sources.set(
-          executableFactsBoundary.consumer,
-          `${sources.get(executableFactsBoundary.consumer)}\n`
-            + 'pub fn leak_executable_facts() -> ExecutableFacts { verify_executable_facts() }\n',
+          'runtime/request/src/bypass.rs',
+          'pub fn link_deployment_execution_image() -> DeploymentExecutionImage { todo!() }',
         );
-        const result = checkExecutableFactsBoundary(sources);
+        const result = checkExecutionImageHardCut(sources, hardCutManifestFixture());
         assert(
-          result.violations.some((violation) =>
-            violation.includes('import-only use outside link_deployment_execution_image')),
-          'expected a second same-file ExecutableFacts consumer to be rejected',
-        );
-        assert(
-          result.violations.some((violation) =>
-            violation.includes('verify_executable_facts import-only use outside')),
-          'expected a second same-file verifier call to be rejected',
+          result.violations.some((violation) => violation.includes('must exist exactly once')),
+          'expected second public mint rejection',
         );
       },
     },
     {
-      name: 'executable facts boundary rejects comment-only into_parts proof',
+      name: 'hard-cut scan rejects hand-built images and owned view escape',
       run: () => {
-        const sources = executableFactsBoundaryFixture();
-        sources.set(
-          executableFactsBoundary.consumer,
-          [
-            'use verifier::{ExecutableFacts, verify_executable_facts};',
-            'pub fn link_deployment_execution_image() {',
-            '  let facts: ExecutableFacts = verify_executable_facts();',
-            '  // facts.into_parts();',
-            '}',
-          ].join('\n'),
-        );
-        const result = checkExecutableFactsBoundary(sources);
+        const sources = executionImageHardCutFixture();
+        sources.set('runtime/request/src/bypass.rs', [
+          'pub fn leak() -> Result<ExecutionResumeSites, Error> { todo!() }',
+          'fn hand_build() { let _ = DeploymentExecutionImage { value: 1 }; }',
+        ].join('\n'));
+        const result = checkExecutionImageHardCut(sources, hardCutManifestFixture());
         assert(
-          result.violations.some((violation) => violation.includes('into_parts call')),
-          'expected comment-only into_parts proof to be rejected',
+          result.violations.some((violation) => violation.includes('publicly returns owned ExecutionResumeSites')),
+          'expected owned view escape rejection',
+        );
+        assert(
+          result.violations.some((violation) => violation.includes('constructed outside its sole mint owner')),
+          'expected hand-built image rejection',
         );
       },
     },
@@ -1310,35 +1436,63 @@ function metadataFromRuntimeDag(options = {}) {
   };
 }
 
-function executableFactsBoundaryFixture() {
+function executionImageHardCutFixture() {
   return new Map([
     [
-      executableFactsBoundary.owner,
+      executionImageHardCut.owner,
       [
-        'pub struct ExecutableFacts {}',
-        'impl ExecutableFacts { pub fn into_parts(self) {} }',
-        'pub fn verify_executable_facts() -> ExecutableFacts { ExecutableFacts {} }',
-      ].join('\n'),
-    ],
-    [
-      executableFactsBoundary.consumer,
-      [
-        'use verifier::{ExecutableFacts, verify_executable_facts};',
-        'pub fn link_deployment_execution_image() {',
-        '  let facts: ExecutableFacts = verify_executable_facts();',
-        '  facts.into_parts();',
+        'pub struct DeploymentExecutionImage {',
+        '  constant_heap: ExecutionConstantHeap,',
+        '  statement_schedule: ExecutionStatementSchedule,',
+        '  resume_sites: ExecutionResumeSites,',
+        '}',
+        'impl DeploymentExecutionImage {',
+        '  pub const fn constant_heap(&self) -> &ExecutionConstantHeap { &self.constant_heap }',
+        '  pub const fn statement_schedule(&self) -> &ExecutionStatementSchedule { &self.statement_schedule }',
+        '  pub const fn resume_sites(&self) -> &ExecutionResumeSites { &self.resume_sites }',
+        '}',
+        'pub fn link_deployment_execution_image() -> Result<DeploymentExecutionImage, Error> {',
+        '  let constant_heap = build_constant_heap();',
+        '  let statement_schedule = build_statement_schedule();',
+        '  let resume_sites = build_resume_sites();',
+        '  Ok(DeploymentExecutionImage { constant_heap, statement_schedule, resume_sites })',
         '}',
       ].join('\n'),
     ],
     [
-      'runtime/request/src/lexically_inert.rs',
+      'runtime/linker/src/bytecode/execution_image/constants.rs',
       [
-        '// ExecutableFacts verify_executable_facts facts.into_parts()',
-        'const TEXT: &str = "ExecutableFacts verify_executable_facts";',
-        'const RAW: &str = r#"facts.into_parts()"#;',
-        '/* nested /* ExecutableFacts */ verify_executable_facts */',
+        'pub struct ExecutionConstantHeap { values: Box<[ValueSlot]> }',
+        'pub(super) fn build_constant_heap() -> ExecutionConstantHeap {',
+        '  ExecutionConstantHeap { values: Box::new([]) }',
+        '}',
       ].join('\n'),
     ],
+    [
+      'runtime/linker/src/bytecode/execution_image/statements.rs',
+      [
+        'pub struct ExecutionStatementSchedule { rows: Box<[u8]> }',
+        'pub(super) fn build_statement_schedule() -> ExecutionStatementSchedule {',
+        '  ExecutionStatementSchedule { rows: Box::new([]) }',
+        '}',
+      ].join('\n'),
+    ],
+    [
+      'runtime/linker/src/bytecode/execution_image/resume.rs',
+      [
+        'pub struct ExecutionResumeSites { rows: Box<[u8]> }',
+        'pub(super) fn build_resume_sites() -> ExecutionResumeSites {',
+        '  ExecutionResumeSites { rows: Box::new([]) }',
+        '}',
+      ].join('\n'),
+    ],
+  ]);
+}
+
+function hardCutManifestFixture() {
+  return new Map([
+    ['Cargo.toml', '[workspace]\nmembers = ["runtime/linker"]'],
+    ['runtime/linker/Cargo.toml', '[package]\nname = "skiff-runtime-linker"'],
   ]);
 }
 
