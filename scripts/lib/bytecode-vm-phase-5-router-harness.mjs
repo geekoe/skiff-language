@@ -68,6 +68,7 @@ async function main() {
   });
   const [httpPort, runtimePort, relayPort] = lease.ports;
   const upstream = await createGatedUpstream();
+  const disconnectUpstream = await createGatedUpstream();
   const mongo = await MongodLiveHarness.create({ repoRoot: repository });
   let router;
   let runtime;
@@ -115,6 +116,12 @@ async function main() {
       stderrPath: join(tempRoot, 'runtime.stderr.log'),
     });
     await waitForHandshakeAfter(relay, 0);
+
+    const disconnect = await exerciseClientDisconnect({
+      relay,
+      httpPort,
+      upstream: disconnectUpstream,
+    });
 
     const fromIndex = relay.records.length;
     const responseOutcome = requestFull({
@@ -198,17 +205,20 @@ async function main() {
         pending: nonzeroHealth.counters,
         terminal: zeroHealth.counters,
       },
+      disconnect,
     })}\n`);
   } catch (error) {
     primaryError = error;
     throw error;
   } finally {
     upstream.releaseBodies();
+    disconnectUpstream.releaseBodies();
     const cleanupErrors = [];
     await cleanupProcess(router, 'Phase 5 Router', 'SIGTERM', cleanupErrors);
     await cleanupProcess(runtime, 'Phase 5 Runtime', 'SIGINT', cleanupErrors);
     if (relay !== undefined) await relay.close().catch((error) => cleanupErrors.push(error));
     await upstream.close().catch((error) => cleanupErrors.push(error));
+    await disconnectUpstream.close().catch((error) => cleanupErrors.push(error));
     await mongo.cleanup().catch((error) => cleanupErrors.push(error));
     await lease.release().catch((error) => cleanupErrors.push(error));
     await rm(tempRoot, { recursive: true, force: true }).catch((error) => cleanupErrors.push(error));
@@ -216,6 +226,106 @@ async function main() {
       throw new AggregateError(cleanupErrors, 'Phase 5 Router proof cleanup failed');
     }
   }
+}
+
+async function exerciseClientDisconnect({ relay, httpPort, upstream }) {
+  const fromIndex = relay.records.length;
+  const external = observeRawRequest({
+    port: httpPort,
+    method: 'POST',
+    path: '/phase-5/vcp',
+    headers: selectorHeaders({ service: SERVICE_ID, version: VERSION }),
+    body: Buffer.from(upstream.baseUrl, 'utf8'),
+  });
+  try {
+    await upstream.waitForTwoOpenStreams();
+  } catch (error) {
+    const early = await Promise.race([
+      external.outcome,
+      delay(100).then(() => ({ pending: true })),
+    ]);
+    const frames = relay.records.slice(fromIndex).map((record) => ({
+      direction: record.direction,
+      type: record.type,
+      requestId: record.header?.requestId,
+    }));
+    throw new Error(
+      `${error.message}; external=${JSON.stringify(early)}; relay=${JSON.stringify(frames)}`,
+    );
+  }
+  const activeHealth = await waitForHealth(relay, fromIndex, (counters) => (
+    counters?.outboundStreamLeasesActive === 2
+    && counters?.streamRuntimeStreamsActive === 0
+  ), 'two table-backed streams before external client disconnect');
+  const starts = relay.records.slice(fromIndex).filter(({ type }) => type === 'request.start');
+  assert.equal(starts.length, 1, 'disconnect case must dispatch exactly one production request');
+  const start = starts[0];
+  assert.equal(start.direction, 'ToRuntime');
+  assert.equal(start.header?.mode, 'serverStream');
+  assert.equal(start.header?.routing?.deployment?.serviceId, SERVICE_ID);
+  assert.equal(start.header?.routing?.deployment?.contractVersion, VERSION);
+  assert.equal(start.header?.routing?.ingress?.path, '/phase-5/vcp');
+  const requestId = start.header?.requestId;
+  assert.equal(typeof requestId, 'string');
+
+  external.destroy();
+  const cancel = await waitForRecord(relay, activeHealth.index + 1, (record) => (
+    record.type === 'request.cancel'
+    && record.header?.requestId === requestId
+  ), 'Router client_disconnect request.cancel');
+  const cancels = relay.records.slice(fromIndex).filter((record) => (
+    record.type === 'request.cancel' && record.header?.requestId === requestId
+  ));
+  assert.deepEqual(
+    cancels.map(({ header }) => header?.reason),
+    ['client_disconnect'],
+    'the real external disconnect must have one exact Router terminal',
+  );
+  await upstream.waitForTwoClosedStreams();
+  const terminalHealth = await waitForHealth(
+    relay,
+    cancel.index + 1,
+    (counters) => exactObject(counters, ZERO_COUNTERS),
+    'zero RuntimeHost inventory after Router client_disconnect',
+  );
+  assert.deepEqual(upstream.routes, [
+    { method: 'GET', path: '/request' },
+    { method: 'GET', path: '/stream/left' },
+    { method: 'GET', path: '/stream/right' },
+  ]);
+  upstream.releaseBodies();
+  return {
+    requestId,
+    cancelReason: cancels[0].header.reason,
+    providerStreamsClosed: true,
+    terminalHealth: terminalHealth.counters,
+  };
+}
+
+function observeRawRequest({ port, method, path, headers, body }) {
+  let request;
+  const outcome = new Promise((resolvePromise) => {
+    request = http.request({
+      host: '127.0.0.1',
+      port,
+      method,
+      path,
+      headers: { ...headers, host: `127.0.0.1:${port}` },
+    }, (response) => {
+      const chunks = [];
+      response.on('data', (chunk) => chunks.push(Buffer.from(chunk)));
+      response.on('end', () => resolvePromise({
+        status: response.statusCode,
+        body: Buffer.concat(chunks).toString('utf8'),
+      }));
+    });
+    request.once('error', (error) => resolvePromise({ error: error.message }));
+    request.end(body);
+  });
+  return {
+    outcome,
+    destroy() { request.destroy(); },
+  };
 }
 
 async function requiredCanonicalDirectory(name) {
@@ -269,6 +379,18 @@ async function waitForHealth(relay, fromIndex, predicate, label) {
   throw new Error(`timed out waiting for ${label}; observed health=${JSON.stringify(observed)}`);
 }
 
+async function waitForRecord(relay, fromIndex, predicate, label) {
+  const deadline = Date.now() + 7_000;
+  while (Date.now() < deadline) {
+    for (let index = fromIndex; index < relay.records.length; index += 1) {
+      const record = relay.records[index];
+      if (predicate(record)) return { index, record };
+    }
+    await delay(25);
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
 function assertRuntimeFrames(records) {
   const starts = records.filter(({ type }) => type === 'request.start');
   assert.equal(starts.length, 1, 'external HTTP request must mint exactly one request.start');
@@ -309,6 +431,7 @@ function assertRuntimeFrames(records) {
 async function createGatedUpstream() {
   const routes = [];
   const streams = new Map();
+  const closedStreams = new Set();
   let release = false;
   let twoStreamsOpenBeforeRelease = false;
   const server = http.createServer((request, response) => {
@@ -331,7 +454,10 @@ async function createGatedUpstream() {
     response.writeHead(200, { 'content-type': 'application/octet-stream' });
     response.flushHeaders();
     streams.set(request.url, response);
-    response.once('close', () => streams.delete(request.url));
+    response.once('close', () => {
+      streams.delete(request.url);
+      closedStreams.add(request.url);
+    });
     if (!release && streams.has('/stream/left') && streams.has('/stream/right')) {
       twoStreamsOpenBeforeRelease = true;
     }
@@ -354,6 +480,16 @@ async function createGatedUpstream() {
         await delay(10);
       }
       throw new Error(`two outbound stream heads did not coexist; routes=${JSON.stringify(routes)}`);
+    },
+    async waitForTwoClosedStreams() {
+      const deadline = Date.now() + 7_000;
+      while (Date.now() < deadline) {
+        if (closedStreams.has('/stream/left') && closedStreams.has('/stream/right')) return;
+        await delay(10);
+      }
+      throw new Error(
+        `client disconnect did not close both provider streams; closed=${JSON.stringify([...closedStreams])}`,
+      );
     },
     releaseBodies() {
       if (release) return;
