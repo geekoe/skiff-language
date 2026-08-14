@@ -583,6 +583,59 @@ fn drive_intrinsic_fiber_to_completion(fiber: &mut VmFiber, heap: &mut Intrinsic
 }
 
 #[test]
+fn stream_item_release_failure_returns_the_rooted_carrier_for_exact_retry() {
+    let mut heap = IntrinsicDispatchHeap::default();
+    let mut fiber = intrinsic_fiber(&mut heap);
+    let item = loop {
+        match fiber
+            .dispatch_one(&mut heap)
+            .expect("drive intrinsic fixture to EmitStream")
+        {
+            DispatchOutcome::Continue => {}
+            DispatchOutcome::Handoff(VmControl::EmitStream(item)) => break item,
+            DispatchOutcome::Handoff(_) => {
+                panic!("intrinsic fixture has only EmitStream handoff")
+            }
+            DispatchOutcome::Complete(_) => panic!("fixture completed before EmitStream"),
+            DispatchOutcome::Throw(_) => panic!("intrinsic fixture must not throw"),
+        }
+    };
+    let [root] = item.item().values() else {
+        panic!("EmitStream transfers exactly one item owner")
+    };
+    let handle = root.as_request_heap_ref().unwrap().get();
+    heap.fail_release_at = Some(heap.release_attempts + 1);
+
+    let failure = item
+        .release(&mut heap)
+        .expect_err("the injected first release must return its carrier");
+
+    assert!(matches!(
+        failure.error(),
+        VmError::Heap(VmHeapError::HeapOperationFailed {
+            operation: VmHeapOperation::ReleaseSnapshot,
+            ..
+        })
+    ));
+    assert_eq!(heap.owner_count(handle), 1);
+    let mut roots = IntrinsicRootHandles::default();
+    failure.visit_roots(&mut roots).unwrap();
+    assert_eq!(roots.0, [handle]);
+
+    let (item, _error) = failure.into_parts();
+    heap.fail_release_at = None;
+    let resume = item
+        .release(&mut heap)
+        .expect("the unchanged carrier can retry on the same heap");
+    assert_eq!(heap.owner_count(handle), 0);
+    fiber
+        .resume(resume, ResumeOutcome::Empty)
+        .expect("the same continuation resumes after release retry");
+    drive_intrinsic_fiber_to_completion(&mut fiber, &mut heap);
+    assert!(heap.entries.is_empty());
+}
+
+#[test]
 fn intrinsic_dispatch_executes_phase_5_string_and_bytes_ops_with_typed_rooted_results() {
     let mut heap = IntrinsicDispatchHeap::default();
     let mut fiber = intrinsic_fiber(&mut heap);

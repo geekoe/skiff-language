@@ -1,4 +1,4 @@
-use std::{num::NonZeroU64, sync::Arc};
+use std::{fmt, num::NonZeroU64, sync::Arc};
 
 use skiff_artifact_model::Opcode;
 use skiff_runtime_deployment_image::DeploymentOwnerIdentity;
@@ -505,6 +505,74 @@ pub struct StreamItem {
     resume: VmResumeToken,
 }
 
+/// A failed stream-item release together with the still-unique carrier.
+///
+/// Heap release is transactional, so `item` remains the logical owner and may
+/// be visited or retried. A request owner that has already chosen a terminal
+/// outcome may instead consume this error through [`Self::into_cleanup_roots`]
+/// and transfer the values into its explicit terminal cleanup escrow.
+#[must_use = "a failed stream-item release still owns its item and continuation"]
+pub struct StreamItemReleaseError {
+    item: StreamItem,
+    error: VmError,
+}
+
+impl StreamItemReleaseError {
+    pub const fn item(&self) -> &StreamItem {
+        &self.item
+    }
+
+    pub const fn error(&self) -> &VmError {
+        &self.error
+    }
+
+    /// Returns the intact carrier for a retry on the same request heap.
+    pub fn into_parts(self) -> (StreamItem, VmError) {
+        (self.item, self.error)
+    }
+
+    /// Transfers the failed value owner into terminal cleanup escrow.
+    ///
+    /// The continuation is deliberately abandoned only on this explicit
+    /// terminal path; callers that may resume must use [`Self::into_parts`].
+    pub fn into_cleanup_roots(self) -> (Box<[ValueSlot]>, VmError) {
+        let Self { item, error } = self;
+        let StreamItem { item, .. } = item;
+        (item.values, error)
+    }
+}
+
+impl fmt::Debug for StreamItemReleaseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StreamItemReleaseError")
+            .field("item_type", &self.item.item_type)
+            .field("item_shape", &self.item.item_shape)
+            .field("function", &self.item.function)
+            .field("instruction", &self.item.instruction)
+            .field("error", &self.error)
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Display for StreamItemReleaseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl std::error::Error for StreamItemReleaseError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+impl VmRootSource for StreamItemReleaseError {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        self.item.visit_roots(visitor)
+    }
+}
+
 impl StreamItem {
     #[allow(dead_code)]
     pub(crate) fn new(
@@ -554,21 +622,16 @@ impl StreamItem {
     /// Releases the emitted owner through its exact linked lifecycle plan on
     /// the request heap thread, then returns the unique zero-result resume.
     /// No VM value crosses an actual-Pending writer flush.
-    pub fn release(self, heap: &mut dyn VmHeap) -> Result<VmResumeToken, VmError> {
-        let Self {
-            item,
-            item_type: _,
-            item_shape: _,
-            plan,
-            function,
-            instruction,
-            resume,
-        } = self;
-        let mut executor = LifecycleExecutor::new(heap);
-        executor
-            .release_batch(item.values(), std::slice::from_ref(&plan))
-            .map_err(|error| error.into_vm_error(function, instruction, Opcode::EmitStream))?;
-        Ok(resume)
+    pub fn release(self, heap: &mut dyn VmHeap) -> Result<VmResumeToken, StreamItemReleaseError> {
+        let released = LifecycleExecutor::new(heap)
+            .release_batch(self.item.values(), std::slice::from_ref(&self.plan))
+            .map_err(|error| {
+                error.into_vm_error(self.function, self.instruction, Opcode::EmitStream)
+            });
+        match released {
+            Ok(()) => Ok(self.resume),
+            Err(error) => Err(StreamItemReleaseError { item: self, error }),
+        }
     }
 }
 

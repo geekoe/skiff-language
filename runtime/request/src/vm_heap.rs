@@ -54,6 +54,12 @@ struct PreparedOwnerConsume {
     resource_releases: Vec<RequestResourceHandle>,
 }
 
+#[derive(Clone, Copy)]
+struct ExcludedOwnerField<'a> {
+    root: HeapHandle,
+    field: &'a str,
+}
+
 pub struct RequestVmHeap {
     heap: RequestHeap,
     resources: Option<RequestResourceTable>,
@@ -630,17 +636,18 @@ impl RequestVmHeap {
         children
     }
 
-    /// Validates the entire recursive remainder drop before the selected
-    /// field is physically detached. Owner counts are simulated per handle,
-    /// so malformed duplicate edges, cycles, stale children, and resources
-    /// that this heap cannot terminate all fail without changing state.
+    /// Validates one complete recursive owner transition before any mutation.
+    /// `excluded` is used only by affine dense-field take: that selected owner
+    /// leaves the aggregate instead of participating in the remainder drop.
+    /// Owner counts are simulated per handle, so malformed duplicate edges,
+    /// cycles, stale children, and resources this heap cannot terminate all
+    /// fail without changing heap, sidecar, or route state.
     fn prepare_owner_consume(
         &self,
         root: ValueSlot,
-        root_heap_handle: HeapHandle,
-        excluded_root_field: &str,
+        operation: VmHeapOperation,
+        excluded: Option<ExcludedOwnerField<'_>>,
     ) -> Result<PreparedOwnerConsume, VmHeapError> {
-        let operation = VmHeapOperation::TakeDenseField;
         let mut remaining_owners = HashMap::new();
         let mut removals = Vec::new();
         let mut resource_releases = Vec::new();
@@ -673,9 +680,10 @@ impl RequestVmHeap {
                             })?;
                     if *remaining == 0 {
                         removals.push((handle, heap_handle));
-                        let excluded =
-                            (heap_handle == root_heap_handle).then_some(excluded_root_field);
-                        pending.extend(self.container_children_except(heap_handle, excluded));
+                        let excluded_field = excluded
+                            .filter(|excluded| excluded.root == heap_handle)
+                            .map(|excluded| excluded.field);
+                        pending.extend(self.container_children_except(heap_handle, excluded_field));
                     }
                 }
                 ValueKind::ResourceRef => {
@@ -704,7 +712,12 @@ impl RequestVmHeap {
     }
 
     /// Applies only facts frozen by `prepare_owner_consume`. The caller holds
-    /// `&mut self`, so no live entry can change between prepare and commit.
+    /// `&mut self`, so no heap entry can change between prepare and commit.
+    /// Resource release is also commit-safe: `RequestResourceTable::release`
+    /// treats an exact closed tombstone as `AlreadyReleased`, the packed handle
+    /// was validated during prepare, and provider termination has no fallible
+    /// return path. Consequently no operation below can reject after the first
+    /// owner count or sidecar is changed.
     fn commit_owner_consume(&mut self, prepared: PreparedOwnerConsume) {
         for (handle, remaining) in &prepared.remaining_owners {
             if *remaining == 0 {
@@ -1098,46 +1111,9 @@ impl VmHeap for RequestVmHeap {
                 | ValueKind::Date,
             ) => Ok(()),
             Some(ValueKind::RequestHeapRef) => {
-                let vm_handle = owner
-                    .as_request_heap_ref()
-                    .ok_or(VmHeapError::InvalidValueMetadata)?;
-                let heap_handle = self.live_entry_mut(owner)?.heap_handle;
-                let remove = {
-                    let entry = self.live.get_mut(&vm_handle).ok_or_else(|| {
-                        Self::invalid_handle(
-                            vm_handle,
-                            VmHandleInvalidReason::StaleGenerationOrEpoch,
-                        )
-                    })?;
-                    entry.snapshot_owners = entry.snapshot_owners.checked_sub(1).ok_or(
-                        VmHeapError::OwnershipViolation {
-                            kind: ValueKind::RequestHeapRef,
-                            handle: vm_handle,
-                        },
-                    )?;
-                    entry.snapshot_owners == 0
-                };
-                if remove {
-                    let entry = self.live.remove(&vm_handle).ok_or_else(|| {
-                        Self::invalid_handle(
-                            vm_handle,
-                            VmHandleInvalidReason::StaleGenerationOrEpoch,
-                        )
-                    })?;
-                    let children = self.take_container_children(heap_handle);
-                    self.handles_by_heap.remove(&entry.heap_handle);
-                    self.released_heap_handles
-                        .insert(entry.heap_handle, vm_handle);
-                    // Recursive snapshot drop: nested aggregates owned by this
-                    // container lose exactly one owner each. The guard skips
-                    // already-released children so a self-referential container
-                    // cannot recurse forever.
-                    for child in children {
-                        if self.validate_live(&child).is_ok() {
-                            self.release_snapshot(&child)?;
-                        }
-                    }
-                }
+                let prepared =
+                    self.prepare_owner_consume(*owner, VmHeapOperation::ReleaseSnapshot, None)?;
+                self.commit_owner_consume(prepared);
                 Ok(())
             }
             Some(kind) => Err(VmHeapError::OperationKindMismatch {
@@ -1577,7 +1553,14 @@ impl VmHeap for RequestVmHeap {
             }
             None => return Err(VmHeapError::InvalidValueMetadata),
         }
-        let prepared = self.prepare_owner_consume(*record, heap_handle, &field)?;
+        let prepared = self.prepare_owner_consume(
+            *record,
+            operation,
+            Some(ExcludedOwnerField {
+                root: heap_handle,
+                field: &field,
+            }),
+        )?;
 
         // Detach the authoritative VM slot first. RequestHeap deletion has a
         // prepare-before-mutate contract; if it rejects the target, restoring

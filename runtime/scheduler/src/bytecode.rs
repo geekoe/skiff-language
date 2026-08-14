@@ -6,8 +6,8 @@ use skiff_runtime_model::vm_heap::{VmHeap, VmHeapError};
 use skiff_runtime_model::vm_root::{VmRootSource, VmRootVisitor};
 use skiff_runtime_vm::{
     AdapterInvocation as VmAdapterInvocation, ChildInvocation as VmChildInvocation, ChildTarget,
-    PendingOperation as VmPendingOperation, ResumeOutcome, StreamItem as VmStreamItem, VmBudget,
-    VmControl, VmError, VmFiber, VmResult, VmResumeToken,
+    PendingOperation as VmPendingOperation, ResumeOutcome, StreamItem as VmStreamItem,
+    StreamItemReleaseError, VmBudget, VmControl, VmError, VmFiber, VmResult, VmResumeToken,
 };
 
 use crate::{
@@ -25,6 +25,10 @@ pub enum BytecodeSchedulerError {
     UnsupportedPark,
     ChildCapacityExceeded,
     ChildOwnerCreation(OwnerCreationError),
+    /// The scheduler rejected an emitted VM item, but its exact release
+    /// failed. This variant retains the unique item carrier until the request
+    /// terminal path can transfer its values into cleanup escrow.
+    StreamItemRelease(StreamItemReleaseError),
     Vm(VmError),
     Port(String),
 }
@@ -44,6 +48,9 @@ impl fmt::Display for BytecodeSchedulerError {
                 formatter.write_str("bytecode blocked child capacity is exhausted")
             }
             Self::ChildOwnerCreation(error) => error.fmt(formatter),
+            Self::StreamItemRelease(error) => {
+                write!(formatter, "bytecode stream item release failed: {error}")
+            }
             Self::Vm(error) => write!(formatter, "bytecode VM unit failed: {error}"),
             Self::Port(message) => write!(formatter, "bytecode scheduler port failed: {message}"),
         }
@@ -54,8 +61,18 @@ impl std::error::Error for BytecodeSchedulerError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Vm(error) => Some(error),
+            Self::StreamItemRelease(error) => Some(error),
             Self::ChildOwnerCreation(error) => Some(error),
             _ => None,
+        }
+    }
+}
+
+impl VmRootSource for BytecodeSchedulerError {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        match self {
+            Self::StreamItemRelease(error) => error.visit_roots(visitor),
+            _ => Ok(()),
         }
     }
 }
@@ -648,7 +665,7 @@ impl BytecodeUnit for VmFiber {
     ) -> Result<(), BytecodeSchedulerError> {
         item.release(heap)
             .map(|_resume| ())
-            .map_err(BytecodeSchedulerError::from)
+            .map_err(BytecodeSchedulerError::StreamItemRelease)
     }
 
     fn is_stream_next_child(invocation: &VmChildInvocation) -> bool {

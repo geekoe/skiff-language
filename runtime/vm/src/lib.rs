@@ -25,8 +25,8 @@ pub use budget::{
 pub use control::{
     AdapterControl, AdapterInvocation, BoundaryStart, ChildInvocation, ChildTarget, EffectStart,
     PendingOperation, PendingTicket, ResumeOutcome, StreamEndpointRef, StreamInvocation,
-    StreamItem, VmControl, VmHostEffectArguments, VmInternalTerminal, VmOwnedValues, VmResult,
-    VmResumeKind, VmResumeToken,
+    StreamItem, StreamItemReleaseError, VmControl, VmHostEffectArguments, VmInternalTerminal,
+    VmOwnedValues, VmResult, VmResumeKind, VmResumeToken,
 };
 pub use error::{VmEntryArgumentRejection, VmError, VmValueLocation, VmVerifiedInvariant};
 pub use fiber::{Vm, VmFiber, VmFiberState};

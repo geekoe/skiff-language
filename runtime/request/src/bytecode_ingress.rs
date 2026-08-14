@@ -644,6 +644,16 @@ impl RequestPendingRuntime {
         )
     }
 
+    /// Transfers unique values from a terminally failed handoff into the
+    /// request retention cleanup list. No pending/GC safepoint can intervene
+    /// between this synchronous transfer and terminal retention.
+    pub(super) fn escrow_cleanup_roots(&self, roots: Box<[ValueSlot]>) {
+        self.cleanup_roots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(roots);
+    }
+
     pub(super) fn begin_pending<T, F, M>(
         &self,
         resume: VmResumeToken,
@@ -2421,6 +2431,10 @@ impl ParkedBytecodeRequest {
             runtime,
             ..
         } = self;
+        // An absent stream supervisor is terminal, but a failed item release
+        // still owns its exact VM carrier. Transfer that carrier before any
+        // Display/string projection can discard the owner-bearing error.
+        let error = escrow_terminal_scheduler_error(&runtime, error);
         let result: RequestResult<BoundaryResponse> =
             Err(scheduler_error_to_request_error(&execution_budget, error));
         let snapshot = context.freeze_with_termination(resource_termination_for_result(&result));
@@ -2433,6 +2447,20 @@ impl ParkedBytecodeRequest {
             },
             owner_inventory: DrivenBytecodeRequestOwnerInventory::Started(snapshot),
         })
+    }
+}
+
+fn escrow_terminal_scheduler_error(
+    runtime: &RequestPendingRuntime,
+    error: BytecodeSchedulerError,
+) -> BytecodeSchedulerError {
+    match error {
+        BytecodeSchedulerError::StreamItemRelease(failure) => {
+            let (roots, error) = failure.into_cleanup_roots();
+            runtime.escrow_cleanup_roots(roots);
+            BytecodeSchedulerError::Vm(error)
+        }
+        error => error,
     }
 }
 
@@ -3025,6 +3053,9 @@ fn scheduler_error_to_request_error(
         BytecodeSchedulerError::ChildOwnerCreation(_) => {
             RequestError::Decode("bytecode scheduler owner creation failed".to_string())
         }
+        BytecodeSchedulerError::StreamItemRelease(_) => RequestError::Decode(
+            "bytecode scheduler retained a stream item outside request cleanup escrow".to_string(),
+        ),
         BytecodeSchedulerError::Vm(error) => vm_error_to_request_error(execution_budget, error),
         BytecodeSchedulerError::Port(message) => {
             RequestError::Unsupported(format!("bytecode scheduler port failed: {message}"))
@@ -3394,6 +3425,9 @@ fn vm_limits() -> VmLimits {
         NonZeroU32::new(1024).expect("VM segment instruction limit is non-zero"),
     )
 }
+
+#[cfg(test)]
+mod absent_supervisor_tests;
 
 #[cfg(test)]
 mod tests {

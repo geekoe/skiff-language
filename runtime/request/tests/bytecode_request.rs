@@ -616,6 +616,37 @@ function dropLeft(request: std.http.HttpRequest) -> Stream<std.http.HttpResponse
         )
     }
 
+    fn build_recursive_drop() -> Self {
+        Self::build_from_source(
+            "test.skiff/bytecode-vm-phase-5-recursive-drop",
+            "/phase-5/request-stream-recursive-drop",
+            r#"import std
+
+function headers() -> Array<std.http.HttpHeader> {
+  return []
+}
+
+function outbound(url: string) -> std.http.HttpClientRequest {
+  return std.http.HttpClientRequest {
+    method: "GET",
+    url: url,
+    headers: headers(),
+    body: null,
+    timeoutMs: 5000,
+  }
+}
+
+function run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  std.http.stream(outbound(request.body.toUtf8String().concat("/stream/discard")))
+  emit({ tag: "start", status: 209, headers: [] })
+  emit({ tag: "end" })
+  return null
+}
+"#,
+            "",
+        )
+    }
+
     fn build_from_source(package_id: &str, path: &str, source: &str, extra_http: &str) -> Self {
         let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -752,6 +783,11 @@ function dropLeft(request: std.http.HttpRequest) -> Stream<std.http.HttpResponse
 fn server_stream_fixture() -> &'static ServerStreamFixture {
     static FIXTURE: OnceLock<ServerStreamFixture> = OnceLock::new();
     FIXTURE.get_or_init(ServerStreamFixture::build)
+}
+
+fn recursive_drop_server_stream_fixture() -> &'static ServerStreamFixture {
+    static FIXTURE: OnceLock<ServerStreamFixture> = OnceLock::new();
+    FIXTURE.get_or_init(ServerStreamFixture::build_recursive_drop)
 }
 
 fn shapeless_raw_http_fixture() -> &'static ServerStreamFixture {
@@ -917,6 +953,7 @@ impl BytecodeServerStreamWriterPort for ControlledServerStreamWriter {
 
 struct ReadyHttpBodySource {
     chunks: VecDeque<Vec<u8>>,
+    drops: Arc<AtomicUsize>,
 }
 
 impl StreamPullSource for ReadyHttpBodySource {
@@ -928,6 +965,12 @@ impl StreamPullSource for ReadyHttpBodySource {
         Box::pin(
             async move { Ok(next.map(|chunk| skiff_runtime_boundary::value::bytes_value(&chunk))) },
         )
+    }
+}
+
+impl Drop for ReadyHttpBodySource {
+    fn drop(&mut self) {
+        self.drops.fetch_add(1, Ordering::AcqRel);
     }
 }
 
@@ -1071,6 +1114,7 @@ impl BytecodeHttpClientPort for BreakProbeHttpClient {
 #[derive(Clone, Default)]
 struct ReadyHttpClient {
     requests: Arc<Mutex<Vec<BytecodeHttpRequest>>>,
+    stream_drops: Arc<AtomicUsize>,
 }
 
 impl ReadyHttpClient {
@@ -1079,6 +1123,10 @@ impl ReadyHttpClient {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+
+    fn stream_drops(&self) -> usize {
+        self.stream_drops.load(Ordering::Acquire)
     }
 }
 
@@ -1114,6 +1162,8 @@ impl BytecodeHttpClientPort for ReadyHttpClient {
                 .collect()
         } else if request.url.ends_with("/stream/right") {
             [b"right".to_vec()].into_iter().collect()
+        } else if request.url.ends_with("/stream/discard") {
+            VecDeque::new()
         } else {
             return Box::pin(std::future::ready(Err(
                 BytecodeHttpFailure::InvalidProviderContract(format!(
@@ -1127,7 +1177,10 @@ impl BytecodeHttpClientPort for ReadyHttpClient {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(request);
         let token = registrar.stream_runtime().pull_stream_with_cancellation(
-            ReadyHttpBodySource { chunks },
+            ReadyHttpBodySource {
+                chunks,
+                drops: Arc::clone(&self.stream_drops),
+            },
             execution.cancellation_token(),
         );
         let result = registrar
@@ -1268,6 +1321,7 @@ struct ServerStreamHeapTrace {
     item_type_tag: u32,
     item_releases: AtomicUsize,
     fail_item_decode: AtomicBool,
+    fail_item_release: AtomicBool,
 }
 
 impl ServerStreamHeapTrace {
@@ -1276,7 +1330,12 @@ impl ServerStreamHeapTrace {
             item_type_tag,
             item_releases: AtomicUsize::new(0),
             fail_item_decode: AtomicBool::new(fail_item_decode),
+            fail_item_release: AtomicBool::new(false),
         })
+    }
+
+    fn fail_next_item_release(&self) {
+        self.fail_item_release.store(true, Ordering::Release);
     }
 }
 
@@ -1318,6 +1377,16 @@ impl VmHeap for RecordingServerStreamHeap {
     }
 
     fn release_snapshot(&mut self, owner: &ValueSlot) -> Result<(), VmHeapError> {
+        if owner
+            .compact_type_tag()
+            .is_some_and(|tag| tag.type_index() == self.trace.item_type_tag)
+            && self.trace.fail_item_release.swap(false, Ordering::AcqRel)
+        {
+            return Err(VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::ReleaseSnapshot,
+                message: "injected server-stream item release failure".to_string(),
+            });
+        }
         self.inner.release_snapshot(owner)?;
         if owner
             .compact_type_tag()
@@ -2243,6 +2312,62 @@ mod tests {
         drop(driven.retention);
     }
 
+    #[test]
+    fn phase_5_ignored_http_stream_executes_recursive_frame_drop_exactly_once() {
+        let fixture = recursive_drop_server_stream_fixture();
+        let writer = Arc::new(ControlledServerStreamWriter::new([
+            WriterPlan::Ready(Ok(())),
+            WriterPlan::Ready(Ok(())),
+        ]));
+        let http_client = Arc::new(ReadyHttpClient::default());
+        let mut input = server_stream_input_for_fixture(
+            fixture,
+            Arc::clone(&writer) as Arc<dyn BytecodeServerStreamWriterPort>,
+            CancellationToken::new(),
+            Arc::new(ExecutionBudget::for_runtime_request(None)),
+            NonZeroUsize::new(1024).unwrap(),
+        );
+        input.http_client = Some(Arc::clone(&http_client) as Arc<dyn BytecodeHttpClientPort>);
+
+        let driven = drive_runtime_bytecode_request(input);
+
+        assert!(
+            matches!(&driven.result, Ok(BoundaryResponse::StreamSent)),
+            "an ignored std.http.stream result must complete through its linked RecursiveShape drop: {:?}",
+            driven.result
+        );
+        assert_eq!(
+            writer.frames(),
+            vec![
+                BytecodeServerStreamFrame::Start {
+                    status: 209,
+                    headers: Vec::new(),
+                },
+                BytecodeServerStreamFrame::End,
+            ]
+        );
+        assert_eq!(
+            http_client
+                .requests()
+                .iter()
+                .map(|request| request.url.as_str())
+                .collect::<Vec<_>>(),
+            ["chunk/stream/discard"]
+        );
+        assert_eq!(
+            http_client.stream_drops(),
+            1,
+            "the ignored handle terminates its provider exactly once"
+        );
+        let snapshot = driven.owner_inventory.into_snapshot();
+        assert_eq!(snapshot.pending.current, 0);
+        assert_eq!(snapshot.resource.current, 0);
+        assert!(snapshot.resource.ever_created);
+        assert_eq!(snapshot.child.current, 0);
+        drop(driven.retention);
+        assert_eq!(http_client.stream_drops(), 1);
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn phase_5_stream_break_promptly_closes_endpoint_before_next_stream() {
         let probe = Arc::new(BreakStreamProbe::default());
@@ -2389,6 +2514,45 @@ mod tests {
         assert!(snapshot.resource.ever_created);
         assert_eq!(snapshot.child.current, 0);
         drop(driven.retention);
+    }
+
+    #[test]
+    fn phase_5_stream_release_failure_escrows_owner_for_terminal_retry() {
+        let trace = ServerStreamHeapTrace::new(server_stream_item_type_tag(), false);
+        trace.fail_next_item_release();
+        let writer = Arc::new(ControlledServerStreamWriter::new([]));
+        let mut input = server_stream_input(
+            Arc::clone(&writer) as Arc<dyn BytecodeServerStreamWriterPort>,
+            CancellationToken::new(),
+            Arc::new(ExecutionBudget::for_runtime_request(None)),
+            NonZeroUsize::new(64).unwrap(),
+        );
+        input.heap = Some(Box::new(RecordingServerStreamHeap::new(Arc::clone(&trace))));
+
+        let driven = drive_runtime_bytecode_request(input);
+
+        assert!(matches!(
+            &driven.result,
+            Err(RequestError::Unsupported(message))
+                if message.contains("injected server-stream item release failure")
+        ));
+        assert!(writer.frames().is_empty());
+        assert_eq!(
+            trace.item_releases.load(Ordering::Acquire),
+            0,
+            "the failed attempt must leave the unique item owner unchanged"
+        );
+        let snapshot = driven.owner_inventory.into_snapshot();
+        assert_eq!(snapshot.pending.current, 0);
+        assert_eq!(snapshot.resource.current, 0);
+        assert_eq!(snapshot.child.current, 0);
+
+        drop(driven.retention);
+        assert_eq!(
+            trace.item_releases.load(Ordering::Acquire),
+            1,
+            "terminal retention retries the exact escrowed item owner"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

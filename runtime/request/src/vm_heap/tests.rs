@@ -875,3 +875,182 @@ fn phase_5_resource_take_dense_field_preflights_and_drops_only_the_remainder_rou
     let snapshot = context.into_not_started();
     assert_eq!(snapshot.resource.current, 0);
 }
+
+#[test]
+fn phase_5_recursive_snapshot_drop_atomically_commits_mixed_heap_and_resource_carriers() {
+    let context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
+    let table = context.resource_table();
+    let terminations = Arc::new(Mutex::new(Vec::new()));
+    let handle = table
+        .register_byte_stream(Box::new(RecordingByteStreamSource(Arc::clone(
+            &terminations,
+        ))))
+        .unwrap();
+    let mut heap = RequestVmHeap::for_execution(table.clone(), RequestHeapLimits::default());
+    let resource = heap
+        .admit_resource_ref(handle.vm_handle(), RESOURCE_TAG, RESOURCE_FLAGS)
+        .unwrap();
+    let nested = heap
+        .allocate_record(
+            &[
+                VmRecordField {
+                    name: "body".to_string(),
+                    value: resource,
+                },
+                VmRecordField {
+                    name: "status".to_string(),
+                    value: ValueSlot::integer(200),
+                },
+            ],
+            TAG,
+            FLAGS,
+        )
+        .unwrap();
+    let root = heap
+        .allocate_record(
+            &[
+                VmRecordField {
+                    name: "handle".to_string(),
+                    value: nested,
+                },
+                VmRecordField {
+                    name: "marker".to_string(),
+                    value: ValueSlot::integer(1),
+                },
+            ],
+            TAG,
+            FLAGS,
+        )
+        .unwrap();
+
+    heap.release_snapshot(&root).unwrap();
+
+    for released in [root, nested] {
+        assert!(matches!(
+            heap.validate_live(&released),
+            Err(VmHeapError::InvalidHandle {
+                reason: VmHandleInvalidReason::StaleGenerationOrEpoch,
+                ..
+            })
+        ));
+    }
+    assert_eq!(table.snapshot().total(), 0);
+    assert_eq!(
+        *terminations.lock().unwrap(),
+        [RequestResourceTermination::VmDrop]
+    );
+    let snapshot = context.into_not_started();
+    assert_eq!(snapshot.resource.current, 0);
+}
+
+#[test]
+fn phase_5_recursive_snapshot_drop_first_and_middle_preflight_failures_are_retryable() {
+    for corrupted_field in ["z-resource", "m-resource"] {
+        let context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
+        let table = context.resource_table();
+        let terminations = Arc::new(Mutex::new(Vec::new()));
+        let handle = table
+            .register_byte_stream(Box::new(RecordingByteStreamSource(Arc::clone(
+                &terminations,
+            ))))
+            .unwrap();
+        let mut heap = RequestVmHeap::for_execution(table.clone(), RequestHeapLimits::default());
+        let resource = heap
+            .admit_resource_ref(handle.vm_handle(), RESOURCE_TAG, RESOURCE_FLAGS)
+            .unwrap();
+        let first = heap
+            .allocate_record(
+                &[VmRecordField {
+                    name: "value".to_string(),
+                    value: ValueSlot::integer(1),
+                }],
+                TAG,
+                FLAGS,
+            )
+            .unwrap();
+        let last = heap
+            .allocate_record(
+                &[VmRecordField {
+                    name: "value".to_string(),
+                    value: ValueSlot::integer(2),
+                }],
+                TAG,
+                FLAGS,
+            )
+            .unwrap();
+        let root = heap
+            .allocate_record(
+                &[
+                    VmRecordField {
+                        name: "a-first".to_string(),
+                        value: first,
+                    },
+                    VmRecordField {
+                        name: "m-resource".to_string(),
+                        value: resource,
+                    },
+                    VmRecordField {
+                        name: "z-last".to_string(),
+                        value: last,
+                    },
+                ],
+                TAG,
+                FLAGS,
+            )
+            .unwrap();
+        let root_heap = heap.live_entry(&root).unwrap().heap_handle;
+        let target_field = if corrupted_field == "z-resource" {
+            // BTreeMap children are pushed in ascending order and consumed as
+            // a stack, so replacing the last field makes this the first
+            // preflight failure. The middle case first validates `z-last`.
+            "z-last"
+        } else {
+            "m-resource"
+        };
+        let corrupted = ValueSlot::resource_ref(
+            handle.vm_handle(),
+            tag(RESOURCE_TAG.type_index() + 1),
+            RESOURCE_FLAGS,
+        );
+        let original = heap
+            .object_slots
+            .get_mut(&root_heap)
+            .unwrap()
+            .insert(target_field.to_string(), corrupted)
+            .unwrap();
+
+        assert_eq!(
+            heap.release_snapshot(&root),
+            Err(VmHeapError::InvalidValueMetadata)
+        );
+        assert_eq!(heap.snapshot_owner_count(&root), Ok(1));
+        assert_eq!(heap.snapshot_owner_count(&first), Ok(1));
+        assert_eq!(heap.snapshot_owner_count(&last), Ok(1));
+        assert!(
+            heap.object_slots
+                .get(&root_heap)
+                .and_then(|slots| slots.get(target_field))
+                == Some(&corrupted),
+            "preflight failure must not detach or rewrite the root sidecar"
+        );
+        assert_eq!(heap.validate_live(&root), Ok(()));
+        assert_eq!(heap.validate_live(&first), Ok(()));
+        assert_eq!(heap.validate_live(&last), Ok(()));
+        assert_eq!(table.snapshot().total(), 1);
+        assert!(terminations.lock().unwrap().is_empty());
+
+        heap.object_slots
+            .get_mut(&root_heap)
+            .unwrap()
+            .insert(target_field.to_string(), original);
+        heap.release_snapshot(&root)
+            .expect("restoring the exact carrier makes the same owner retryable");
+        assert_eq!(table.snapshot().total(), 0);
+        assert_eq!(
+            *terminations.lock().unwrap(),
+            [RequestResourceTermination::VmDrop]
+        );
+        let snapshot = context.into_not_started();
+        assert_eq!(snapshot.resource.current, 0);
+    }
+}

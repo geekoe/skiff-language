@@ -334,9 +334,12 @@ pub trait VmHeap {
     ///
     /// Each successful call releases exactly one logical owner; the verified VM
     /// must call it once per live owner even when multiple slots contain the
-    /// same bits. The caller clears its slot only after success. On error heap
-    /// state is unchanged, the caller retains `owner`, and retrying the same
-    /// operation is safe.
+    /// same bits. Releasing the final owner of an aggregate must preflight its
+    /// complete owned carrier graph, including exact resource routes, before
+    /// changing any owner count, sidecar, route, or liveness entry. The caller
+    /// clears its slot only after success. On error heap/resource state is
+    /// unchanged, the caller retains `owner`, and retrying the same operation
+    /// is safe.
     fn release_snapshot(&mut self, owner: &ValueSlot) -> Result<(), VmHeapError>;
 
     /// Releases one exact ResourceTable owner without relying on GC finalizers.

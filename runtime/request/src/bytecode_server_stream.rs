@@ -1,6 +1,5 @@
 use std::{sync::Arc, task::Poll};
 
-use skiff_artifact_model::{LiteralIr, TypeRefIr};
 use skiff_runtime_linked_bytecode::{LinkedShapeEntry, ShapeIndex, TypeIndex};
 use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_model::{error::RuntimeErrorPayload, vm_heap::VmHeap, vm_value::ValueSlot};
@@ -132,33 +131,17 @@ fn decode_server_stream_headers(
     Ok(decoded)
 }
 
-fn validate_server_stream_tag_type(
+fn validate_server_stream_tag_carrier(
     image: &DeploymentExecutionImage,
     shape: &LinkedShapeEntry,
     expected: &str,
 ) -> Result<(), BytecodeSchedulerError> {
     let tag_type = shape_field_type(shape, "tag")?;
-    let entry = image
-        .types()
-        .get(tag_type.get() as usize)
-        .filter(|entry| entry.index() == tag_type)
-        .ok_or_else(|| {
-            BytecodeSchedulerError::Port(format!(
-                "server-stream discriminator type {} is absent from the linked image",
-                tag_type.get()
-            ))
-        })?;
-    if !matches!(
-        entry.type_ref(),
-        TypeRefIr::Literal {
-            value: LiteralIr::String { value }
-        } if value == expected
-    ) {
-        return Err(BytecodeSchedulerError::Port(format!(
-            "server-stream {expected:?} variant does not retain its exact linked discriminator"
-        )));
-    }
-    Ok(())
+    validate_builtin_type(image, tag_type, "string").map_err(|_| {
+        BytecodeSchedulerError::Port(format!(
+            "server-stream {expected:?} variant does not retain its exact linked string discriminator carrier"
+        ))
+    })
 }
 
 fn exact_server_stream_variant_shape<'a>(
@@ -240,7 +223,7 @@ fn decode_server_stream_frame(
                 &["headers", "status", "tag"],
                 "server-stream start item",
             )?;
-            validate_server_stream_tag_type(image, shape, "start")?;
+            validate_server_stream_tag_carrier(image, shape, "start")?;
             require_exact_slot_type_ref(
                 image,
                 &tag_value,
@@ -248,7 +231,7 @@ fn decode_server_stream_frame(
                 "server-stream start discriminator",
             )?;
             let status_type = shape_field_type(shape, "status")?;
-            validate_builtin_type(image, status_type, "integer")?;
+            validate_builtin_type(image, status_type, "number")?;
             let status = heap
                 .record_field(item, "status")
                 .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
@@ -287,7 +270,7 @@ fn decode_server_stream_frame(
                 &["tag", "value"],
                 "server-stream chunk item",
             )?;
-            validate_server_stream_tag_type(image, shape, "chunk")?;
+            validate_server_stream_tag_carrier(image, shape, "chunk")?;
             require_exact_slot_type_ref(
                 image,
                 &tag_value,
@@ -308,7 +291,7 @@ fn decode_server_stream_frame(
         "end" => {
             let shape = exact_server_stream_variant_shape(image, item_shape, &["tag"])?;
             validate_record_carrier_fields(heap, item, &["tag"], "server-stream end item")?;
-            validate_server_stream_tag_type(image, shape, "end")?;
+            validate_server_stream_tag_carrier(image, shape, "end")?;
             require_exact_slot_type_ref(
                 image,
                 &tag_value,
@@ -339,8 +322,13 @@ fn release_stream_item_after_decode<T>(
     prepared: Result<T, BytecodeSchedulerError>,
     item: StreamItem,
     heap: &mut dyn VmHeap,
+    runtime: &RequestPendingRuntime,
 ) -> Result<(T, VmResumeToken), BytecodeSchedulerError> {
-    let released = item.release(heap).map_err(BytecodeSchedulerError::from);
+    let released = item.release(heap).map_err(|failure| {
+        let (roots, error) = failure.into_cleanup_roots();
+        runtime.escrow_cleanup_roots(roots);
+        BytecodeSchedulerError::from(error)
+    });
     match (prepared, released) {
         (Ok(prepared), Ok(resume)) => Ok((prepared, resume)),
         (Err(error), Ok(_resume)) => Err(error),
@@ -419,7 +407,8 @@ impl BytecodeStreamSupervisor<VmFiber> for BytecodeServerStreamSupervisor {
         // This is the sole ownership exit for every decode result. The
         // transport future below can therefore retain only its owned,
         // heap-free frame; pending root escrow stays empty.
-        let (decoded, resume) = release_stream_item_after_decode(prepared, item, heap)?;
+        let (decoded, resume) =
+            release_stream_item_after_decode(prepared, item, heap, &self.runtime)?;
         let reservation = match self
             .runtime
             .resources
