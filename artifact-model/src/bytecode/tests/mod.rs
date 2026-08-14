@@ -3,6 +3,7 @@
 
 pub(crate) use super::*;
 
+mod affine_composite;
 mod authority;
 mod corpus;
 mod interface_limits;
@@ -416,6 +417,7 @@ pub(crate) fn canonical_pools() -> BytecodePools {
         shapes: vec![BytecodePoolEntry::ShapeRef {
             shape: ShapeDeclaration {
                 type_ref: 0,
+                privileged_affine_composite: None,
                 fields: vec![ShapeFieldDeclaration {
                     name: "value".to_string(),
                     type_ref: 0,

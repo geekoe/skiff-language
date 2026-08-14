@@ -1,8 +1,8 @@
-//! Frozen v7 wire-shape snapshot and fail-closed serde tests.
+//! Frozen v8 wire-shape snapshot and fail-closed serde tests.
 
 use super::*;
 
-/// Compact golden projection: it freezes every v7 seam that downstream
+/// Compact golden projection: it freezes every v8 seam that downstream
 /// emission/linking consumes without duplicating the canonical fixture's
 /// large literal payload.
 const GOLDEN_V7_SHAPE: &str = r#"{
@@ -32,7 +32,7 @@ fn sorted_keys(value: &serde_json::Value) -> Vec<String> {
 }
 
 #[test]
-fn canonical_fixture_matches_v7_wire_shape_snapshot() {
+fn canonical_fixture_matches_v8_wire_shape_snapshot() {
     let value = serde_json::to_value(canonical_artifact()).expect("fixture JSON");
     let main = &value["image"]["functions"]["module::main"];
     let projection = serde_json::json!({
@@ -52,8 +52,8 @@ fn canonical_fixture_matches_v7_wire_shape_snapshot() {
     let golden: serde_json::Value = serde_json::from_str(GOLDEN_V7_SHAPE).expect("golden JSON");
     assert_eq!(projection, golden);
 
-    assert_eq!(value["schemaVersion"], "skiff-bytecode-v7");
-    assert_eq!(value["isaVersion"], "skiff-bytecode-isa-v4");
+    assert_eq!(value["schemaVersion"], "skiff-bytecode-v8");
+    assert_eq!(value["isaVersion"], "skiff-bytecode-isa-v5");
     assert_eq!(
         value["nativeValueLifecycleRegistry"]["fingerprint"],
         crate::NATIVE_VALUE_LIFECYCLE_REGISTRY_FINGERPRINT
@@ -297,10 +297,10 @@ fn schema_rejects_unknown_tagged_enum_variants() {
 }
 
 #[test]
-fn version_constants_freeze_schema_v7_and_isa_v4() {
+fn version_constants_freeze_schema_v8_and_isa_v5() {
     assert_eq!(BYTECODE_MAGIC, "skiff-bytecode");
-    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v7");
-    assert_eq!(BYTECODE_ISA_VERSION, "skiff-bytecode-isa-v4");
+    assert_eq!(BYTECODE_SCHEMA_VERSION, "skiff-bytecode-v8");
+    assert_eq!(BYTECODE_ISA_VERSION, "skiff-bytecode-isa-v5");
 }
 
 #[test]

@@ -4,9 +4,9 @@ use sha2::Digest;
 
 use super::contract::ValueLifecyclePolicyIdentity;
 
-pub const VALUE_LIFECYCLE_POLICY_VERSION: &str = "skiff-bytecode-value-lifecycle-policy-v3";
+pub const VALUE_LIFECYCLE_POLICY_VERSION: &str = "skiff-bytecode-value-lifecycle-policy-v4";
 pub const VALUE_LIFECYCLE_POLICY_FINGERPRINT: &str =
-    "1e86b11ab2f5362c81ba357a896654786ff569b8d752f24b5d474dd2f0c0e1ca";
+    "dc4ad38b05496d0853830252e892618286080e5438e253b08b3f2a7b0c95024d";
 
 static VALUE_LIFECYCLE_POLICY_IDENTITY: LazyLock<ValueLifecyclePolicyIdentity> =
     LazyLock::new(|| {
@@ -51,7 +51,8 @@ pub(super) fn policy_projection() -> serde_json::Value {
         "ownerNormalization": "resolvedPackageId+exactAbi;rejectLocalPublicationDependencyServiceDb",
         "packageSchema": "exactOwnerStableKeyTypeId+descriptorClosure",
         "planVerification": "FromTypeExactNormalizedType+concreteExactRecompute",
-        "recursiveShape": "reject",
+        "privilegedAffineComposite": "exactFingerprintRegistrySchema+shapeAuthority+moveOnlyRecursiveRemainder+oneAffineFieldTake",
+        "recursiveShape": "valueDropOnlyForExactPrivilegedComposite;resourceDropReject",
         "version": VALUE_LIFECYCLE_POLICY_VERSION,
     })
 }

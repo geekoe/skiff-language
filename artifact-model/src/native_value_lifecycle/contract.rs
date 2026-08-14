@@ -80,9 +80,54 @@ pub enum NativeValueDropPlan {
     /// Release one logical snapshot root. Child edges remain owned by the
     /// tracing GC; this action never performs element-by-element drops.
     SnapshotRelease,
+    /// Abstract registry fact for a privileged record whose concrete artifact
+    /// plan names one fingerprinted shape.  The pool-local shape reference is
+    /// deliberately carried only by bytecode; this registry fact cannot mint
+    /// or select a shape by itself.
+    PrivilegedRecursiveShape,
     NativeAdapter {
         adapter: NativeValueLifecycleAdapter,
     },
+}
+
+/// Closed identity of a native aggregate allowed to contain an affine child.
+/// Ordinary records never acquire this identity by matching their field
+/// layout; it is a fingerprinted registry row and an explicit shape fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PrivilegedAffineCompositeIdentity {
+    HttpClientStreamHandle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PrivilegedAffineFieldAccess {
+    SnapshotShare,
+    AffineTake,
+}
+
+/// One exact dense field in a privileged affine composite registry row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PrivilegedAffineCompositeField {
+    pub name: String,
+    pub ty: crate::CallableRegistryTypeExpression,
+    pub lifecycle: NativeValueLifecycleConcrete,
+    pub access: PrivilegedAffineFieldAccess,
+}
+
+/// Fingerprinted authority for one privileged recursive aggregate.  Package
+/// ABI hydration remains resolver-owned; this row freezes the stable owner,
+/// public symbol, exact descriptor fields and lifecycle policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PrivilegedAffineCompositeSchema {
+    pub identity: PrivilegedAffineCompositeIdentity,
+    pub package_id: String,
+    pub symbol_path: String,
+    pub fields: Vec<PrivilegedAffineCompositeField>,
+    pub lifecycle: NativeValueLifecycleConcrete,
+    pub embedding: NativeValueEmbedding,
 }
 
 /// Drop actions valid for affine resources and explicit clone leases.
@@ -228,6 +273,20 @@ pub enum NativeValueLifecycleRegistryError {
         first_abi_version: u32,
         next_role: NativeValueAdapterRole,
         next_abi_version: u32,
+    },
+    DuplicatePrivilegedCompositeIdentity {
+        identity: PrivilegedAffineCompositeIdentity,
+    },
+    DuplicatePrivilegedCompositeSymbol {
+        package_id: String,
+        symbol_path: String,
+    },
+    InvalidPrivilegedComposite {
+        entry: usize,
+        message: &'static str,
+    },
+    PrivilegedRecursiveShapeOutsideComposite {
+        entry: usize,
     },
     FingerprintProjection {
         message: String,

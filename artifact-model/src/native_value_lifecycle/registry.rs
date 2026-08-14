@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, sync::LazyLock};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::LazyLock,
+};
 
 use serde::Serialize;
 use sha2::Digest;
@@ -8,15 +11,16 @@ use crate::{PackageRefIr, TypeRefIr};
 use super::contract::*;
 
 pub const NATIVE_VALUE_LIFECYCLE_REGISTRY_ID: &str = "skiff-native-value-lifecycle";
-pub const NATIVE_VALUE_LIFECYCLE_REGISTRY_VERSION: &str = "skiff-native-value-lifecycle-v4";
+pub const NATIVE_VALUE_LIFECYCLE_REGISTRY_VERSION: &str = "skiff-native-value-lifecycle-v5";
 pub const NATIVE_VALUE_LIFECYCLE_REGISTRY_FINGERPRINT: &str =
-    "bd03a9f3550ec1ee1356e429abbf1bb58a314add0b2692a5b3cae822c700e4b3";
+    "66cfd7b124781318dad3c69a89ff0356ae40fde169f485d1e698184bff8526b5";
 pub const MAX_NATIVE_VALUE_LIFECYCLE_ARGUMENTS: usize = 64;
 
 #[derive(Debug, Clone)]
 pub struct NativeValueLifecycleRegistry {
     identity: NativeValueLifecycleRegistryIdentity,
     entries: Vec<NativeValueLifecycleEntry>,
+    privileged_affine_composites: Vec<PrivilegedAffineCompositeSchema>,
     adapters: BTreeMap<String, NativeValueLifecycleAdapter>,
 }
 
@@ -24,7 +28,16 @@ impl NativeValueLifecycleRegistry {
     pub fn new(
         registry_id: impl Into<String>,
         version: impl Into<String>,
+        entries: Vec<NativeValueLifecycleEntry>,
+    ) -> Result<Self, NativeValueLifecycleRegistryError> {
+        Self::new_with_privileged_affine_composites(registry_id, version, entries, Vec::new())
+    }
+
+    pub(super) fn new_with_privileged_affine_composites(
+        registry_id: impl Into<String>,
+        version: impl Into<String>,
         mut entries: Vec<NativeValueLifecycleEntry>,
+        mut privileged_affine_composites: Vec<PrivilegedAffineCompositeSchema>,
     ) -> Result<Self, NativeValueLifecycleRegistryError> {
         let registry_id = registry_id.into();
         let version = version.into();
@@ -35,8 +48,15 @@ impl NativeValueLifecycleRegistry {
             return Err(NativeValueLifecycleRegistryError::EmptyVersion);
         }
         entries.sort_by(compare_entries);
+        privileged_affine_composites.sort_by_key(|schema| schema.identity);
         let adapters = validate_entries(&entries)?;
-        let fingerprint = registry_fingerprint(&registry_id, &version, &entries)?;
+        validate_privileged_affine_composites(&privileged_affine_composites)?;
+        let fingerprint = registry_fingerprint(
+            &registry_id,
+            &version,
+            &entries,
+            &privileged_affine_composites,
+        )?;
         Ok(Self {
             identity: NativeValueLifecycleRegistryIdentity {
                 registry_id,
@@ -44,6 +64,7 @@ impl NativeValueLifecycleRegistry {
                 fingerprint,
             },
             entries,
+            privileged_affine_composites,
             adapters,
         })
     }
@@ -54,6 +75,31 @@ impl NativeValueLifecycleRegistry {
 
     pub fn entries(&self) -> &[NativeValueLifecycleEntry] {
         &self.entries
+    }
+
+    pub fn privileged_affine_composites(&self) -> &[PrivilegedAffineCompositeSchema] {
+        &self.privileged_affine_composites
+    }
+
+    pub fn privileged_affine_composite(
+        &self,
+        identity: PrivilegedAffineCompositeIdentity,
+    ) -> Option<&PrivilegedAffineCompositeSchema> {
+        self.privileged_affine_composites
+            .iter()
+            .find(|schema| schema.identity == identity)
+    }
+
+    pub fn privileged_affine_composite_for_symbol(
+        &self,
+        symbol: &crate::PackageSymbolRef,
+    ) -> Option<&PrivilegedAffineCompositeSchema> {
+        let PackageRefIr::PackageId { package_id } = &symbol.package else {
+            return None;
+        };
+        self.privileged_affine_composites.iter().find(|schema| {
+            schema.package_id == *package_id && schema.symbol_path == symbol.symbol_path
+        })
     }
 
     pub fn adapter(&self, binding_key: &str) -> Option<&NativeValueLifecycleAdapter> {
@@ -335,8 +381,112 @@ fn validate_value_drop(
     drop: &NativeValueDropPlan,
     adapters: &mut BTreeMap<String, NativeValueLifecycleAdapter>,
 ) -> Result<(), NativeValueLifecycleRegistryError> {
-    if let NativeValueDropPlan::NativeAdapter { adapter } = drop {
-        validate_adapter(entry, adapter, NativeValueAdapterRole::ValueDrop, adapters)?;
+    match drop {
+        NativeValueDropPlan::NativeAdapter { adapter } => {
+            validate_adapter(entry, adapter, NativeValueAdapterRole::ValueDrop, adapters)?;
+        }
+        NativeValueDropPlan::PrivilegedRecursiveShape => {
+            return Err(
+                NativeValueLifecycleRegistryError::PrivilegedRecursiveShapeOutsideComposite {
+                    entry,
+                },
+            );
+        }
+        NativeValueDropPlan::Trivial | NativeValueDropPlan::SnapshotRelease => {}
+    }
+    Ok(())
+}
+
+fn validate_privileged_affine_composites(
+    schemas: &[PrivilegedAffineCompositeSchema],
+) -> Result<(), NativeValueLifecycleRegistryError> {
+    let mut identities = BTreeSet::new();
+    let mut symbols = BTreeSet::new();
+    for (entry, schema) in schemas.iter().enumerate() {
+        if !identities.insert(schema.identity) {
+            return Err(
+                NativeValueLifecycleRegistryError::DuplicatePrivilegedCompositeIdentity {
+                    identity: schema.identity,
+                },
+            );
+        }
+        if schema.package_id.is_empty() || schema.symbol_path.is_empty() {
+            return Err(
+                NativeValueLifecycleRegistryError::InvalidPrivilegedComposite {
+                    entry,
+                    message: "package id and symbol path must be non-empty",
+                },
+            );
+        }
+        if !symbols.insert((schema.package_id.clone(), schema.symbol_path.clone())) {
+            return Err(
+                NativeValueLifecycleRegistryError::DuplicatePrivilegedCompositeSymbol {
+                    package_id: schema.package_id.clone(),
+                    symbol_path: schema.symbol_path.clone(),
+                },
+            );
+        }
+        if schema.embedding != NativeValueEmbedding::Privileged
+            || schema.lifecycle
+                != (NativeValueLifecycleConcrete::MoveOnly {
+                    drop: NativeValueDropPlan::PrivilegedRecursiveShape,
+                })
+        {
+            return Err(
+                NativeValueLifecycleRegistryError::InvalidPrivilegedComposite {
+                    entry,
+                    message: "root must be Privileged MoveOnly with recursive-shape drop",
+                },
+            );
+        }
+        if schema.fields.is_empty()
+            || !schema
+                .fields
+                .windows(2)
+                .all(|fields| fields[0].name < fields[1].name)
+            || schema.fields.iter().any(|field| field.name.is_empty())
+        {
+            return Err(
+                NativeValueLifecycleRegistryError::InvalidPrivilegedComposite {
+                    entry,
+                    message: "fields must be non-empty and strictly name-sorted",
+                },
+            );
+        }
+        let affine_fields = schema
+            .fields
+            .iter()
+            .filter(|field| field.access == PrivilegedAffineFieldAccess::AffineTake)
+            .collect::<Vec<_>>();
+        if affine_fields.len() != 1
+            || !matches!(
+                affine_fields[0].lifecycle,
+                NativeValueLifecycleConcrete::AffineResource {
+                    drop: NativeResourceDropPlan::ResourceTableRelease
+                }
+            )
+        {
+            return Err(
+                NativeValueLifecycleRegistryError::InvalidPrivilegedComposite {
+                    entry,
+                    message: "exactly one affine-take ResourceTable field is required",
+                },
+            );
+        }
+        if schema.fields.iter().any(|field| {
+            field.access == PrivilegedAffineFieldAccess::SnapshotShare
+                && !matches!(
+                    field.lifecycle,
+                    NativeValueLifecycleConcrete::SnapshotShare { .. }
+                )
+        }) {
+            return Err(
+                NativeValueLifecycleRegistryError::InvalidPrivilegedComposite {
+                    entry,
+                    message: "snapshot-share fields require SnapshotShare lifecycle",
+                },
+            );
+        }
     }
     Ok(())
 }
@@ -405,6 +555,7 @@ fn registry_fingerprint(
     registry_id: &str,
     version: &str,
     entries: &[NativeValueLifecycleEntry],
+    privileged_affine_composites: &[PrivilegedAffineCompositeSchema],
 ) -> Result<String, NativeValueLifecycleRegistryError> {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -412,6 +563,7 @@ fn registry_fingerprint(
         registry_id: &'a str,
         version: &'a str,
         entries: Vec<&'a NativeValueLifecycleEntry>,
+        privileged_affine_composites: &'a [PrivilegedAffineCompositeSchema],
     }
 
     let mut sorted = entries.iter().collect::<Vec<_>>();
@@ -420,6 +572,7 @@ fn registry_fingerprint(
         registry_id,
         version,
         entries: sorted,
+        privileged_affine_composites,
     })
     .map_err(
         |error| NativeValueLifecycleRegistryError::FingerprintProjection {
@@ -523,12 +676,67 @@ fn initial_entries() -> Vec<NativeValueLifecycleEntry> {
     entries
 }
 
+fn initial_privileged_affine_composites() -> Vec<PrivilegedAffineCompositeSchema> {
+    use crate::CallableRegistryTypeExpression as Type;
+
+    let builtin = |name: &str| Type::Builtin {
+        name: name.to_string(),
+        arguments: Vec::new(),
+    };
+    let package = |symbol_path: &str| Type::PackageSymbol {
+        package_id: "skiff.run/std".to_string(),
+        symbol_path: symbol_path.to_string(),
+    };
+    vec![PrivilegedAffineCompositeSchema {
+        identity: PrivilegedAffineCompositeIdentity::HttpClientStreamHandle,
+        package_id: "skiff.run/std".to_string(),
+        symbol_path: "std.http.HttpClientStreamHandle".to_string(),
+        fields: vec![
+            PrivilegedAffineCompositeField {
+                name: "body".to_string(),
+                ty: Type::Builtin {
+                    name: "Stream".to_string(),
+                    arguments: vec![builtin("bytes")],
+                },
+                lifecycle: NativeValueLifecycleConcrete::AffineResource {
+                    drop: NativeResourceDropPlan::ResourceTableRelease,
+                },
+                access: PrivilegedAffineFieldAccess::AffineTake,
+            },
+            PrivilegedAffineCompositeField {
+                name: "headers".to_string(),
+                ty: Type::Builtin {
+                    name: "Array".to_string(),
+                    arguments: vec![package("std.http.HttpHeader")],
+                },
+                lifecycle: NativeValueLifecycleConcrete::SnapshotShare {
+                    drop: NativeValueDropPlan::SnapshotRelease,
+                },
+                access: PrivilegedAffineFieldAccess::SnapshotShare,
+            },
+            PrivilegedAffineCompositeField {
+                name: "status".to_string(),
+                ty: builtin("integer"),
+                lifecycle: NativeValueLifecycleConcrete::SnapshotShare {
+                    drop: NativeValueDropPlan::Trivial,
+                },
+                access: PrivilegedAffineFieldAccess::SnapshotShare,
+            },
+        ],
+        lifecycle: NativeValueLifecycleConcrete::MoveOnly {
+            drop: NativeValueDropPlan::PrivilegedRecursiveShape,
+        },
+        embedding: NativeValueEmbedding::Privileged,
+    }]
+}
+
 pub static NATIVE_VALUE_LIFECYCLE_REGISTRY: LazyLock<NativeValueLifecycleRegistry> =
     LazyLock::new(|| {
-        let registry = NativeValueLifecycleRegistry::new(
+        let registry = NativeValueLifecycleRegistry::new_with_privileged_affine_composites(
             NATIVE_VALUE_LIFECYCLE_REGISTRY_ID,
             NATIVE_VALUE_LIFECYCLE_REGISTRY_VERSION,
             initial_entries(),
+            initial_privileged_affine_composites(),
         )
         .expect("built-in native lifecycle registry is valid");
         assert_eq!(

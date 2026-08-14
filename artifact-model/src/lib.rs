@@ -183,6 +183,8 @@ pub use native_value_lifecycle::{
     NativeValueLifecycleRegistry, NativeValueLifecycleRegistryError,
     NativeValueLifecycleRegistryIdentity, NativeValueLifecycleResolution,
     NativeValueLifecycleTemplate, NativeValueTypeConstructor, NativeValueTypePattern,
+    PrivilegedAffineCompositeField, PrivilegedAffineCompositeIdentity,
+    PrivilegedAffineCompositeSchema, PrivilegedAffineFieldAccess,
     MAX_NATIVE_VALUE_LIFECYCLE_ARGUMENTS, NATIVE_VALUE_LIFECYCLE_REGISTRY,
     NATIVE_VALUE_LIFECYCLE_REGISTRY_FINGERPRINT, NATIVE_VALUE_LIFECYCLE_REGISTRY_ID,
     NATIVE_VALUE_LIFECYCLE_REGISTRY_VERSION,

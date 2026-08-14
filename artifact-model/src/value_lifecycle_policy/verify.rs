@@ -82,9 +82,7 @@ fn value_drop(drop: &ValueDropPlan) -> Result<NativeValueDropPlan, ValueLifecycl
     Ok(match drop {
         ValueDropPlan::Trivial => NativeValueDropPlan::Trivial,
         ValueDropPlan::SnapshotRelease => NativeValueDropPlan::SnapshotRelease,
-        ValueDropPlan::RecursiveShape { .. } => {
-            return Err(ValueLifecyclePolicyError::RecursiveShapePlan);
-        }
+        ValueDropPlan::RecursiveShape { .. } => NativeValueDropPlan::PrivilegedRecursiveShape,
         ValueDropPlan::NativeAdapter { adapter: reference } => NativeValueDropPlan::NativeAdapter {
             adapter: adapter(&reference.binding_key, NativeValueAdapterRole::ValueDrop)?,
         },

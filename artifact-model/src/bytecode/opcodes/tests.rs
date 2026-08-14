@@ -35,6 +35,7 @@ const EXPECTED_OPCODE_MANIFEST: &[(Opcode, u8, &str)] = &[
     (Opcode::GetDenseField, 0x41, "get_dense_field"),
     (Opcode::SetWritablePath, 0x42, "set_writable_path"),
     (Opcode::RepresentationWrap, 0x43, "representation_wrap"),
+    (Opcode::TakeDenseField, 0x44, "take_dense_field"),
     (Opcode::NewArrayBuilder, 0x50, "new_array_builder"),
     (Opcode::ArrayBuilderPush, 0x51, "array_builder_push"),
     (Opcode::FreezeArray, 0x52, "freeze_array"),
@@ -71,8 +72,8 @@ const EXPECTED_OPCODE_MANIFEST: &[(Opcode, u8, &str)] = &[
 ];
 
 #[test]
-fn opcode_manifest_is_an_exact_63_row_cover() {
-    assert_eq!(OPCODE_COUNT, 63);
+fn opcode_manifest_is_an_exact_64_row_cover() {
+    assert_eq!(OPCODE_COUNT, 64);
     assert_eq!(EXPECTED_OPCODE_MANIFEST.len(), OPCODE_COUNT);
     assert_eq!(Opcode::ALL.len(), OPCODE_COUNT);
     assert_eq!(OPCODE_CONTRACTS.len(), OPCODE_COUNT);
@@ -279,7 +280,7 @@ fn canonical_projection_contains_the_decided_runtime_semantics() {
         projection["frameEntryStatement"]["chargeKind"],
         "functionEntry"
     );
-    assert_eq!(projection["opcodes"].as_array().map(Vec::len), Some(63));
+    assert_eq!(projection["opcodes"].as_array().map(Vec::len), Some(64));
 
     let opcode = |mnemonic: &str| -> &Value {
         projection["opcodes"]
@@ -565,6 +566,6 @@ fn every_top_level_contract_field_changes_the_fingerprint() {
 fn opcode_contract_fingerprint_is_frozen() {
     assert_eq!(
         opcode_table_fingerprint(),
-        "b71229465799eebd70f2521001e7d41622aca7ef8397151adacc122f659c5b24"
+        "dbf23d31b1cdcec2b0750784d51fbafa726c9269c8930155e4108806466354db"
     );
 }

@@ -62,8 +62,8 @@ pub mod limits {
 /// defined here so the Phase 1 bytecode module owns its version surface.
 /// The artifact record is still canonical JSON (D8).
 pub const BYTECODE_MAGIC: &str = "skiff-bytecode";
-pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v7";
-pub const BYTECODE_ISA_VERSION: &str = "skiff-bytecode-isa-v4";
+pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v8";
+pub const BYTECODE_ISA_VERSION: &str = "skiff-bytecode-isa-v5";
 
 /// Root bytecode artifact record (D11: one image per package).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -723,6 +723,11 @@ pub struct IntrinsicReference {
 pub struct ShapeDeclaration {
     /// Nominal or exact structural type; references the types pool.
     pub type_ref: u32,
+    /// Registry-owned exception to the ordinary snapshot-only record rule.
+    /// The identity is absent for every ordinary shape and is never inferred
+    /// from the nominal type name or field layout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub privileged_affine_composite: Option<crate::PrivilegedAffineCompositeIdentity>,
     /// Strictly ascending UTF-8 field names define dense field ordinal order.
     pub fields: Vec<ShapeFieldDeclaration>,
 }

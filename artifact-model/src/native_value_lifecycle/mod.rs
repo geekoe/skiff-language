@@ -7,7 +7,8 @@ pub use contract::{
     NativeValueLifecycleEntry, NativeValueLifecycleKind, NativeValueLifecycleLookupError,
     NativeValueLifecycleRegistryError, NativeValueLifecycleRegistryIdentity,
     NativeValueLifecycleResolution, NativeValueLifecycleTemplate, NativeValueTypeConstructor,
-    NativeValueTypePattern,
+    NativeValueTypePattern, PrivilegedAffineCompositeField, PrivilegedAffineCompositeIdentity,
+    PrivilegedAffineCompositeSchema, PrivilegedAffineFieldAccess,
 };
 pub use registry::{
     native_value_lifecycle_registry, native_value_lifecycle_registry_identity,

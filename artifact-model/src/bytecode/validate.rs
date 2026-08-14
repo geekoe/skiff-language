@@ -20,7 +20,9 @@ use self::control_flow::{validate_resume_sites, validate_tables, validate_target
 use self::instructions::validate_operands;
 use self::loans::validate_writable_locals_and_loans;
 use self::origins::validate_function_origins;
-use self::plans::{validate_adapter_key, validate_transfer_plan};
+use self::plans::{
+    validate_adapter_key, validate_privileged_shape_declaration, validate_transfer_plan,
+};
 
 use std::collections::BTreeSet;
 
@@ -615,6 +617,7 @@ fn validate_pool_entry_references(
             )?;
             previous_name = Some(field.name.as_str());
         }
+        validate_privileged_shape_declaration(index, shape, pools)?;
     }
 
     for (index, entry) in pools.effects.iter().enumerate() {

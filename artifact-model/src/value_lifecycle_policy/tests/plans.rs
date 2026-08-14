@@ -1,4 +1,6 @@
 use super::*;
+use std::collections::BTreeMap;
+
 use crate::{
     bytecode::{ResourceDropPlan, ValueDropPlan, ValueTransferPlan},
     NativeValueDropPlan, NativeValueLifecycleConcrete, NativeValueLifecycleResolution,
@@ -109,7 +111,7 @@ fn plans_are_recomputed_and_recursive_shape_is_rejected() {
             &mut RejectingResolver,
             &mut budget(),
         ),
-        Err(ValueLifecyclePolicyError::RecursiveShapePlan)
+        Err(ValueLifecyclePolicyError::PlanMismatch { .. })
     ));
     assert!(matches!(
         verify_value_transfer_plan(
@@ -150,6 +152,144 @@ fn plans_are_recomputed_and_recursive_shape_is_rejected() {
         ),
         Err(ValueLifecyclePolicyError::UnknownAdapter { .. })
     ));
+}
+
+struct HttpStreamHandleResolver {
+    drift_body: bool,
+}
+
+impl ValueLifecycleFactResolver for HttpStreamHandleResolver {
+    fn resolve_package_symbol(
+        &mut self,
+        _symbol: &crate::PackageSymbolRef,
+    ) -> Result<ResolvedPackageValueType, ValueLifecycleResolverError> {
+        let package_symbol = |symbol_path: &str| TypeRefIr::PackageSymbol {
+            symbol: crate::PackageSymbolRef {
+                package: crate::PackageRefIr::PackageId {
+                    package_id: "skiff.run/std".to_string(),
+                },
+                symbol_path: symbol_path.to_string(),
+                abi_expectation: None,
+            },
+        };
+        Ok(ResolvedPackageValueType {
+            type_parameters: Vec::new(),
+            descriptor: crate::TypeDescriptorIr::Record {
+                fields: BTreeMap::from([
+                    (
+                        "body".to_string(),
+                        if self.drift_body {
+                            TypeRefIr::builtin("bytes")
+                        } else {
+                            TypeRefIr::Builtin {
+                                name: "Stream".to_string(),
+                                args: vec![TypeRefIr::builtin("bytes")],
+                            }
+                        },
+                    ),
+                    (
+                        "headers".to_string(),
+                        TypeRefIr::Builtin {
+                            name: "Array".to_string(),
+                            args: vec![package_symbol("std.http.HttpHeader")],
+                        },
+                    ),
+                    ("status".to_string(), TypeRefIr::builtin("integer")),
+                ]),
+            },
+        })
+    }
+
+    fn resolve_package_schema(
+        &mut self,
+        _package_id: &str,
+        _stable_schema_key: &str,
+        _package_schema_type_id: &crate::PackageSchemaTypeId,
+    ) -> Result<crate::PackageSchemaTypeRecord, ValueLifecycleResolverError> {
+        Err(resolver_error())
+    }
+
+    fn validate_interface(
+        &mut self,
+        _interface: &crate::InterfaceInstantiationRef,
+    ) -> Result<(), ValueLifecycleResolverError> {
+        Err(resolver_error())
+    }
+
+    fn validate_contract_interface(
+        &mut self,
+        _interface: &crate::ContractTypeRef,
+        _arguments: &[crate::ContractTypeRef],
+    ) -> Result<(), ValueLifecycleResolverError> {
+        Err(resolver_error())
+    }
+}
+
+fn http_stream_handle_type(symbol_path: &str) -> TypeRefIr {
+    TypeRefIr::PackageSymbol {
+        symbol: crate::PackageSymbolRef {
+            package: crate::PackageRefIr::PackageId {
+                package_id: "skiff.run/std".to_string(),
+            },
+            symbol_path: symbol_path.to_string(),
+            abi_expectation: Some("abi:http-stream-handle:v1".to_string()),
+        },
+    }
+}
+
+#[test]
+fn privileged_http_stream_composite_accepts_only_exact_recursive_plan() {
+    let ty = http_stream_handle_type("std.http.HttpClientStreamHandle");
+    let plan = ValueTransferPlan::MoveOnly {
+        drop: ValueDropPlan::RecursiveShape { shape_ref: 7 },
+    };
+    assert_eq!(
+        verify_value_transfer_plan(
+            &ty,
+            &plan,
+            &PositionalTypeEnvironment::empty(),
+            &mut HttpStreamHandleResolver { drift_body: false },
+            &mut budget(),
+        )
+        .expect("exact registry composite accepts its pool-local recursive plan"),
+        NativeValueLifecycleResolution {
+            lifecycle: NativeValueLifecycleConcrete::MoveOnly {
+                drop: NativeValueDropPlan::PrivilegedRecursiveShape,
+            },
+            embedding: crate::NativeValueEmbedding::Privileged,
+        }
+    );
+
+    assert!(matches!(
+        verify_value_transfer_plan(
+            &ty,
+            &ValueTransferPlan::SnapshotShare {
+                drop: ValueDropPlan::RecursiveShape { shape_ref: 7 },
+            },
+            &PositionalTypeEnvironment::empty(),
+            &mut HttpStreamHandleResolver { drift_body: false },
+            &mut budget(),
+        ),
+        Err(ValueLifecyclePolicyError::PlanMismatch { .. })
+    ));
+    assert!(matches!(
+        verify_value_transfer_plan(
+            &ty,
+            &plan,
+            &PositionalTypeEnvironment::empty(),
+            &mut HttpStreamHandleResolver { drift_body: true },
+            &mut budget(),
+        ),
+        Err(ValueLifecyclePolicyError::AuthorityMismatch { .. })
+    ));
+    assert!(verify_value_transfer_plan(
+        &http_stream_handle_type("example.HttpClientStreamHandle"),
+        &plan,
+        &PositionalTypeEnvironment::empty(),
+        &mut HttpStreamHandleResolver { drift_body: false },
+        &mut budget(),
+    )
+    .is_err());
 }
 
 #[test]

@@ -14,11 +14,11 @@ fn built_in_identity_and_entries_are_deterministic() {
     let registry = native_value_lifecycle_registry();
     assert_eq!(
         NATIVE_VALUE_LIFECYCLE_REGISTRY_VERSION,
-        "skiff-native-value-lifecycle-v4"
+        "skiff-native-value-lifecycle-v5"
     );
     assert_eq!(
         NATIVE_VALUE_LIFECYCLE_REGISTRY_FINGERPRINT,
-        "bd03a9f3550ec1ee1356e429abbf1bb58a314add0b2692a5b3cae822c700e4b3"
+        "66cfd7b124781318dad3c69a89ff0356ae40fde169f485d1e698184bff8526b5"
     );
     assert_eq!(
         registry.identity().registry_id,
@@ -34,10 +34,16 @@ fn built_in_identity_and_entries_are_deterministic() {
     );
     assert_eq!(registry.entries().len(), 17);
 
-    let reversed = NativeValueLifecycleRegistry::new(
+    let reversed = NativeValueLifecycleRegistry::new_with_privileged_affine_composites(
         NATIVE_VALUE_LIFECYCLE_REGISTRY_ID,
         NATIVE_VALUE_LIFECYCLE_REGISTRY_VERSION,
         registry.entries().iter().cloned().rev().collect(),
+        registry
+            .privileged_affine_composites()
+            .iter()
+            .cloned()
+            .rev()
+            .collect(),
     )
     .unwrap();
     assert_eq!(registry.identity(), reversed.identity());
@@ -47,6 +53,55 @@ fn built_in_identity_and_entries_are_deterministic() {
         serde_json::from_value::<NativeValueLifecycleRegistryIdentity>(wire).unwrap(),
         registry.identity().clone()
     );
+}
+
+#[test]
+fn privileged_http_stream_composite_is_exact_and_fingerprinted() {
+    let registry = native_value_lifecycle_registry();
+    assert_eq!(registry.privileged_affine_composites().len(), 1);
+    let schema = registry
+        .privileged_affine_composite(PrivilegedAffineCompositeIdentity::HttpClientStreamHandle)
+        .expect("HTTP stream handle composite authority");
+    assert_eq!(schema.package_id, "skiff.run/std");
+    assert_eq!(schema.symbol_path, "std.http.HttpClientStreamHandle");
+    assert_eq!(
+        schema
+            .fields
+            .iter()
+            .map(|field| (field.name.as_str(), field.access))
+            .collect::<Vec<_>>(),
+        vec![
+            ("body", PrivilegedAffineFieldAccess::AffineTake),
+            ("headers", PrivilegedAffineFieldAccess::SnapshotShare),
+            ("status", PrivilegedAffineFieldAccess::SnapshotShare),
+        ]
+    );
+    assert_eq!(
+        schema.lifecycle,
+        NativeValueLifecycleConcrete::MoveOnly {
+            drop: NativeValueDropPlan::PrivilegedRecursiveShape,
+        }
+    );
+    assert_eq!(schema.embedding, NativeValueEmbedding::Privileged);
+
+    let symbol = crate::PackageSymbolRef {
+        package: PackageRefIr::PackageId {
+            package_id: "skiff.run/std".to_string(),
+        },
+        symbol_path: "std.http.HttpClientStreamHandle".to_string(),
+        abi_expectation: Some("abi:exact".to_string()),
+    };
+    assert_eq!(
+        registry
+            .privileged_affine_composite_for_symbol(&symbol)
+            .map(|schema| schema.identity),
+        Some(PrivilegedAffineCompositeIdentity::HttpClientStreamHandle)
+    );
+    let mut lookalike = symbol;
+    lookalike.symbol_path = "example.HttpClientStreamHandle".to_string();
+    assert!(registry
+        .privileged_affine_composite_for_symbol(&lookalike)
+        .is_none());
 }
 
 #[test]

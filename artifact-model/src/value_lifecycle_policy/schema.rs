@@ -1,6 +1,8 @@
 use crate::{
-    ContractLiteral, ContractTypeDescriptor, ContractTypeRef, LiteralIr, NamedUnionBranchIr,
-    NativeValueLifecycleResolution, PackageSchemaTypeRecord, TypeDescriptorIr, TypeRefIr,
+    native_value_lifecycle_registry, CallableRegistryTypeExpression, ContractLiteral,
+    ContractTypeDescriptor, ContractTypeRef, LiteralIr, NamedUnionBranchIr,
+    NativeValueLifecycleResolution, PackageRefIr, PackageSchemaTypeRecord, TypeDescriptorIr,
+    TypeRefIr,
 };
 
 use super::{
@@ -30,11 +32,89 @@ pub(super) fn classify_package_symbol<R: ValueLifecycleFactResolver>(
         .resolve_package_symbol(symbol)
         .map_err(|source| ValueLifecyclePolicyError::Authority { source });
     let result = resolved.and_then(|resolved| {
+        if let Some(schema) =
+            native_value_lifecycle_registry().privileged_affine_composite_for_symbol(symbol)
+        {
+            context.budget.charge(&resolved.descriptor, depth + 1)?;
+            verify_privileged_affine_composite(schema, &arguments, &resolved)?;
+            return Ok(NativeValueLifecycleResolution {
+                lifecycle: schema.lifecycle.clone(),
+                embedding: schema.embedding,
+            });
+        }
         let environment = PositionalTypeEnvironment::new(resolved.type_parameters, arguments)?;
         classify_descriptor(&resolved.descriptor, &environment, context, depth + 1)
     });
     context.state.finish(key, &result);
     result
+}
+
+fn verify_privileged_affine_composite(
+    schema: &crate::PrivilegedAffineCompositeSchema,
+    arguments: &[TypeRefIr],
+    resolved: &crate::ResolvedPackageValueType,
+) -> Result<(), ValueLifecyclePolicyError> {
+    if !arguments.is_empty() || !resolved.type_parameters.is_empty() {
+        return Err(ValueLifecyclePolicyError::AuthorityMismatch {
+            message: "privileged affine composite must be non-generic".to_string(),
+        });
+    }
+    let TypeDescriptorIr::Record { fields } = &resolved.descriptor else {
+        return Err(ValueLifecyclePolicyError::AuthorityMismatch {
+            message: "privileged affine composite must resolve to a record".to_string(),
+        });
+    };
+    if fields.len() != schema.fields.len() {
+        return Err(ValueLifecyclePolicyError::AuthorityMismatch {
+            message: "privileged affine composite field count drifted from registry".to_string(),
+        });
+    }
+    for (actual, expected) in fields.iter().zip(&schema.fields) {
+        if actual.0 != &expected.name || !matches_type_expression(&expected.ty, actual.1) {
+            return Err(ValueLifecyclePolicyError::AuthorityMismatch {
+                message: format!(
+                    "privileged affine composite field {:?} drifted from registry",
+                    expected.name
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn matches_type_expression(expected: &CallableRegistryTypeExpression, actual: &TypeRefIr) -> bool {
+    match (expected, actual) {
+        (
+            CallableRegistryTypeExpression::Builtin { name, arguments },
+            TypeRefIr::Builtin {
+                name: actual_name,
+                args: actual_arguments,
+            },
+        ) => {
+            name == actual_name
+                && arguments.len() == actual_arguments.len()
+                && arguments
+                    .iter()
+                    .zip(actual_arguments)
+                    .all(|(expected, actual)| matches_type_expression(expected, actual))
+        }
+        (
+            CallableRegistryTypeExpression::PackageSymbol {
+                package_id,
+                symbol_path,
+            },
+            TypeRefIr::PackageSymbol { symbol },
+        ) => {
+            matches!(
+                &symbol.package,
+                PackageRefIr::PackageId {
+                    package_id: actual_package_id
+                } if actual_package_id == package_id
+            ) && symbol.symbol_path == *symbol_path
+        }
+        (CallableRegistryTypeExpression::TypeParameter { .. }, _) => false,
+        _ => false,
+    }
 }
 
 pub(super) fn classify_package_schema<R: ValueLifecycleFactResolver>(

@@ -320,8 +320,14 @@ fn validate_instruction_contract(
                     shape.fields.len()
                 )));
             }
+            if shape.privileged_affine_composite.is_some() {
+                return Err(operand_error(
+                    "NewRecord may not construct a registry-owned privileged affine composite"
+                        .to_string(),
+                ));
+            }
         }
-        Opcode::GetDenseField => {
+        Opcode::GetDenseField | Opcode::TakeDenseField => {
             let shape_index = descriptor
                 .operand_word(OperandRole::ShapeRef, &instruction.operand_words)
                 .ok_or_else(|| descriptor_mismatch(key, instruction.pc, "ShapeRef".to_string()))?;
@@ -342,6 +348,23 @@ fn validate_instruction_contract(
                     "FieldOrdinal {ordinal} is outside shape field count {}",
                     shape.fields.len()
                 )));
+            }
+            let access = super::plans::privileged_field_access(shape, ordinal as usize);
+            match (descriptor.kind, access) {
+                (Opcode::GetDenseField, Some(crate::PrivilegedAffineFieldAccess::AffineTake)) => {
+                    return Err(operand_error(
+                        "GetDenseField may not share a privileged affine field".to_string(),
+                    ));
+                }
+                (Opcode::TakeDenseField, Some(crate::PrivilegedAffineFieldAccess::AffineTake)) => {}
+                (Opcode::TakeDenseField, _) => {
+                    return Err(operand_error(
+                        "TakeDenseField requires the exact affine-take field of a privileged composite"
+                            .to_string(),
+                    ));
+                }
+                (Opcode::GetDenseField, _) => {}
+                _ => unreachable!("match is limited to dense-field opcodes"),
             }
         }
         Opcode::SetWritablePath => {

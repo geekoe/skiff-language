@@ -540,6 +540,20 @@ macro_rules! opcode_rows {
                 capabilities: [CapabilityRequirement::RepresentationType]
             },
             {
+                kind: TakeDenseField, opcode: 0x44, mnemonic: "take_dense_field",
+                operands: [
+                    (OperandKind::Pool, OperandRole::ShapeRef, LinkedOperandKind::Shape, []),
+                    (OperandKind::Immediate, OperandRole::FieldOrdinal, LinkedOperandKind::Immediate, [])
+                ],
+                stack_in: [(Arity::Fixed(1), ValueSource::ShapeValue { shape: OperandRole::ShapeRef })],
+                stack_out: [(Arity::Fixed(1), ValueSource::ShapeField { shape: OperandRole::ShapeRef, ordinal: OperandRole::FieldOrdinal })],
+                slots: SlotContract::None, control: ControlContract::Fallthrough,
+                pending: PendingContract::Never, checkpoint: CheckpointContract::None,
+                exception: ExceptionContract::new(ExceptionBehavior::None, &[]), statement: StatementContract::None, source: SourceContract::None,
+                region: RegionContract::new(RegionEffect::Preserve, RegionEffect::NotApplicable),
+                capabilities: [CapabilityRequirement::VerifiedShape, CapabilityRequirement::AffineFieldTake]
+            },
+            {
                 kind: NewArrayBuilder, opcode: 0x50, mnemonic: "new_array_builder",
                 operands: [(OperandKind::Pool, OperandRole::ElementTypeRef, LinkedOperandKind::Type, [])],
                 stack_in: [],
@@ -1045,7 +1059,7 @@ macro_rules! define_opcode_contracts {
 
 opcode_rows!(define_opcode_contracts);
 
-pub const OPCODE_COUNT: usize = 63;
+pub const OPCODE_COUNT: usize = 64;
 
 pub const fn opcode_contract_for(value: u8) -> Option<&'static OpcodeContract> {
     let mut index = 0;
