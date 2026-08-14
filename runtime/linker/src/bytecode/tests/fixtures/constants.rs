@@ -205,6 +205,7 @@ pub(super) fn populate_bytecode(artifact: &mut BytecodeArtifact, program: Consta
     let type_plan = exact_fixture_plan(&ty);
     artifact.image.pools.types = vec![BytecodePoolEntry::TypeRef {
         ty,
+        representation_carrier: None,
         plan: type_plan,
     }];
     artifact.image.pools.shapes = if matches!(

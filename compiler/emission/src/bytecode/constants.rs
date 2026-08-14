@@ -63,6 +63,7 @@ impl ConstantImage {
         let plan = self.exact_type_plan(module_path, ty, context)?;
         self.pools.types.push(BytecodePoolEntry::TypeRef {
             ty: qualified.clone(),
+            representation_carrier: None,
             plan,
         });
         self.type_indices.insert(key, index);
@@ -444,7 +445,11 @@ pub(crate) fn build_constant_image(
                 &ty,
                 "canonical type pool",
             )?;
-            Ok(BytecodePoolEntry::TypeRef { ty, plan })
+            Ok(BytecodePoolEntry::TypeRef {
+                ty,
+                representation_carrier: None,
+                plan,
+            })
         })
         .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
     let pools = BytecodePools {
@@ -905,6 +910,7 @@ fn intern_merged_type(
     )?;
     pools.types.push(BytecodePoolEntry::TypeRef {
         ty: qualified,
+        representation_carrier: None,
         plan,
     });
     type_indices.insert(key, index);

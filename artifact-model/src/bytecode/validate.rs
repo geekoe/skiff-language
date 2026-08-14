@@ -578,7 +578,12 @@ fn validate_pool_entry_references(
     }
 
     for (index, entry) in pools.types.iter().enumerate() {
-        let BytecodePoolEntry::TypeRef { plan, .. } = entry else {
+        let BytecodePoolEntry::TypeRef {
+            plan,
+            representation_carrier,
+            ..
+        } = entry
+        else {
             continue;
         };
         validate_transfer_plan(
@@ -587,6 +592,9 @@ fn validate_pool_entry_references(
             None,
             &format!("image.pools.types[{index}].plan"),
         )?;
+        if let Some(declaration) = representation_carrier {
+            validate_representation_carrier_declaration(index, plan, declaration, pools)?;
+        }
         if let ValueTransferPlan::MoveOnly {
             drop: ValueDropPlan::RecursiveShape { shape_ref },
         } = plan
@@ -959,6 +967,92 @@ fn validate_pool_entry_references(
                 path.leaf_type_ref
             )));
         }
+    }
+    Ok(())
+}
+
+fn validate_representation_carrier_declaration(
+    owner_index: usize,
+    owner_plan: &ValueTransferPlan,
+    declaration: &crate::bytecode::dto::RepresentationCarrierDeclaration,
+    pools: &BytecodePools,
+) -> Result<(), StructuralValidationError> {
+    let location = format!("image.pools.types[{owner_index}].representationCarrier");
+    let representation_location = format!("{location}.representationTypeRef");
+    let physical_location = format!("{location}.physicalCarrierTypeRef");
+
+    validate_type_pool_ref(
+        pools,
+        declaration.representation_type_ref,
+        &representation_location,
+    )?;
+    validate_type_pool_ref(
+        pools,
+        declaration.physical_carrier_type_ref,
+        &physical_location,
+    )?;
+
+    let owner_index = owner_index as u64;
+    if u64::from(declaration.representation_type_ref) == owner_index {
+        return Err(header_error(format!(
+            "{representation_location} must not self-reference its owning TypeRef row"
+        )));
+    }
+    if u64::from(declaration.physical_carrier_type_ref) == owner_index {
+        return Err(header_error(format!(
+            "{physical_location} must not self-reference its owning TypeRef row"
+        )));
+    }
+    if declaration.representation_type_ref == declaration.physical_carrier_type_ref {
+        return Err(header_error(format!(
+            "{location} representationTypeRef and physicalCarrierTypeRef must reference distinct TypeRef rows"
+        )));
+    }
+
+    let Some(BytecodePoolEntry::TypeRef {
+        plan: representation_plan,
+        representation_carrier: nested_representation,
+        ..
+    }) = pools
+        .types
+        .get(declaration.representation_type_ref as usize)
+    else {
+        return Err(header_error(format!(
+            "{representation_location} must reference a TypeRef entry"
+        )));
+    };
+    let Some(BytecodePoolEntry::TypeRef {
+        plan: physical_plan,
+        representation_carrier: nested_physical,
+        ..
+    }) = pools
+        .types
+        .get(declaration.physical_carrier_type_ref as usize)
+    else {
+        return Err(header_error(format!(
+            "{physical_location} must reference a TypeRef entry"
+        )));
+    };
+
+    if nested_representation.is_some() {
+        return Err(header_error(format!(
+            "{representation_location} must reference a one-layer TypeRef row without representationCarrier"
+        )));
+    }
+    if nested_physical.is_some() {
+        return Err(header_error(format!(
+            "{physical_location} must reference a one-layer TypeRef row without representationCarrier"
+        )));
+    }
+    if representation_plan != owner_plan {
+        return Err(header_error(format!(
+            "{representation_location} plan must exactly match the owning TypeRef plan"
+        )));
+    }
+    if physical_plan != owner_plan {
+        return Err(header_error(format!(
+            "{physical_location} plan must exactly match the owning TypeRef plan"
+        )));
     }
     Ok(())
 }

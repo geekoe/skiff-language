@@ -10,6 +10,7 @@ mod interface_limits;
 mod limits;
 mod manifests;
 mod property;
+mod representation_carrier;
 mod roundtrip;
 mod schema_snapshot;
 mod source_coverage;
@@ -71,6 +72,7 @@ pub(crate) fn number_type() -> TypeRefIr {
 pub(crate) fn type_entry(ty: TypeRefIr) -> BytecodePoolEntry {
     BytecodePoolEntry::TypeRef {
         ty,
+        representation_carrier: None,
         plan: snapshot_share(),
     }
 }

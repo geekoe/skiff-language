@@ -497,6 +497,7 @@ fn call_local_inout_checks_table_and_selector_count_without_guessing_values() {
             name: "Array".to_string(),
             args: vec![string_type()],
         },
+        representation_carrier: None,
         plan: ValueTransferPlan::SnapshotShare {
             drop: ValueDropPlan::SnapshotRelease,
         },

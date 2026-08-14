@@ -1421,7 +1421,7 @@ fn assert_exact_v12_provenance(
     let view = admitted.view();
 
     assert_eq!(provenance.magic(), "skiff-bytecode");
-    assert_eq!(provenance.schema_version(), "skiff-bytecode-v13");
+    assert_eq!(provenance.schema_version(), "skiff-bytecode-v14");
     assert_eq!(provenance.isa_version(), "skiff-bytecode-isa-v5");
     assert_eq!(provenance.schema_version(), view.schema_version());
     assert_eq!(provenance.isa_version(), view.isa_version());

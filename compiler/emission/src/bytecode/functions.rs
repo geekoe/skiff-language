@@ -5557,6 +5557,7 @@ mod tests {
                     module_path: "main".to_string(),
                     type_index: 0,
                 },
+                representation_carrier: None,
                 plan: ValueTransferPlan::SnapshotShare {
                     drop: ValueDropPlan::SnapshotRelease,
                 },

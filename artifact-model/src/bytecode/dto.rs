@@ -62,7 +62,7 @@ pub mod limits {
 /// defined here so the Phase 1 bytecode module owns its version surface.
 /// The artifact record is still canonical JSON (D8).
 pub const BYTECODE_MAGIC: &str = "skiff-bytecode";
-pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v13";
+pub const BYTECODE_SCHEMA_VERSION: &str = "skiff-bytecode-v14";
 pub const BYTECODE_ISA_VERSION: &str = "skiff-bytecode-isa-v5";
 
 /// Root bytecode artifact record (D11: one image per package).
@@ -154,6 +154,11 @@ pub enum BytecodePoolEntry {
     /// Type reference (reuses the File IR type vocabulary).
     TypeRef {
         ty: TypeRefIr,
+        /// Exact compiler-owned source representation and physical VM carrier
+        /// rows for this type. The field is required on the wire and `null`
+        /// when the type has no explicit representation carrier fact.
+        #[serde(deserialize_with = "deserialize_required_option")]
+        representation_carrier: Option<RepresentationCarrierDeclaration>,
         /// Exact compiler-owned lifecycle plan for values of this type.
         /// The linker may resolve pool-local references but must never derive
         /// a replacement from the type shape or a lifecycle registry.
@@ -170,6 +175,17 @@ pub enum BytecodePoolEntry {
     ResumeDescriptor(ResumeDescriptor),
     CallbackCaptureLayout(CallbackCaptureLayout),
     WritablePath(WritablePathDeclaration),
+}
+
+/// Pool-local closure for one explicit representation boundary. The owning
+/// TypeRef, source representation row and physical VM carrier row are kept
+/// distinct so later admission can match the compiler's exact descriptor fact
+/// without searching nominal names or reconstructing source semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RepresentationCarrierDeclaration {
+    pub representation_type_ref: u32,
+    pub physical_carrier_type_ref: u32,
 }
 
 impl BytecodePoolEntry {
@@ -498,7 +514,7 @@ pub struct HostEffectSignature {
     pub parameter_types: Vec<TypeRefIr>,
     pub parameter_modes: Vec<crate::ParamModeIr>,
     pub parameter_plans: Vec<ValueTransferPlan>,
-    /// v4 supports zero or one result, but uses vectors so arity remains
+    /// ISA v5 supports zero or one result, but uses vectors so arity remains
     /// explicit and exactly matches the opcode `resultCount`.
     pub result_types: Vec<TypeRefIr>,
     pub result_plans: Vec<ValueTransferPlan>,

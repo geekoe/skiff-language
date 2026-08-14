@@ -28,7 +28,7 @@ fn current_identity_generations_are_atomic() {
     assert_eq!(BYTECODE_IDENTITY_PREFIX, "skiff-bytecode-image-v5:sha256");
     assert_eq!(
         skiff_artifact_model::BYTECODE_SCHEMA_VERSION,
-        "skiff-bytecode-v13"
+        "skiff-bytecode-v14"
     );
     assert_eq!(
         skiff_artifact_model::BYTECODE_ISA_VERSION,

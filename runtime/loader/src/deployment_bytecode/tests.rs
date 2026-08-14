@@ -47,6 +47,7 @@ fn admitted_bytecode(seed: &str) -> Arc<ValidatedBytecodeArtifact> {
                 }],
                 types: vec![BytecodePoolEntry::TypeRef {
                     ty: TypeRefIr::builtin("string"),
+                    representation_carrier: None,
                     plan: ValueTransferPlan::SnapshotShare {
                         drop: ValueDropPlan::Trivial,
                     },
@@ -106,6 +107,7 @@ fn bytecode_with_type_root(seed: &str, ty: TypeRefIr) -> Arc<ValidatedBytecodeAr
     let mut artifact = admitted_bytecode(seed).artifact().clone();
     artifact.image.pools.types.push(BytecodePoolEntry::TypeRef {
         ty,
+        representation_carrier: None,
         plan: ValueTransferPlan::SnapshotShare {
             drop: ValueDropPlan::Trivial,
         },
@@ -326,6 +328,7 @@ fn callable_bytecode(
     if self_bound {
         artifact.image.pools.types.push(BytecodePoolEntry::TypeRef {
             ty: TypeRefIr::builtin("string"),
+            representation_carrier: None,
             plan: ValueTransferPlan::SnapshotShare {
                 drop: ValueDropPlan::Trivial,
             },

@@ -933,7 +933,11 @@ fn snapshot_plan() -> ValueTransferPlan {
 }
 
 fn type_entry(ty: TypeRefIr, plan: ValueTransferPlan) -> BytecodePoolEntry {
-    BytecodePoolEntry::TypeRef { ty, plan }
+    BytecodePoolEntry::TypeRef {
+        ty,
+        representation_carrier: None,
+        plan,
+    }
 }
 
 fn coordinate(executable_index: u32) -> PackageExecutableCoordinate {

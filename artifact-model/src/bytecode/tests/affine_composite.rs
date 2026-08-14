@@ -45,11 +45,11 @@ fn affine_take_artifact() -> BytecodeArtifact {
             },
             _ => snapshot_share(),
         };
-        artifact
-            .image
-            .pools
-            .types
-            .push(BytecodePoolEntry::TypeRef { ty, plan });
+        artifact.image.pools.types.push(BytecodePoolEntry::TypeRef {
+            ty,
+            representation_carrier: None,
+            plan,
+        });
     }
     artifact
         .image

@@ -440,6 +440,7 @@ function stream(input: std.http.HttpClientRequest) -> void {
     let BytecodePoolEntry::TypeRef {
         ty: body_ty,
         plan: body_type_plan,
+        ..
     } = &artifact.image.pools.types[body.type_ref as usize]
     else {
         panic!("ignored handle body must reference a type row")

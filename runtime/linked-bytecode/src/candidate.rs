@@ -23,7 +23,7 @@ use crate::BytecodePackageIndex;
 
 /// Exact package bytecode/header provenance retained beside all linked rows.
 /// The schema string remains untrusted data here: artifact admission and
-/// hydration accept the current five-authority `skiff-bytecode-v13`, while
+/// hydration accept the current five-authority `skiff-bytecode-v14`, while
 /// candidate construction retains the exact hydrated package binding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedPackageBytecodeProvenance {

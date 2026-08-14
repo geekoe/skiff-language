@@ -903,6 +903,7 @@ fn bytecode_fixture() -> BytecodeArtifact {
             pools: BytecodePools {
                 types: vec![BytecodePoolEntry::TypeRef {
                     ty: TypeRefIr::builtin("string"),
+                    representation_carrier: None,
                     plan: ValueTransferPlan::SnapshotShare {
                         drop: ValueDropPlan::Trivial,
                     },

@@ -18,6 +18,7 @@ fn stream_producer_artifact() -> BytecodeArtifact {
             name: "Stream".to_string(),
             args: vec![string_type()],
         },
+        representation_carrier: None,
         plan: ValueTransferPlan::AffineResource {
             drop: ResourceDropPlan::ResourceTableRelease,
         },
@@ -322,6 +323,7 @@ fn stream_return_type_requires_explicit_producer_declaration() {
             name: "Stream".to_string(),
             args: vec![string_type()],
         },
+        representation_carrier: None,
         plan: ValueTransferPlan::AffineResource {
             drop: ResourceDropPlan::ResourceTableRelease,
         },

@@ -10,9 +10,10 @@ use skiff_artifact_model::{
     BytecodeSpecialization, DebugBinding, DebugTable, FrameLayout, FrozenConstantGraph,
     FrozenConstantNode, HostEffectSignature, IntrinsicReference, LiteralIr, PackageCallableId,
     PackageExecutableCoordinate, ParamModeIr, ParameterSlotDecl, RelocatableBytecodeFunction,
-    ResumeDescriptor, ResumeErrorMode, ResumeResultMaterialization, ShapeDeclaration,
-    SourceMapEntry, StatementAttributionId, StatementEntry, TypeRefIr, ValueDropPlan,
-    ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    RepresentationCarrierDeclaration, ResumeDescriptor, ResumeErrorMode,
+    ResumeResultMaterialization, ShapeDeclaration, SourceMapEntry, StatementAttributionId,
+    StatementEntry, TypeRefIr, ValueDropPlan, ValueTransferPlan, BYTECODE_ISA_VERSION,
+    BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -39,6 +40,7 @@ fn snapshot_share() -> ValueTransferPlan {
 fn type_entry(ty: TypeRefIr) -> BytecodePoolEntry {
     BytecodePoolEntry::TypeRef {
         ty,
+        representation_carrier: None,
         plan: snapshot_share(),
     }
 }
@@ -135,6 +137,15 @@ fn fixture() -> BytecodeArtifact {
                 types: vec![
                     type_entry(TypeRefIr::builtin("string")),
                     type_entry(TypeRefIr::builtin("number")),
+                    type_entry(TypeRefIr::builtin("integer")),
+                    BytecodePoolEntry::TypeRef {
+                        ty: TypeRefIr::builtin("fixtureRepresentation"),
+                        representation_carrier: Some(RepresentationCarrierDeclaration {
+                            representation_type_ref: 2,
+                            physical_carrier_type_ref: 1,
+                        }),
+                        plan: snapshot_share(),
+                    },
                 ],
                 shapes: (0..2)
                     .map(|_| BytecodePoolEntry::ShapeRef {
@@ -463,6 +474,89 @@ fn every_image_mutation_changes_the_identity() {
     key_changed.image.debug_table.as_mut().unwrap().bindings[0].function_key =
         "module::renamed".to_string();
     assert_ne!(bytecode_identity(&key_changed).unwrap(), base_identity);
+}
+
+#[test]
+fn representation_carrier_fact_and_each_exact_ref_participate_in_the_preimage() {
+    let with_fact = fixture();
+    skiff_artifact_model::structurally_validate(&with_fact)
+        .expect("canonical identity fixture carries one valid representation fact");
+    let with_fact_identity = bytecode_identity(&with_fact).unwrap();
+
+    let mut without_fact = with_fact.clone();
+    let BytecodePoolEntry::TypeRef {
+        representation_carrier,
+        ..
+    } = &mut without_fact.image.pools.types[3]
+    else {
+        unreachable!("identity fixture type pool is homogeneous")
+    };
+    *representation_carrier = None;
+    let without_fact_identity = bytecode_identity(&without_fact).unwrap();
+    assert_ne!(
+        without_fact_identity, with_fact_identity,
+        "representationCarrier None-to-Some must change bytecode identity"
+    );
+
+    let mut changed_representation_ref = with_fact.clone();
+    let BytecodePoolEntry::TypeRef {
+        representation_carrier: Some(declaration),
+        ..
+    } = &mut changed_representation_ref.image.pools.types[3]
+    else {
+        unreachable!("identity fixture owns one representation fact")
+    };
+    declaration.representation_type_ref = 0;
+    skiff_artifact_model::structurally_validate(&changed_representation_ref)
+        .expect("alternate bounded representation row remains structurally valid");
+    assert_ne!(
+        bytecode_identity(&changed_representation_ref).unwrap(),
+        with_fact_identity,
+        "representationTypeRef mutation must change bytecode identity"
+    );
+
+    let mut changed_physical_ref = with_fact;
+    let BytecodePoolEntry::TypeRef {
+        representation_carrier: Some(declaration),
+        ..
+    } = &mut changed_physical_ref.image.pools.types[3]
+    else {
+        unreachable!("identity fixture owns one representation fact")
+    };
+    declaration.physical_carrier_type_ref = 0;
+    skiff_artifact_model::structurally_validate(&changed_physical_ref)
+        .expect("alternate bounded physical carrier row remains structurally valid");
+    assert_ne!(
+        bytecode_identity(&changed_physical_ref).unwrap(),
+        with_fact_identity,
+        "physicalCarrierTypeRef mutation must change bytecode identity"
+    );
+}
+
+#[test]
+fn malformed_representation_carrier_is_rejected_before_identity_admission() {
+    let mut artifact = fixture();
+    let out_of_bounds = artifact.image.pools.types.len() as u32;
+    let BytecodePoolEntry::TypeRef {
+        representation_carrier: Some(declaration),
+        ..
+    } = &mut artifact.image.pools.types[3]
+    else {
+        unreachable!("identity fixture owns one representation fact")
+    };
+    declaration.physical_carrier_type_ref = out_of_bounds;
+
+    let error = bytecode_identity(&artifact)
+        .expect_err("identity admission must reject an unclosed representation fact");
+    assert!(
+        matches!(
+            &error,
+            ArtifactIdentityError::InvalidBytecodeStructural(
+                skiff_artifact_model::bytecode::validate::StructuralValidationError::Header { .. }
+            )
+        ),
+        "{error}"
+    );
 }
 
 #[test]

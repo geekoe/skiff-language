@@ -611,6 +611,7 @@ fn normalization_bytecode(program: RootProgram) -> Arc<ValidatedBytecodeArtifact
     let mut artifact = artifact::bytecode_artifact(program);
     artifact.image.pools.types.push(BytecodePoolEntry::TypeRef {
         ty: schema_type(),
+        representation_carrier: None,
         plan: skiff_artifact_model::ValueTransferPlan::SnapshotShare {
             drop: skiff_artifact_model::ValueDropPlan::SnapshotRelease,
         },
@@ -620,6 +621,7 @@ fn normalization_bytecode(program: RootProgram) -> Arc<ValidatedBytecodeArtifact
             module_path: "fixture".to_string(),
             type_index: 0,
         },
+        representation_carrier: None,
         plan: skiff_artifact_model::ValueTransferPlan::SnapshotShare {
             drop: skiff_artifact_model::ValueDropPlan::SnapshotRelease,
         },
