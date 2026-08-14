@@ -21,8 +21,8 @@ use skiff_compiler_lowering::mir::{
 };
 
 use super::{
-    constants::ConstantImage, inputs::ValidatedEmissionInputs, BytecodeEmissionError,
-    FunctionValueTransferPlans,
+    carriers::FunctionMachineCarrierFacts, constants::ConstantImage,
+    inputs::ValidatedEmissionInputs, BytecodeEmissionError, FunctionValueTransferPlans,
 };
 use super::{inputs::is_void, intrinsics::static_intrinsic_canonical_key};
 
@@ -70,6 +70,7 @@ struct FunctionEmitter<'a> {
     function: &'a MirFunction,
     key: String,
     plans: &'a FunctionValueTransferPlans,
+    machine_carriers: &'a FunctionMachineCarrierFacts,
     image: &'a mut ConstantImage,
     inputs: &'a ValidatedEmissionInputs<'a>,
     source_attribution: SourceAttributionMode,
@@ -166,11 +167,19 @@ impl<'a> FunctionEmitter<'a> {
             .unwrap_or_default();
         let event_count = events.len();
         let value_block_body_blocks = value_block_body_blocks(function)?;
+        let machine_carriers = inputs.machine_carriers.function(key).ok_or_else(|| {
+            unsupported(
+                key,
+                "exact machine carrier facts",
+                "function carrier row is absent",
+            )
+        })?;
         Ok(Self {
             unit,
             function,
             key: key.to_string(),
             plans,
+            machine_carriers,
             image,
             inputs,
             source_attribution,
@@ -194,6 +203,113 @@ impl<'a> FunctionEmitter<'a> {
             stream_source_sites: Vec::new(),
             operand_depth: 0,
         })
+    }
+
+    fn expression_carrier(&self, expression: u32) -> Result<&TypeRefIr, BytecodeEmissionError> {
+        self.machine_carriers
+            .expression(expression)
+            .map(|carrier| carrier.ty())
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "exact machine carrier facts",
+                    &format!("expression {expression} carrier is absent"),
+                )
+            })
+    }
+
+    fn slot_carrier(&self, slot: u32) -> Result<&TypeRefIr, BytecodeEmissionError> {
+        self.machine_carriers
+            .slot(slot)
+            .map(|carrier| carrier.ty())
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "exact machine carrier facts",
+                    &format!("slot {slot} carrier is absent"),
+                )
+            })
+    }
+
+    fn emitted_slot_carrier(&self, slot: u32) -> Result<TypeRefIr, BytecodeEmissionError> {
+        if let Some(carrier) = self.machine_carriers.slot(slot) {
+            return Ok(carrier.ty().clone());
+        }
+        let generated = usize::try_from(slot)
+            .ok()
+            .and_then(|slot| slot.checked_sub(self.function.slots.len()))
+            .and_then(|slot| self.generated_slots.get(slot))
+            .and_then(|slot| slot.ty.clone());
+        generated.ok_or_else(|| {
+            unsupported(
+                &self.key,
+                "exact generated slot carrier",
+                &format!("slot {slot} carrier is absent"),
+            )
+        })
+    }
+
+    fn result_carrier(&self) -> Result<&TypeRefIr, BytecodeEmissionError> {
+        self.machine_carriers
+            .result()
+            .map(|carrier| carrier.ty())
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "exact machine carrier facts",
+                    "non-void function result carrier is absent",
+                )
+            })
+    }
+
+    fn machine_shape_fields(
+        &self,
+        owner: &TypeRefIr,
+        context: &'static str,
+    ) -> Result<BTreeMap<String, TypeRefIr>, BytecodeEmissionError> {
+        self.machine_carriers
+            .shape(owner)
+            .map(|shape| {
+                shape
+                    .fields()
+                    .iter()
+                    .map(|(name, carrier)| (name.clone(), carrier.ty().clone()))
+                    .collect()
+            })
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "exact machine carrier shape",
+                    &format!("{context} owner {owner:?} has no analyzed field layout"),
+                )
+            })
+    }
+
+    fn machine_construct_shape_fields(
+        &self,
+        expression: u32,
+        owner: &TypeRefIr,
+        context: &'static str,
+    ) -> Result<BTreeMap<String, TypeRefIr>, BytecodeEmissionError> {
+        self.machine_carriers
+            .construct_shape(expression)
+            .filter(|shape| shape.owner() == owner)
+            .map(|shape| {
+                shape
+                    .fields()
+                    .iter()
+                    .map(|(name, carrier)| (name.clone(), carrier.ty().clone()))
+                    .collect()
+            })
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "exact construct carrier shape",
+                    &format!(
+                        "{context} expression {expression} owner {owner:?} has no analyzed field layout"
+                    ),
+                )
+            })
     }
 
     fn emit(mut self) -> Result<RelocatableBytecodeFunction, BytecodeEmissionError> {
@@ -412,7 +528,7 @@ impl<'a> FunctionEmitter<'a> {
                 "single insert requires an ObjectFields body",
             ));
         };
-        let declared = self.record_shape_fields(
+        let declared = self.machine_shape_fields(
             &operation.target.type_ref,
             "DbOperation single insert object",
         )?;
@@ -519,7 +635,7 @@ impl<'a> FunctionEmitter<'a> {
             operand: 3,
             expected_stack_height_before_result: u32::try_from(expected_stack_height_before_result)
                 .map_err(|_| arithmetic(&self.key, "DbOperation resume stack height conversion"))?,
-            result_ty: Some(expression.ty.clone()),
+            result_ty: Some(self.expression_carrier(expression.index)?.clone()),
             result_materialization: None,
             emit_stream_item_shape_ref: None,
             end_block: None,
@@ -730,7 +846,12 @@ impl<'a> FunctionEmitter<'a> {
                             "statement has no natural end continuation",
                         )
                     })?;
-                self.emit_stream_next(*endpoint_slot, item_type, Some(end_block))?;
+                self.emit_stream_next(
+                    Some(statement.statement_index),
+                    *endpoint_slot,
+                    item_type,
+                    Some(end_block),
+                )?;
             }
             MirStmtKind::TestEffectRegister {
                 expect,
@@ -784,9 +905,10 @@ impl<'a> FunctionEmitter<'a> {
                     ));
                 }
                 self.emit_expression(*value)?;
+                let carrier = self.expression_carrier(value.expression)?;
                 let type_ref = self.image.type_index(
                     self.unit.module_path.as_str(),
-                    value_type,
+                    carrier,
                     &format!("statement throw value type in `{}`", self.key),
                 )?;
                 // The throw instruction itself is the raise site: the
@@ -998,9 +1120,10 @@ impl<'a> FunctionEmitter<'a> {
                     ));
                 }
                 self.emit_expression(*value)?;
+                let carrier = self.expression_carrier(value.expression)?;
                 let type_ref = self.image.type_index(
                     self.unit.module_path.as_str(),
-                    value_type,
+                    carrier,
                     &format!("expression throw value type in `{}`", self.key),
                 )?;
                 self.emit_op(Opcode::Throw, vec![type_ref])?;
@@ -1354,7 +1477,7 @@ impl<'a> FunctionEmitter<'a> {
                 result_ty: if result_count == 0 {
                     None
                 } else {
-                    Some(expression.ty.clone())
+                    Some(self.expression_carrier(expression.index)?.clone())
                 },
                 result_materialization,
                 emit_stream_item_shape_ref: None,
@@ -1383,11 +1506,12 @@ impl<'a> FunctionEmitter<'a> {
                 "the canonical HTTP client request result must not be void",
             ));
         }
+        let result_carrier = self.expression_carrier(expression.index)?.clone();
         let fields =
-            self.record_shape_fields(&expression.ty, "std.http.request result materialization")?;
+            self.machine_shape_fields(&result_carrier, "std.http.request result materialization")?;
         let shape_ref = self.image.intern_shape(
             self.unit.module_path.as_str(),
-            &expression.ty,
+            &result_carrier,
             &fields,
             &format!("std.http.request result materialization in `{}`", self.key),
         )?;
@@ -1660,7 +1784,7 @@ impl<'a> FunctionEmitter<'a> {
             .args
             .iter()
             .map(|argument| {
-                let ty = &self.function.expression(*argument)?.ty;
+                let ty = self.expression_carrier(argument.expression)?;
                 Ok(super::constants::qualify_local_types(
                     self.unit.module_path.as_str(),
                     &self.normalize_host_signature_type(ty),
@@ -1669,7 +1793,7 @@ impl<'a> FunctionEmitter<'a> {
             .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
         let mut parameter_plans = Vec::with_capacity(call.args.len());
         for argument in &call.args {
-            let ty = self.function.expression(*argument)?.ty.clone();
+            let ty = self.expression_carrier(argument.expression)?.clone();
             let source_plan = self.image.exact_type_plan(
                 self.unit.module_path.as_str(),
                 &ty,
@@ -1680,20 +1804,22 @@ impl<'a> FunctionEmitter<'a> {
         let result_types = if is_void(&expression.ty) {
             Vec::new()
         } else {
+            let carrier = self.expression_carrier(expression.index)?;
             vec![super::constants::qualify_local_types(
                 self.unit.module_path.as_str(),
-                &self.normalize_host_signature_type(&expression.ty),
+                &self.normalize_host_signature_type(carrier),
             )]
         };
         let result_plans = if result_types.is_empty() {
             Vec::new()
         } else {
+            let carrier = self.expression_carrier(expression.index)?.clone();
             let source_plan = self.image.exact_type_plan(
                 self.unit.module_path.as_str(),
-                &expression.ty,
+                &carrier,
                 &format!("host call result plan in `{}`", self.key),
             )?;
-            vec![self.bind_privileged_plan(&expression.ty, &source_plan)?]
+            vec![self.bind_privileged_plan(&carrier, &source_plan)?]
         };
         let parameter_count = parameter_types.len();
         Ok(HostEffectSignature {
@@ -1772,6 +1898,7 @@ impl<'a> FunctionEmitter<'a> {
             ));
         }
         let carriers = self.record_construct_carrier_fields(
+            value_expression.index,
             &construct_type,
             &construct_fields,
             "EmitStream item shape",
@@ -1834,17 +1961,33 @@ impl<'a> FunctionEmitter<'a> {
 
     fn emit_stream_next(
         &mut self,
+        statement_index: Option<u32>,
         endpoint_slot: u32,
-        item_type: &TypeRefIr,
+        _item_type: &TypeRefIr,
         end_block: Option<u32>,
     ) -> Result<(), BytecodeEmissionError> {
-        let endpoint_type = self.slot_type(endpoint_slot)?;
+        let endpoint_type = self.emitted_slot_carrier(endpoint_slot)?;
         let TypeRefIr::Builtin { name, args } = endpoint_type else {
             return Err(unsupported(
                 &self.key,
                 "StreamNext",
                 "endpoint slot is not Stream<T>",
             ));
+        };
+        let item_type = match statement_index {
+            Some(statement_index) => self
+                .machine_carriers
+                .stream_next_item(statement_index)
+                .map(|carrier| carrier.ty())
+                .ok_or_else(|| {
+                    unsupported(
+                        &self.key,
+                        "exact StreamNext carrier",
+                        &format!("statement {statement_index} item carrier is absent"),
+                    )
+                })?
+                .clone(),
+            None => args[0].clone(),
         };
         if name != "Stream" || args.as_slice() != [item_type.clone()] {
             return Err(unsupported(
@@ -1860,7 +2003,7 @@ impl<'a> FunctionEmitter<'a> {
             operand: 1,
             expected_stack_height_before_result: u32::try_from(expected_stack_height_before_result)
                 .map_err(|_| arithmetic(&self.key, "StreamNext stack height conversion"))?,
-            result_ty: Some(item_type.clone()),
+            result_ty: Some(item_type),
             result_materialization: None,
             emit_stream_item_shape_ref: None,
             end_block,
@@ -2071,7 +2214,7 @@ impl<'a> FunctionEmitter<'a> {
             for segment in &loan.path {
                 match segment {
                     MirInOutPathSegment::Field { name } => {
-                        let fields = self.record_shape_fields(&current_ty, "inout field path")?;
+                        let fields = self.machine_shape_fields(&current_ty, "inout field path")?;
                         let field_ordinal = fields
                             .keys()
                             .position(|candidate| candidate == name)
@@ -2267,7 +2410,7 @@ impl<'a> FunctionEmitter<'a> {
         for segment in &place.path {
             match segment {
                 MirWritablePathSegment::Field { name } => {
-                    let fields = self.record_shape_fields(&current_ty, "writable field path")?;
+                    let fields = self.machine_shape_fields(&current_ty, "writable field path")?;
                     let field_ordinal = fields
                         .keys()
                         .position(|candidate| candidate == name)
@@ -2489,12 +2632,12 @@ impl<'a> FunctionEmitter<'a> {
     ) -> Result<(), BytecodeEmissionError> {
         let object_expression = self.function.expression(object)?;
         let object_index = object_expression.index;
-        let object_ty = object_expression.ty.clone();
+        let object_ty = self.expression_carrier(object_expression.index)?.clone();
         let object_slot = match &object_expression.expression {
             ExprIr::LoadSlot { slot } => Some(*slot),
             _ => None,
         };
-        let fields = self.record_shape_fields(&object_ty, "field read")?;
+        let fields = self.machine_shape_fields(&object_ty, "field read")?;
         let ordinal = fields
             .keys()
             .position(|name| name == field)
@@ -2641,7 +2784,7 @@ impl<'a> FunctionEmitter<'a> {
                 Ok(())
             }
             _ => {
-                let fields = self.record_shape_fields(ty, context)?;
+                let fields = self.machine_shape_fields(ty, context)?;
                 let shape = self.image.intern_shape(
                     self.unit.module_path.as_str(),
                     ty,
@@ -2661,12 +2804,16 @@ impl<'a> FunctionEmitter<'a> {
 
     fn emit_record_construct(
         &mut self,
-        _expression: &MirExpression,
+        expression: &MirExpression,
         type_ref: &TypeRefIr,
         fields: &BTreeMap<String, ExprRefIr>,
     ) -> Result<(), BytecodeEmissionError> {
-        let carriers =
-            self.record_construct_carrier_fields(type_ref, fields, "record construct")?;
+        let carriers = self.record_construct_carrier_fields(
+            expression.index,
+            type_ref,
+            fields,
+            "record construct",
+        )?;
         // The runtime tag comes from the constructed nominal leaf, not the
         // surrounding static context: a union-typed constructor must still
         // carry its concrete leaf identity so throw/catch match the actual
@@ -2688,28 +2835,22 @@ impl<'a> FunctionEmitter<'a> {
 
     fn record_construct_carrier_fields(
         &self,
+        expression: u32,
         type_ref: &TypeRefIr,
         fields: &BTreeMap<String, ExprRefIr>,
         context: &'static str,
     ) -> Result<BTreeMap<String, TypeRefIr>, BytecodeEmissionError> {
-        let declared = self.record_construct_fields(type_ref, fields, context)?;
-        declared
-            .into_keys()
-            .map(|name| {
-                let value = fields
-                    .get(&name)
-                    .copied()
-                    .expect("declared field set was checked");
-                let expression = self.function.expression(value)?;
-                // Source typing remains the admission authority for the
-                // declared field. The shape consumed by NewRecord instead
-                // publishes the exact machine carrier selected below by
-                // emit_expression: literal refinements and integer literals
-                // are represented by their builtin string/number carriers.
-                let carrier = expression_machine_carrier_type(expression);
-                Ok((name, carrier))
-            })
-            .collect()
+        self.record_construct_fields(type_ref, fields, context)?;
+        let carriers = self.machine_construct_shape_fields(expression, type_ref, context)?;
+        if carriers.len() != fields.len() || carriers.keys().any(|name| !fields.contains_key(name))
+        {
+            return Err(unsupported(
+                &self.key,
+                context,
+                "analyzed machine shape differs from the checked construct field set",
+            ));
+        }
+        Ok(carriers)
     }
 
     fn record_construct_fields(
@@ -2744,7 +2885,8 @@ impl<'a> FunctionEmitter<'a> {
         expression: &MirExpression,
         items: &[ExprRefIr],
     ) -> Result<(), BytecodeEmissionError> {
-        let element_ty = self.array_element_type(&expression.ty, "array literal")?;
+        let carrier = self.expression_carrier(expression.index)?.clone();
+        let element_ty = self.array_element_type(&carrier, "array literal")?;
         let element_ref = self.image.type_index(
             self.unit.module_path.as_str(),
             &element_ty,
@@ -2764,7 +2906,8 @@ impl<'a> FunctionEmitter<'a> {
         expression: &MirExpression,
         entries: &BTreeMap<String, ExprRefIr>,
     ) -> Result<(), BytecodeEmissionError> {
-        let (key_ty, value_ty) = self.map_key_value_types(&expression.ty, "map literal")?;
+        let carrier = self.expression_carrier(expression.index)?.clone();
+        let (key_ty, value_ty) = self.map_key_value_types(&carrier, "map literal")?;
         let key_ref = self.image.intern_type(
             self.unit.module_path.as_str(),
             &key_ty,
@@ -3083,24 +3226,46 @@ impl<'a> FunctionEmitter<'a> {
         body: u32,
         continuation: u32,
     ) -> Result<(), BytecodeEmissionError> {
-        let iterable_ty = facts.iterable_type.clone();
+        let iterable_ty = self.expression_carrier(iterable.expression)?.clone();
         let (array, stream, item_slot, value_slot, item_ty) = match &facts.binding {
-            skiff_compiler_lowering::mir::MirForInBinding::Item { slot, ty, kind } => match kind {
-                MirForInItemKind::ArrayItem => (true, false, *slot, None, ty.clone()),
-                MirForInItemKind::MapKey => (false, false, *slot, None, ty.clone()),
-                MirForInItemKind::StreamItem => (false, true, *slot, None, ty.clone()),
+            skiff_compiler_lowering::mir::MirForInBinding::Item { slot, kind, .. } => match kind {
+                MirForInItemKind::ArrayItem => (
+                    true,
+                    false,
+                    *slot,
+                    None,
+                    self.array_element_type(&iterable_ty, "for-in Array item")?,
+                ),
+                MirForInItemKind::MapKey => {
+                    let (key, _) = self.map_key_value_types(&iterable_ty, "for-in Map key")?;
+                    (false, false, *slot, None, key)
+                }
+                MirForInItemKind::StreamItem => {
+                    let TypeRefIr::Builtin { name, args } = &iterable_ty else {
+                        return Err(unsupported(
+                            &self.key,
+                            "for-in Stream item",
+                            "iterable carrier is not Stream<T>",
+                        ));
+                    };
+                    if name != "Stream" || args.len() != 1 {
+                        return Err(unsupported(
+                            &self.key,
+                            "for-in Stream item",
+                            "iterable carrier is not exact Stream<T>",
+                        ));
+                    }
+                    (false, true, *slot, None, args[0].clone())
+                }
             },
             skiff_compiler_lowering::mir::MirForInBinding::MapEntry {
                 key_slot,
                 value_slot,
                 ..
-            } => (
-                false,
-                false,
-                *key_slot,
-                Some(*value_slot),
-                iterable_ty.clone(),
-            ),
+            } => {
+                let (key, _) = self.map_key_value_types(&iterable_ty, "for-in Map entry")?;
+                (false, false, *key_slot, Some(*value_slot), key)
+            }
         };
         let iterable_slot = self.push_generated_slot(&iterable_ty, "$forIterable")?;
         if stream {
@@ -3156,7 +3321,7 @@ impl<'a> FunctionEmitter<'a> {
             });
             self.event_mapping.push(Some(self.instructions.len()));
             debug_assert_eq!(next_event_index, self.event_mapping.len() - 1);
-            self.emit_stream_next(iterable_slot, &item_ty, Some(continuation))?;
+            self.emit_stream_next(None, iterable_slot, &item_ty, Some(continuation))?;
             self.emit_op(Opcode::StoreSlot, vec![item_slot])?;
             self.emit_jump_to_block(body)?;
             self.stream_loop_item_states
@@ -3381,7 +3546,8 @@ impl<'a> FunctionEmitter<'a> {
         arms: &[skiff_compiler_lowering::mir::MirMatchArmIr],
     ) -> Result<(), BytecodeEmissionError> {
         let value_expression = self.function.expression(value)?;
-        let temp_slot = self.push_generated_slot(&value_expression.ty, "$matchValue")?;
+        let value_carrier = self.expression_carrier(value_expression.index)?.clone();
+        let temp_slot = self.push_generated_slot(&value_carrier, "$matchValue")?;
         self.emit_expression(value)?;
         self.emit_op(Opcode::StoreSlot, vec![temp_slot])?;
         let current = self
@@ -3516,23 +3682,6 @@ impl<'a> FunctionEmitter<'a> {
             ty,
             &format!("generated slot plan in `{}`", self.key),
         )
-    }
-
-    fn slot_type(&self, slot: u32) -> Result<&TypeRefIr, BytecodeEmissionError> {
-        let index = slot as usize;
-        let found = self
-            .function
-            .slots
-            .get(index)
-            .filter(|candidate| candidate.slot == slot)
-            .or_else(|| {
-                self.generated_slots
-                    .get(index.saturating_sub(self.function.slots.len()))
-                    .filter(|candidate| candidate.slot == slot)
-            });
-        found
-            .and_then(|candidate| candidate.ty.as_ref())
-            .ok_or_else(|| unsupported(&self.key, "slot type", &format!("slot {slot} is absent")))
     }
 
     fn push_generated_slot(
@@ -4211,16 +4360,10 @@ impl<'a> FunctionEmitter<'a> {
         let slot_count = self.function.slots.len() + self.generated_slots.len();
         let mut slot_type_refs = Vec::with_capacity(slot_count);
         for slot in &self.function.slots {
-            let ty = slot.ty.as_ref().ok_or_else(|| {
-                unsupported(
-                    &self.key,
-                    "frame slot type",
-                    &format!("slot `{name}` has no exact type", name = slot.name),
-                )
-            })?;
+            let ty = self.slot_carrier(slot.slot)?.clone();
             slot_type_refs.push(self.image.type_index(
                 self.unit.module_path.as_str(),
-                ty,
+                &ty,
                 &format!(
                     "function `{key}` slot `{name}` type",
                     key = self.key,
@@ -4233,16 +4376,7 @@ impl<'a> FunctionEmitter<'a> {
             .slots
             .iter()
             .zip(&self.plans.slot_plans)
-            .map(|(slot, plan)| {
-                let ty = slot.ty.as_ref().ok_or_else(|| {
-                    unsupported(
-                        &self.key,
-                        "frame slot type",
-                        &format!("slot `{}` has no exact type", slot.name),
-                    )
-                })?;
-                Ok((ty.clone(), plan.clone()))
-            })
+            .map(|(slot, plan)| Ok((self.slot_carrier(slot.slot)?.clone(), plan.clone())))
             .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
         let mut slot_plans = Vec::with_capacity(slot_count);
         for (ty, plan) in source_slot_plans {
@@ -4302,10 +4436,35 @@ impl<'a> FunctionEmitter<'a> {
                             ),
                         ));
                     }
+                    let carrier = self.slot_carrier(parameter.slot)?.clone();
+                    if carrier != fact.ty {
+                        return Err(unsupported(
+                            &self.key,
+                            "dense parameter materialization",
+                            &format!(
+                                "parameter `{}` machine carrier differs from its nominal gateway type",
+                                parameter.name
+                            ),
+                        ));
+                    }
+                    let fields = self.machine_shape_fields(
+                        &carrier,
+                        "dense parameter materialization",
+                    )?;
+                    if fields.keys().ne(fact.fields.keys()) {
+                        return Err(unsupported(
+                            &self.key,
+                            "dense parameter materialization",
+                            &format!(
+                                "parameter `{}` machine field set differs from admitted gateway fact",
+                                parameter.name
+                            ),
+                        ));
+                    }
                     self.image.intern_shape(
                         self.unit.module_path.as_str(),
-                        &fact.ty,
-                        &fact.fields,
+                        &carrier,
+                        &fields,
                         &format!(
                             "rawHttp gateway parameter `{}` in `{}`",
                             parameter.name, self.key
@@ -4353,16 +4512,28 @@ impl<'a> FunctionEmitter<'a> {
         let result_type_refs = if result_count == 0 {
             Vec::new()
         } else {
+            let result_ty = self.result_carrier()?.clone();
             vec![self.image.type_index(
                 self.unit.module_path.as_str(),
-                &self.function.return_type,
+                &result_ty,
                 &format!("function `{key}` return type", key = self.key),
             )?]
         };
         let stream_result_type_ref = if is_stream_producer {
+            let stream_ty = self
+                .machine_carriers
+                .stream_result()
+                .map(|carrier| carrier.ty().clone())
+                .ok_or_else(|| {
+                    unsupported(
+                        &self.key,
+                        "exact stream result carrier",
+                        "stream producer frame row is absent",
+                    )
+                })?;
             Some(self.image.type_index(
                 self.unit.module_path.as_str(),
-                &self.function.return_type,
+                &stream_ty,
                 &format!("function `{key}` stream authority type", key = self.key),
             )?)
         } else {
@@ -4372,7 +4543,11 @@ impl<'a> FunctionEmitter<'a> {
             Vec::new()
         } else {
             let source_plans = self.plans.result_plans.clone();
-            let return_type = self.function.return_type.clone();
+            let return_type = if result_count == 0 {
+                self.function.return_type.clone()
+            } else {
+                self.result_carrier()?.clone()
+            };
             let mut result_plans = Vec::with_capacity(source_plans.len());
             for plan in source_plans {
                 result_plans.push(self.bind_privileged_plan(&return_type, &plan)?);
@@ -4425,7 +4600,7 @@ impl<'a> FunctionEmitter<'a> {
                 "FromType authority differs from the exact privileged slot type",
             ));
         }
-        let fields = self.record_shape_fields(ty, "privileged affine slot plan")?;
+        let fields = self.machine_shape_fields(ty, "privileged affine slot plan")?;
         let shape_ref = self.image.intern_shape(
             self.unit.module_path.as_str(),
             ty,
@@ -4778,13 +4953,6 @@ fn literal_type(literal: &LiteralIr) -> TypeRefIr {
     })
 }
 
-fn expression_machine_carrier_type(expression: &MirExpression) -> TypeRefIr {
-    match &expression.expression {
-        ExprIr::Literal { value } => literal_type(value),
-        _ => expression.ty.clone(),
-    }
-}
-
 fn require_narrow_target(caller: &str, target: &MirFunction) -> Result<(), BytecodeEmissionError> {
     if target.self_type.is_some() {
         return Err(unsupported(
@@ -4917,64 +5085,6 @@ mod tests {
     use super::*;
     use crate::bytecode::constants::build_constant_image;
     use crate::bytecode::plans::derive_test_bytecode_value_transfer_plans;
-
-    #[test]
-    fn record_construct_carrier_rewrites_only_literal_lowering() {
-        let number_literal = MirExpression {
-            index: 0,
-            expression: ExprIr::Literal {
-                value: LiteralIr::Number {
-                    value: serde_json::Number::from(207_u64),
-                },
-            },
-            ty: TypeRefIr::builtin("integer"),
-            writable: None,
-            direct_call: None,
-            stream_result: None,
-            remote_interface: None,
-        };
-        assert_eq!(
-            expression_machine_carrier_type(&number_literal),
-            TypeRefIr::builtin("number")
-        );
-
-        let string_literal = MirExpression {
-            index: 1,
-            expression: ExprIr::Literal {
-                value: LiteralIr::String {
-                    value: "start".to_string(),
-                },
-            },
-            ty: TypeRefIr::Literal {
-                value: LiteralIr::String {
-                    value: "start".to_string(),
-                },
-            },
-            writable: None,
-            direct_call: None,
-            stream_result: None,
-            remote_interface: None,
-        };
-        assert_eq!(
-            expression_machine_carrier_type(&string_literal),
-            TypeRefIr::builtin("string")
-        );
-
-        let loaded_slot = MirExpression {
-            index: 2,
-            expression: ExprIr::LoadSlot { slot: 0 },
-            ty: TypeRefIr::builtin("integer"),
-            writable: None,
-            direct_call: None,
-            stream_result: None,
-            remote_interface: None,
-        };
-        assert_eq!(
-            expression_machine_carrier_type(&loaded_slot),
-            TypeRefIr::builtin("integer"),
-            "non-literal expressions retain their source-semantic type fact"
-        );
-    }
 
     #[test]
     fn stream_backedge_state_distinguishes_shared_and_consumed_items() {
@@ -5120,7 +5230,7 @@ mod tests {
         let emitter = FunctionEmitter::new(
             unit,
             function,
-            "main.boom",
+            "main::boom",
             function_plans,
             &mut image,
             &inputs,

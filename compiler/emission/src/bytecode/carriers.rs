@@ -14,8 +14,7 @@ use skiff_artifact_model::{
     ValueTransferPlan,
 };
 use skiff_compiler_lowering::mir::{
-    MirCallArgument, MirForInBinding, MirForInItemKind, MirFunction, MirStmtKind, MirUnit,
-    MirWritableRoot,
+    MirCallArgument, MirForInBinding, MirForInItemKind, MirStmtKind, MirUnit, MirWritableRoot,
 };
 
 use super::{inputs::canonical_function_key, BytecodeEmissionError};
@@ -72,6 +71,7 @@ pub(crate) struct FunctionMachineCarrierFacts {
     stream_result_carrier: Option<MachineCarrier>,
     stream_next_items: BTreeMap<u32, MachineCarrier>,
     shapes: Vec<MachineShapeCarrierFact>,
+    construct_shapes: BTreeMap<u32, MachineShapeCarrierFact>,
 }
 
 impl FunctionMachineCarrierFacts {
@@ -99,6 +99,10 @@ impl FunctionMachineCarrierFacts {
         self.shapes.iter().find(|shape| shape.owner == *owner)
     }
 
+    pub(crate) fn construct_shape(&self, expression: u32) -> Option<&MachineShapeCarrierFact> {
+        self.construct_shapes.get(&expression)
+    }
+
     pub(crate) fn carriers(&self) -> impl Iterator<Item = &MachineCarrier> {
         self.expression_carriers
             .iter()
@@ -107,6 +111,11 @@ impl FunctionMachineCarrierFacts {
             .chain(self.stream_result_carrier.iter())
             .chain(self.stream_next_items.values())
             .chain(self.shapes.iter().flat_map(|shape| shape.fields.values()))
+            .chain(
+                self.construct_shapes
+                    .values()
+                    .flat_map(|shape| shape.fields.values()),
+            )
     }
 }
 
@@ -130,6 +139,7 @@ enum SemanticRole {
     Expression,
     ConstructExpression,
     Position,
+    ShapeField,
 }
 
 #[derive(Debug)]
@@ -152,6 +162,7 @@ struct FunctionNodes {
     stream_result: Option<usize>,
     stream_next_items: BTreeMap<u32, usize>,
     shape_indices: Vec<usize>,
+    construct_shape_indices: BTreeMap<u32, usize>,
 }
 
 #[derive(Debug)]
@@ -305,6 +316,7 @@ impl<'a> Analyzer<'a> {
                     stream_result,
                     stream_next_items: BTreeMap::new(),
                     shape_indices: Vec::new(),
+                    construct_shape_indices: BTreeMap::new(),
                 });
             }
         }
@@ -348,6 +360,23 @@ impl<'a> Analyzer<'a> {
         let unit = &self.units[unit_index];
         let function = &unit.functions[mir_index];
 
+        let boundary_shape_types = function
+            .params
+            .iter()
+            .map(|parameter| parameter.ty.clone())
+            .chain(
+                function
+                    .regions
+                    .iter()
+                    .map(|region| region.catch_type.clone()),
+            )
+            .collect::<Vec<_>>();
+        for ty in boundary_shape_types {
+            if declared_record_fields(self.units, unit_index, &ty).is_some() {
+                self.ensure_shape(function_index, &ty)?;
+            }
+        }
+
         for expression in &function.expressions {
             let output = self.expression_node(function_index, expression.index)?;
             match &expression.expression {
@@ -374,6 +403,9 @@ impl<'a> Analyzer<'a> {
                     // is the machine contract; admission separately decides
                     // whether that boundary is currently supported.
                     self.assign(output, expression.ty.clone(), "exact boundary producer")?;
+                    if declared_record_fields(self.units, unit_index, &expression.ty).is_some() {
+                        self.ensure_shape(function_index, &expression.ty)?;
+                    }
                 }
                 ExprIr::Unary { op, .. } => {
                     self.assign(
@@ -418,7 +450,12 @@ impl<'a> Analyzer<'a> {
                 }
                 ExprIr::Construct { type_ref, fields } => {
                     self.assign(output, type_ref.clone(), "record constructor")?;
-                    let shape = self.ensure_shape(function_index, type_ref)?;
+                    let shape = self.ensure_construct_shape(
+                        function_index,
+                        expression.index,
+                        type_ref,
+                        fields,
+                    )?;
                     for (name, value) in fields {
                         let field =
                             self.shapes[shape]
@@ -490,6 +527,9 @@ impl<'a> Analyzer<'a> {
                 }
                 ExprIr::Call { call } => {
                     self.collect_call_constraints(function_index, expression, output, call)?;
+                    if declared_record_fields(self.units, unit_index, &expression.ty).is_some() {
+                        self.ensure_shape(function_index, &expression.ty)?;
+                    }
                 }
                 ExprIr::Throw { .. } => {
                     self.assign(output, expression.ty.clone(), "throw terminator")?;
@@ -702,7 +742,7 @@ impl<'a> Analyzer<'a> {
         for (name, ty) in declared {
             let node = self.add_node(
                 ty,
-                SemanticRole::Position,
+                SemanticRole::ShapeField,
                 &key,
                 format!("shape {owner:?} field `{name}`"),
             );
@@ -715,6 +755,56 @@ impl<'a> Analyzer<'a> {
             fields,
         });
         self.functions[function_index].shape_indices.push(index);
+        Ok(index)
+    }
+
+    fn ensure_construct_shape(
+        &mut self,
+        function_index: usize,
+        expression_index: u32,
+        owner: &TypeRefIr,
+        values: &BTreeMap<String, ExprRefIr>,
+    ) -> Result<usize, BytecodeEmissionError> {
+        if declared_record_fields(self.units, self.functions[function_index].unit, owner).is_some()
+        {
+            let shape = self.ensure_shape(function_index, owner)?;
+            self.functions[function_index]
+                .construct_shape_indices
+                .insert(expression_index, shape);
+            return Ok(shape);
+        }
+        if !matches!(owner, TypeRefIr::PackageSymbol { .. }) {
+            return self.ensure_shape(function_index, owner);
+        }
+        let unit_index = self.functions[function_index].unit;
+        let key = self.functions[function_index].key.clone();
+        let mir_index = self.functions[function_index].function;
+        let semantic_fields = values
+            .iter()
+            .map(|(name, value)| {
+                let expression = self.units[unit_index].functions[mir_index].expression(*value)?;
+                Ok((name.clone(), expression.ty.clone()))
+            })
+            .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
+        let mut fields = BTreeMap::new();
+        for (name, ty) in semantic_fields {
+            let node = self.add_node(
+                ty,
+                SemanticRole::ShapeField,
+                &key,
+                format!("shape {owner:?} field `{name}`"),
+            );
+            fields.insert(name, node);
+        }
+        let index = self.shapes.len();
+        self.shapes.push(ShapeNodes {
+            unit: unit_index,
+            owner: owner.clone(),
+            fields,
+        });
+        self.functions[function_index]
+            .construct_shape_indices
+            .insert(expression_index, index);
         Ok(index)
     }
 
@@ -1034,6 +1124,29 @@ impl<'a> Analyzer<'a> {
                     }
                 })
                 .collect();
+            let construct_shapes = function
+                .construct_shape_indices
+                .into_iter()
+                .map(|(expression, shape)| {
+                    let shape = &self.shapes[shape];
+                    (
+                        expression,
+                        MachineShapeCarrierFact {
+                            owner: shape.owner.clone(),
+                            fields: shape
+                                .fields
+                                .iter()
+                                .map(|(name, node)| {
+                                    (
+                                        name.clone(),
+                                        MachineCarrier::type_only(resolved(&self.nodes, *node)),
+                                    )
+                                })
+                                .collect(),
+                        },
+                    )
+                })
+                .collect();
             functions.insert(
                 function.key,
                 FunctionMachineCarrierFacts {
@@ -1043,6 +1156,7 @@ impl<'a> Analyzer<'a> {
                     stream_result_carrier,
                     stream_next_items,
                     shapes,
+                    construct_shapes,
                 },
             );
         }
@@ -1124,6 +1238,22 @@ fn semantic_accepts_carrier(semantic: &TypeRefIr, carrier: &TypeRefIr, role: Sem
                 })
         }
         TypeRefIr::Record { fields } => {
+            if matches!(role, SemanticRole::ConstructExpression)
+                && matches!(
+                    carrier,
+                    TypeRefIr::LocalType { .. }
+                        | TypeRefIr::PublicationType { .. }
+                        | TypeRefIr::ServiceSymbol { .. }
+                        | TypeRefIr::PackageSymbol { .. }
+                        | TypeRefIr::PackageSchema { .. }
+                        | TypeRefIr::DbObjectSymbol { .. }
+                )
+            {
+                // The explicit Construct.type_ref is the runtime nominal
+                // identity.  Its separately checked exact field graph is the
+                // only authority for this structural source expression.
+                return true;
+            }
             let TypeRefIr::Record {
                 fields: carrier_fields,
             } = carrier
@@ -1155,6 +1285,16 @@ fn semantic_accepts_carrier(semantic: &TypeRefIr, carrier: &TypeRefIr, role: Sem
                 collapsed = Some(item_carrier);
             }
             collapsed.as_ref() == Some(carrier)
+        }
+        TypeRefIr::Nullable { .. }
+            if matches!(role, SemanticRole::ShapeField)
+                && carrier == &TypeRefIr::builtin("null") =>
+        {
+            // A concrete record construction publishes its physical null
+            // field row and plan.  Nullable frame/call/return positions do
+            // not take this path and remain fail closed without an explicit
+            // representation fact.
+            true
         }
         // Nullable/nominal/representation identity is never implicitly
         // replaced by a concrete branch or payload.
@@ -1195,9 +1335,9 @@ fn declared_record_fields(
             .get(*type_index as usize)
             .and_then(record_descriptor_fields),
         TypeRefIr::PackageSymbol { symbol } => {
-            let skiff_artifact_model::PackageRefIr::PackageId { package_id } = &symbol.package
-            else {
-                return None;
+            let package_id = match &symbol.package {
+                skiff_artifact_model::PackageRefIr::PackageId { package_id } => package_id,
+                skiff_artifact_model::PackageRefIr::Dependency { dependency_ref } => dependency_ref,
             };
             unit.package_type_records
                 .get(&(package_id.clone(), symbol.symbol_path.clone()))
@@ -1256,7 +1396,7 @@ mod tests {
             (LiteralIr::Bool { value: true }, "bool"),
             (
                 LiteralIr::Number {
-                    value: "1".to_string(),
+                    value: serde_json::Number::from(1_u64),
                 },
                 "number",
             ),
