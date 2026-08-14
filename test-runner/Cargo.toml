@@ -49,7 +49,6 @@ skiff-artifact-model = { path = "../artifact-model" }
 skiff-artifact-identity = { path = "../artifact-identity" }
 skiff-syntax = { path = "../syntax" }
 skiff-runtime-model = { path = "../runtime/model" }
-skiff-runtime-bytecode-verifier = { path = "../runtime/bytecode-verifier" }
 skiff-runtime-loader = { path = "../runtime/loader" }
 skiff-runtime-linker = { path = "../runtime/linker" }
 

@@ -30,7 +30,6 @@ skiff-compiler-core = { path = "../../compiler/core" }
 skiff-compiler-input = { path = "../../compiler/input" }
 skiff-compiler-source = { path = "../../compiler/source" }
 skiff-runtime-loader = { path = "../loader" }
-skiff-runtime-bytecode-verifier = { path = "../bytecode-verifier" }
 skiff-runtime-deployment-image = { path = "../deployment-image" }
 
 [lints]

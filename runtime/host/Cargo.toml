@@ -32,7 +32,6 @@ skiff-runtime-config-snapshot = { path = "../../runtime-config-snapshot" }
 skiff-runtime-activation = { path = "../activation" }
 skiff-runtime-boundary = { path = "../boundary" }
 skiff-runtime-capability-context = { path = "../capability-context" }
-skiff-runtime-bytecode-verifier = { path = "../bytecode-verifier" }
 skiff-runtime-deployment-image = { path = "../deployment-image" }
 skiff-runtime-linker = { path = "../linker" }
 skiff-runtime-loader = { path = "../loader" }

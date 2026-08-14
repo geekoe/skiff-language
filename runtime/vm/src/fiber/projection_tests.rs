@@ -19,12 +19,8 @@ use skiff_compiler::{
     PackageCompileInput, PackageSourceInput, PublicationManifest, PublicationSourceGraph,
     SourceTree, SourceTreeFile,
 };
-use skiff_runtime_bytecode_verifier::VerificationLimits;
 use skiff_runtime_linked_bytecode::{ActiveRegionIndex, InstructionIndex};
-use skiff_runtime_linker::{
-    link_deployment_execution_image, DeploymentExecutionImage, DeploymentExecutionLimits,
-    LinkLimits,
-};
+use skiff_runtime_linker::{link_deployment_execution_image, DeploymentExecutionImage, LinkLimits};
 use skiff_runtime_loader::{DeploymentBytecodeContentResolver, DeploymentBytecodeLoader};
 use skiff_runtime_model::{
     bytecode_execution_observation::{BytecodeExecutionCorrelation, BytecodeExecutionObserver},
@@ -189,13 +185,7 @@ impl ProjectionTestImage {
         let hydrated = DeploymentBytecodeLoader::new(&resolver)
             .load(&deployment_ref)
             .unwrap();
-        let image = Arc::new(
-            link_deployment_execution_image(
-                hydrated,
-                &DeploymentExecutionLimits::new(link_limits(), verification_limits()),
-            )
-            .unwrap(),
-        );
+        let image = Arc::new(link_deployment_execution_image(hydrated, &link_limits()).unwrap());
         Self { image, operation }
     }
 
@@ -462,30 +452,6 @@ fn link_limits() -> LinkLimits {
         max_expanded_type_nodes: u64::MAX,
         max_expanded_type_bytes: u64::MAX,
         max_constant_graph_nodes: u64::MAX,
-        max_constant_graph_edges: u64::MAX,
-    }
-}
-
-fn verification_limits() -> VerificationLimits {
-    VerificationLimits {
-        max_functions: u64::MAX,
-        max_total_instructions: u64::MAX,
-        max_instructions_per_function: u64::MAX,
-        max_frame_slots_per_function: u64::MAX,
-        max_operand_depth: u64::MAX,
-        max_control_flow_edges_per_function: u64::MAX,
-        max_exception_regions_per_function: u64::MAX,
-        max_switch_targets_per_function: u64::MAX,
-        max_statement_events_per_pc: u64::MAX,
-        max_statement_events_per_function: u64::MAX,
-        max_total_statement_events: u64::MAX,
-        max_source_map_entries_per_function: u64::MAX,
-        max_image_table_entries: u64::MAX,
-        max_arity: u64::MAX,
-        max_callback_captures_per_callback: u64::MAX,
-        max_type_nesting_depth: u64::MAX,
-        max_value_lifecycle_nodes: u64::MAX,
-        max_value_lifecycle_canonical_bytes: u64::MAX,
         max_constant_graph_edges: u64::MAX,
     }
 }

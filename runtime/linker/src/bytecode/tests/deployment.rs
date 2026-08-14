@@ -12,20 +12,20 @@ use skiff_artifact_identity::{
     PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
 };
 use skiff_artifact_model::{
-    derive_bytecode_statement_manifest_identity, BytecodeFunctionStatementManifest,
-    HostEffectExecutorIdentity, InstructionSourceSite, Opcode, PrivilegedAffineCompositeIdentity,
-    ServiceDeploymentRef, SourcePosition, SourceSpanRef, StatementAttributionId,
-    StructuralValidationError, SyntheticInstructionSiteReason, TypeRefIr,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    contract_for_opcode, derive_bytecode_statement_manifest_identity,
+    BytecodeFunctionStatementManifest, HostEffectExecutorIdentity, InstructionSourceSite, Opcode,
+    PendingContract, PrivilegedAffineCompositeIdentity, ServiceDeploymentRef, SourcePosition,
+    SourceSpanRef, StatementAttributionId, StatementContract, StructuralValidationError,
+    SyntheticInstructionSiteReason, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, seed_official_std_package, AuthoringObject},
     CompilerPlatformSources,
 };
-use skiff_runtime_bytecode_verifier::VerifiedResumeKind;
 use skiff_runtime_linked_bytecode::{
-    HostEffectAdapterIndex, InstructionIndex, LinkedBytecodeCandidate, LinkedContainerLayoutKind,
-    LinkedFunction, LinkedInstructionTarget, LinkedPackageBytecodeProvenance, LinkedSlotState,
+    HostEffectAdapterIndex, InstructionIndex, LinkedBytecodeCandidate,
+    LinkedBytecodeCandidateParts, LinkedContainerLayoutKind, LinkedFunction, LinkedFunctionTables,
+    LinkedInstructionTarget, LinkedPackageBytecodeProvenance, LinkedResumeSite, LinkedSlotState,
     LinkedValueDropPlan, LinkedValueTransferPlan,
 };
 use skiff_runtime_loader::{
@@ -33,15 +33,17 @@ use skiff_runtime_loader::{
 };
 
 use crate::bytecode::{
+    execution_image::{build_resume_sites, build_statement_schedule},
     link_deployment, link_deployment_backend_for_test, link_deployment_execution_image,
     BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation, CodeEntryLookupError,
-    DeploymentExecutionImage, Phase1LinkedCapability,
+    DeploymentExecutionImage, ExecutionImageConstructionError, ExecutionResumeKind,
+    Phase1LinkedCapability,
 };
 
 use super::{
     fixtures::{
-        corrupt_relocation_artifact, corrupt_relocation_index_artifact, Fixture, CALLBACK_FUNCTION,
-        HELPER_FUNCTION, ROOT_FUNCTION,
+        corrupt_relocation_artifact, corrupt_relocation_index_artifact, ConstantProgram, Fixture,
+        CALLBACK_FUNCTION, HELPER_FUNCTION, ROOT_FUNCTION,
     },
     generous_limits,
 };
@@ -91,6 +93,151 @@ fn production_execution_image_links_distinct_operation_entries_to_shared_image()
         Err(CodeEntryLookupError::OperationNotFound {
             contract_operation_id
         }) if contract_operation_id == unknown
+    ));
+}
+
+#[test]
+fn atomic_image_exposes_image_owned_runtime_views_without_effect_certificate() {
+    let constant_image = link_deployment_execution_image(
+        Fixture::constant(ConstantProgram::Number).hydrate(),
+        &super::generous_execution_limits(),
+    )
+    .unwrap();
+    assert_eq!(
+        constant_image
+            .constant_heap()
+            .get(skiff_runtime_linked_bytecode::ConstantIndex::new(0))
+            .and_then(|value| value.as_number()),
+        Some(42.0),
+    );
+    assert_eq!(
+        constant_image.statement_schedule().function_count(),
+        constant_image.functions().len(),
+    );
+
+    let pending_image = production_execution_image(
+        "runtime/host/src/host/request_entry/phase_4_proof_support/fixtures/vcp4-sleep",
+        "sleep-runtime-views",
+    );
+    assert_eq!(pending_image.resume_sites().rows().len(), 1);
+    assert!(matches!(
+        pending_image.resume_sites().rows()[0].kind(),
+        ExecutionResumeKind::HostEffect
+    ));
+    let debug = format!("{pending_image:?}");
+    assert!(!debug.contains("callable_effects"));
+}
+
+#[test]
+fn atomic_image_resume_view_rejects_swapped_descriptor_with_typed_construction_error() {
+    let fixture = Fixture::host();
+    let hydrated = fixture.hydrate();
+    let candidate = link_deployment_backend_for_test(&hydrated, &super::generous_limits()).unwrap();
+    let mut parts = clone_candidate_parts(&candidate);
+    let original = parts.resume_sites[0].clone();
+    let function = &parts.functions[original.function().get() as usize];
+    let swapped_site = function
+        .instructions()
+        .iter()
+        .enumerate()
+        .find(|(_, instruction)| {
+            !matches!(
+                contract_for_opcode(instruction.opcode()).pending,
+                PendingContract::ActualWithResume { .. }
+            )
+        })
+        .map(|(ordinal, _)| InstructionIndex::new(u32::try_from(ordinal).unwrap()))
+        .expect("host fixture contains a non-pending instruction");
+    parts.resume_sites[0] = LinkedResumeSite::new(
+        original.index(),
+        original.function(),
+        swapped_site,
+        original.resume(),
+        original.end_resume(),
+        original.expected_stack_height_before_result(),
+        original.result_types().into(),
+        original.result_plans().into(),
+        original.error_mode(),
+    )
+    .unwrap();
+    let malformed = LinkedBytecodeCandidate::try_from_parts(parts).unwrap();
+
+    assert!(matches!(
+        build_resume_sites(&malformed),
+        Err(ExecutionImageConstructionError::ResumeOpcodeNotPending {
+            resume_site,
+            function,
+            instruction,
+            ..
+        }) if resume_site == original.index()
+            && function == original.function()
+            && instruction == swapped_site
+    ));
+}
+
+#[test]
+fn atomic_image_statement_view_rejects_missing_required_fact_with_typed_construction_error() {
+    let fixture = Fixture::exact_local();
+    let hydrated = fixture.hydrate();
+    let candidate = link_deployment_backend_for_test(&hydrated, &super::generous_limits()).unwrap();
+    let mut parts = clone_candidate_parts(&candidate);
+    let (function_position, instruction) = parts
+        .functions
+        .iter()
+        .enumerate()
+        .find_map(|(function_position, function)| {
+            function
+                .instructions()
+                .iter()
+                .enumerate()
+                .find(|(_, instruction)| {
+                    matches!(
+                        contract_for_opcode(instruction.opcode()).statement,
+                        StatementContract::RequiredEvent { .. }
+                    )
+                })
+                .map(|(ordinal, _)| {
+                    (
+                        function_position,
+                        InstructionIndex::new(u32::try_from(ordinal).unwrap()),
+                    )
+                })
+        })
+        .expect("local-call fixture contains an instruction with a required event");
+    let function = parts.functions[function_position].clone();
+    let tables = LinkedFunctionTables::new(
+        function.exception_regions().into(),
+        function.active_regions().into(),
+        function.switch_tables().into(),
+        function.call_loan_layouts().into(),
+        function
+            .statement_entries()
+            .iter()
+            .filter(|entry| entry.instruction() != instruction)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+        function.source_map().into(),
+    );
+    parts.functions[function_position] = LinkedFunction::new(
+        function.index(),
+        function.key().clone(),
+        function.instructions().into(),
+        function.frame().clone(),
+        function.max_operand_depth(),
+        function.effect().clone(),
+        tables,
+        function.stack_map().clone(),
+    );
+    let malformed = LinkedBytecodeCandidate::try_from_parts(parts).unwrap();
+
+    assert!(matches!(
+        build_statement_schedule(&malformed),
+        Err(ExecutionImageConstructionError::StatementContractMismatch {
+            instruction: actual,
+            matching: 0,
+            ..
+        }) if actual == instruction
     ));
 }
 
@@ -199,7 +346,7 @@ fn production_stream_image_proves_exact_privileged_shape_and_affine_body_take() 
         host_resume.site(),
         InstructionIndex::new(u32::try_from(host_ordinal).unwrap())
     );
-    assert_eq!(host_resume.kind(), &VerifiedResumeKind::HostEffect);
+    assert_eq!(host_resume.kind(), &ExecutionResumeKind::HostEffect);
     assert_eq!(host_resume.result_types(), &[shape.nominal_type()]);
     assert_eq!(
         host_resume.result_types(),
@@ -278,7 +425,7 @@ fn production_stream_image_proves_exact_privileged_shape_and_affine_body_take() 
         resume.site(),
         InstructionIndex::new(u32::try_from(stream_ordinal).unwrap())
     );
-    let VerifiedResumeKind::StreamRead {
+    let ExecutionResumeKind::StreamRead {
         item_type,
         end_resume,
         ..
@@ -829,6 +976,31 @@ fn assert_exact_v8_provenance(
             .platform_error_projection_registry(),
         package.platform_error_projection_registry()
     );
+}
+
+fn clone_candidate_parts(candidate: &LinkedBytecodeCandidate) -> LinkedBytecodeCandidateParts {
+    LinkedBytecodeCandidateParts {
+        packages: candidate.packages().to_vec(),
+        functions: candidate.functions().to_vec(),
+        operation_entries: candidate.operation_entries().to_vec(),
+        gateway_entries: candidate.gateway_entries().to_vec(),
+        exact_local_targets: candidate.exact_local_targets().to_vec(),
+        service_operations: candidate.service_operations().to_vec(),
+        actor_creates: candidate.actor_creates().to_vec(),
+        actor_methods: candidate.actor_methods().to_vec(),
+        interface_tables: candidate.interface_tables().to_vec(),
+        synthetic_callbacks: candidate.synthetic_callbacks().to_vec(),
+        callback_capture_layouts: candidate.callback_capture_layouts().to_vec(),
+        host_effect_adapters: candidate.host_effect_adapters().to_vec(),
+        intrinsics: candidate.intrinsics().to_vec(),
+        types: candidate.types().to_vec(),
+        shapes: candidate.shapes().to_vec(),
+        constants: candidate.constants().to_vec(),
+        constant_roots: candidate.constant_roots().to_vec(),
+        frozen_constant_nodes: candidate.frozen_constant_nodes().to_vec(),
+        resume_sites: candidate.resume_sites().to_vec(),
+        writable_paths: candidate.writable_paths().to_vec(),
+    }
 }
 
 #[test]

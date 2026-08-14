@@ -6,7 +6,6 @@ publish = false
 
 [dependencies]
 skiff-artifact-model = { path = "../../artifact-model" }
-skiff-runtime-bytecode-verifier = { path = "../bytecode-verifier" }
 skiff-runtime-deployment-image = { path = "../deployment-image" }
 skiff-runtime-linker = { path = "../linker" }
 skiff-runtime-linked-bytecode = { path = "../linked-bytecode" }

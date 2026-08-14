@@ -15,7 +15,6 @@ use skiff_artifact_model::{
     PrivilegedAffineCompositeIdentity, PrivilegedAffineFieldAccess, TypeRefIr,
     NATIVE_VALUE_LIFECYCLE_REGISTRY,
 };
-use skiff_runtime_bytecode_verifier::VerifiedResumeSite;
 use skiff_runtime_deployment_image::DeploymentOwnerIdentity;
 use skiff_runtime_linked_bytecode::{
     ActiveRegionIndex, CandidateTable, FrameSlotIndex, FrozenConstantNodeIndex, FunctionIndex,
@@ -25,6 +24,7 @@ use skiff_runtime_linked_bytecode::{
     LinkedResourceDropPlan, LinkedValueDropPlan, LinkedValueTransferPlan,
     LinkedWritablePathSegment, ResumeSiteIndex, TypeIndex,
 };
+use skiff_runtime_linker::ExecutionResumeSite;
 use skiff_runtime_linker::{DeploymentExecutionEntry, DeploymentExecutionImage};
 use skiff_runtime_model::{
     bytecode_execution_observation::{
@@ -3759,7 +3759,7 @@ impl VmFiber {
         instruction: InstructionIndex,
         opcode: Opcode,
         index: ResumeSiteIndex,
-    ) -> Result<&VerifiedResumeSite, VmError> {
+    ) -> Result<&ExecutionResumeSite, VmError> {
         let row = self
             .execution_image()
             .resume_sites()

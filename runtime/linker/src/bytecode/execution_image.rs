@@ -2,48 +2,36 @@ use std::{collections::BTreeMap, fmt, sync::Arc};
 
 use skiff_artifact_model::{
     ContractOperationId, DeploymentIngressBinding, GatewayAdapterPlan, GatewayEntryIdentity,
-    GatewayEntryKey, HostEffectExecutorIdentity, IngressSelector, ServiceProtocolIdentity,
-    ServiceRequirementKey,
-};
-use skiff_runtime_bytecode_verifier::{
-    verify_executable_facts, ExecutableFacts, VerificationError, VerificationLimits,
-    VerifiedCallableEffects, VerifiedConstantHeap, VerifiedFunctionEffects, VerifiedResumeSites,
-    VerifiedStatementSchedule,
+    GatewayEntryKey, HostEffectExecutorIdentity, IngressSelector, Opcode, ServiceProtocolIdentity,
+    ServiceRequirementKey, StatementAttributionClass,
 };
 use skiff_runtime_deployment_image::{
     DeploymentCacheValue, DeploymentOwnerIdentity, ServiceDependencySlot,
     ServiceDependencySlotError,
 };
 use skiff_runtime_linked_bytecode::{
-    FunctionIndex, HostEffectAdapterIndex, LinkedActorMethodTarget, LinkedBytecodeCandidate,
-    LinkedCallableSignature, LinkedCallbackCaptureLayout, LinkedConstantEntry, LinkedConstantRoot,
-    LinkedExactLocalTarget, LinkedFrozenConstantNode, LinkedInterfaceTable, LinkedIntrinsicTarget,
+    ConstantIndex, FrozenConstantNodeIndex, FunctionIndex, HostEffectAdapterIndex,
+    InstructionIndex, LinkedActorMethodTarget, LinkedBytecodeCandidate, LinkedCallableSignature,
+    LinkedCallbackCaptureLayout, LinkedConstantEntry, LinkedConstantRoot, LinkedExactLocalTarget,
+    LinkedFrozenConstantNode, LinkedInterfaceTable, LinkedIntrinsicTarget,
     LinkedPackageBytecodeProvenance, LinkedServiceOperationTarget, LinkedShapeEntry,
-    LinkedSyntheticCallbackTarget, LinkedTypeEntry, LinkedWritablePathEntry,
+    LinkedSyntheticCallbackTarget, LinkedTypeEntry, LinkedWritablePathEntry, ResumeSiteIndex,
 };
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 
 use super::{entry::link_deployment, BytecodeLinkError, LinkLimits};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DeploymentExecutionLimits {
-    link: LinkLimits,
-    verification: VerificationLimits,
-}
+mod constants;
+mod resume;
+mod statements;
 
-impl DeploymentExecutionLimits {
-    pub const fn new(link: LinkLimits, verification: VerificationLimits) -> Self {
-        Self { link, verification }
-    }
+pub use constants::ExecutionConstantHeap;
+pub use resume::{ExecutionResumeKind, ExecutionResumeSite, ExecutionResumeSites};
+pub use statements::{ExecutionStatementEvent, ExecutionStatementSchedule};
 
-    pub const fn link(&self) -> &LinkLimits {
-        &self.link
-    }
-
-    pub const fn verification(&self) -> &VerificationLimits {
-        &self.verification
-    }
-}
+pub(in crate::bytecode) use constants::build_constant_heap;
+pub(in crate::bytecode) use resume::build_resume_sites;
+pub(in crate::bytecode) use statements::build_statement_schedule;
 
 /// The sole immutable execution authority for one exact deployment build.
 #[derive(Debug)]
@@ -55,10 +43,9 @@ pub struct DeploymentExecutionImage {
     dependency_slots: BTreeMap<ServiceRequirementKey, ServiceDependencySlot>,
     operation_entries: BTreeMap<ContractOperationId, CallableEntryFacts>,
     http_gateway_entries: BTreeMap<GatewayEntryKey, HttpGatewayEntryFacts>,
-    constant_heap: VerifiedConstantHeap,
-    statement_schedule: VerifiedStatementSchedule,
-    callable_effects: VerifiedCallableEffects,
-    resume_sites: VerifiedResumeSites,
+    constant_heap: ExecutionConstantHeap,
+    statement_schedule: ExecutionStatementSchedule,
+    resume_sites: ExecutionResumeSites,
 }
 
 #[derive(Debug)]
@@ -142,20 +129,16 @@ impl DeploymentExecutionImage {
             .map(|entry| &entry.adapter_plan)
     }
 
-    pub const fn constant_heap(&self) -> &VerifiedConstantHeap {
+    pub const fn constant_heap(&self) -> &ExecutionConstantHeap {
         &self.constant_heap
     }
 
-    pub const fn statement_schedule(&self) -> &VerifiedStatementSchedule {
+    pub const fn statement_schedule(&self) -> &ExecutionStatementSchedule {
         &self.statement_schedule
     }
 
-    pub const fn resume_sites(&self) -> &VerifiedResumeSites {
+    pub const fn resume_sites(&self) -> &ExecutionResumeSites {
         &self.resume_sites
-    }
-
-    pub fn function_effects(&self, function: FunctionIndex) -> Option<&VerifiedFunctionEffects> {
-        self.callable_effects.function(function)
     }
 
     pub fn types(&self) -> &[LinkedTypeEntry] {
@@ -366,12 +349,101 @@ impl fmt::Display for CodeEntryLookupError {
 
 impl std::error::Error for CodeEntryLookupError {}
 
+/// Fail-closed structural error while assembling runtime-only image views.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ExecutionImageConstructionError {
+    #[error("constant {constant:?} has a reference kind unsupported by the execution image")]
+    UnsupportedConstantReference { constant: ConstantIndex },
+    #[error("constant {constant:?} references missing frozen node {node:?}")]
+    ConstantNodeMissing {
+        constant: ConstantIndex,
+        node: FrozenConstantNodeIndex,
+    },
+    #[error("constant {constant:?} references unsupported frozen node {node:?}")]
+    UnsupportedConstantNode {
+        constant: ConstantIndex,
+        node: FrozenConstantNodeIndex,
+    },
+    #[error("constant {constant:?} number cannot be represented by the VM scalar carrier")]
+    ConstantNumberNotRepresentable { constant: ConstantIndex },
+    #[error("statement schedule for function {function:?} exceeds addressable memory")]
+    StatementScheduleOverflow { function: FunctionIndex },
+    #[error(
+        "statement row for function {function:?} references missing instruction {instruction:?}"
+    )]
+    StatementInstructionOutOfBounds {
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+    },
+    #[error(
+        "statement contract for {function:?}/{instruction:?} ({opcode:?}) requires exactly one {expected_attribution:?} event; found {matching}"
+    )]
+    StatementContractMismatch {
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        opcode: Opcode,
+        expected_attribution: StatementAttributionClass,
+        matching: usize,
+    },
+    #[error("resume site {resume_site:?} references missing function {function:?}")]
+    ResumeFunctionMissing {
+        resume_site: ResumeSiteIndex,
+        function: FunctionIndex,
+    },
+    #[error(
+        "resume site {resume_site:?} references missing instruction {function:?}/{instruction:?}"
+    )]
+    ResumeInstructionMissing {
+        resume_site: ResumeSiteIndex,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+    },
+    #[error(
+        "resume site {resume_site:?} points at non-pending opcode {opcode:?} at {function:?}/{instruction:?}"
+    )]
+    ResumeOpcodeNotPending {
+        resume_site: ResumeSiteIndex,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        opcode: Opcode,
+    },
+    #[error(
+        "resume site {resume_site:?} has {matching_targets} matching targets at {function:?}/{instruction:?}; expected one"
+    )]
+    ResumeTargetMismatch {
+        resume_site: ResumeSiteIndex,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        matching_targets: usize,
+    },
+    #[error("StreamNext resume site {resume_site:?} has an invalid mechanical descriptor shape")]
+    StreamResumeShape { resume_site: ResumeSiteIndex },
+    #[error("pending instruction ordinal overflow in function {function:?}")]
+    ResumeInstructionOverflow { function: FunctionIndex },
+    #[error(
+        "pending instruction {function:?}/{instruction:?} has {actual} resume targets; expected one"
+    )]
+    PendingInstructionResumeCardinality {
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        actual: usize,
+    },
+    #[error(
+        "pending instruction {function:?}/{instruction:?} does not match resume site {resume_site:?}"
+    )]
+    PendingInstructionResumeMismatch {
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        resume_site: ResumeSiteIndex,
+    },
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum DeploymentExecutionImageError {
     #[error(transparent)]
     Link(#[from] BytecodeLinkError),
     #[error(transparent)]
-    Verification(#[from] VerificationError),
+    Construction(#[from] ExecutionImageConstructionError),
     #[error("deployment image dependency slot is invalid: {0}")]
     Dependency(#[from] ServiceDependencySlotError),
     #[error("deployment image has duplicate dependency key {0:?}")]
@@ -380,11 +452,12 @@ pub enum DeploymentExecutionImageError {
 
 pub fn link_deployment_execution_image(
     hydrated: HydratedDeploymentBytecode,
-    limits: &DeploymentExecutionLimits,
+    limits: &LinkLimits,
 ) -> Result<DeploymentExecutionImage, DeploymentExecutionImageError> {
-    let linked = link_deployment(&hydrated, limits.link())?;
-    let facts: ExecutableFacts =
-        verify_executable_facts(&hydrated, &linked, limits.verification())?;
+    let linked = link_deployment(&hydrated, limits)?;
+    let constant_heap = build_constant_heap(&linked)?;
+    let statement_schedule = build_statement_schedule(&linked)?;
+    let resume_sites = build_resume_sites(&linked)?;
     let owner = DeploymentOwnerIdentity::new(hydrated.reference().clone());
     let service_protocol_identity = hydrated
         .deployment()
@@ -423,7 +496,6 @@ pub fn link_deployment_execution_image(
             })
         })
         .collect();
-    let (constant_heap, statement_schedule, callable_effects, resume_sites) = facts.into_parts();
     Ok(DeploymentExecutionImage {
         linked,
         owner,
@@ -434,7 +506,6 @@ pub fn link_deployment_execution_image(
         http_gateway_entries,
         constant_heap,
         statement_schedule,
-        callable_effects,
         resume_sites,
     })
 }

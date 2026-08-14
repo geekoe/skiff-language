@@ -1,10 +1,10 @@
 use skiff_artifact_model::{InstructionSourceSite, StatementAttributionId, StatementChargeKind};
-use skiff_runtime_bytecode_verifier::{VerifiedStatementEvent, VerifiedStatementSchedule};
+use skiff_runtime_linker::{ExecutionStatementEvent, ExecutionStatementSchedule};
 
 use crate::{frame::VmFrame, VmBudget, VmError, VmSemanticCharge, VmVerifiedInvariant};
 
 pub(crate) fn charge_frame_entry(
-    schedule: &VerifiedStatementSchedule,
+    schedule: &ExecutionStatementSchedule,
     frame: &mut VmFrame,
     budget: &mut dyn VmBudget,
 ) -> Result<(), VmError> {
@@ -22,7 +22,7 @@ pub(crate) fn charge_frame_entry(
 }
 
 pub(crate) fn charge_instruction_events(
-    schedule: &VerifiedStatementSchedule,
+    schedule: &ExecutionStatementSchedule,
     frame: &mut VmFrame,
     budget: &mut dyn VmBudget,
 ) -> Result<(), VmError> {
@@ -118,9 +118,9 @@ trait SourceEventRange {
     fn view_at(&self, index: usize) -> Option<SourceEventView<'_>>;
 }
 
-impl SourceEventRange for [VerifiedStatementEvent] {
+impl SourceEventRange for [ExecutionStatementEvent] {
     fn event_count(&self) -> usize {
-        <[VerifiedStatementEvent]>::len(self)
+        <[ExecutionStatementEvent]>::len(self)
     }
 
     fn view_at(&self, index: usize) -> Option<SourceEventView<'_>> {
@@ -136,8 +136,8 @@ struct SourceEventView<'a> {
     charge_kind: StatementChargeKind,
 }
 
-impl<'a> From<&'a VerifiedStatementEvent> for SourceEventView<'a> {
-    fn from(event: &'a VerifiedStatementEvent) -> Self {
+impl<'a> From<&'a ExecutionStatementEvent> for SourceEventView<'a> {
+    fn from(event: &'a ExecutionStatementEvent) -> Self {
         Self {
             sequence_ordinal: event.sequence_ordinal(),
             attribution_id: event.attribution_id(),

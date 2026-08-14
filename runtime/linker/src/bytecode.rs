@@ -1,14 +1,12 @@
 //! Deployment bytecode link boundary.
 //!
-//! [`link_deployment`] is the only bytecode-link entry point. It accepts the
-//! loader's opaque, exact consumer input and produces an unverified
-//! [`LinkedBytecodeCandidate`]. The input is borrowed deliberately: the
-//! deployment owner and independent verifier must retain the same hydrated
-//! owner, contract and validated-artifact facts and must not trust facts copied
-//! into the candidate as authority.
+//! The public [`link_deployment_execution_image`] entry point accepts the
+//! loader's opaque, exact consumer input and atomically constructs the only
+//! executable image. The raw [`link_deployment`] candidate remains private to
+//! that constructor.
 //!
-//! This module never accepts a raw bytecode artifact, never resolves a service
-//! provider executable and never creates a verified-image token.
+//! This module never accepts a raw bytecode artifact and never resolves a
+//! service provider executable.
 
 mod entry;
 mod error;
@@ -28,8 +26,9 @@ pub use error::{
 };
 pub use execution_image::{
     link_deployment_execution_image, CodeEntryLookupError, DeploymentExecutionEntry,
-    DeploymentExecutionImage, DeploymentExecutionImageError, DeploymentExecutionLimits,
-    DeploymentHostEffectTarget,
+    DeploymentExecutionImage, DeploymentExecutionImageError, DeploymentHostEffectTarget,
+    ExecutionConstantHeap, ExecutionImageConstructionError, ExecutionResumeKind,
+    ExecutionResumeSite, ExecutionResumeSites, ExecutionStatementEvent, ExecutionStatementSchedule,
 };
 pub use limits::LinkLimits;
 

@@ -22,8 +22,7 @@ use skiff_compiler::{
     CompilerPlatformSources,
 };
 use skiff_deployment::storage::CanonicalArtifactStore;
-use skiff_runtime_bytecode_verifier::VerificationLimits;
-use skiff_runtime_linker::{DeploymentExecutionLimits, LinkLimits};
+use skiff_runtime_linker::LinkLimits;
 use skiff_runtime_loader::{
     DeploymentBytecodeContentResolver, DeploymentBytecodeLoader, HydratedDeploymentBytecode,
 };
@@ -316,32 +315,8 @@ pub fn production_sized_limits() -> LinkLimits {
     }
 }
 
-pub fn production_sized_execution_limits() -> DeploymentExecutionLimits {
-    DeploymentExecutionLimits::new(production_sized_limits(), verification_limits())
-}
-
-fn verification_limits() -> VerificationLimits {
-    VerificationLimits {
-        max_functions: 64,
-        max_total_instructions: 65_536,
-        max_instructions_per_function: 16_384,
-        max_frame_slots_per_function: 4_096,
-        max_operand_depth: 4_096,
-        max_control_flow_edges_per_function: 65_536,
-        max_exception_regions_per_function: 4_096,
-        max_switch_targets_per_function: 4_096,
-        max_statement_events_per_pc: 64,
-        max_statement_events_per_function: 65_536,
-        max_total_statement_events: 262_144,
-        max_source_map_entries_per_function: 65_536,
-        max_image_table_entries: 32_768,
-        max_arity: 256,
-        max_callback_captures_per_callback: 4_096,
-        max_type_nesting_depth: 64,
-        max_value_lifecycle_nodes: 65_536,
-        max_value_lifecycle_canonical_bytes: 4 * 1024 * 1024,
-        max_constant_graph_edges: 262_144,
-    }
+pub fn production_sized_execution_limits() -> LinkLimits {
+    production_sized_limits()
 }
 
 #[derive(Debug)]

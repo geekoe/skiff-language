@@ -5,8 +5,8 @@ use skiff_artifact_model::{
     bytecode::{structurally_validate, Opcode},
     HostEffectExecutorIdentity,
 };
-use skiff_runtime_bytecode_verifier::VerifiedResumeKind;
 use skiff_runtime_linked_bytecode::LinkedInstructionTarget;
+use skiff_runtime_linker::ExecutionResumeKind;
 use skiff_runtime_model::{
     bytecode_execution_observation::{
         BytecodeRequestTerminal, RequestExecutionOwnerInventorySnapshot,
@@ -36,8 +36,8 @@ const PHASE4_NEGATIVE_FIXTURE_RELATIVE: &str =
 const NEGATIVE_SLEEP_BODY: &[u8] = b"60000";
 
 /// Phase 4 VCP on the real runtime surface. C4 owns admission of the single
-/// canonical host effect, V4 owns the typed linked entry and pending-contract
-/// verification, and K4 owns the actual-Pending VM/scheduler/request kernel.
+/// canonical host effect, the atomic linker owns the typed execution image,
+/// and K4 owns the actual-Pending VM/scheduler/request kernel.
 /// This harness drives the exact production route composition with an injected
 /// `RecordingVmHeap` and the production observation sink, and asserts: actual
 /// Pending (never pseudo-Ready), deterministic fake host completion at the
@@ -180,12 +180,13 @@ fn phase_4_stage_sentinel_admission_to_emission() {
     );
 }
 
-/// Stage sentinel emission -> link. The input is the real emitted artifact
-/// hydrated from the canonical store; the assertion is on the real linked
-/// image: exactly one typed host-effect adapter entry with the pinned opaque
-/// executor identity and linked signature (no std bypass or string dispatch).
+/// Stage sentinel emission -> atomic-link input. The input is the real emitted
+/// artifact hydrated from the canonical store; the assertion is on the real
+/// atomic image: exactly one typed host-effect adapter entry with the pinned
+/// opaque executor identity and linked signature (no std bypass or string
+/// dispatch).
 #[tokio::test(flavor = "current_thread")]
-async fn phase_4_stage_sentinel_emission_to_link() {
+async fn phase_4_stage_sentinel_emission_to_atomic_link_input() {
     let fixture = publish_or_panic(
         "phase-4-sentinel-link",
         PHASE4_VCP_FIXTURE_RELATIVE,
@@ -232,12 +233,11 @@ async fn phase_4_stage_sentinel_emission_to_link() {
     );
 }
 
-/// Stage sentinel link -> verify. The input is the real linked image; the
-/// assertion is on the real verifier certificate: exactly one
-/// `HostEffect` resume site proving the pending contract
-/// (`ActualWithResume{HostEffect}`).
+/// Stage sentinel atomic-link -> image. The assertion is on the image-owned
+/// mechanical resume view: exactly one `HostEffect` descriptor selected by
+/// the pinned opcode contract (`ActualWithResume{HostEffect}`).
 #[tokio::test(flavor = "current_thread")]
-async fn phase_4_stage_sentinel_link_to_verify() {
+async fn phase_4_stage_sentinel_atomic_link_to_image() {
     let fixture = publish_or_panic(
         "phase-4-sentinel-verify",
         PHASE4_VCP_FIXTURE_RELATIVE,
@@ -253,22 +253,22 @@ async fn phase_4_stage_sentinel_link_to_verify() {
         .resume_sites()
         .rows()
         .iter()
-        .filter(|site| matches!(site.kind(), VerifiedResumeKind::HostEffect))
+        .filter(|site| matches!(site.kind(), ExecutionResumeKind::HostEffect))
         .collect::<Vec<_>>();
     assert_eq!(
         host_effect_sites.len(),
         1,
-        "the verifier must certify exactly one HostEffect pending/resume site; \
+        "the atomic image must index exactly one HostEffect pending/resume site; \
          observed: {host_effect_sites:?}"
     );
 }
 
-/// Stage sentinel verify -> scheduler. The input is the real verified image
-/// driven through the production request seam; the assertion is the actual
+/// Stage sentinel image -> scheduler. The input is the real atomic image driven
+/// through the production request seam; the assertion is the actual
 /// Pending park (inventory shows exactly one live published owner), never a
 /// pseudo-Ready completion.
 #[tokio::test(flavor = "current_thread")]
-async fn phase_4_stage_sentinel_verify_to_scheduler() {
+async fn phase_4_stage_sentinel_image_to_scheduler() {
     let fixture = publish_or_panic(
         "phase-4-sentinel-scheduler",
         PHASE4_VCP_FIXTURE_RELATIVE,
@@ -280,7 +280,7 @@ async fn phase_4_stage_sentinel_verify_to_scheduler() {
     let parked = park_phase_4_request(&fixture, &correlation, Box::new(spy), b"1")
         .await
         .unwrap_or_else(|error| {
-            panic!("verified image must park as actual Pending once K4 joins: {error}")
+            panic!("atomic image must park as actual Pending once K4 joins: {error}")
         });
     assert!(
         parked.pending_completion().complete(),

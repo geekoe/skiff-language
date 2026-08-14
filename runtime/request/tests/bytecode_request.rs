@@ -33,11 +33,9 @@ use skiff_compiler::{
     SourceTree, SourceTreeFile,
 };
 use skiff_deployment::storage::CanonicalArtifactStore;
-use skiff_runtime_bytecode_verifier::VerificationLimits;
 use skiff_runtime_capability_context::{CancellationToken, ExecutionBudgetReason};
 use skiff_runtime_linker::{
-    link_deployment_execution_image, DeploymentExecutionEntry, DeploymentExecutionImage,
-    DeploymentExecutionLimits, LinkLimits,
+    link_deployment_execution_image, DeploymentExecutionEntry, DeploymentExecutionImage, LinkLimits,
 };
 use skiff_runtime_loader::{
     DeploymentBytecodeContentResolver, DeploymentBytecodeLoader,
@@ -646,38 +644,8 @@ fn generous_link_limits() -> LinkLimits {
     }
 }
 
-fn generous_verification_limits() -> VerificationLimits {
-    VerificationLimits {
-        max_functions: u64::MAX,
-        max_total_instructions: u64::MAX,
-        max_instructions_per_function: u64::MAX,
-        max_frame_slots_per_function: u64::MAX,
-        max_operand_depth: u64::MAX,
-        max_control_flow_edges_per_function: u64::MAX,
-        max_exception_regions_per_function: u64::MAX,
-        max_switch_targets_per_function: u64::MAX,
-        max_statement_events_per_pc: u64::MAX,
-        max_statement_events_per_function: u64::MAX,
-        max_total_statement_events: u64::MAX,
-        max_source_map_entries_per_function: u64::MAX,
-        max_image_table_entries: u64::MAX,
-        max_arity: u64::MAX,
-        max_callback_captures_per_callback: u64::MAX,
-        max_type_nesting_depth: u64::MAX,
-        max_value_lifecycle_nodes: u64::MAX,
-        max_value_lifecycle_canonical_bytes: u64::MAX,
-        max_constant_graph_edges: u64::MAX,
-    }
-}
-
 fn execution_image(hydrated: HydratedDeploymentBytecode) -> Arc<DeploymentExecutionImage> {
-    Arc::new(
-        link_deployment_execution_image(
-            hydrated,
-            &DeploymentExecutionLimits::new(generous_link_limits(), generous_verification_limits()),
-        )
-        .unwrap(),
-    )
+    Arc::new(link_deployment_execution_image(hydrated, &generous_link_limits()).unwrap())
 }
 
 fn request_envelope() -> RequestEnvelope {

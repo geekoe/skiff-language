@@ -2625,20 +2625,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "skiff-runtime-bytecode-verifier"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "serde_json",
- "skiff-artifact-identity",
- "skiff-artifact-model",
- "skiff-canonical-json",
- "skiff-runtime-linked-bytecode",
- "skiff-runtime-loader",
- "skiff-runtime-model",
-]
-
-[[package]]
 name = "skiff-runtime-capability-context"
 version = "0.1.0"
 dependencies = [
@@ -2699,7 +2685,6 @@ dependencies = [
  "skiff-deployment",
  "skiff-runtime-activation",
  "skiff-runtime-boundary",
- "skiff-runtime-bytecode-verifier",
  "skiff-runtime-capability-context",
  "skiff-runtime-config-snapshot",
  "skiff-runtime-deployment-image",
@@ -2757,10 +2742,10 @@ dependencies = [
  "skiff-canonical-json",
  "skiff-compiler",
  "skiff-deployment",
- "skiff-runtime-bytecode-verifier",
  "skiff-runtime-deployment-image",
  "skiff-runtime-linked-bytecode",
  "skiff-runtime-loader",
+ "skiff-runtime-model",
  "skiff-runtime-native-contract",
  "skiff-test-runner",
  "thiserror 2.0.18",
@@ -2825,7 +2810,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "skiff-artifact-model",
- "skiff-runtime-bytecode-verifier",
  "skiff-runtime-linker",
  "skiff-runtime-loader",
 ]
@@ -2846,7 +2830,6 @@ dependencies = [
  "skiff-compiler-source",
  "skiff-deployment",
  "skiff-runtime-boundary",
- "skiff-runtime-bytecode-verifier",
  "skiff-runtime-capability-context",
  "skiff-runtime-deployment-image",
  "skiff-runtime-linked-bytecode",
@@ -2933,7 +2916,6 @@ dependencies = [
  "skiff-compiler-core",
  "skiff-compiler-input",
  "skiff-compiler-source",
- "skiff-runtime-bytecode-verifier",
  "skiff-runtime-deployment-image",
  "skiff-runtime-linked-bytecode",
  "skiff-runtime-linker",
@@ -2983,7 +2965,6 @@ dependencies = [
  "skiff-compiler-source",
  "skiff-config-snapshot-tooling",
  "skiff-deployment",
- "skiff-runtime-bytecode-verifier",
  "skiff-runtime-config-snapshot",
  "skiff-runtime-linker",
  "skiff-runtime-loader",

@@ -60,12 +60,12 @@ fn production_image_executes_source_scalar_slot_branch_local_call_and_return_wit
 }
 
 #[test]
-fn verifier_owned_slot_transfer_fixture_executes_copy_and_move_without_heap_sidecars() {
+fn atomic_image_slot_transfer_fixture_executes_copy_and_move_without_heap_sidecars() {
     // The production compiler has no scalar CopySlot producer and emits
     // MoveSlot only for the disabled Stream lane. This fixture therefore does
     // not claim source reachability: it changes a compiler-produced scalar
     // artifact, reassigns every content/owner identity, and then must pass the
-    // same structural loader, sole image linker, verifier, opaque entry and VM
+    // same structural loader, sole atomic image linker, opaque entry and VM
     // path as production.
     let source =
         "function run(value: number) -> number { final first = value final second = first return second }\n";
@@ -101,7 +101,7 @@ fn verifier_owned_slot_transfer_fixture_executes_copy_and_move_without_heap_side
         end_pc: u32::try_from(run.words.len()).unwrap(),
         site: synthetic,
     });
-    fixture.republish_verifier_owned_artifact();
+    fixture.republish_mutated_artifact();
     assert_no_unwind_or_pending_opcode(&fixture.opcodes());
 
     let mut fiber = fixture.start(ValueSlot::number(13.0), vm_limits_with_segment(8, 64, 2));
@@ -312,7 +312,7 @@ impl ExecutionFixture {
             .unwrap_or_else(|| panic!("compiler emits {key}"))
     }
 
-    fn republish_verifier_owned_artifact(&mut self) {
+    fn republish_mutated_artifact(&mut self) {
         skiff_artifact_identity::assign_bytecode_identity(&mut self.bytecode).unwrap();
         let admitted = ValidatedBytecodeArtifact::admit(self.bytecode.clone()).unwrap();
 
@@ -379,16 +379,8 @@ impl ExecutionFixture {
         let hydrated = DeploymentBytecodeLoader::new(&resolver)
             .load(&reference)
             .unwrap();
-        let image = Arc::new(
-            link_deployment_execution_image(
-                hydrated,
-                &DeploymentExecutionLimits::new(
-                    generous_link_limits(),
-                    generous_verification_limits(),
-                ),
-            )
-            .unwrap(),
-        );
+        let image =
+            Arc::new(link_deployment_execution_image(hydrated, &generous_link_limits()).unwrap());
         (image, operation)
     }
 

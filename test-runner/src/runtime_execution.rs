@@ -21,11 +21,8 @@ use skiff_deployment::{
     projection::actor_routing::ActorRoutingProjection,
     storage::{CanonicalArtifactStore, ReleasePointer},
 };
-use skiff_runtime_bytecode_verifier::VerificationLimits;
 use skiff_runtime_config_snapshot::RuntimeConfigSnapshotStore;
-use skiff_runtime_linker::{
-    link_deployment_execution_image, DeploymentExecutionLimits, LinkLimits,
-};
+use skiff_runtime_linker::{link_deployment_execution_image, LinkLimits};
 use skiff_runtime_loader::FilesystemDeploymentBytecodeContentResolver;
 
 use crate::{
@@ -210,10 +207,7 @@ fn verify_deployment_bytecode(
                 "open runtime artifact store for deployment bytecode: {error}"
             ))
         })?;
-    let limits = DeploymentExecutionLimits::new(
-        test_runner_link_limits(),
-        test_runner_verification_limits(),
-    );
+    let limits = test_runner_link_limits();
     for deployment in deployments {
         let reference = service_deployment_ref(deployment);
         let hydrated = resolver
@@ -250,30 +244,6 @@ fn test_runner_link_limits() -> LinkLimits {
         max_expanded_type_nodes: 1_000_000,
         max_expanded_type_bytes: 64 * 1024 * 1024,
         max_constant_graph_nodes: 1_000_000,
-        max_constant_graph_edges: 1_000_000,
-    }
-}
-
-fn test_runner_verification_limits() -> VerificationLimits {
-    VerificationLimits {
-        max_functions: 100_000,
-        max_total_instructions: 100_000_000,
-        max_instructions_per_function: 1_000_000,
-        max_frame_slots_per_function: 65_536,
-        max_operand_depth: 65_536,
-        max_control_flow_edges_per_function: 1_000_000,
-        max_exception_regions_per_function: 1_000_000,
-        max_switch_targets_per_function: 65_536,
-        max_statement_events_per_pc: 100_000,
-        max_statement_events_per_function: 1_000_000,
-        max_total_statement_events: 10_000_000,
-        max_source_map_entries_per_function: 1_000_000,
-        max_image_table_entries: 1_000_000,
-        max_arity: 256,
-        max_callback_captures_per_callback: 4_096,
-        max_type_nesting_depth: 64,
-        max_value_lifecycle_nodes: 1_000_000,
-        max_value_lifecycle_canonical_bytes: 64 * 1024 * 1024,
         max_constant_graph_edges: 1_000_000,
     }
 }
