@@ -230,15 +230,18 @@ fn plan_matches_lifecycle(
             NativeValueLifecycleConcrete::MoveOnly {
                 drop: expected_drop,
             },
-        ) => match (drop, expected_drop) {
+        ) => matches!(
+            (drop, expected_drop),
             (ValueDropPlan::Trivial, NativeValueDropPlan::Trivial)
-            | (ValueDropPlan::SnapshotRelease, NativeValueDropPlan::SnapshotRelease) => true,
-            (
-                ValueDropPlan::RecursiveShape { .. },
-                NativeValueDropPlan::PrivilegedRecursiveShape,
-            ) => true,
-            _ => false,
-        },
+                | (
+                    ValueDropPlan::SnapshotRelease,
+                    NativeValueDropPlan::SnapshotRelease
+                )
+                | (
+                    ValueDropPlan::RecursiveShape { .. },
+                    NativeValueDropPlan::PrivilegedRecursiveShape
+                )
+        ),
         (
             ValueTransferPlan::AffineResource { drop },
             NativeValueLifecycleConcrete::AffineResource {
