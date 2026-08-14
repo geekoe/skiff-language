@@ -139,9 +139,58 @@ deployment `buildId` 和 `ActorActivationSnapshot`（key / create 输入 / expec
 - task lease 不替代 actor owner lease；task 执行仍遵守同一个逐 identity build admission。task 冻结的
   build 与 live incarnation 不同时，不能把旧 payload 交给另一 build 的代码；该 attempt 以
   `ActorVersionRejectedError` 收敛。Actor 已销毁时，后续独立请求仍可用任意可加载 build 重新创建。
-- 这是业务表达“继续推进 / 给自己发消息”的通用原语：例如消息处理完成后
-  `dispatch actor.tick(...)`，tick 作为普通方法在之后执行，不嵌套在投递方法调用栈内。
+- 这是业务表达“继续推进 / 给自己发消息”的通用原语：例如用户消息持久化后
+  `dispatch actor.runModelTurn(...)`，该普通业务方法在之后独立执行，不嵌套在接收消息的调用栈内。
 - 平台不提供独立的 `wake` 保留原语；需要唤醒时直接用 `dispatch` 目标方法。
+
+### 事件驱动推进：不以 `while true` 表达 Actor 生命周期
+
+Actor 的 logical identity 可以长期存在，但不需要一个与 identity 等长的成员方法或
+`while true` 循环。长时业务的权威状态已经位于数据面；每一个使它重新可运行的持久化事件，
+直接 `dispatch` 下一个有业务含义的 Actor 方法即可。
+
+Agent thread 是典型形态：
+
+```text
+receiveUserMessage
+  -> 持久化 message / run
+  -> dispatch thread.runModelTurn(runId)
+  -> 返回接收回执
+
+thread.runModelTurn
+  -> 从数据库重新校验 run 仍然可运行
+  -> 在活跃 LLM stream 期间保持该方法
+  -> 持久化 assistant output / tool intents
+  -> dispatch tool work
+  -> 返回，不在调用栈里等待持久化工具结果
+
+receiveToolResult
+  -> 持久化 tool result
+  -> 当 thread 从 blocked 变为 runnable 时 dispatch thread.runModelTurn(runId)
+  -> 返回结算回执
+```
+
+此模式下，数据库中的 thread / run / message / tool-call 状态就是业务 continuation。新调用
+总是从方法入口开始，读取当前持久化事实再决定下一个 effect；平台不保存上次方法的
+program counter、locals 或 stack，也不需要把它们恢复到某条循环语句。`create` 仍只负责新
+incarnation 的初始化；Actor 激活不会隐式执行业务 driver。
+
+`while true` 仍是方法内普通控制流，但它不获得 Actor 生命周期或持久挂起语义。用它表达长时
+实体会使该方法始终属于 active 或 suspended continuation，阻止实例到达自然 idle 逐出条件；
+若要跨逐出恢复它，反而必须引入隐藏持久化调用栈与代码版本绑定。事件驱动方法没有这两个问题：
+
+- LLM / WebSocket / HTTP stream 正在产生数据时，socket、parser、stream reducer 和调用栈本来就无法从纯
+  数据库状态重建，所以对应方法保持活跃是真实的资源需求；
+- 等待工具结果、用户输入、定时到期或其它已持久化条件时，当前方法应当返回。尚未执行的
+  durable task 是 TaskStore 事实，不需要 Actor 实例或 suspended frame 常驻内存；
+- 结果、超时、取消或新输入到达后，接收方持久化事实并再次 `dispatch` 业务方法。多次唤醒可以安全
+  收敛为无工作返回，每个方法在发起外部 effect 前都必须重新校验数据面状态。
+
+service DB 写入与随后 source-level `dispatch` 是两个独立 capability，不自动原子提交。若请求在写入
+成功后、执行 `dispatch` 前终止，这次唤醒可能丢失。对互动式工作，这可以是有意接受的业务取舍：幂等的
+用户重试或后续事件再次读取数据面并补发推进调用。这不是平台自动恢复保证；对没有后续互动也必须
+自主前进的业务，仍须在数据面使用显式 outbox / reconciliation。`dispatch` 一旦被 TaskStore 确认接受，
+其后的 durable delivery 契约不受该取舍影响。
 
 ### 消费视图与验收矩阵
 
