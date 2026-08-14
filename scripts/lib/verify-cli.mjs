@@ -126,6 +126,7 @@ quality and focused selectors:
   bytecode-vm-phase-0-gate     Phase 0 exact-candidate closure gate
   bytecode-vm-phase-1-gate     Phase 1 trusted synchronous core gate
   bytecode-vm-phase-2-gate     Phase 2 value-lifecycle gate (Phase 1 full regression)
+  bytecode-vm-phase-5-gate     Phase 5 r1 typed host/resource/stream full-chain gate
   type-check                   scripts and VS Code static checks
   checks                       repository architecture and policy checks
   scripts  vscode              focused tooling tests
@@ -172,6 +173,14 @@ The bytecode-vm-phase-2-gate selector uses an independent evidence epoch and req
   SKIFF_BYTECODE_VM_PHASE2_EVIDENCE_DIR       caller-chosen canonical absolute absent path
 It checks the Phase 2 VCP/missing-plan/K2/C2 scenario matrix plus the Phase 1 full
 regression selector, and never selects its own candidate or evidence directory.`);
+
+  console.log(`
+The bytecode-vm-phase-5-gate selector is the independent recovery epoch r1 and requires:
+  SKIFF_BYTECODE_VM_PHASE5_CANDIDATE_COMMIT   literal 40-hex commit from the freeze receipt
+  SKIFF_BYTECODE_VM_PHASE5_CANDIDATE_TREE     literal 40-hex tree from the freeze receipt
+  SKIFF_BYTECODE_VM_PHASE5_EVIDENCE_DIR       caller-chosen canonical absolute absent path
+It executes G1-G10 plus the complete accepted Phase 1-4 regression under the exclusive
+/tmp/skiff-bcvm-p5-r1-cargo.lockdir lease and records every command without fail-fast.`);
 }
 
 function splitSelectors(value) {
