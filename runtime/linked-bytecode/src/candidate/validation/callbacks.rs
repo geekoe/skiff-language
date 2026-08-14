@@ -8,7 +8,7 @@ use crate::{
 };
 
 use super::{
-    check_index, plans::validate_callable_signature, plans::validate_plan, validate_origin,
+    check_index, plans::validate_callable_signature, plans::validate_type_plan, validate_origin,
 };
 
 pub(super) fn validate_synthetic_callback(
@@ -88,13 +88,7 @@ pub(super) fn validate_capture_layout(
             capture.slot().get(),
             function.frame().slot_types().len(),
         )?;
-        check_index(
-            location,
-            CandidateReferenceKind::Type,
-            capture.ty().get(),
-            parts.types.len(),
-        )?;
-        validate_plan(capture.plan(), location, parts)?;
+        validate_type_plan(capture.ty(), capture.plan(), location, parts)?;
         let slot = capture.slot().get() as usize;
         if function.frame().slot_types().get(slot) != Some(&capture.ty()) {
             return Err(LinkedBytecodeCandidateError::CallbackCaptureTypeMismatch {

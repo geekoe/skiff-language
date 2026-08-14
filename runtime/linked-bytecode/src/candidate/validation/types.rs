@@ -3,12 +3,14 @@ use std::collections::BTreeSet;
 use skiff_artifact_model::PackageBuildId;
 
 use crate::{
-    CandidateLocation, CandidateReferenceKind, CandidateTable, LinkedBytecodeCandidateError,
-    LinkedBytecodeCandidateParts, LinkedContainerLayout, LinkedContainerPositionKind,
-    LinkedTypeEntry,
+    CandidateLocation, CandidateTable, LinkedBytecodeCandidateError, LinkedBytecodeCandidateParts,
+    LinkedContainerLayout, LinkedContainerPositionKind, LinkedTypeEntry,
 };
 
-use super::{check_index, plans::validate_plan, validate_origin};
+use super::{
+    plans::{validate_plan, validate_type_plan},
+    validate_origin,
+};
 
 pub(super) fn validate_type(
     row: &LinkedTypeEntry,
@@ -22,23 +24,8 @@ pub(super) fn validate_type(
     validate_origin(row.origin(), location, parts, package_ids)?;
     validate_plan(row.plan(), location, parts)?;
     if let Some(layout) = row.container_layout() {
-        for (kind, position) in layout.position_entries() {
-            check_index(
-                location,
-                CandidateReferenceKind::Type,
-                position.ty().get(),
-                parts.types.len(),
-            )?;
-            validate_plan(position.plan(), location, parts)?;
-            let target = &parts.types[position.ty().get() as usize];
-            if position.plan() != target.plan() {
-                return Err(
-                    LinkedBytecodeCandidateError::ContainerPositionPlanMismatch {
-                        type_index: row.index(),
-                        position: kind,
-                    },
-                );
-            }
+        for position in layout.positions() {
+            validate_type_plan(position.ty(), position.plan(), location, parts)?;
         }
         validate_container_closure(row, layout)?;
     }

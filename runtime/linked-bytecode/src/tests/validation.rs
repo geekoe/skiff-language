@@ -20,20 +20,22 @@ use crate::{
     LinkedConstantRoot, LinkedConstantSymbolPath, LinkedContainerLayout, LinkedContainerPosition,
     LinkedContainerPositionKind, LinkedExceptionRegion, LinkedFrameLayout, LinkedFrameLayoutError,
     LinkedFrozenConstantNode, LinkedFrozenConstantValue, LinkedFunctionTables, LinkedInstruction,
-    LinkedInstructionError, LinkedInstructionTarget, LinkedOperationEntry,
-    LinkedPackageBytecodeProvenance, LinkedPackageBytecodeProvenanceError, LinkedParameterSlot,
-    LinkedProgramPointState, LinkedResolvedOperand, LinkedResumeSite, LinkedShapeEntry,
-    LinkedShapeField, LinkedSlotState, LinkedSourceMapEntry, LinkedStackMapCandidate,
-    LinkedStackValue, LinkedStatementEntry, LinkedSwitchCase, LinkedSwitchTable, LinkedTypeEntry,
-    LinkedValueDropPlan, LinkedValueTransferPlan, LinkedWritablePathEntry,
+    LinkedInstructionError, LinkedInstructionTarget, LinkedIntrinsicCanonicalKey,
+    LinkedIntrinsicKind, LinkedIntrinsicTarget, LinkedNativeCallableSignature,
+    LinkedOperationEntry, LinkedPackageBytecodeProvenance, LinkedPackageBytecodeProvenanceError,
+    LinkedParameterSlot, LinkedProgramPointState, LinkedResolvedOperand,
+    LinkedResumeResultMaterialization, LinkedResumeSite, LinkedShapeEntry, LinkedShapeField,
+    LinkedSlotState, LinkedSourceMapEntry, LinkedStackMapCandidate, LinkedStackValue,
+    LinkedStatementEntry, LinkedStaticIntrinsicTarget, LinkedSwitchCase, LinkedSwitchTable,
+    LinkedTypeEntry, LinkedValueDropPlan, LinkedValueTransferPlan, LinkedWritablePathEntry,
     LinkedWritablePathSegment, ResumeSiteIndex, ServiceOperationIndex, ShapeIndex,
     SwitchTableIndex, SyntheticCallbackIndex, TypeIndex, WritablePathIndex,
 };
 
 use super::fixtures::{
-    authority_pins, authority_pins_with_platform_error_registry, build_id, function,
-    function_with_key, historical_platform_error_projection_registry_ref, minimal_parts, package,
-    package_with_authority_pins, signature, snapshot_plan, snapshot_release_plan,
+    analyzed_effects, authority_pins, authority_pins_with_platform_error_registry, build_id,
+    function, function_with_key, historical_platform_error_projection_registry_ref, minimal_parts,
+    package, package_with_authority_pins, signature, snapshot_plan, snapshot_release_plan,
     specialization_for, type_origin,
 };
 
@@ -611,13 +613,539 @@ fn candidate_rejects_invalid_json_recursive_position() {
     ));
     assert!(matches!(
         LinkedBytecodeCandidate::try_from_parts(wrong_plan),
-        Err(
-            LinkedBytecodeCandidateError::ContainerPositionPlanMismatch {
-                position: LinkedContainerPositionKind::JsonRecursiveValue,
-                ..
-            }
-        )
+        Err(LinkedBytecodeCandidateError::TypePlanMismatch {
+            location: CandidateLocation::TableRow {
+                table: CandidateTable::Types,
+                row: 1,
+            },
+            type_index,
+        }) if type_index == TypeIndex::new(1)
     ));
+}
+
+#[derive(Debug, Clone, Copy)]
+enum DamagedPlanCarrier {
+    FrameSlot,
+    FrameResult,
+    CallableSignature,
+    NativeSignature,
+    OperandStack,
+    LiveSlot,
+    ResumeResult,
+    ShapeRoot,
+    ShapeField,
+    Constant,
+    CallbackCapture,
+    ContainerPosition,
+}
+
+fn function_with_program_point_claims(
+    stack_before: Box<[LinkedStackValue]>,
+    slots_before: Box<[LinkedSlotState]>,
+) -> crate::LinkedFunction {
+    let base = function(0, "damaged-plan");
+    let stack_map = LinkedStackMapCandidate::try_new(
+        Box::new([LinkedProgramPointState::new(
+            InstructionIndex::new(0),
+            stack_before,
+            slots_before,
+            Box::new([]),
+            Box::new([]),
+        )]),
+        1,
+        1,
+        1,
+    )
+    .expect("fixture program-point claim has one instruction and frame slot");
+    crate::LinkedFunction::new(
+        base.index(),
+        base.key().clone(),
+        base.instructions().to_vec().into_boxed_slice(),
+        base.frame().clone(),
+        base.max_operand_depth(),
+        base.effect().clone(),
+        base.tables().clone(),
+        stack_map,
+    )
+}
+
+fn mismatched_frame(
+    slot_plan: LinkedValueTransferPlan,
+    result_plan: Option<LinkedValueTransferPlan>,
+) -> LinkedFrameLayout {
+    let result_types: Box<[TypeIndex]> = result_plan
+        .as_ref()
+        .map_or_else(Vec::new, |_| vec![TypeIndex::new(0)])
+        .into_boxed_slice();
+    let result_plans: Box<[LinkedValueTransferPlan]> = result_plan
+        .into_iter()
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    LinkedFrameLayout::new(
+        Box::new([TypeIndex::new(0)]),
+        Box::new([LinkedParameterSlot::new(
+            FrameSlotIndex::new(0),
+            ParamModeIr::Value,
+            slot_plan.clone(),
+            None,
+        )]),
+        Box::new([]),
+        result_types,
+        Box::new([slot_plan]),
+        result_plans,
+        None,
+    )
+    .expect("damaged fixture remains locally shape-valid")
+}
+
+fn damaged_plan_candidate_parts(
+    carrier: DamagedPlanCarrier,
+) -> (LinkedBytecodeCandidateParts, CandidateLocation) {
+    let wrong_plan = snapshot_release_plan();
+    match carrier {
+        DamagedPlanCarrier::FrameSlot => {
+            let function = function_with_frame(mismatched_frame(wrong_plan, None));
+            (
+                minimal_parts(vec![function]),
+                CandidateLocation::Function {
+                    function: FunctionIndex::new(0),
+                },
+            )
+        }
+        DamagedPlanCarrier::FrameResult => {
+            let function = function_with_frame(mismatched_frame(snapshot_plan(), Some(wrong_plan)));
+            (
+                minimal_parts(vec![function]),
+                CandidateLocation::Function {
+                    function: FunctionIndex::new(0),
+                },
+            )
+        }
+        DamagedPlanCarrier::CallableSignature => {
+            let mut parts = minimal_parts(vec![function(0, "callable-plan")]);
+            let signature = LinkedCallableSignature::new(
+                Box::new([TypeIndex::new(0)]),
+                Box::new([ParamModeIr::Value]),
+                Box::new([wrong_plan]),
+                Box::new([]),
+                Box::new([]),
+                CallableEffectSummary::analysis_pending(),
+            )
+            .expect("damaged callable signature remains locally shape-valid");
+            parts.operation_entries.push(LinkedOperationEntry::new(
+                ContractOperationId::new("operation:damaged-plan"),
+                FunctionIndex::new(0),
+                signature,
+            ));
+            (
+                parts,
+                CandidateLocation::TableRow {
+                    table: CandidateTable::OperationEntries,
+                    row: 0,
+                },
+            )
+        }
+        DamagedPlanCarrier::NativeSignature => {
+            let mut parts = minimal_parts(Vec::new());
+            let signature = LinkedNativeCallableSignature::new(
+                Box::new([TypeIndex::new(0)]),
+                Box::new([ParamModeIr::Value]),
+                Box::new([wrong_plan]),
+                Box::new([]),
+                Box::new([]),
+                analyzed_effects(),
+            )
+            .expect("damaged native signature remains locally shape-valid");
+            let kind = LinkedIntrinsicKind::Static(
+                LinkedStaticIntrinsicTarget::new(
+                    LinkedIntrinsicCanonicalKey::parse("fixture.damaged-plan")
+                        .expect("fixture intrinsic key is lexical"),
+                    1,
+                )
+                .expect("fixture intrinsic version is non-zero"),
+            );
+            parts.intrinsics.push(LinkedIntrinsicTarget::new(
+                IntrinsicIndex::new(0),
+                kind,
+                signature,
+            ));
+            (
+                parts,
+                CandidateLocation::TableRow {
+                    table: CandidateTable::Intrinsics,
+                    row: 0,
+                },
+            )
+        }
+        DamagedPlanCarrier::OperandStack => {
+            let function = function_with_program_point_claims(
+                Box::new([LinkedStackValue::new(TypeIndex::new(0), wrong_plan)]),
+                Box::new([LinkedSlotState::Live(LinkedStackValue::new(
+                    TypeIndex::new(0),
+                    snapshot_plan(),
+                ))]),
+            );
+            (
+                minimal_parts(vec![function]),
+                CandidateLocation::Instruction {
+                    function: FunctionIndex::new(0),
+                    instruction: InstructionIndex::new(0),
+                },
+            )
+        }
+        DamagedPlanCarrier::LiveSlot => {
+            let function = function_with_program_point_claims(
+                Box::new([]),
+                Box::new([LinkedSlotState::Live(LinkedStackValue::new(
+                    TypeIndex::new(0),
+                    wrong_plan,
+                ))]),
+            );
+            (
+                minimal_parts(vec![function]),
+                CandidateLocation::Instruction {
+                    function: FunctionIndex::new(0),
+                    instruction: InstructionIndex::new(0),
+                },
+            )
+        }
+        DamagedPlanCarrier::ResumeResult => {
+            let mut parts = minimal_parts(vec![function(0, "resume-plan")]);
+            parts.resume_sites.push(
+                LinkedResumeSite::new(
+                    ResumeSiteIndex::new(0),
+                    FunctionIndex::new(0),
+                    InstructionIndex::new(0),
+                    InstructionIndex::new(0),
+                    None,
+                    0,
+                    Box::new([TypeIndex::new(0)]),
+                    Box::new([wrong_plan]),
+                    Box::new([None]),
+                    None,
+                    ResumeErrorMode::RaiseAtSite,
+                )
+                .expect("damaged resume remains locally shape-valid"),
+            );
+            (
+                parts,
+                CandidateLocation::TableRow {
+                    table: CandidateTable::ResumeSites,
+                    row: 0,
+                },
+            )
+        }
+        DamagedPlanCarrier::ShapeRoot | DamagedPlanCarrier::ShapeField => {
+            let mut parts = minimal_parts(Vec::new());
+            let (root_plan, fields): (_, Box<[LinkedShapeField]>) = match carrier {
+                DamagedPlanCarrier::ShapeRoot => (wrong_plan, Vec::new().into_boxed_slice()),
+                DamagedPlanCarrier::ShapeField => (
+                    snapshot_plan(),
+                    vec![
+                        LinkedShapeField::new("value", TypeIndex::new(0), wrong_plan)
+                            .expect("fixture shape field is lexical"),
+                    ]
+                    .into_boxed_slice(),
+                ),
+                _ => unreachable!("carrier arm is narrowed above"),
+            };
+            parts.shapes.push(
+                LinkedShapeEntry::new(
+                    ShapeIndex::new(0),
+                    LinkedArtifactPoolOrigin::new(build_id(), ArtifactShapeIndex::new(0), None)
+                        .expect("fixture shape origin is package-global"),
+                    TypeIndex::new(0),
+                    root_plan,
+                    None,
+                    fields,
+                )
+                .expect("damaged shape remains locally shape-valid"),
+            );
+            (
+                parts,
+                CandidateLocation::TableRow {
+                    table: CandidateTable::Shapes,
+                    row: 0,
+                },
+            )
+        }
+        DamagedPlanCarrier::Constant => {
+            let mut parts = minimal_parts(Vec::new());
+            parts
+                .frozen_constant_nodes
+                .push(LinkedFrozenConstantNode::new(
+                    FrozenConstantNodeIndex::new(0),
+                    LinkedArtifactPoolOrigin::new(
+                        build_id(),
+                        ArtifactConstantNodeIndex::new(0),
+                        None,
+                    )
+                    .expect("fixture frozen-node origin is package-global"),
+                    LinkedFrozenConstantValue::Literal(LiteralIr::Null),
+                ));
+            parts.constants.push(LinkedConstantEntry::new(
+                ConstantIndex::new(0),
+                LinkedArtifactPoolOrigin::new(build_id(), ArtifactConstantIndex::new(0), None)
+                    .expect("fixture constant origin is package-global"),
+                LinkedConstantReference::LocalNode {
+                    node: FrozenConstantNodeIndex::new(0),
+                },
+                TypeIndex::new(0),
+                wrong_plan,
+            ));
+            (
+                parts,
+                CandidateLocation::TableRow {
+                    table: CandidateTable::Constants,
+                    row: 0,
+                },
+            )
+        }
+        DamagedPlanCarrier::CallbackCapture => {
+            let mut parts = minimal_parts(vec![function(0, "callback-plan")]);
+            parts.callback_capture_layouts.push(
+                LinkedCallbackCaptureLayout::try_new(
+                    CallbackCaptureLayoutIndex::new(0),
+                    LinkedArtifactPoolOrigin::new(
+                        build_id(),
+                        ArtifactCallbackCaptureIndex::new(0),
+                        Some(parts.functions[0].key().clone()),
+                    )
+                    .expect("fixture capture origin has exact specialization"),
+                    parts.functions[0].key().artifact_function_key().clone(),
+                    FunctionIndex::new(0),
+                    Box::new([LinkedCallbackCapture::new(
+                        FrameSlotIndex::new(0),
+                        TypeIndex::new(0),
+                        wrong_plan,
+                    )]),
+                )
+                .expect("fixture capture slots are unique"),
+            );
+            (
+                parts,
+                CandidateLocation::TableRow {
+                    table: CandidateTable::CallbackCaptureLayouts,
+                    row: 0,
+                },
+            )
+        }
+        DamagedPlanCarrier::ContainerPosition => {
+            let mut parts = minimal_parts(Vec::new());
+            parts.types.push(LinkedTypeEntry::new(
+                TypeIndex::new(1),
+                type_origin(1, None),
+                TypeRefIr::builtin("OpaqueContainer"),
+                snapshot_plan(),
+                Some(LinkedContainerLayout::array(LinkedContainerPosition::new(
+                    TypeIndex::new(0),
+                    wrong_plan,
+                ))),
+            ));
+            (
+                parts,
+                CandidateLocation::TableRow {
+                    table: CandidateTable::Types,
+                    row: 1,
+                },
+            )
+        }
+    }
+}
+
+#[test]
+fn candidate_rejects_every_damaged_type_plan_carrier() {
+    let cases = [
+        DamagedPlanCarrier::FrameSlot,
+        DamagedPlanCarrier::FrameResult,
+        DamagedPlanCarrier::CallableSignature,
+        DamagedPlanCarrier::NativeSignature,
+        DamagedPlanCarrier::OperandStack,
+        DamagedPlanCarrier::LiveSlot,
+        DamagedPlanCarrier::ResumeResult,
+        DamagedPlanCarrier::ShapeRoot,
+        DamagedPlanCarrier::ShapeField,
+        DamagedPlanCarrier::Constant,
+        DamagedPlanCarrier::CallbackCapture,
+        DamagedPlanCarrier::ContainerPosition,
+    ];
+
+    for carrier in cases {
+        let (parts, location) = damaged_plan_candidate_parts(carrier);
+        assert_eq!(
+            LinkedBytecodeCandidate::try_from_parts(parts)
+                .expect_err("a carried plan must equal its direct TypeRef row plan"),
+            LinkedBytecodeCandidateError::TypePlanMismatch {
+                location,
+                type_index: TypeIndex::new(0),
+            },
+            "carrier {carrier:?} did not fail at its direct type-plan correlation",
+        );
+    }
+}
+
+#[test]
+fn candidate_rejects_live_slot_that_differs_from_its_exact_frame_pair() {
+    let function = function_with_program_point_claims(
+        Box::new([]),
+        Box::new([LinkedSlotState::Live(LinkedStackValue::new(
+            TypeIndex::new(1),
+            snapshot_plan(),
+        ))]),
+    );
+    let mut parts = minimal_parts(vec![function]);
+    parts.types.push(LinkedTypeEntry::new(
+        TypeIndex::new(1),
+        type_origin(1, None),
+        TypeRefIr::builtin("string"),
+        snapshot_plan(),
+        None,
+    ));
+
+    assert_eq!(
+        LinkedBytecodeCandidate::try_from_parts(parts)
+            .expect_err("a live slot must retain its exact declared frame pair"),
+        LinkedBytecodeCandidateError::ProgramPointSlotValueMismatch {
+            function: FunctionIndex::new(0),
+            instruction: InstructionIndex::new(0),
+            slot: FrameSlotIndex::new(0),
+            expected_type: TypeIndex::new(0),
+            actual_type: TypeIndex::new(1),
+        }
+    );
+}
+
+fn duplicate_abi_type(parts: &mut LinkedBytecodeCandidateParts) {
+    parts.types.push(LinkedTypeEntry::new(
+        TypeIndex::new(1),
+        type_origin(1, None),
+        TypeRefIr::builtin("string"),
+        snapshot_plan(),
+        None,
+    ));
+}
+
+fn exact_shape_with_nominal_type(nominal_type: TypeIndex) -> LinkedShapeEntry {
+    LinkedShapeEntry::new(
+        ShapeIndex::new(0),
+        LinkedArtifactPoolOrigin::new(build_id(), ArtifactShapeIndex::new(0), None)
+            .expect("fixture shape origin is package-global"),
+        nominal_type,
+        snapshot_plan(),
+        None,
+        Box::new([]),
+    )
+    .expect("fixture shape is locally canonical")
+}
+
+#[test]
+fn dense_materialization_accepts_distinct_type_rows_with_the_same_normalized_abi() {
+    let mut parts = minimal_parts(vec![function(0, "dense-duplicate-abi")]);
+    duplicate_abi_type(&mut parts);
+    parts
+        .shapes
+        .push(exact_shape_with_nominal_type(TypeIndex::new(0)));
+    parts.resume_sites.push(
+        LinkedResumeSite::new(
+            ResumeSiteIndex::new(0),
+            FunctionIndex::new(0),
+            InstructionIndex::new(0),
+            InstructionIndex::new(0),
+            None,
+            0,
+            Box::new([TypeIndex::new(1)]),
+            Box::new([snapshot_plan()]),
+            Box::new([Some(LinkedResumeResultMaterialization::DenseRecord {
+                shape: ShapeIndex::new(0),
+            })]),
+            None,
+            ResumeErrorMode::RaiseAtSite,
+        )
+        .expect("fixture resume result arrays align"),
+    );
+
+    LinkedBytecodeCandidate::try_from_parts(parts)
+        .expect("dense materialization compares normalized ABI, not TypeIndex identity");
+}
+
+fn emit_stream_instruction() -> LinkedInstruction {
+    let contract = OPCODE_CONTRACTS
+        .iter()
+        .find(|contract| contract.kind == Opcode::EmitStream)
+        .expect("EmitStream has a canonical opcode contract");
+    let resolved = contract
+        .operands
+        .iter()
+        .enumerate()
+        .filter_map(|(ordinal, specification)| {
+            target_for_operand_kind(specification.linked_kind)
+                .map(|target| LinkedResolvedOperand::new(ordinal as u32, target))
+        })
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    LinkedInstruction::new(
+        Opcode::EmitStream,
+        vec![0; contract.operands.len()].into_boxed_slice(),
+        resolved,
+        0,
+    )
+    .expect("fixture EmitStream follows the canonical operand contract")
+}
+
+#[test]
+fn emit_stream_accepts_distinct_type_rows_with_the_same_normalized_abi() {
+    let base = function(0, "emit-duplicate-abi");
+    let instruction = emit_stream_instruction();
+    let stack_map = LinkedStackMapCandidate::try_new(
+        Box::new([LinkedProgramPointState::new(
+            InstructionIndex::new(0),
+            Box::new([LinkedStackValue::new(TypeIndex::new(1), snapshot_plan())]),
+            Box::new([LinkedSlotState::Live(LinkedStackValue::new(
+                TypeIndex::new(0),
+                snapshot_plan(),
+            ))]),
+            Box::new([]),
+            Box::new([]),
+        )]),
+        1,
+        1,
+        1,
+    )
+    .expect("fixture EmitStream stack map is locally shaped");
+    let function = crate::LinkedFunction::new(
+        base.index(),
+        base.key().clone(),
+        Box::new([instruction]),
+        base.frame().clone(),
+        base.max_operand_depth(),
+        base.effect().clone(),
+        base.tables().clone(),
+        stack_map,
+    );
+    let mut parts = minimal_parts(vec![function]);
+    duplicate_abi_type(&mut parts);
+    parts
+        .shapes
+        .push(exact_shape_with_nominal_type(TypeIndex::new(0)));
+    parts.resume_sites.push(
+        LinkedResumeSite::new(
+            ResumeSiteIndex::new(0),
+            FunctionIndex::new(0),
+            InstructionIndex::new(0),
+            InstructionIndex::new(0),
+            None,
+            0,
+            Box::new([]),
+            Box::new([]),
+            Box::new([]),
+            Some(ShapeIndex::new(0)),
+            ResumeErrorMode::RaiseAtSite,
+        )
+        .expect("fixture EmitStream resume arrays align"),
+    );
+
+    LinkedBytecodeCandidate::try_from_parts(parts)
+        .expect("EmitStream shape correlation compares normalized ABI, not TypeIndex identity");
 }
 
 fn target_for_operand_kind(kind: LinkedOperandKind) -> Option<LinkedInstructionTarget> {

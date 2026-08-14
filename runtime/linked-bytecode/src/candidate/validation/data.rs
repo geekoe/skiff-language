@@ -9,7 +9,7 @@ use crate::{
 };
 
 use super::{
-    check_index, check_package, plans::validate_plan, table_location, types, validate_origin,
+    check_index, check_package, plans::validate_type_plan, table_location, types, validate_origin,
 };
 
 pub(super) fn validate_data_references(
@@ -55,21 +55,9 @@ fn validate_shape(
         row: shape.index().get(),
     };
     validate_origin(shape.origin(), location, parts, package_ids)?;
-    check_index(
-        location,
-        CandidateReferenceKind::Type,
-        shape.nominal_type().get(),
-        parts.types.len(),
-    )?;
-    validate_plan(shape.plan(), location, parts)?;
+    validate_type_plan(shape.nominal_type(), shape.plan(), location, parts)?;
     for field in shape.fields() {
-        check_index(
-            location,
-            CandidateReferenceKind::Type,
-            field.ty().get(),
-            parts.types.len(),
-        )?;
-        validate_plan(field.plan(), location, parts)?;
+        validate_type_plan(field.ty(), field.plan(), location, parts)?;
     }
     Ok(())
 }
@@ -84,13 +72,7 @@ fn validate_constant(
         row: constant.index().get(),
     };
     validate_origin(constant.origin(), location, parts, package_ids)?;
-    check_index(
-        location,
-        CandidateReferenceKind::Type,
-        constant.ty().get(),
-        parts.types.len(),
-    )?;
-    validate_plan(constant.plan(), location, parts)?;
+    validate_type_plan(constant.ty(), constant.plan(), location, parts)?;
     let node_index = constant.reference().node();
     check_index(
         location,
@@ -331,16 +313,8 @@ fn validate_resume_site(
         }
         (_, None) => {}
     }
-    for ty in resume.result_types() {
-        check_index(
-            location,
-            CandidateReferenceKind::Type,
-            ty.get(),
-            parts.types.len(),
-        )?;
-    }
-    for plan in resume.result_plans() {
-        validate_plan(plan, location, parts)?;
+    for (ty, plan) in resume.result_types().iter().zip(resume.result_plans()) {
+        validate_type_plan(*ty, plan, location, parts)?;
     }
     match (site_instruction.opcode(), resume.emit_stream_item_shape()) {
         (Opcode::EmitStream, Some(shape_index)) => {
@@ -378,13 +352,10 @@ fn validate_resume_site(
                     detail: "shape nominal TypeRef/ABI differs from the site stack-top item",
                 });
             }
-            if stack_item.plan() != stack_type.plan()
-                || shape.plan() != nominal_type.plan()
-                || stack_item.plan() != shape.plan()
-            {
+            if stack_item.plan() != shape.plan() {
                 return Err(LinkedBytecodeCandidateError::EmitStreamItemShapeMismatch {
                     resume_site: resume.index().get(),
-                    detail: "stack item and shape plans differ from their exact TypeRef row plans",
+                    detail: "shape plan differs from the site stack-top item plan",
                 });
             }
         }
@@ -424,15 +395,12 @@ fn validate_resume_site(
                 },
             );
         }
-        if &resume.result_plans()[result_index] != result_type.plan()
-            || shape.plan() != nominal_type.plan()
-            || &resume.result_plans()[result_index] != shape.plan()
-        {
+        if &resume.result_plans()[result_index] != shape.plan() {
             return Err(
                 LinkedBytecodeCandidateError::ResumeResultMaterializationMismatch {
                     resume_site: resume.index().get(),
                     result_index,
-                    detail: "result and shape plans differ from their exact TypeRef row plans",
+                    detail: "shape plan differs from the exact resume result plan",
                 },
             );
         }

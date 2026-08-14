@@ -3,7 +3,7 @@ use skiff_artifact_model::{NativeValueAdapterRole, NativeValueLifecycleAdapter};
 use crate::{
     CandidateLocation, CandidateReferenceKind, LinkedBytecodeCandidateError,
     LinkedBytecodeCandidateParts, LinkedCallableSignature, LinkedNativeCallableSignature,
-    LinkedResourceDropPlan, LinkedValueDropPlan, LinkedValueTransferPlan,
+    LinkedResourceDropPlan, LinkedValueDropPlan, LinkedValueTransferPlan, TypeIndex,
 };
 
 use super::check_index;
@@ -46,16 +46,34 @@ fn validate_signature_parts(
     location: CandidateLocation,
     parts: &LinkedBytecodeCandidateParts,
 ) -> Result<(), LinkedBytecodeCandidateError> {
-    for ty in parameter_types.iter().chain(result_types) {
-        check_index(
-            location,
-            CandidateReferenceKind::Type,
-            ty.get(),
-            parts.types.len(),
-        )?;
+    for (ty, plan) in parameter_types
+        .iter()
+        .zip(parameter_plans)
+        .chain(result_types.iter().zip(result_plans))
+    {
+        validate_type_plan(*ty, plan, location, parts)?;
     }
-    for plan in parameter_plans.iter().chain(result_plans) {
-        validate_plan(plan, location, parts)?;
+    Ok(())
+}
+
+pub(super) fn validate_type_plan(
+    ty: TypeIndex,
+    plan: &LinkedValueTransferPlan,
+    location: CandidateLocation,
+    parts: &LinkedBytecodeCandidateParts,
+) -> Result<(), LinkedBytecodeCandidateError> {
+    check_index(
+        location,
+        CandidateReferenceKind::Type,
+        ty.get(),
+        parts.types.len(),
+    )?;
+    validate_plan(plan, location, parts)?;
+    if parts.types[ty.get() as usize].plan() != plan {
+        return Err(LinkedBytecodeCandidateError::TypePlanMismatch {
+            location,
+            type_index: ty,
+        });
     }
     Ok(())
 }

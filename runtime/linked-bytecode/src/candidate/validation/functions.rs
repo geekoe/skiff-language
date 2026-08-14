@@ -1,11 +1,12 @@
 use skiff_artifact_model::TypeRefIr;
 
 use crate::{
-    CandidateLocation, CandidateReferenceKind, CandidateTable, LinkedBytecodeCandidateError,
-    LinkedBytecodeCandidateParts, LinkedInstructionTarget, LinkedSlotState,
+    CandidateLocation, CandidateReferenceKind, CandidateTable, FrameSlotIndex,
+    LinkedBytecodeCandidateError, LinkedBytecodeCandidateParts, LinkedInstructionTarget,
+    LinkedSlotState,
 };
 
-use super::{check_boundary, check_index, plans::validate_plan, position_u32};
+use super::{check_boundary, check_index, plans::validate_type_plan, position_u32};
 
 pub(super) fn validate_function(
     function: &crate::LinkedFunction,
@@ -14,30 +15,31 @@ pub(super) fn validate_function(
     let function_location = CandidateLocation::Function {
         function: function.index(),
     };
-    for ty in function.frame().slot_types() {
-        check_index(
-            function_location,
-            CandidateReferenceKind::Type,
-            ty.get(),
-            parts.types.len(),
-        )?;
+    for (ty, plan) in function
+        .frame()
+        .slot_types()
+        .iter()
+        .zip(function.frame().slot_plans())
+    {
+        validate_type_plan(*ty, plan, function_location, parts)?;
     }
-    for ty in function.frame().result_types() {
-        check_index(
-            function_location,
-            CandidateReferenceKind::Type,
-            ty.get(),
-            parts.types.len(),
-        )?;
-    }
-    for plan in function.frame().slot_plans() {
-        validate_plan(plan, function_location, parts)?;
-    }
-    for plan in function.frame().result_plans() {
-        validate_plan(plan, function_location, parts)?;
+    for (ty, plan) in function
+        .frame()
+        .result_types()
+        .iter()
+        .zip(function.frame().result_plans())
+    {
+        validate_type_plan(*ty, plan, function_location, parts)?;
     }
     for parameter in function.frame().parameters() {
-        validate_plan(parameter.plan(), function_location, parts)?;
+        check_index(
+            function_location,
+            CandidateReferenceKind::FrameSlot,
+            parameter.slot().get(),
+            function.frame().slot_types().len(),
+        )?;
+        let parameter_type = function.frame().slot_types()[parameter.slot().get() as usize];
+        validate_type_plan(parameter_type, parameter.plan(), function_location, parts)?;
         if let Some(shape) = parameter.dense_record_shape() {
             check_index(
                 function_location,
@@ -527,9 +529,27 @@ fn validate_stack_map(
                 },
             );
         }
-        for slot in state.slots_before() {
+        for (slot_position, slot) in state.slots_before().iter().enumerate() {
             if let LinkedSlotState::Live(value) = slot {
                 validate_stack_value(value, location, parts)?;
+                let expected_type = function.frame().slot_types()[slot_position];
+                let expected_plan = &function.frame().slot_plans()[slot_position];
+                if value.ty() != expected_type || value.plan() != expected_plan {
+                    let slot = FrameSlotIndex::new(position_u32(
+                        CandidateTable::Functions,
+                        slot_position,
+                        state.slots_before().len(),
+                    )?);
+                    return Err(
+                        LinkedBytecodeCandidateError::ProgramPointSlotValueMismatch {
+                            function: function.index(),
+                            instruction: state.instruction(),
+                            slot,
+                            expected_type,
+                            actual_type: value.ty(),
+                        },
+                    );
+                }
             }
         }
         for region in state.active_regions() {
@@ -563,11 +583,5 @@ fn validate_stack_value(
     location: CandidateLocation,
     parts: &LinkedBytecodeCandidateParts,
 ) -> Result<(), LinkedBytecodeCandidateError> {
-    check_index(
-        location,
-        CandidateReferenceKind::Type,
-        value.ty().get(),
-        parts.types.len(),
-    )?;
-    validate_plan(value.plan(), location, parts)
+    validate_type_plan(value.ty(), value.plan(), location, parts)
 }

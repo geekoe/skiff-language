@@ -221,6 +221,10 @@ pub enum LinkedBytecodeCandidateError {
         index: u32,
         len: usize,
     },
+    TypePlanMismatch {
+        location: CandidateLocation,
+        type_index: crate::TypeIndex,
+    },
     InvalidRange {
         location: CandidateLocation,
         start: u32,
@@ -270,6 +274,13 @@ pub enum LinkedBytecodeCandidateError {
         instruction: crate::InstructionIndex,
         slot_count: usize,
         state_count: usize,
+    },
+    ProgramPointSlotValueMismatch {
+        function: crate::FunctionIndex,
+        instruction: crate::InstructionIndex,
+        slot: crate::FrameSlotIndex,
+        expected_type: crate::TypeIndex,
+        actual_type: crate::TypeIndex,
     },
     ProgramPointOperandDepthExceeded {
         function: crate::FunctionIndex,
