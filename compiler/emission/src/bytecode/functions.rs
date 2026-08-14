@@ -87,6 +87,7 @@ struct FunctionEmitter<'a> {
     current_block: u32,
     generated_slots: Vec<MirSlot>,
     loop_backedges: BTreeMap<u32, LoopBackedge>,
+    stream_loop_item_states: BTreeMap<(u32, u32), EmittedSlotState>,
     value_block_body_blocks: BTreeSet<u32>,
     throw_source_sites: Vec<(usize, InstructionSourceSite)>,
     stream_source_sites: Vec<(usize, InstructionSourceSite)>,
@@ -129,6 +130,7 @@ struct PendingExceptionRegion {
 #[derive(Clone)]
 struct LoopBackedge {
     header_block: u32,
+    continuation_block: u32,
     header_instruction: usize,
     iterable_slot: u32,
     index_slot: u32,
@@ -136,6 +138,12 @@ struct LoopBackedge {
     value_slot: Option<u32>,
     array: bool,
     stream: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EmittedSlotState {
+    Live,
+    Empty,
 }
 
 impl<'a> FunctionEmitter<'a> {
@@ -177,6 +185,7 @@ impl<'a> FunctionEmitter<'a> {
             current_block: 0,
             generated_slots: Vec::new(),
             loop_backedges: BTreeMap::new(),
+            stream_loop_item_states: BTreeMap::new(),
             value_block_body_blocks,
             throw_source_sites: Vec::new(),
             stream_source_sites: Vec::new(),
@@ -556,10 +565,68 @@ impl<'a> FunctionEmitter<'a> {
             }
         }
 
+        let mut stream_item_states =
+            self.stream_item_states_after_block(block.id, instruction_start)?;
         if !block.successors.is_empty() {
-            if let Some(backedge) = self.loop_backedges.get(&block.id).cloned() {
-                if block.successors.as_slice() == [backedge.header_block] {
-                    self.emit_loop_backedge(block.id, &backedge)?;
+            if let [successor] = block.successors.as_slice() {
+                let backedge = self
+                    .loop_backedges
+                    .values()
+                    .find(|backedge| {
+                        backedge.header_block == *successor
+                            && if backedge.stream {
+                                self.stream_loop_item_states
+                                    .contains_key(&(backedge.header_block, block.id))
+                            } else {
+                                self.loop_backedges
+                                    .get(&block.id)
+                                    .is_some_and(|registered| {
+                                        registered.header_block == backedge.header_block
+                                    })
+                            }
+                    })
+                    .cloned();
+                if let Some(backedge) = backedge {
+                    let stream_item_state = if backedge.stream {
+                        let state = stream_item_states
+                            .iter_mut()
+                            .find(|(header, _, _)| *header == backedge.header_block)
+                            .ok_or_else(|| {
+                                unsupported(
+                                    &self.key,
+                                    "stream loop item lifecycle",
+                                    &format!(
+                                        "block {} has no propagated state for stream header {}",
+                                        block.id, backedge.header_block
+                                    ),
+                                )
+                            })?;
+                        if self
+                            .function
+                            .liveness
+                            .blocks
+                            .get(&block.id)
+                            .is_none_or(|liveness| {
+                                liveness.live_out.binary_search(&backedge.item_slot).is_ok()
+                            })
+                        {
+                            return Err(unsupported(
+                                &self.key,
+                                "stream loop item lifecycle",
+                                &format!(
+                                    "block {} retains item slot {} across its redefining backedge",
+                                    block.id, backedge.item_slot
+                                ),
+                            ));
+                        }
+                        let item_state = state.2;
+                        state.2 = EmittedSlotState::Empty;
+                        Some(item_state)
+                    } else {
+                        None
+                    };
+                    self.emit_loop_backedge(block.id, &backedge, stream_item_state)?;
+                    self.propagate_stream_item_states(block, &stream_item_states)?;
                     return Ok(());
                 }
             }
@@ -571,6 +638,7 @@ impl<'a> FunctionEmitter<'a> {
                 _ => {}
             }
         }
+        self.propagate_stream_item_states(block, &stream_item_states)?;
         if block.successors.is_empty() {
             let terminal = self.instructions.last().is_some_and(|instruction| {
                 matches!(
@@ -2986,10 +3054,13 @@ impl<'a> FunctionEmitter<'a> {
             self.emit_stream_next(iterable_slot, &item_ty, Some(continuation))?;
             self.emit_op(Opcode::StoreSlot, vec![item_slot])?;
             self.emit_jump_to_block(body)?;
+            self.stream_loop_item_states
+                .insert((self.current_block, body), EmittedSlotState::Live);
             self.loop_backedges.insert(
                 body,
                 LoopBackedge {
                     header_block: self.current_block,
+                    continuation_block: continuation,
                     header_instruction,
                     iterable_slot,
                     index_slot,
@@ -3025,6 +3096,7 @@ impl<'a> FunctionEmitter<'a> {
             body,
             LoopBackedge {
                 header_block: self.current_block,
+                continuation_block: continuation,
                 header_instruction,
                 iterable_slot,
                 index_slot,
@@ -3038,12 +3110,100 @@ impl<'a> FunctionEmitter<'a> {
         Ok(())
     }
 
+    fn stream_item_states_after_block(
+        &self,
+        block: u32,
+        instruction_start: usize,
+    ) -> Result<Vec<(u32, u32, EmittedSlotState)>, BytecodeEmissionError> {
+        let mut states = Vec::new();
+        for backedge in self
+            .loop_backedges
+            .values()
+            .filter(|backedge| backedge.stream)
+        {
+            let Some(mut state) = self
+                .stream_loop_item_states
+                .get(&(backedge.header_block, block))
+                .copied()
+            else {
+                continue;
+            };
+            for instruction in &self.instructions[instruction_start..] {
+                state = apply_emitted_slot_state(
+                    state,
+                    backedge.item_slot,
+                    instruction,
+                    &self.key,
+                    block,
+                )?;
+            }
+            states.push((backedge.header_block, backedge.item_slot, state));
+        }
+        Ok(states)
+    }
+
+    fn propagate_stream_item_states(
+        &mut self,
+        block: &skiff_compiler_lowering::mir::MirBlock,
+        states: &[(u32, u32, EmittedSlotState)],
+    ) -> Result<(), BytecodeEmissionError> {
+        for &(header, _slot, state) in states {
+            let backedge = self
+                .loop_backedges
+                .values()
+                .find(|backedge| backedge.header_block == header && backedge.stream)
+                .ok_or_else(|| {
+                    unsupported(
+                        &self.key,
+                        "stream loop item lifecycle",
+                        &format!("stream header {header} lost its exact loop facts"),
+                    )
+                })?;
+            for &successor in &block.successors {
+                if successor == header || successor == backedge.continuation_block {
+                    continue;
+                }
+                match self.stream_loop_item_states.entry((header, successor)) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(state);
+                    }
+                    std::collections::btree_map::Entry::Occupied(entry)
+                        if *entry.get() == state => {}
+                    std::collections::btree_map::Entry::Occupied(_) => {
+                        return Err(unsupported(
+                            &self.key,
+                            "stream loop item lifecycle",
+                            &format!(
+                                "block {successor} merges live and consumed item states from stream header {header}"
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn emit_loop_backedge(
         &mut self,
         _block: u32,
         backedge: &LoopBackedge,
+        stream_item_state: Option<EmittedSlotState>,
     ) -> Result<(), BytecodeEmissionError> {
         if backedge.stream {
+            match stream_item_state {
+                Some(EmittedSlotState::Live) => {
+                    self.emit_op(Opcode::Drop, vec![backedge.item_slot])?;
+                }
+                Some(EmittedSlotState::Empty) => {}
+                None => {
+                    return Err(unsupported(
+                        &self.key,
+                        "stream loop item lifecycle",
+                        "stream backedge has no exact emitted item state",
+                    ));
+                }
+            }
             self.emit_jump_to_instruction(backedge.header_instruction)?;
             return Ok(());
         }
@@ -4075,13 +4235,81 @@ fn same_privileged_package_symbol(left: &TypeRefIr, right: &TypeRefIr) -> bool {
     matches!((symbol(left), symbol(right)), (Some(left), Some(right)) if left == right)
 }
 
+fn apply_emitted_slot_state(
+    mut state: EmittedSlotState,
+    slot: u32,
+    instruction: &RawInstruction,
+    function_key: &str,
+    block: u32,
+) -> Result<EmittedSlotState, BytecodeEmissionError> {
+    let require_live = |state| {
+        if state == EmittedSlotState::Live {
+            Ok(())
+        } else {
+            Err(unsupported(
+                function_key,
+                "stream loop item lifecycle",
+                &format!(
+                    "block {block} applies {:?} to consumed item slot {slot}",
+                    instruction.opcode
+                ),
+            ))
+        }
+    };
+    match instruction.opcode {
+        Opcode::Drop | Opcode::TakeSlot if instruction.operands.first() == Some(&slot) => {
+            require_live(state)?;
+            state = EmittedSlotState::Empty;
+        }
+        Opcode::MoveSlot => {
+            if instruction.operands.first() == Some(&slot) {
+                require_live(state)?;
+                state = EmittedSlotState::Empty;
+            }
+            if instruction.operands.get(1) == Some(&slot) {
+                if state == EmittedSlotState::Live {
+                    return Err(unsupported(
+                        function_key,
+                        "stream loop item lifecycle",
+                        &format!("block {block} overwrites live item slot {slot}"),
+                    ));
+                }
+                state = EmittedSlotState::Live;
+            }
+        }
+        Opcode::CopySlot if instruction.operands.get(1) == Some(&slot) => {
+            if state == EmittedSlotState::Live {
+                return Err(unsupported(
+                    function_key,
+                    "stream loop item lifecycle",
+                    &format!("block {block} overwrites live item slot {slot}"),
+                ));
+            }
+            state = EmittedSlotState::Live;
+        }
+        Opcode::StoreSlot if instruction.operands.first() == Some(&slot) => {
+            if state == EmittedSlotState::Live {
+                return Err(unsupported(
+                    function_key,
+                    "stream loop item lifecycle",
+                    &format!("block {block} overwrites live item slot {slot}"),
+                ));
+            }
+            state = EmittedSlotState::Live;
+        }
+        _ => {}
+    }
+    Ok(state)
+}
+
 fn stack_effect(
     instruction: &RawInstruction,
     function: &MirFunction,
 ) -> Result<(usize, usize), BytecodeEmissionError> {
     Ok(match instruction.opcode {
         Opcode::Const | Opcode::LoadSlot | Opcode::TakeSlot => (0, 1),
-        Opcode::StoreSlot | Opcode::Pop | Opcode::Drop => (1, 0),
+        Opcode::StoreSlot | Opcode::Pop => (1, 0),
+        Opcode::Drop => (0, 0),
         Opcode::Dup => (1, 2),
         Opcode::CopySlot
         | Opcode::MoveSlot
@@ -4465,6 +4693,35 @@ mod tests {
     use super::*;
     use crate::bytecode::constants::build_constant_image;
     use crate::bytecode::plans::derive_test_bytecode_value_transfer_plans;
+
+    #[test]
+    fn stream_backedge_state_distinguishes_shared_and_consumed_items() {
+        let shared = apply_emitted_slot_state(
+            EmittedSlotState::Live,
+            7,
+            &RawInstruction {
+                opcode: Opcode::LoadSlot,
+                operands: vec![7],
+            },
+            "main::shared",
+            2,
+        )
+        .expect("a shared item remains live for backedge cleanup");
+        assert_eq!(shared, EmittedSlotState::Live);
+
+        let consumed = apply_emitted_slot_state(
+            EmittedSlotState::Live,
+            7,
+            &RawInstruction {
+                opcode: Opcode::MoveSlot,
+                operands: vec![7, 8],
+            },
+            "main::consumed",
+            2,
+        )
+        .expect("an exact MoveSlot consumes the iteration item");
+        assert_eq!(consumed, EmittedSlotState::Empty);
+    }
 
     /// The statement form of `throw` emits its payload first; the raise
     /// instruction must still carry exactly one source/synthetic site in the

@@ -10,6 +10,9 @@ use skiff_compiler_lowering::{
     Bounds, ConstEvaluator, LoweredPackage,
 };
 
+use crate::bytecode::{
+    emitter::emit_bytecode_artifact_unchecked, plans::derive_test_bytecode_value_transfer_plans,
+};
 use crate::{
     admit_phase_1_bytecode_mir, derive_bytecode_value_transfer_plans, emit_bytecode_artifact,
     BytecodeEmissionError, Phase1UnsupportedCapability,
@@ -27,6 +30,83 @@ fn lower(source: &str) -> LoweredPackage {
         source,
     })
     .expect("real Phase 5 source lowers through the production source/MIR API")
+}
+
+fn emit_unchecked_source(source: &str) -> skiff_artifact_model::BytecodeArtifact {
+    let lowered = lower(source);
+    let plans = derive_test_bytecode_value_transfer_plans(lowered.mir_units())
+        .expect("test source has complete lifecycle plans");
+    let bundles = lowered
+        .file_ir_units()
+        .iter()
+        .map(|unit| {
+            ConstEvaluator::new(Bounds::default())
+                .evaluate_unit(unit)
+                .expect("test source constants evaluate")
+        })
+        .collect::<Vec<_>>();
+    emit_bytecode_artifact_unchecked(lowered.mir_units(), &bundles, &plans)
+        .expect("crate-owned emission accepts structurally valid MIR")
+}
+
+#[test]
+fn stream_for_in_backedges_drop_only_live_iteration_items() {
+    const SOURCE: &str = r#"
+function normal(input: Stream<bytes>) -> void {
+  for chunk in input {
+  }
+}
+
+function continued(input: Stream<bytes>) -> void {
+  for chunk in input {
+    continue
+  }
+}
+
+function broken(input: Stream<bytes>) -> void {
+  for chunk in input {
+    break
+  }
+}
+"#;
+    let artifact = emit_unchecked_source(SOURCE);
+    let lowered = lower(SOURCE);
+
+    for (symbol, expects_drop) in [
+        ("main.normal", true),
+        ("main.continued", true),
+        ("main.broken", false),
+    ] {
+        let mir = lowered.mir_units()[0]
+            .functions
+            .iter()
+            .find(|function| function.symbol == symbol)
+            .unwrap_or_else(|| panic!("missing MIR function {symbol}"));
+        let item_slot = mir
+            .slots
+            .iter()
+            .find(|slot| slot.name == "chunk")
+            .expect("for-in item slot exists")
+            .slot;
+        let function_key = symbol.replace('.', "::");
+        let function = artifact
+            .image
+            .functions
+            .get(&function_key)
+            .unwrap_or_else(|| panic!("missing emitted function {function_key}"));
+        let decoded = BoundedDecoder::new()
+            .decode_function(&function.words)
+            .expect("emitted loop decodes");
+        let drops_before_jump = decoded.instructions.windows(2).any(|pair| {
+            pair[0].descriptor.kind == Opcode::Drop
+                && pair[0].operand(0) == item_slot
+                && pair[1].descriptor.kind == Opcode::Jump
+        });
+        assert_eq!(
+            drops_before_jump, expects_drop,
+            "{symbol} must emit exactly the lifecycle action required by its backedge"
+        );
+    }
 }
 
 #[test]
