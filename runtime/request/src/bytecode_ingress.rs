@@ -23,7 +23,7 @@ use skiff_runtime_model::{
     },
     error::RuntimeErrorPayload,
     request_heap::RequestHeapLimits,
-    service_error::{ErrorCorrelation, RequestException},
+    service_error::ErrorCorrelation,
     vm_heap::{VmContainerShape, VmHeap, VmHeapError, VmHeapOperation, VmRecordField},
     vm_root::{VmRootSource, VmRootVisitor},
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot},
@@ -36,17 +36,18 @@ const HTTP_CLIENT_RESPONSE_TYPE: &str = "std.http.HttpClientResponse";
 const HTTP_CLIENT_STREAM_HANDLE_TYPE: &str = "std.http.HttpClientStreamHandle";
 use skiff_runtime_scheduler::{
     BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeHandoff,
-    BytecodeScheduler, BytecodeSchedulerError, BytecodeSchedulerOutcome, BytecodeSchedulerPorts,
-    BytecodeStreamHandoff, BytecodeStreamSupervisor, ClaimedPendingWakeGuard, CompletionHandle,
-    PendingRegistry, PendingWake, PendingWakeQueue, RequestByteStreamFailure,
-    RequestExecutionContext, RequestResourceFinishReason, RequestResourceHandle,
-    RequestResourceTable, RequestResourceTermination, RequestServerStreamReservation, RootEscrow,
-    SuspendedTrampoline,
+    BytecodeParkFailure, BytecodeParkRequest, BytecodePortFailure, BytecodeScheduler,
+    BytecodeSchedulerError, BytecodeSchedulerFailure, BytecodeSchedulerFailureOwner,
+    BytecodeSchedulerOutcome, BytecodeSchedulerPorts, BytecodeStreamHandoff,
+    BytecodeStreamSupervisor, ClaimedPendingWakeGuard, CompletionHandle, PendingRegistry,
+    PendingWake, PendingWakeQueue, RequestByteStreamFailure, RequestExecutionContext,
+    RequestResourceFinishReason, RequestResourceHandle, RequestResourceTable,
+    RequestResourceTermination, RequestServerStreamReservation, RootEscrow, SuspendedTrampoline,
 };
 use skiff_runtime_vm::{
     AdapterInvocation, ChildInvocation, PendingOperation, ResumeOutcome, Vm, VmBudget,
-    VmBudgetClosed, VmBudgetTerminal, VmError, VmFiber, VmHostEffectArguments, VmInternalTerminal,
-    VmLimits, VmOwnedValues, VmResult, VmResumeToken,
+    VmBudgetClosed, VmBudgetTerminal, VmCompletion, VmError, VmFiber, VmHostEffectArguments,
+    VmInternalTerminal, VmLimits, VmOwnedValues, VmResumeToken, VmTerminalCause, VmTerminalEscrow,
 };
 
 use crate::{
@@ -103,9 +104,16 @@ pub struct BytecodeRequestExecutionHandles {
 /// carrier's entire contract is its Drop lifetime.
 #[allow(dead_code)]
 pub struct BytecodeRequestRetention {
-    heap: Option<Box<dyn VmHeap + Send>>,
+    scheduler_failure_owner: Option<BytecodeSchedulerFailureOwner<VmFiber>>,
+    terminal_cause: Option<VmTerminalCause>,
+    terminal_escrow: Option<VmTerminalEscrow>,
+    materialization_escrows: Vec<VmTerminalEscrow>,
     budget: Option<Box<dyn VmBudget + Send>>,
     cleanup_roots: Vec<ValueSlot>,
+    // The concrete request heap is deliberately last. Every carrier above is
+    // released or dropped before heap teardown, including on retryable
+    // lifecycle failure.
+    heap: Option<Box<dyn VmHeap + Send>>,
 }
 
 impl Drop for BytecodeRequestRetention {
@@ -113,6 +121,18 @@ impl Drop for BytecodeRequestRetention {
         let Some(heap) = self.heap.as_deref_mut() else {
             return;
         };
+        if let Some(owner) = self.scheduler_failure_owner.as_mut() {
+            let _ = owner.release_terminal_escrow(heap);
+        }
+        if let Some(cause) = self.terminal_cause.as_mut() {
+            let _ = cause.release_all(heap);
+        }
+        if let Some(escrow) = self.terminal_escrow.as_mut() {
+            let _ = escrow.release_all(heap);
+        }
+        for escrow in &mut self.materialization_escrows {
+            let _ = escrow.release_all(heap);
+        }
         while let Some(root) = self.cleanup_roots.last().copied() {
             let released = if root.kind() == Some(ValueKind::ResourceRef) {
                 heap.release_resource(&root)
@@ -127,6 +147,27 @@ impl Drop for BytecodeRequestRetention {
             }
             self.cleanup_roots.pop();
         }
+    }
+}
+
+impl VmRootSource for BytecodeRequestRetention {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        if let Some(owner) = &self.scheduler_failure_owner {
+            owner.visit_roots(visitor)?;
+        }
+        if let Some(cause) = &self.terminal_cause {
+            cause.visit_roots(visitor)?;
+        }
+        if let Some(escrow) = &self.terminal_escrow {
+            escrow.visit_roots(visitor)?;
+        }
+        for escrow in &self.materialization_escrows {
+            escrow.visit_roots(visitor)?;
+        }
+        for root in &self.cleanup_roots {
+            visitor.visit_root(root)?;
+        }
+        Ok(())
     }
 }
 
@@ -334,9 +375,13 @@ pub fn drive_runtime_bytecode_request_controlled(
             return ControlledBytecodeDrive::Complete(DrivenBytecodeRequest {
                 result: Err(error),
                 retention: BytecodeRequestRetention {
-                    heap: None,
+                    scheduler_failure_owner: None,
+                    terminal_cause: None,
+                    terminal_escrow: None,
+                    materialization_escrows: Vec::new(),
                     budget: None,
                     cleanup_roots: Vec::new(),
+                    heap: None,
                 },
                 owner_inventory: DrivenBytecodeRequestOwnerInventory::NotStarted(
                     context.into_not_started(),
@@ -361,6 +406,7 @@ pub fn drive_runtime_bytecode_request_controlled(
         execution_control: start.execution_control.clone(),
         stream_registrar,
         cleanup_roots: Mutex::new(Vec::new()),
+        materialization_escrows: Mutex::new(Vec::new()),
         manual_sleep_completion: Mutex::new(None),
     });
     let stream_supervisor: Option<Arc<dyn BytecodeStreamSupervisor<VmFiber>>> =
@@ -549,6 +595,10 @@ pub(super) struct RequestPendingRuntime {
     /// materialization. No pending or GC safepoint intervenes before terminal
     /// request retention takes this escrow.
     cleanup_roots: Mutex<Vec<ValueSlot>>,
+    /// Exact or explicitly damaged owners rejected by the VM resume-token
+    /// binder. These carriers never fall back to runtime-kind cleanup and are
+    /// moved into request retention before the request heap can be destroyed.
+    materialization_escrows: Mutex<Vec<VmTerminalEscrow>>,
     /// Deterministic Phase 4 regression authority. Only typed Sleep may
     /// install a handle here; HTTP and StreamNext are host-owned futures and
     /// can never accept an injected empty result.
@@ -605,6 +655,47 @@ impl Wake for FirstPollWake {
     fn wake(self: Arc<Self>) {}
 }
 
+/// Owner-returning failure to create an actual-pending operation.
+///
+/// Construction is sealed in this module so every pre-publication error must
+/// return the exact continuation it did not consume. Scheduler ports convert
+/// this carrier to `BytecodePortFailure::Continuation` instead of flattening
+/// the reason and losing the resume token.
+#[must_use = "a failed pending begin still owns its exact resume continuation"]
+pub(super) struct BeginPendingFailure {
+    reason: BytecodeSchedulerError,
+    resume: VmResumeToken,
+}
+
+impl BeginPendingFailure {
+    fn new(reason: BytecodeSchedulerError, resume: VmResumeToken) -> Self {
+        Self { reason, resume }
+    }
+
+    pub(super) const fn reason(&self) -> &BytecodeSchedulerError {
+        &self.reason
+    }
+
+    pub(super) fn into_parts(self) -> (BytecodeSchedulerError, VmResumeToken) {
+        (self.reason, self.resume)
+    }
+}
+
+impl std::fmt::Debug for BeginPendingFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BeginPendingFailure")
+            .field("reason", &self.reason)
+            .finish_non_exhaustive()
+    }
+}
+
+impl VmRootSource for BeginPendingFailure {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        self.reason.visit_roots(visitor)
+    }
+}
+
 pub(super) fn poll_future_once<F>(future: Pin<&mut F>) -> Poll<F::Output>
 where
     F: Future + ?Sized,
@@ -644,14 +735,13 @@ impl RequestPendingRuntime {
         )
     }
 
-    /// Transfers unique values from a terminally failed handoff into the
-    /// request retention cleanup list. No pending/GC safepoint can intervene
-    /// between this synchronous transfer and terminal retention.
-    pub(super) fn escrow_cleanup_roots(&self, roots: Box<[ValueSlot]>) {
-        self.cleanup_roots
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .extend(roots);
+    fn take_materialization_escrows(&self) -> Vec<VmTerminalEscrow> {
+        std::mem::take(
+            &mut *self
+                .materialization_escrows
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     pub(super) fn begin_pending<T, F, M>(
@@ -660,7 +750,7 @@ impl RequestPendingRuntime {
         future: Pin<Box<F>>,
         allow_manual_sleep_completion: bool,
         map: M,
-    ) -> Result<PendingOperation, BytecodeSchedulerError>
+    ) -> Result<PendingOperation, BeginPendingFailure>
     where
         T: Send + 'static,
         F: Future<Output = T> + Send + 'static + ?Sized,
@@ -687,7 +777,7 @@ impl RequestPendingRuntime {
         resume: VmResumeToken,
         future: BytecodeServerStreamWriteFuture,
         reservation: RequestServerStreamReservation,
-    ) -> Result<PendingOperation, BytecodeSchedulerError> {
+    ) -> Result<PendingOperation, BeginPendingFailure> {
         self.begin_pending_with_policy(
             resume,
             future,
@@ -707,21 +797,36 @@ impl RequestPendingRuntime {
         allow_manual_sleep_completion: bool,
         terminal_policy: PendingFutureTerminalPolicy,
         map: M,
-    ) -> Result<PendingOperation, BytecodeSchedulerError>
+    ) -> Result<PendingOperation, BeginPendingFailure>
     where
         T: Send + 'static,
         F: Future<Output = T> + Send + 'static + ?Sized,
         M: FnOnce(T) -> RequestPendingOutcome + Send + 'static,
     {
-        let spawner = tokio::runtime::Handle::try_current().map_err(|_| {
-            BytecodeSchedulerError::Port(
-                "actual-Pending host effect requires the current request Tokio runtime".to_string(),
-            )
-        })?;
-        let completion = self
+        let spawner = match tokio::runtime::Handle::try_current() {
+            Ok(spawner) => spawner,
+            Err(_) => {
+                return Err(BeginPendingFailure::new(
+                    BytecodeSchedulerError::Port(
+                        "actual-Pending host effect requires the current request Tokio runtime"
+                            .to_string(),
+                    ),
+                    resume,
+                ));
+            }
+        };
+        let completion = match self
             .registry
             .begin_with_resource_roots(RootEscrow::empty(), self.resources.root_pin())
-            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        {
+            Ok(completion) => completion,
+            Err(error) => {
+                return Err(BeginPendingFailure::new(
+                    BytecodeSchedulerError::Port(error.to_string()),
+                    resume,
+                ));
+            }
+        };
         let sink: Arc<dyn RequestPendingSink> = Arc::new(PendingCellSink {
             completion: completion.clone(),
         });
@@ -855,22 +960,24 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
         invocation: AdapterInvocation,
         heap: &mut dyn VmHeap,
         _budget: &mut dyn VmBudget,
-    ) -> Result<BytecodeAdapterHandoff<VmFiber>, BytecodeSchedulerError> {
+    ) -> Result<
+        BytecodeAdapterHandoff<VmFiber>,
+        BytecodePortFailure<AdapterInvocation, VmResumeToken>,
+    > {
         let adapter_index = invocation.adapter();
         let image = Arc::clone(invocation.resume().image());
         let target = image
             .host_effect_target(adapter_index)
             .map(|target| (target.executor_identity(), target.signature().clone()));
-        let (_adapter, arguments, resume) = invocation.into_parts();
         let Some((identity, signature)) = target else {
-            return finish_host_argument_use(
-                Err(BytecodeSchedulerError::Port(
+            return Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::Port(
                     "pending host effect adapter row is absent from the pinned image".to_string(),
-                )),
-                arguments,
-                heap,
-            );
+                ),
+                invocation,
+            ));
         };
+        let (_adapter, arguments, resume) = invocation.into_parts();
         match identity {
             HostEffectExecutorIdentity::Sleep => {
                 let prepared: Result<_, BytecodeSchedulerError> = (|| {
@@ -893,7 +1000,13 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                     let first_poll = poll_future_once(future.as_mut());
                     Ok((future, first_poll))
                 })();
-                let (future, first_poll) = finish_host_argument_use(prepared, arguments, heap)?;
+                let (future, first_poll) = match finish_host_argument_use(prepared, arguments, heap)
+                {
+                    Ok(prepared) => prepared,
+                    Err(reason) => {
+                        return Err(BytecodePortFailure::continuation(reason, resume));
+                    }
+                };
                 match first_poll {
                     Poll::Ready(()) => Ok(Self::ready_adapter(
                         resume,
@@ -906,7 +1019,11 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                         .begin_pending(resume, future, true, |_| {
                             RequestPendingOutcome::Vm(ResumeOutcome::Empty)
                         })
-                        .map(BytecodeAdapterHandoff::Pending),
+                        .map(BytecodeAdapterHandoff::Pending)
+                        .map_err(|failure| {
+                            let (reason, resume) = failure.into_parts();
+                            BytecodePortFailure::continuation(reason, resume)
+                        }),
                 }
             }
             HostEffectExecutorIdentity::HttpClientRequest => {
@@ -926,7 +1043,12 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                     Ok((layout, future, first_poll))
                 })();
                 let (layout, future, first_poll) =
-                    finish_host_argument_use(prepared, arguments, heap)?;
+                    match finish_host_argument_use(prepared, arguments, heap) {
+                        Ok(prepared) => prepared,
+                        Err(reason) => {
+                            return Err(BytecodePortFailure::continuation(reason, resume));
+                        }
+                    };
                 match first_poll {
                     Poll::Ready(result) => {
                         if matches!(&result, Err(BytecodeHttpFailure::Cancelled)) {
@@ -934,10 +1056,11 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                         }
                         let outcome = self.runtime.ready_terminal().unwrap_or_else(|| {
                             materialize_http_request_outcome(
-                                &image,
+                                &resume,
                                 layout,
                                 result,
                                 &self.runtime.cleanup_roots,
+                                &self.runtime.materialization_escrows,
                                 heap,
                             )
                         });
@@ -948,7 +1071,11 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                         .begin_pending(resume, future, false, move |result| {
                             RequestPendingOutcome::HttpRequest { layout, result }
                         })
-                        .map(BytecodeAdapterHandoff::Pending),
+                        .map(BytecodeAdapterHandoff::Pending)
+                        .map_err(|failure| {
+                            let (reason, resume) = failure.into_parts();
+                            BytecodePortFailure::continuation(reason, resume)
+                        }),
                 }
             }
             HostEffectExecutorIdentity::HttpClientStream => {
@@ -971,7 +1098,12 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                     Ok((layout, future, first_poll))
                 })();
                 let (layout, future, first_poll) =
-                    finish_host_argument_use(prepared, arguments, heap)?;
+                    match finish_host_argument_use(prepared, arguments, heap) {
+                        Ok(prepared) => prepared,
+                        Err(reason) => {
+                            return Err(BytecodePortFailure::continuation(reason, resume));
+                        }
+                    };
                 match first_poll {
                     Poll::Ready(result) => {
                         if matches!(&result, Err(BytecodeHttpFailure::Cancelled)) {
@@ -979,11 +1111,12 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                         }
                         let outcome = self.runtime.ready_terminal().unwrap_or_else(|| {
                             materialize_http_stream_outcome(
-                                &image,
+                                &resume,
                                 &self.runtime.resources,
                                 layout,
                                 result,
                                 &self.runtime.cleanup_roots,
+                                &self.runtime.materialization_escrows,
                                 heap,
                             )
                         });
@@ -994,7 +1127,11 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                         .begin_pending(resume, future, false, move |result| {
                             RequestPendingOutcome::HttpStream { layout, result }
                         })
-                        .map(BytecodeAdapterHandoff::Pending),
+                        .map(BytecodeAdapterHandoff::Pending)
+                        .map_err(|failure| {
+                            let (reason, resume) = failure.into_parts();
+                            BytecodePortFailure::continuation(reason, resume)
+                        }),
                 }
             }
         }
@@ -1002,13 +1139,13 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
 
     fn park_adapter(
         &self,
-        operation: PendingOperation,
-        suspended: VmSuspended,
+        request: BytecodeParkRequest<VmFiber>,
         _heap: &mut dyn VmHeap,
         _budget: &mut dyn VmBudget,
-    ) -> Result<(), BytecodeSchedulerError> {
+    ) -> Result<(), BytecodeParkFailure<VmFiber>> {
         let queue: Arc<dyn PendingWakeQueue<VmResumeToken, VmSuspended, RequestPendingOutcome>> =
             self.runtime.wake_queue.clone();
+        let (operation, suspended) = request.into_parts();
         match self
             .runtime
             .registry
@@ -1016,9 +1153,11 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
         {
             Ok(_) => Ok(()),
             Err(error) => {
-                let message = error.to_string();
-                drop(error);
-                Err(BytecodeSchedulerError::Port(message))
+                let reason = BytecodeSchedulerError::Port(error.reason().to_string());
+                Err(BytecodeParkFailure::pending_draft(
+                    reason,
+                    error.into_draft(),
+                ))
             }
         }
     }
@@ -1028,29 +1167,48 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
         invocation: ChildInvocation,
         heap: &mut dyn VmHeap,
         _budget: &mut dyn VmBudget,
-    ) -> Result<BytecodeStreamHandoff<VmFiber>, BytecodeSchedulerError> {
-        let (_target, arguments, endpoint, resume) = invocation.into_parts();
-        if !arguments.is_empty() {
-            return Err(BytecodeSchedulerError::Port(
-                "verified StreamNext invocation carried unexpected owned arguments".to_string(),
+    ) -> Result<BytecodeStreamHandoff<VmFiber>, BytecodePortFailure<ChildInvocation, VmResumeToken>>
+    {
+        if !invocation.arguments().is_empty() {
+            return Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::Port(
+                    "verified StreamNext invocation carried unexpected owned arguments".to_string(),
+                ),
+                invocation,
             ));
         }
-        let endpoint = endpoint.ok_or_else(|| {
-            BytecodeSchedulerError::Port(
-                "StreamNext invocation is missing its exact endpoint route".to_string(),
-            )
-        })?;
-        let handle = self
-            .runtime
-            .resources
-            .validate_vm_route(endpoint.route())
-            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
-        let item_type = stream_next_item_type(&resume)?;
-        let mut future = self
-            .runtime
-            .resources
-            .start_byte_stream_pull(&handle)
-            .map_err(|error| BytecodeSchedulerError::Port(error.to_string()))?;
+        let Some(endpoint) = invocation.stream_endpoint() else {
+            return Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::Port(
+                    "StreamNext invocation is missing its exact endpoint route".to_string(),
+                ),
+                invocation,
+            ));
+        };
+        let handle = match self.runtime.resources.validate_vm_route(endpoint.route()) {
+            Ok(handle) => handle,
+            Err(error) => {
+                return Err(BytecodePortFailure::input(
+                    BytecodeSchedulerError::Port(error.to_string()),
+                    invocation,
+                ));
+            }
+        };
+        let item_type = match stream_next_item_type(invocation.resume()) {
+            Ok(item_type) => item_type,
+            Err(reason) => return Err(BytecodePortFailure::input(reason, invocation)),
+        };
+        let mut future = match self.runtime.resources.start_byte_stream_pull(&handle) {
+            Ok(future) => future,
+            Err(error) => {
+                return Err(BytecodePortFailure::input(
+                    BytecodeSchedulerError::Port(error.to_string()),
+                    invocation,
+                ));
+            }
+        };
+        let (_target, arguments, _endpoint, resume) = invocation.into_parts();
+        debug_assert!(arguments.is_empty());
         match poll_future_once(future.as_mut()) {
             Poll::Ready(result) => {
                 if matches!(&result, Err(RequestByteStreamFailure::Cancelled)) {
@@ -1058,11 +1216,12 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                 }
                 let outcome = self.runtime.ready_terminal().unwrap_or_else(|| {
                     materialize_stream_next_outcome(
-                        resume.image(),
+                        &resume,
                         &self.runtime.resources,
                         handle,
                         item_type,
                         result,
+                        &self.runtime.materialization_escrows,
                         heap,
                     )
                 });
@@ -1080,19 +1239,23 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                         result,
                     }
                 })
-                .map(BytecodeStreamHandoff::Pending),
+                .map(BytecodeStreamHandoff::Pending)
+                .map_err(|failure| {
+                    let (reason, resume) = failure.into_parts();
+                    BytecodePortFailure::continuation(reason, resume)
+                }),
         }
     }
 
     fn park_stream_next(
         &self,
-        operation: PendingOperation,
-        suspended: VmSuspended,
+        request: BytecodeParkRequest<VmFiber>,
         _heap: &mut dyn VmHeap,
         _budget: &mut dyn VmBudget,
-    ) -> Result<(), BytecodeSchedulerError> {
+    ) -> Result<(), BytecodeParkFailure<VmFiber>> {
         let queue: Arc<dyn PendingWakeQueue<VmResumeToken, VmSuspended, RequestPendingOutcome>> =
             self.runtime.wake_queue.clone();
+        let (operation, suspended) = request.into_parts();
         match self
             .runtime
             .registry
@@ -1100,9 +1263,11 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
         {
             Ok(_) => Ok(()),
             Err(error) => {
-                let message = error.to_string();
-                drop(error);
-                Err(BytecodeSchedulerError::Port(message))
+                let reason = BytecodeSchedulerError::Port(error.reason().to_string());
+                Err(BytecodeParkFailure::pending_draft(
+                    reason,
+                    error.into_draft(),
+                ))
             }
         }
     }
@@ -2073,10 +2238,11 @@ fn cleanup_http_materialized_roots(
 }
 
 fn materialize_http_request_outcome(
-    image: &Arc<DeploymentExecutionImage>,
+    resume: &VmResumeToken,
     layout: HttpResultLayout,
     result: Result<BytecodeHttpResponse, BytecodeHttpFailure>,
     cleanup_escrow: &Mutex<Vec<ValueSlot>>,
+    terminal_escrows: &Mutex<Vec<VmTerminalEscrow>>,
     heap: &mut dyn VmHeap,
 ) -> ResumeOutcome {
     let result = match result {
@@ -2085,20 +2251,20 @@ fn materialize_http_request_outcome(
     };
     let materialized = materialize_http_response_value(layout, result, cleanup_escrow, heap);
     match materialized {
-        Ok(value) => ResumeOutcome::Values(VmOwnedValues::from_values(
-            Arc::clone(image),
-            vec![value].into_boxed_slice(),
-        )),
+        Ok(value) => {
+            materialize_resume_values(resume, vec![value].into_boxed_slice(), terminal_escrows)
+        }
         Err(error) => ResumeOutcome::Failure(VmError::Heap(error)),
     }
 }
 
 fn materialize_http_stream_outcome(
-    image: &Arc<DeploymentExecutionImage>,
+    resume: &VmResumeToken,
     resources: &RequestResourceTable,
     layout: HttpResultLayout,
     result: Result<BytecodeHttpStreamResponse, BytecodeHttpFailure>,
     cleanup_escrow: &Mutex<Vec<ValueSlot>>,
+    terminal_escrows: &Mutex<Vec<VmTerminalEscrow>>,
     heap: &mut dyn VmHeap,
 ) -> ResumeOutcome {
     let result = match result {
@@ -2108,10 +2274,9 @@ fn materialize_http_stream_outcome(
     let materialized =
         materialize_http_stream_value(layout, result, resources, cleanup_escrow, heap);
     match materialized {
-        Ok(value) => ResumeOutcome::Values(VmOwnedValues::from_values(
-            Arc::clone(image),
-            vec![value].into_boxed_slice(),
-        )),
+        Ok(value) => {
+            materialize_resume_values(resume, vec![value].into_boxed_slice(), terminal_escrows)
+        }
         Err(error) => ResumeOutcome::Failure(VmError::Heap(error)),
     }
 }
@@ -2156,21 +2321,21 @@ fn http_failure_outcome(error: BytecodeHttpFailure) -> ResumeOutcome {
 }
 
 fn materialize_stream_next_outcome(
-    image: &Arc<DeploymentExecutionImage>,
+    resume: &VmResumeToken,
     resources: &RequestResourceTable,
     handle: RequestResourceHandle,
     item_type: TypeIndex,
     result: Result<Option<Vec<u8>>, RequestByteStreamFailure>,
+    terminal_escrows: &Mutex<Vec<VmTerminalEscrow>>,
     heap: &mut dyn VmHeap,
 ) -> ResumeOutcome {
     match result {
         Ok(Some(bytes)) => match heap_compact_type_tag(item_type)
             .and_then(|tag| heap.alloc_typed_bytes(bytes, tag, ValueFlags::new(0)))
         {
-            Ok(value) => ResumeOutcome::Values(VmOwnedValues::from_values(
-                Arc::clone(image),
-                vec![value].into_boxed_slice(),
-            )),
+            Ok(value) => {
+                materialize_resume_values(resume, vec![value].into_boxed_slice(), terminal_escrows)
+            }
             Err(error) => ResumeOutcome::Failure(VmError::Heap(error)),
         },
         Ok(None) => match resources.finish(&handle, RequestResourceFinishReason::Exhausted) {
@@ -2200,6 +2365,24 @@ fn materialize_stream_next_outcome(
     }
 }
 
+fn materialize_resume_values(
+    resume: &VmResumeToken,
+    values: Box<[ValueSlot]>,
+    terminal_escrows: &Mutex<Vec<VmTerminalEscrow>>,
+) -> ResumeOutcome {
+    match VmOwnedValues::try_from_resume(resume, values) {
+        Ok(values) => ResumeOutcome::Values(values),
+        Err(rejected) => {
+            let (error, escrow) = rejected.into_terminal_escrow();
+            terminal_escrows
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(escrow);
+            ResumeOutcome::Failure(error)
+        }
+    }
+}
+
 fn resource_failure_outcome(message: String) -> ResumeOutcome {
     ResumeOutcome::Failure(VmError::HostEffectFailure(RuntimeErrorPayload {
         code: "InternalError".to_string(),
@@ -2210,25 +2393,45 @@ fn resource_failure_outcome(message: String) -> ResumeOutcome {
 }
 
 fn materialize_request_pending_outcome(
-    image: &Arc<DeploymentExecutionImage>,
+    resume: &VmResumeToken,
     resources: &RequestResourceTable,
     outcome: RequestPendingOutcome,
     cleanup_escrow: &Mutex<Vec<ValueSlot>>,
+    terminal_escrows: &Mutex<Vec<VmTerminalEscrow>>,
     heap: &mut dyn VmHeap,
 ) -> ResumeOutcome {
     match outcome {
         RequestPendingOutcome::Vm(outcome) => outcome,
-        RequestPendingOutcome::HttpRequest { layout, result } => {
-            materialize_http_request_outcome(image, layout, result, cleanup_escrow, heap)
-        }
-        RequestPendingOutcome::HttpStream { layout, result } => {
-            materialize_http_stream_outcome(image, resources, layout, result, cleanup_escrow, heap)
-        }
+        RequestPendingOutcome::HttpRequest { layout, result } => materialize_http_request_outcome(
+            resume,
+            layout,
+            result,
+            cleanup_escrow,
+            terminal_escrows,
+            heap,
+        ),
+        RequestPendingOutcome::HttpStream { layout, result } => materialize_http_stream_outcome(
+            resume,
+            resources,
+            layout,
+            result,
+            cleanup_escrow,
+            terminal_escrows,
+            heap,
+        ),
         RequestPendingOutcome::StreamNext {
             handle,
             item_type,
             result,
-        } => materialize_stream_next_outcome(image, resources, handle, item_type, result, heap),
+        } => materialize_stream_next_outcome(
+            resume,
+            resources,
+            handle,
+            item_type,
+            result,
+            terminal_escrows,
+            heap,
+        ),
         RequestPendingOutcome::ServerStreamFlush {
             reservation,
             result,
@@ -2356,10 +2559,11 @@ impl ParkedBytecodeRequest {
                     outcome,
                     |outcome| {
                         materialize_request_pending_outcome(
-                            resume.image(),
+                            resume,
                             &resources,
                             outcome,
                             &self.runtime.cleanup_roots,
+                            &self.runtime.materialization_escrows,
                             &mut *self.heap,
                         )
                     },
@@ -2383,7 +2587,7 @@ impl ParkedBytecodeRequest {
 
     fn finish_drive(
         self,
-        outcome: Result<BytecodeSchedulerOutcome<VmFiber>, BytecodeSchedulerError>,
+        outcome: Result<BytecodeSchedulerOutcome<VmFiber>, BytecodeSchedulerFailure<VmFiber>>,
     ) -> ControlledBytecodeDrive {
         match outcome {
             Ok(BytecodeSchedulerOutcome::Complete(result)) => self.complete(result),
@@ -2392,7 +2596,7 @@ impl ParkedBytecodeRequest {
         }
     }
 
-    fn complete(self, result: VmResult) -> ControlledBytecodeDrive {
+    fn complete(self, completion: VmCompletion) -> ControlledBytecodeDrive {
         let ParkedBytecodeRequest {
             context,
             mut heap,
@@ -2406,61 +2610,68 @@ impl ParkedBytecodeRequest {
         let result = project_completed_request(
             &mut *heap,
             &execution_budget,
-            result,
+            &completion,
             &mode,
             raw_http_adapter,
         );
+        let (mut terminal_cause, mut terminal_escrow) = completion.into_terminal();
+        if let Some(cause) = terminal_cause.as_mut() {
+            let _ = cause.release_all(&mut *heap);
+        }
+        let _ = terminal_escrow.release_all(&mut *heap);
+        let mut materialization_escrows = runtime.take_materialization_escrows();
+        for escrow in &mut materialization_escrows {
+            let _ = escrow.release_all(&mut *heap);
+        }
         let snapshot = context.freeze_with_termination(resource_termination_for_result(&result));
         ControlledBytecodeDrive::Complete(DrivenBytecodeRequest {
             result,
             retention: BytecodeRequestRetention {
-                heap: Some(heap),
+                scheduler_failure_owner: None,
+                terminal_cause,
+                terminal_escrow: Some(terminal_escrow),
+                materialization_escrows,
                 budget: Some(budget),
                 cleanup_roots: runtime.take_cleanup_roots(),
+                heap: Some(heap),
             },
             owner_inventory: DrivenBytecodeRequestOwnerInventory::Started(snapshot),
         })
     }
 
-    fn terminal(self, error: BytecodeSchedulerError) -> ControlledBytecodeDrive {
+    fn terminal(self, failure: BytecodeSchedulerFailure<VmFiber>) -> ControlledBytecodeDrive {
         let ParkedBytecodeRequest {
             context,
-            heap,
+            mut heap,
             budget,
             execution_budget,
             runtime,
             ..
         } = self;
-        // An absent stream supervisor is terminal, but a failed item release
-        // still owns its exact VM carrier. Transfer that carrier before any
-        // Display/string projection can discard the owner-bearing error.
-        let error = escrow_terminal_scheduler_error(&runtime, error);
-        let result: RequestResult<BoundaryResponse> =
-            Err(scheduler_error_to_request_error(&execution_budget, error));
+        let result: RequestResult<BoundaryResponse> = Err(scheduler_error_to_request_error_ref(
+            &execution_budget,
+            failure.reason(),
+        ));
+        let (_reason, mut scheduler_failure_owner) = failure.into_parts();
+        let _ = scheduler_failure_owner.release_terminal_escrow(&mut *heap);
+        let mut materialization_escrows = runtime.take_materialization_escrows();
+        for escrow in &mut materialization_escrows {
+            let _ = escrow.release_all(&mut *heap);
+        }
         let snapshot = context.freeze_with_termination(resource_termination_for_result(&result));
         ControlledBytecodeDrive::Complete(DrivenBytecodeRequest {
             result,
             retention: BytecodeRequestRetention {
-                heap: Some(heap),
+                scheduler_failure_owner: Some(scheduler_failure_owner),
+                terminal_cause: None,
+                terminal_escrow: None,
+                materialization_escrows,
                 budget: Some(budget),
                 cleanup_roots: runtime.take_cleanup_roots(),
+                heap: Some(heap),
             },
             owner_inventory: DrivenBytecodeRequestOwnerInventory::Started(snapshot),
         })
-    }
-}
-
-fn escrow_terminal_scheduler_error(
-    runtime: &RequestPendingRuntime,
-    error: BytecodeSchedulerError,
-) -> BytecodeSchedulerError {
-    match error {
-        BytecodeSchedulerError::StreamItemRelease(failure) => {
-            let (roots, error) = failure.into_cleanup_roots();
-            runtime.escrow_cleanup_roots(roots);
-            BytecodeSchedulerError::Vm(error)
-        }
-        error => error,
     }
 }
 
@@ -2514,28 +2725,32 @@ fn resource_termination_for_result(
 fn project_completed_request(
     heap: &mut dyn VmHeap,
     execution_budget: &ExecutionBudget,
-    result: VmResult,
+    completion: &VmCompletion,
     mode: &str,
     raw_http_adapter: bool,
 ) -> RequestResult<BoundaryResponse> {
-    match result {
-        Ok(values) => {
-            if mode == "serverStream" {
-                if values.is_empty() {
-                    Ok(BoundaryResponse::StreamSent)
-                } else {
-                    Err(RequestError::Decode(
-                        "linked serverStream request returned unexpected scalar values".to_string(),
-                    ))
-                }
-            } else if raw_http_adapter {
-                http_response_from_vm_values(heap, values.values())
+    if let Some(values) = completion.returned_values() {
+        if mode == "serverStream" {
+            if values.is_empty() {
+                Ok(BoundaryResponse::StreamSent)
             } else {
-                json_payload_from_value_slots(heap, values.values()).map(BoundaryResponse::payload)
+                Err(RequestError::Decode(
+                    "linked serverStream request returned unexpected scalar values".to_string(),
+                ))
             }
+        } else if raw_http_adapter {
+            http_response_from_vm_values(heap, values.values())
+        } else {
+            json_payload_from_value_slots(heap, values.values()).map(BoundaryResponse::payload)
         }
-        Err(VmError::Thrown(envelope)) => Err(uncaught_throw_to_request_error(heap, &envelope)),
-        Err(error) => Err(vm_error_to_request_error(execution_budget, error)),
+    } else if completion.thrown_diagnostic().is_some() {
+        Err(uncaught_throw_to_request_error_without_payload())
+    } else if let Some(error) = completion.failure() {
+        Err(vm_error_to_request_error_ref(execution_budget, error))
+    } else {
+        Err(RequestError::Decode(
+            "bytecode VM completion has no primary diagnostic".to_string(),
+        ))
     }
 }
 
@@ -3030,9 +3245,9 @@ fn heap_error_to_request_error(error: VmHeapError) -> RequestError {
     ))
 }
 
-fn scheduler_error_to_request_error(
+fn scheduler_error_to_request_error_ref(
     execution_budget: &ExecutionBudget,
-    error: BytecodeSchedulerError,
+    error: &BytecodeSchedulerError,
 ) -> RequestError {
     match error {
         BytecodeSchedulerError::UnsupportedChild => RequestError::Unsupported(
@@ -3053,10 +3268,7 @@ fn scheduler_error_to_request_error(
         BytecodeSchedulerError::ChildOwnerCreation(_) => {
             RequestError::Decode("bytecode scheduler owner creation failed".to_string())
         }
-        BytecodeSchedulerError::StreamItemRelease(_) => RequestError::Decode(
-            "bytecode scheduler retained a stream item outside request cleanup escrow".to_string(),
-        ),
-        BytecodeSchedulerError::Vm(error) => vm_error_to_request_error(execution_budget, error),
+        BytecodeSchedulerError::Vm(error) => vm_error_to_request_error_ref(execution_budget, error),
         BytecodeSchedulerError::Port(message) => {
             RequestError::Unsupported(format!("bytecode scheduler port failed: {message}"))
         }
@@ -3311,17 +3523,24 @@ fn http_headers_from_vm(
 }
 
 fn vm_error_to_request_error(execution_budget: &ExecutionBudget, error: VmError) -> RequestError {
+    vm_error_to_request_error_ref(execution_budget, &error)
+}
+
+fn vm_error_to_request_error_ref(
+    execution_budget: &ExecutionBudget,
+    error: &VmError,
+) -> RequestError {
     match error {
-        VmError::BudgetClosed(error) => vm_budget_closed_to_request_error(execution_budget, error),
+        VmError::BudgetClosed(error) => vm_budget_closed_to_request_error(execution_budget, *error),
         VmError::InternalTerminal(VmInternalTerminal::Budget(error)) => {
-            vm_budget_closed_to_request_error(execution_budget, error)
+            vm_budget_closed_to_request_error(execution_budget, *error)
         }
         VmError::InternalTerminal(VmInternalTerminal::OwnerStopped) => RequestError::Cancelled,
         VmError::HostEffectFailure(payload) => RequestError::ExternalErrorPayload {
-            code: payload.code,
-            message: payload.message,
+            code: payload.code.clone(),
+            message: payload.message.clone(),
             status: payload.status,
-            details: payload.details,
+            details: payload.details.clone(),
         },
         // A root throw is intercepted by the scheduler outcome before this
         // projection; reaching here means the envelope cannot be materialized
@@ -3348,25 +3567,6 @@ fn bytecode_error_correlation(request: &RequestEnvelope) -> ErrorCorrelation {
     ErrorCorrelation {
         trace_id: request_id.to_string(),
         error_id: request_id.to_string(),
-    }
-}
-
-/// Projects a root uncaught user throw to the canonical ordinary error. The
-/// payload is materialized to JSON when the Phase 2 surface can encode it;
-/// private or unencodable payloads are suppressed rather than leaking fields
-/// or strings.
-fn uncaught_throw_to_request_error(
-    heap: &mut dyn VmHeap,
-    envelope: &RequestException,
-) -> RequestError {
-    let details = envelope
-        .vm_local_slot()
-        .and_then(|slot| json_value_from_slot(heap, &slot, 0).ok());
-    RequestError::ExternalErrorPayload {
-        code: "std.service.InternalError".to_string(),
-        message: "uncaught user exception".to_string(),
-        status: None,
-        details,
     }
 }
 
@@ -3465,6 +3665,7 @@ mod tests {
             execution_control: ExecutionControl::new(cancellation, &budget).owned(),
             stream_registrar: BytecodeHttpStreamRegistrar::new(resources),
             cleanup_roots: Mutex::new(Vec::new()),
+            materialization_escrows: Mutex::new(Vec::new()),
             manual_sleep_completion: Mutex::new(None),
         });
         (runtime, context)
@@ -4187,25 +4388,37 @@ mod tests {
     fn scheduler_fail_closed_errors_map_to_unsupported() {
         let budget = ExecutionBudget::for_runtime_request(None);
         assert!(matches!(
-            scheduler_error_to_request_error(&budget, BytecodeSchedulerError::UnsupportedChild),
-            RequestError::Unsupported(message) if message.contains("child executor port")
-        ));
-        assert!(matches!(
-            scheduler_error_to_request_error(&budget, BytecodeSchedulerError::UnsupportedAdapter),
-            RequestError::Unsupported(message) if message.contains("child executor port")
-        ));
-        assert!(matches!(
-            scheduler_error_to_request_error(&budget, BytecodeSchedulerError::UnsupportedStream),
-            RequestError::Unsupported(message) if message.contains("stream supervisor")
-        ));
-        assert!(matches!(
-            scheduler_error_to_request_error(&budget, BytecodeSchedulerError::UnsupportedPark),
-            RequestError::Unsupported(message) if message.contains("stream supervisor")
-        ));
-        assert!(matches!(
-            scheduler_error_to_request_error(
+            scheduler_error_to_request_error_ref(
                 &budget,
-                BytecodeSchedulerError::ChildCapacityExceeded
+                &BytecodeSchedulerError::UnsupportedChild
+            ),
+            RequestError::Unsupported(message) if message.contains("child executor port")
+        ));
+        assert!(matches!(
+            scheduler_error_to_request_error_ref(
+                &budget,
+                &BytecodeSchedulerError::UnsupportedAdapter
+            ),
+            RequestError::Unsupported(message) if message.contains("child executor port")
+        ));
+        assert!(matches!(
+            scheduler_error_to_request_error_ref(
+                &budget,
+                &BytecodeSchedulerError::UnsupportedStream
+            ),
+            RequestError::Unsupported(message) if message.contains("stream supervisor")
+        ));
+        assert!(matches!(
+            scheduler_error_to_request_error_ref(
+                &budget,
+                &BytecodeSchedulerError::UnsupportedPark
+            ),
+            RequestError::Unsupported(message) if message.contains("stream supervisor")
+        ));
+        assert!(matches!(
+            scheduler_error_to_request_error_ref(
+                &budget,
+                &BytecodeSchedulerError::ChildCapacityExceeded
             ),
             RequestError::Decode(message) if message == "bytecode scheduler blocked child capacity is exhausted"
         ));
@@ -4316,6 +4529,7 @@ mod tests {
             execution_control: ExecutionControl::new(CancellationToken::new(), &budget).owned(),
             stream_registrar: BytecodeHttpStreamRegistrar::new(_context.resource_table()),
             cleanup_roots: Mutex::new(Vec::new()),
+            materialization_escrows: Mutex::new(Vec::new()),
             manual_sleep_completion: Mutex::new(Some(completion.clone())),
         });
         let authority = RequestPendingCompletion {
@@ -4346,6 +4560,7 @@ mod tests {
             execution_control: ExecutionControl::new(CancellationToken::new(), &budget).owned(),
             stream_registrar: BytecodeHttpStreamRegistrar::new(resources),
             cleanup_roots: Mutex::new(Vec::new()),
+            materialization_escrows: Mutex::new(Vec::new()),
             manual_sleep_completion: Mutex::new(Some(completion.clone())),
         });
         let authority = RequestPendingCompletion {

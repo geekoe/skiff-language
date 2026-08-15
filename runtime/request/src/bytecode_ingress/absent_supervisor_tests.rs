@@ -395,6 +395,7 @@ fn phase_5_absent_stream_supervisor_release_failure_reaches_terminal_retry_escro
         execution_control: start.execution_control.clone(),
         stream_registrar,
         cleanup_roots: Mutex::new(Vec::new()),
+        materialization_escrows: Mutex::new(Vec::new()),
         manual_sleep_completion: Mutex::new(None),
     });
     let mut context = context.with_ports(BytecodeSchedulerPorts {
@@ -458,7 +459,13 @@ fn phase_5_absent_stream_supervisor_release_failure_reaches_terminal_retry_escro
         result,
         Err(RequestError::Unsupported(message)) if message.contains(RELEASE_FAILURE)
     ));
-    assert!(retention.cleanup_roots.as_slice() == roots.0.as_slice());
+    assert!(retention.cleanup_roots.is_empty());
+    let mut retained_roots = CollectRoots(Vec::new());
+    assert!(retention.scheduler_failure_owner.is_some());
+    retention
+        .visit_roots(&mut retained_roots)
+        .expect("request retention exposes the exact terminal root");
+    assert_eq!(retained_roots.0.as_slice(), roots.0.as_slice());
     assert_eq!(
         retention
             .heap

@@ -55,6 +55,7 @@ use skiff_runtime_model::{
         VmContainerElements, VmHeap, VmHeapError, VmHeapOperation, VmHeapPathSegment, VmMapEntry,
         VmRecordField, WritablePathPreparation,
     },
+    vm_root::{VmRootSource, VmRootVisitor},
     vm_value::{CompactTypeTag, ValueFlags, ValueSlot, VmHandle},
 };
 use skiff_runtime_request::execution_budget::{
@@ -339,6 +340,7 @@ fn scalar_gateway_deployment(
         ("number", "main.numberBody", GatewayExternalSchema::Number),
         ("bool", "main.boolBody", GatewayExternalSchema::Boolean),
         ("null", "main.nullBody", GatewayExternalSchema::Null),
+        ("throw", "main.throwBody", GatewayExternalSchema::Number),
     ];
     let mut gateway_entries = BTreeMap::new();
     let mut ingress = Vec::new();
@@ -389,7 +391,11 @@ struct ScalarGatewayFixture {
 impl ScalarGatewayFixture {
     fn build() -> Self {
         let (package, bytecode) = compile_scalar_package_with_source(
-            "function numberBody(value: number) -> number {
+            "type RequestThrow {
+  marker: number,
+}
+
+function numberBody(value: number) -> number {
   return value + 1.0
 }
 
@@ -399,6 +405,13 @@ function boolBody(value: bool) -> bool {
 
 function nullBody(value: null) -> null {
   return value
+}
+
+function throwBody(value: number) -> number {
+  if value == 1 {
+    throw RequestThrow { marker: value }
+  }
+  return 99
 }
 ",
         );
@@ -1581,6 +1594,34 @@ fn server_stream_item_type_tag() -> u32 {
         .expect("linked EmitStream has one exact item type")
 }
 
+fn uncaught_throw_value_type_tag() -> u32 {
+    let target = scalar_gateway_fixture().target("throw");
+    let function = target
+        .image()
+        .functions()
+        .get(target.function().get() as usize)
+        .filter(|row| row.index() == target.function())
+        .expect("uncaught-throw entry function remains exact");
+    function
+        .instructions()
+        .iter()
+        .enumerate()
+        .find(|(_, instruction)| instruction.opcode() == skiff_artifact_model::Opcode::Throw)
+        .and_then(|(position, _)| function.stack_map().entries().get(position))
+        .and_then(|entry| entry.stack_before().last())
+        .map(|value| value.ty().get())
+        .expect("linked root Throw has one exact payload type")
+}
+
+struct RootCounter(usize);
+
+impl VmRootVisitor for RootCounter {
+    fn visit_root(&mut self, _value: &ValueSlot) -> Result<(), VmHeapError> {
+        self.0 += 1;
+        Ok(())
+    }
+}
+
 struct TestMonotonicClock(Mutex<Instant>);
 
 impl TestMonotonicClock {
@@ -1923,7 +1964,73 @@ mod tests {
             serde_json::from_slice::<serde_json::Value>(&response_payload(response)).unwrap(),
             serde_json::json!(3.0)
         );
+        let mut roots = RootCounter(0);
+        driven
+            .retention
+            .visit_roots(&mut roots)
+            .expect("ordinary request retention root walk");
+        assert_eq!(
+            roots.0, 0,
+            "ordinary success releases its exact completion carrier before retention"
+        );
         drop(driven.retention);
+    }
+
+    #[test]
+    fn root_uncaught_throw_keeps_primary_while_terminal_release_retries_once() {
+        let trace = ServerStreamHeapTrace::new(uncaught_throw_value_type_tag(), false);
+        trace.fail_next_item_release();
+        let mut input = BytecodeRequestExecutionInput {
+            target: scalar_gateway_fixture().target("throw"),
+            request: scalar_gateway_request(
+                "throw",
+                HttpAdapterKind::TypedJson,
+                b"1",
+                vec![http_body_argument()],
+            ),
+            observer: noop_observer(),
+            cancellation: CancellationToken::new(),
+            execution_budget: Arc::new(ExecutionBudget::for_runtime_request(None)),
+            handles: BytecodeRequestExecutionHandles {
+                request_heap_limits: RequestHeapLimits::default(),
+                max_response_bytes: NonZeroUsize::new(1024).unwrap(),
+            },
+            http_client: None,
+            server_stream_writer: None,
+            heap: None,
+        };
+        input.heap = Some(Box::new(RecordingServerStreamHeap::new(Arc::clone(&trace))));
+
+        let driven = drive_runtime_bytecode_request(input);
+
+        assert!(matches!(
+            &driven.result,
+            Err(RequestError::ExternalErrorPayload { code, message, .. })
+                if code == "std.service.InternalError" && message == "uncaught user exception"
+        ));
+        assert_eq!(
+            trace.item_releases.load(Ordering::Acquire),
+            0,
+            "the injected terminal release failure must not erase the uncaught primary"
+        );
+        let mut roots = RootCounter(0);
+        driven
+            .retention
+            .visit_roots(&mut roots)
+            .expect("terminal request retention root walk");
+        assert_eq!(
+            roots.0, 1,
+            "the exact uncaught payload remains in the unique terminal cause"
+        );
+        let snapshot = driven.owner_inventory.into_snapshot();
+        assert_synchronous_owner_inventory(&snapshot);
+
+        drop(driven.retention);
+        assert_eq!(
+            trace.item_releases.load(Ordering::Acquire),
+            1,
+            "retention retries the same uncaught payload owner exactly once"
+        );
     }
 
     #[test]
