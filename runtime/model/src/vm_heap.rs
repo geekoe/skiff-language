@@ -11,7 +11,7 @@ use crate::{
     service_error::CatchIdentity,
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot, VmHandle},
 };
-use std::fmt;
+use std::{fmt, num::NonZeroU64};
 
 /// Debug projection for [`ValueSlot`], which intentionally has no `Debug`
 /// impl of its own. Exposing only kind and handle keeps the projection free of
@@ -239,6 +239,45 @@ pub enum VmHeapOperation {
     TransferOwner,
     ReleaseSnapshot,
     ReleaseResource,
+}
+
+/// Request-scoped identity of one owner-local VM heap.
+///
+/// Domain identities are minted by the request memory ledger, never by a
+/// global counter. The type is non-wrapping and intentionally wider than the
+/// old 8-bit request-heap domain so a request can never reuse a stale domain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct HeapDomainId(NonZeroU64);
+
+impl HeapDomainId {
+    pub const fn new(value: NonZeroU64) -> Self {
+        Self(value)
+    }
+
+    pub fn try_new(value: u64) -> Option<Self> {
+        Some(Self(NonZeroU64::new(value)?))
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+/// Epoch stamped on one owner-local heap at mint time.
+///
+/// Child heap carriers use this to reject stale handles after a whole-heap
+/// replacement, independently of request-scoped domain identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct HeapEpoch(u32);
+
+impl HeapEpoch {
+    pub const fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    pub const fn get(self) -> u32 {
+        self.0
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, thiserror::Error)]

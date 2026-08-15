@@ -9,6 +9,7 @@ mod error;
 pub mod execution_budget;
 mod execution_control;
 mod failure_projection;
+pub mod memory_ledger;
 mod outbound;
 mod response_event;
 mod runner;
@@ -39,6 +40,9 @@ pub use failure_projection::{
     ActiveCallSiteKey, ActiveRequestCallSite, AdmittedCallSiteProjection, ContinuationLaneId,
     ContinuationProjectionGuard, FailureProjectionError, FailureSite, RequestGeneration,
     ResumeOwnerKey, ResumeOwnerKind,
+};
+pub use memory_ledger::{
+    MemoryLedgerError, MemoryLedgerSnapshot, MemoryReservation, RequestMemoryLedger,
 };
 pub use outbound::{
     ActivationIdentityControl, ActorFindControlRequest, ActorGetOrCreateControlRequest,

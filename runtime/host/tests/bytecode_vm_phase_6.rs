@@ -12,7 +12,10 @@ use fixture::Capability;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stages::{admitted_artifact, linked_image, published_positive, scheduler_to_request, request_to_terminal};
+    use stages::{
+        admitted_artifact, linked_image, published_positive, request_to_terminal,
+        scheduler_to_request,
+    };
 
     fn assert_stage_one(capability: Capability, prefix: &str) {
         let fixture = published_positive(capability, prefix);
@@ -68,25 +71,86 @@ mod tests {
     // terminal path. On the current accepted main these capability fixtures
     // are rejected before publication, so every matrix command is a genuine
     // expected-red proof until its Phase 6 lane lands.
-    capability_matrix!(Capability::Service, "service-s1",
-        service_s1, service_s2, service_s3, service_s4, service_s5, service_s6);
-    capability_matrix!(Capability::InterfaceLocal, "interface-local-s1",
-        interface_local_s1, interface_local_s2, interface_local_s3, interface_local_s4,
-        interface_local_s5, interface_local_s6);
-    capability_matrix!(Capability::InterfaceRemote, "interface-remote-s1",
-        interface_remote_s1, interface_remote_s2, interface_remote_s3, interface_remote_s4,
-        interface_remote_s5, interface_remote_s6);
-    capability_matrix!(Capability::Callback, "callback-s1",
-        callback_s1, callback_s2, callback_s3, callback_s4, callback_s5, callback_s6);
-    capability_matrix!(Capability::Recoverable, "recoverable-s1",
-        recoverable_s1, recoverable_s2, recoverable_s3, recoverable_s4,
-        recoverable_s5, recoverable_s6);
-    capability_matrix!(Capability::Db, "db-s1",
-        db_s1, db_s2, db_s3, db_s4, db_s5, db_s6);
-    capability_matrix!(Capability::Task, "task-s1",
-        task_s1, task_s2, task_s3, task_s4, task_s5, task_s6);
-    capability_matrix!(Capability::Actor, "actor-s1",
-        actor_s1, actor_s2, actor_s3, actor_s4, actor_s5, actor_s6);
+    capability_matrix!(
+        Capability::Service,
+        "service-s1",
+        service_s1,
+        service_s2,
+        service_s3,
+        service_s4,
+        service_s5,
+        service_s6
+    );
+    capability_matrix!(
+        Capability::InterfaceLocal,
+        "interface-local-s1",
+        interface_local_s1,
+        interface_local_s2,
+        interface_local_s3,
+        interface_local_s4,
+        interface_local_s5,
+        interface_local_s6
+    );
+    capability_matrix!(
+        Capability::InterfaceRemote,
+        "interface-remote-s1",
+        interface_remote_s1,
+        interface_remote_s2,
+        interface_remote_s3,
+        interface_remote_s4,
+        interface_remote_s5,
+        interface_remote_s6
+    );
+    capability_matrix!(
+        Capability::Callback,
+        "callback-s1",
+        callback_s1,
+        callback_s2,
+        callback_s3,
+        callback_s4,
+        callback_s5,
+        callback_s6
+    );
+    capability_matrix!(
+        Capability::Recoverable,
+        "recoverable-s1",
+        recoverable_s1,
+        recoverable_s2,
+        recoverable_s3,
+        recoverable_s4,
+        recoverable_s5,
+        recoverable_s6
+    );
+    capability_matrix!(
+        Capability::Db,
+        "db-s1",
+        db_s1,
+        db_s2,
+        db_s3,
+        db_s4,
+        db_s5,
+        db_s6
+    );
+    capability_matrix!(
+        Capability::Task,
+        "task-s1",
+        task_s1,
+        task_s2,
+        task_s3,
+        task_s4,
+        task_s5,
+        task_s6
+    );
+    capability_matrix!(
+        Capability::Actor,
+        "actor-s1",
+        actor_s1,
+        actor_s2,
+        actor_s3,
+        actor_s4,
+        actor_s5,
+        actor_s6
+    );
 
     #[test]
     fn containment_disabled_surfaces_fail_closed() {

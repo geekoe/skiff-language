@@ -21,6 +21,7 @@ pub enum OwnerDomain {
     Pending,
     Resource,
     Child,
+    ChildHeap,
 }
 
 impl fmt::Display for OwnerDomain {
@@ -29,6 +30,7 @@ impl fmt::Display for OwnerDomain {
             Self::Pending => "pending",
             Self::Resource => "resource",
             Self::Child => "child",
+            Self::ChildHeap => "child-heap",
         })
     }
 }
@@ -129,6 +131,7 @@ struct InventoryState {
     pending: DomainState,
     resource: DomainState,
     child: DomainState,
+    child_heap: DomainState,
 }
 
 impl InventoryState {
@@ -138,6 +141,7 @@ impl InventoryState {
             pending: DomainState::NEVER_CREATED,
             resource: DomainState::NEVER_CREATED,
             child: DomainState::NEVER_CREATED,
+            child_heap: DomainState::NEVER_CREATED,
         }
     }
 
@@ -146,6 +150,7 @@ impl InventoryState {
             OwnerDomain::Pending => self.pending,
             OwnerDomain::Resource => self.resource,
             OwnerDomain::Child => self.child,
+            OwnerDomain::ChildHeap => self.child_heap,
         }
     }
 
@@ -154,6 +159,7 @@ impl InventoryState {
             OwnerDomain::Pending => &mut self.pending,
             OwnerDomain::Resource => &mut self.resource,
             OwnerDomain::Child => &mut self.child,
+            OwnerDomain::ChildHeap => &mut self.child_heap,
         }
     }
 }
@@ -255,6 +261,9 @@ pub(crate) struct ResourceOwnerRegistration(Arc<InventoryShared>);
 #[derive(Clone)]
 pub(crate) struct ChildOwnerRegistration(Arc<InventoryShared>);
 
+#[derive(Clone)]
+pub struct ChildHeapOwnerRegistration(Arc<InventoryShared>);
+
 // These tuple fields are intentionally never read: holding the RAII lease
 // until the wrapper drops is the complete ownership protocol.
 #[allow(dead_code)]
@@ -263,6 +272,7 @@ pub(crate) struct PendingOwnerLease(OwnerLease);
 pub(crate) struct ResourceOwnerLease(OwnerLease);
 #[allow(dead_code)]
 pub(crate) struct ChildOwnerLease(OwnerLease);
+pub struct ChildHeapOwnerLease(OwnerLease);
 
 #[must_use = "a pending creation guard must be committed or explicitly aborted"]
 pub(crate) struct PendingOwnerCreationGuard<'a>(OwnerCreationGuard<'a>);
@@ -270,6 +280,8 @@ pub(crate) struct PendingOwnerCreationGuard<'a>(OwnerCreationGuard<'a>);
 pub(crate) struct ResourceOwnerCreationGuard<'a>(OwnerCreationGuard<'a>);
 #[must_use = "a child creation guard must be committed or explicitly aborted"]
 pub(crate) struct ChildOwnerCreationGuard<'a>(OwnerCreationGuard<'a>);
+#[must_use = "a child heap creation guard must be committed or explicitly aborted"]
+pub(crate) struct ChildHeapOwnerCreationGuard<'a>(OwnerCreationGuard<'a>);
 
 macro_rules! opaque_lease_debug {
     ($lease:ident) => {
@@ -286,6 +298,7 @@ macro_rules! opaque_lease_debug {
 opaque_lease_debug!(PendingOwnerLease);
 opaque_lease_debug!(ResourceOwnerLease);
 opaque_lease_debug!(ChildOwnerLease);
+opaque_lease_debug!(ChildHeapOwnerLease);
 
 macro_rules! opaque_guard_debug {
     ($guard:ident) => {
@@ -302,6 +315,7 @@ macro_rules! opaque_guard_debug {
 opaque_guard_debug!(PendingOwnerCreationGuard);
 opaque_guard_debug!(ResourceOwnerCreationGuard);
 opaque_guard_debug!(ChildOwnerCreationGuard);
+opaque_guard_debug!(ChildHeapOwnerCreationGuard);
 
 impl fmt::Debug for PendingOwnerRegistration {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -358,6 +372,14 @@ impl fmt::Debug for ChildOwnerRegistration {
     }
 }
 
+impl fmt::Debug for ChildHeapOwnerRegistration {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ChildHeapOwnerRegistration")
+            .finish_non_exhaustive()
+    }
+}
+
 macro_rules! registration_guard {
     ($registration:ident, $guard:ident, $lease:ident, $domain:ident) => {
         impl $registration {
@@ -392,11 +414,28 @@ registration_guard!(
     ChildOwnerLease,
     Child
 );
+registration_guard!(
+    ChildHeapOwnerRegistration,
+    ChildHeapOwnerCreationGuard,
+    ChildHeapOwnerLease,
+    ChildHeap
+);
+
+impl ChildHeapOwnerRegistration {
+    /// Mints one child heap owner lease against the request inventory.
+    ///
+    /// The lease is affine and releases its inventory count when the child
+    /// heap carrier drops.
+    pub fn mint_lease(&self) -> Result<ChildHeapOwnerLease, OwnerCreationError> {
+        Ok(self.prepare()?.commit())
+    }
+}
 
 pub(crate) struct RequestExecutionOwnerRegistrations {
     pending: Option<PendingOwnerRegistration>,
     resource: ResourceOwnerRegistration,
     child: ChildOwnerRegistration,
+    child_heap: ChildHeapOwnerRegistration,
 }
 
 impl RequestExecutionOwnerRegistrations {
@@ -420,6 +459,10 @@ impl RequestExecutionOwnerRegistrations {
     pub(crate) fn child(&self) -> ChildOwnerRegistration {
         self.child.clone()
     }
+
+    pub(crate) fn child_heap(&self) -> ChildHeapOwnerRegistration {
+        self.child_heap.clone()
+    }
 }
 
 /// One request's actual owner inventory and unique freeze authority.
@@ -441,6 +484,7 @@ impl RequestExecutionOwnerInventory {
                 pending: Some(PendingOwnerRegistration(Arc::clone(&shared))),
                 resource: ResourceOwnerRegistration(Arc::clone(&shared)),
                 child: ChildOwnerRegistration(Arc::clone(&shared)),
+                child_heap: ChildHeapOwnerRegistration(Arc::clone(&shared)),
             },
             freeze: RequestExecutionOwnerInventoryFreezePermit { shared },
         }
@@ -469,10 +513,18 @@ impl RequestExecutionOwnerInventoryFreezePermit {
             "the unique inventory freeze permit cannot observe a prior freeze"
         );
         state.phase = InventoryPhase::Frozen;
+        let child = FrozenOwnerDomain::from(state.child);
+        let child_heap = FrozenOwnerDomain::from(state.child_heap);
+        // The public Phase 4 snapshot keeps `child` as the stable owner count.
+        // It now aggregates blocked child units and child heap owner leases so
+        // the single inventory still has one observable child authority.
         RequestExecutionOwnerInventorySnapshot {
             pending: state.pending.into(),
             resource: state.resource.into(),
-            child: state.child.into(),
+            child: FrozenOwnerDomain {
+                current: child.current.saturating_add(child_heap.current),
+                ever_created: child.ever_created || child_heap.ever_created,
+            },
         }
     }
 }
@@ -533,6 +585,15 @@ where
     /// table before freezing the owner inventory.
     pub fn resource_table(&self) -> RequestResourceTable {
         self.resources.clone()
+    }
+
+    /// Clones this request's child-heap owner registration.
+    ///
+    /// The registration cannot mint a second inventory or root graph; it only
+    /// creates child heap owner leases inside the same frozen-able owner
+    /// inventory.
+    pub fn child_heap_registration(&self) -> ChildHeapOwnerRegistration {
+        self.registrations.child_heap()
     }
 
     /// Replaces the scheduler ports installed at [`Self::create`].
@@ -751,6 +812,18 @@ mod tests {
     }
 
     #[test]
+    fn frozen_inventory_rejects_child_heap_lease_without_minting_one() {
+        let (registrations, freeze) = open_inventory();
+        let snapshot = freeze.freeze();
+
+        let error = registrations.child_heap().mint_lease().unwrap_err();
+        assert_eq!(error.domain(), OwnerDomain::ChildHeap);
+        assert_eq!(error.kind(), OwnerCreationErrorKind::InventoryFrozen);
+        assert_eq!(snapshot.child.current, 0);
+        assert!(!snapshot.child.ever_created);
+    }
+
+    #[test]
     fn aborting_a_prepared_creation_preserves_never_created() {
         let (registrations, freeze) = open_inventory();
 
@@ -759,6 +832,26 @@ mod tests {
         let snapshot = freeze.freeze();
         assert_eq!(snapshot.resource.current, 0);
         assert!(!snapshot.resource.ever_created);
+    }
+
+    #[test]
+    fn child_heap_lease_counts_through_the_same_frozen_inventory() {
+        let (registrations, freeze) = open_inventory();
+        let first = registrations.child_heap().prepare().unwrap().commit();
+        let second = registrations.child_heap().prepare().unwrap().commit();
+
+        let live = freeze.freeze();
+        assert_eq!(live.child.current, 2);
+        assert!(live.child.ever_created);
+
+        drop(first);
+        drop(second);
+        let (registrations, freeze) = open_inventory();
+        let lease = registrations.child_heap().prepare().unwrap().commit();
+        drop(lease);
+        let released = freeze.freeze();
+        assert_eq!(released.child.current, 0);
+        assert!(released.child.ever_created);
     }
 
     #[test]
@@ -773,6 +866,19 @@ mod tests {
         ));
         drop(registration);
         assert_eq!(context.into_not_started().pending.current, 0);
+    }
+
+    #[test]
+    fn execution_context_exposes_child_heap_registration_against_its_own_inventory() {
+        let mut context =
+            RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
+        let registration = context.child_heap_registration();
+        let lease = registration.mint_lease().unwrap();
+        let snapshot = context.into_not_started();
+
+        assert_eq!(snapshot.child.current, 1);
+        assert!(snapshot.child.ever_created);
+        drop(lease);
     }
 
     #[test]
