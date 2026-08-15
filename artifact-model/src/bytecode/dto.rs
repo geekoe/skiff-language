@@ -588,12 +588,8 @@ pub enum BoundaryTransfer {
 pub enum BoundaryDropPlan {
     Trivial,
     SnapshotRelease,
-    RecursiveShape {
-        shape_ref: u32,
-    },
-    NativeAdapter {
-        adapter: NativeValueAdapterRef,
-    },
+    RecursiveShape { shape_ref: u32 },
+    NativeAdapter { adapter: NativeValueAdapterRef },
 }
 
 /// One exact boundary value fact. The canonical contract type, existing

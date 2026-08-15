@@ -164,9 +164,9 @@ fn corpus_rejects_wrong_relocation_and_pool_entry_kinds() {
         .relocations[0] = BytecodeRelocation::ServiceOperationRef {
         service_call: crate::bytecode::dto::ServiceCallBoundaryFacts::new(
             crate::ServiceCallRef {
-            service_requirement_slot: 0,
-            contract_operation_id: crate::ContractOperationId::new("operation:wrong"),
-            expected_protocol_identity: crate::ServiceProtocolIdentity::new("protocol:wrong"),
+                service_requirement_slot: 0,
+                contract_operation_id: crate::ContractOperationId::new("operation:wrong"),
+                expected_protocol_identity: crate::ServiceProtocolIdentity::new("protocol:wrong"),
             },
             service_boundary_plan(),
         ),

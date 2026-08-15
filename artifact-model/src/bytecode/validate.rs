@@ -26,6 +26,7 @@ use self::plans::{
 
 use std::collections::BTreeSet;
 
+use crate::boundary::{BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValuePlan};
 use crate::bytecode::authority::{
     FunctionStreamEndContract, FunctionStreamItemAuthority, IntrinsicAdapterResultPlan,
     IntrinsicResumeContract, ValidatedFunctionStreamItem, ValidatedIntrinsicContract,
@@ -39,13 +40,12 @@ use crate::bytecode::dto::{
     BytecodeConstantRef, BytecodePoolEntry, BytecodePools, CallbackCaptureLayout, DebugBinding,
     DebugTable, ExceptionRegion, FrameLayout, FrozenConstantGraph, HostEffectReference,
     RelocatableBytecodeFunction, ServiceBoundaryPlan, ServiceCallbackPlan, SwitchTable,
-    ValueDropPlan, ValueTransferPlan, WritablePathSegment, BYTECODE_ISA_VERSION,
-    BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    ValueDropPlan, ValueTransferPlan, WritablePathSegment, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
+    BYTECODE_SCHEMA_VERSION,
 };
 use crate::bytecode::opcodes::{opcode_table_fingerprint, PoolCategory};
-use crate::boundary::{BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValuePlan};
-use crate::ContractLiteral;
 use crate::types::TypeRefIr;
+use crate::ContractLiteral;
 
 /// Structured validation failure: check category (C1–C8) plus location and
 /// details.
@@ -1884,16 +1884,13 @@ fn validate_service_boundary_plan(
         ));
     }
     for (index, value) in plan.arguments.iter().enumerate() {
-        validate_boundary_value_fact(
-            value,
-            &format!("{location}.arguments[{index}]"),
-        )?;
+        validate_boundary_value_fact(value, &format!("{location}.arguments[{index}]"))?;
     }
     for (index, value) in plan.results.iter().enumerate() {
         validate_boundary_value_fact(value, &format!("{location}.results[{index}]"))?;
     }
     validate_boundary_error_plan(&plan.error, &format!("{location}.error"))?;
-    if let Some(stream_item) = &plan.stream_item {
+    if let Some(_stream_item) = &plan.stream_item {
         return Err(table_error(
             "",
             format!("{location}.streamItem is disabled in the first service boundary lane"),
@@ -1923,14 +1920,11 @@ fn validate_boundary_error_plan(
             admission: BoundaryErrorAdmission::PublicNameableSchemaClosed,
             fallback_identity: BoundaryErrorFallbackIdentity::StdServiceInternalError,
         } => {}
-        _ => {
-            return Err(table_error(
-                "",
-                format!("{location}.policy must be the exact dynamic public-schema policy"),
-            ));
-        }
     }
-    if !matches!(plan.transfer, BoundaryTransfer::Copy | BoundaryTransfer::Move) {
+    if !matches!(
+        plan.transfer,
+        BoundaryTransfer::Copy | BoundaryTransfer::Move
+    ) {
         return Err(table_error(
             "",
             format!("{location}.transfer is not a canonical boundary transfer"),
@@ -1946,7 +1940,10 @@ fn validate_boundary_value_fact(
 ) -> Result<(), StructuralValidationError> {
     validate_boundary_contract_type(&value.contract_type, location, 0)?;
     validate_boundary_value_plan(&value.value_plan, location)?;
-    if !matches!(value.transfer, BoundaryTransfer::Copy | BoundaryTransfer::Move) {
+    if !matches!(
+        value.transfer,
+        BoundaryTransfer::Copy | BoundaryTransfer::Move
+    ) {
         return Err(table_error(
             "",
             format!("{location}.transfer is not a canonical boundary transfer"),
@@ -1993,7 +1990,10 @@ fn validate_boundary_drop_plan(
             }
         }
         BoundaryDropPlan::NativeAdapter { adapter } => {
-            validate_adapter_key(&adapter.binding_key, &format!("{location}.adapter.bindingKey"))?;
+            validate_adapter_key(
+                &adapter.binding_key,
+                &format!("{location}.adapter.bindingKey"),
+            )?;
         }
     }
     Ok(())
@@ -2004,7 +2004,7 @@ fn validate_boundary_contract_type(
     location: &str,
     depth: u32,
 ) -> Result<(), StructuralValidationError> {
-    if depth >= limits::MAX_NESTING_DEPTH {
+    if u64::from(depth) >= limits::MAX_NESTING_DEPTH {
         return Err(limit_error(
             "MAX_NESTING_DEPTH",
             limits::MAX_NESTING_DEPTH,
@@ -2015,7 +2015,10 @@ fn validate_boundary_contract_type(
     match ty {
         crate::ContractTypeRef::Builtin { name, arguments } => {
             if name.is_empty() {
-                return Err(table_error("", format!("{location}.name must not be empty")));
+                return Err(table_error(
+                    "",
+                    format!("{location}.name must not be empty"),
+                ));
             }
             for (index, child) in arguments.iter().enumerate() {
                 validate_boundary_contract_type(
@@ -2040,7 +2043,10 @@ fn validate_boundary_contract_type(
         crate::ContractTypeRef::Record { fields } => {
             for (name, child) in fields {
                 if name.is_empty() {
-                    return Err(table_error("", format!("{location}.fields key must not be empty")));
+                    return Err(table_error(
+                        "",
+                        format!("{location}.fields key must not be empty"),
+                    ));
                 }
                 validate_boundary_contract_type(
                     child,
@@ -2130,7 +2136,7 @@ fn validate_relocation_facts(
                     ),
                 ));
             }
-            validate_service_boundary_plan(service_call.boundary_plan(), location)?;
+            validate_service_boundary_plan(service_call.boundary_plan(), &location)?;
         }
         BytecodeRelocation::ActorMethodRef {
             actor,

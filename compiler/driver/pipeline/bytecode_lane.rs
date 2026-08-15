@@ -2,14 +2,14 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     derive_bytecode_statement_manifest_identity, http_boundary::canonical_http_boundary_type,
-    validate_current_platform_error_projection_registry_ref, BytecodeArtifactRef,
-    BytecodeFunctionStatementManifest, BoundaryDropPlan, BoundaryErrorAdmission,
-    BoundaryErrorFallbackIdentity, BoundaryErrorPlan, BoundaryErrorPolicy, BoundaryTransfer,
-    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueFact, BoundaryValueLifetime,
-    BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary, CallableMayEffects,
-    ContractLiteral, ContractTypeRef, GatewayDispatchMode, GatewayProtocolSurface, LiteralIr,
-    PackageArtifact, PackageLocalAbiSymbol, PackageRefIr, PackageTypeRef, PendingEffectCategory,
-    ServiceBoundaryPlan, ServiceCallbackPlan, ServiceCallRef, TypeDescriptorIr, TypeRefIr,
+    validate_current_platform_error_projection_registry_ref, BoundaryDropPlan,
+    BoundaryErrorAdmission, BoundaryErrorFallbackIdentity, BoundaryErrorPlan, BoundaryErrorPolicy,
+    BoundaryTransfer, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueFact,
+    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, BytecodeArtifactRef,
+    BytecodeFunctionStatementManifest, CallableEffectSummary, CallableMayEffects, ContractLiteral,
+    ContractTypeRef, GatewayDispatchMode, GatewayProtocolSurface, LiteralIr, PackageArtifact,
+    PackageLocalAbiSymbol, PackageRefIr, PackageTypeRef, PendingEffectCategory,
+    ServiceBoundaryPlan, ServiceCallRef, ServiceCallbackPlan, TypeDescriptorIr, TypeRefIr,
     ValueProvenance,
 };
 use skiff_compiler_compiled::{
@@ -234,19 +234,14 @@ fn service_boundary_plans(
     compiled: &CompiledPackage,
 ) -> Result<BTreeMap<ServiceCallRef, ServiceBoundaryPlan>, PackageCompileError> {
     let mut plans = BTreeMap::new();
-    let fallback_contract_type = if compiled.lowered().service_calls().call_sites().next().is_some() {
+    let fallback_contract_type = if !compiled.lowered().service_calls().call_sites().is_empty() {
         let fallback_record = compiled
             .compile_model()
             .dependency_analysis()
-            .package_type_by_owner_and_stable_key(
-                "skiff.run/std",
-                "std.service.InternalError",
-            )
-            .ok_or_else(|| {
-                PackageCompileError::ContractValidation {
-                    message: "service bytecode lane cannot resolve std.service.InternalError"
-                        .to_string(),
-                }
+            .package_type_by_owner_and_stable_key("skiff.run/std", "std.service.InternalError")
+            .ok_or_else(|| PackageCompileError::ContractValidation {
+                message: "service bytecode lane cannot resolve std.service.InternalError"
+                    .to_string(),
             })?;
         Some(ContractTypeRef::package_schema(
             fallback_record.package_id.clone(),
@@ -275,8 +270,9 @@ fn service_boundary_plans(
         if let Some(previous) = plans.get(&service_call) {
             if previous != &plan {
                 return Err(PackageCompileError::ContractValidation {
-                    message: "the same service call reference resolves to conflicting boundary plans"
-                        .to_string(),
+                    message:
+                        "the same service call reference resolves to conflicting boundary plans"
+                            .to_string(),
                 });
             }
         } else {
@@ -353,9 +349,12 @@ fn compile_service_boundary_plan(
         callbacks: ServiceCallbackPlan::None,
         effects: CallableEffectSummary::Analyzed {
             effects: CallableMayEffects {
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
                 may_pending: true,
                 pending_effect_categories: vec![PendingEffectCategory::ServiceCall],
-                ..CallableMayEffects::default()
+                inout_path_effects: Vec::new(),
             },
         },
     })

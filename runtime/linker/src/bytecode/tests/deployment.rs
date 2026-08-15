@@ -1089,10 +1089,7 @@ fn production_entry_links_reachable_service_operation_from_compiler_plan() {
 
     assert_eq!(candidate.service_operations().len(), 1);
     let target = &candidate.service_operations()[0];
-    assert_eq!(
-        target.service_requirement_key().service_requirement_slot,
-        7
-    );
+    assert_eq!(target.service_requirement_key().service_requirement_slot, 7);
     assert_eq!(target.boundary_plan().arguments().len(), 0);
     assert_eq!(target.boundary_plan().results().len(), 0);
     assert_eq!(

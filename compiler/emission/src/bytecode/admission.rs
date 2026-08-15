@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     AssignTargetIr, BinaryOpIr, CallTargetIr, CallableEffectSummary, ExprIr, ExprRefIr, LiteralIr,
-    NamedUnionBranchIr, NativeTarget, StatementAttributionId, TypeDescriptorIr, TypeRefIr,
-    ServiceBoundaryPlan, ServiceCallRef,
+    NamedUnionBranchIr, NativeTarget, ServiceBoundaryPlan, ServiceCallRef, StatementAttributionId,
+    TypeDescriptorIr, TypeRefIr,
 };
 use skiff_compiler_lowering::mir::{
     MirCallArgument, MirEmissionAnchor, MirExecutableKind, MirFunction, MirParamMode, MirSlotKind,
@@ -288,7 +288,10 @@ fn validate_service_boundary_plan_coverage(
             }
         })?;
         if plan.stream_item.is_some()
-            || !matches!(plan.callbacks, skiff_artifact_model::ServiceCallbackPlan::None)
+            || !matches!(
+                plan.callbacks,
+                skiff_artifact_model::ServiceCallbackPlan::None
+            )
         {
             return Err(BytecodeEmissionError::UnsupportedServiceBoundaryPlan {
                 location: format!("service call {service_call:?}"),

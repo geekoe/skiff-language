@@ -5,11 +5,11 @@ use skiff_artifact_model::{
     ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, BoundaryDropPlan,
     BoundaryErrorAdmission, BoundaryErrorFallbackIdentity, BoundaryErrorPlan, BoundaryErrorPolicy,
     BoundaryTransfer, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-    BoundaryValueOwner, BoundaryValuePlan, ContractOperationId, GatewayAdapterKind,
-    GatewayAdapterPlan, HostEffectExecutorIdentity, InterfaceInstantiationRef,
+    BoundaryValueOwner, BoundaryValuePlan, ContractOperationId, ContractTypeRef,
+    GatewayAdapterKind, GatewayAdapterPlan, HostEffectExecutorIdentity, InterfaceInstantiationRef,
     NativeValueAdapterRole, NativeValueLifecycleAdapter, PackageBuildId, PackageCallableId,
     ReceiverCallAbi, ServiceProtocolIdentity, ServiceRequirementKey, ServiceSymbolRef, TypeRefIr,
-    ValueProvenance, ContractTypeRef,
+    ValueProvenance,
 };
 
 use crate::{
@@ -154,7 +154,10 @@ fn symbolic_service_target_retains_protocol_without_provider() {
     assert_eq!(target.contract_operation_id(), &operation);
     assert_eq!(target.expected_protocol_identity(), &protocol);
     assert_eq!(target.signature().parameter_types(), [TypeIndex::new(0)]);
-    assert_eq!(target.boundary_plan().callbacks(), LinkedServiceCallbackPlan::None);
+    assert_eq!(
+        target.boundary_plan().callbacks(),
+        LinkedServiceCallbackPlan::None
+    );
     assert!(target.boundary_plan().arguments().is_empty());
 }
 

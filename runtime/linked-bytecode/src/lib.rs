@@ -76,9 +76,9 @@ pub use targets::{
     LinkedIntrinsicCanonicalKey, LinkedIntrinsicKind, LinkedIntrinsicTarget,
     LinkedIntrinsicTargetError, LinkedLocalInterfaceMethod, LinkedLocalInterfaceTable,
     LinkedOperationEntry, LinkedPublicInstanceKey, LinkedRemoteInterfaceMethod,
-    LinkedRemoteInterfaceTable, LinkedRepresentationCarrier, LinkedServiceOperationTarget,
-    LinkedServiceBoundaryErrorPlan, LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue,
-    LinkedServiceCallbackPlan, LinkedShapeEntry, LinkedShapeError, LinkedShapeField,
+    LinkedRemoteInterfaceTable, LinkedRepresentationCarrier, LinkedServiceBoundaryErrorPlan,
+    LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue, LinkedServiceCallbackPlan,
+    LinkedServiceOperationTarget, LinkedShapeEntry, LinkedShapeError, LinkedShapeField,
     LinkedStaticIntrinsicTarget, LinkedSyntheticCallbackTarget, LinkedTypeEntry,
 };
 

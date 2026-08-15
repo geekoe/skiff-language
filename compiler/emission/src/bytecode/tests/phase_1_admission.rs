@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    CallIr, CallTargetIr, CallableEffectSummary, CallableMayEffects, ExprIr, ExprRefIr, FileIrUnit,
-    ContractOperationId, InstructionSourceSite, LiteralIr, PackageCallableId, ServiceCallRef,
+    CallIr, CallTargetIr, CallableEffectSummary, CallableMayEffects, ContractOperationId, ExprIr,
+    ExprRefIr, FileIrUnit, InstructionSourceSite, LiteralIr, PackageCallableId, ServiceCallRef,
     ServiceProtocolIdentity, SyntheticInstructionSiteReason, TypeRefIr,
 };
 use skiff_compiler_lowering::mir::{

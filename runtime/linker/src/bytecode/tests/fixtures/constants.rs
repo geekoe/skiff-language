@@ -66,6 +66,7 @@ impl Fixture {
                 constant: Some(dependency),
             }),
             false,
+            None,
         )
     }
 

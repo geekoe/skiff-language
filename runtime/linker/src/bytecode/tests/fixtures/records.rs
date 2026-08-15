@@ -2,17 +2,17 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryDropPlan, BoundaryEffectGuarantee, BoundaryErrorAdmission,
-    BoundaryErrorFallbackIdentity, BoundaryErrorPlan, BoundaryErrorPolicy, BoundaryOperationContract,
-    BoundaryOperationDescriptor, BoundaryParameter, BoundaryReturn, BoundaryStreamContract,
-    BoundaryTransfer, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-    BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary, CallableMayEffects,
-    ContractDiagnosticText, ContractOperationId, ContractRequirement, ContractTypeRef,
-    DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentOperationBinding,
-    DeploymentRevision, PackageArtifact, PackageArtifactRef, PackageBinding, PackageCallableId,
-    PendingEffectCategory, ServiceBoundaryPlan, ServiceCallbackPlan, ServiceCallRef, ServiceContract,
-    ServiceContractRef, ServiceDeployment, ServiceProtocolIdentity, ServiceRequirement,
-    ServiceRequirementKey, ServiceSelectorBinding, ValueProvenance, SERVICE_CONTRACT_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    BoundaryErrorFallbackIdentity, BoundaryErrorPlan, BoundaryErrorPolicy,
+    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryParameter, BoundaryReturn,
+    BoundaryStreamContract, BoundaryTransfer, BoundaryValueCarrier, BoundaryValueEncoding,
+    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary,
+    CallableMayEffects, ContractDiagnosticText, ContractOperationId, ContractRequirement,
+    ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
+    DeploymentOperationBinding, DeploymentRevision, PackageArtifact, PackageArtifactRef,
+    PackageBinding, PackageCallableId, PendingEffectCategory, ServiceBoundaryPlan, ServiceCallRef,
+    ServiceCallbackPlan, ServiceContract, ServiceContractRef, ServiceDeployment,
+    ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding,
+    ValueProvenance, SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
 use super::RootProgram;
@@ -192,9 +192,12 @@ pub(super) fn service_boundary_plan() -> ServiceBoundaryPlan {
         callbacks: ServiceCallbackPlan::None,
         effects: CallableEffectSummary::Analyzed {
             effects: CallableMayEffects {
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
                 may_pending: true,
                 pending_effect_categories: vec![PendingEffectCategory::ServiceCall],
-                ..CallableMayEffects::default()
+                inout_path_effects: Vec::new(),
             },
         },
     }

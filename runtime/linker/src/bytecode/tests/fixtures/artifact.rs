@@ -2,10 +2,10 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
-    bytecode::opcodes::opcode_table_fingerprint, BytecodeArtifact, BytecodeFunctionOrigin,
-    BytecodeImage, BytecodeIntrinsicRef, BytecodePoolEntry, BytecodePools, BytecodeRelocation,
-    BoundaryDropPlan, BoundaryTransfer, BoundaryValueCarrier, BoundaryValueEncoding,
-    BoundaryValueFact, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+    bytecode::opcodes::opcode_table_fingerprint, BoundaryDropPlan, BoundaryTransfer,
+    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueFact, BoundaryValueLifetime,
+    BoundaryValueOwner, BoundaryValuePlan, BytecodeArtifact, BytecodeFunctionOrigin, BytecodeImage,
+    BytecodeIntrinsicRef, BytecodePoolEntry, BytecodePools, BytecodeRelocation,
     BytecodeSpecialization, CallbackCaptureLayout, ContractTypeRef, FrameLayout,
     FrozenConstantGraph, HostEffectReference, HostEffectSignature, InstructionSourceSite,
     IntrinsicReference, NativeTarget, PackageCallableId, PackageExecutableCoordinate,
@@ -43,18 +43,21 @@ pub(super) fn service_operation_artifact(drifted: bool) -> Arc<ValidatedBytecode
         let BytecodeRelocation::ServiceOperationRef { service_call } = relocation else {
             panic!("service operation fixture has a service relocation")
         };
-        service_call.boundary_plan_mut().arguments.push(BoundaryValueFact {
-            contract_type: ContractTypeRef::builtin("string"),
-            value_plan: BoundaryValuePlan::Linkable {
-                carrier: BoundaryValueCarrier::DetachedValueGraph,
-                encoding: BoundaryValueEncoding::CanonicalValue,
-                owner: BoundaryValueOwner::Caller,
-                lifetime: BoundaryValueLifetime::Call,
-            },
-            transfer: BoundaryTransfer::Copy,
-            drop: BoundaryDropPlan::SnapshotRelease,
-            source: ValueProvenance::CallerParameter { index: 0 },
-        });
+        service_call
+            .boundary_plan_mut()
+            .arguments
+            .push(BoundaryValueFact {
+                contract_type: ContractTypeRef::builtin("string"),
+                value_plan: BoundaryValuePlan::Linkable {
+                    carrier: BoundaryValueCarrier::DetachedValueGraph,
+                    encoding: BoundaryValueEncoding::CanonicalValue,
+                    owner: BoundaryValueOwner::Caller,
+                    lifetime: BoundaryValueLifetime::Call,
+                },
+                transfer: BoundaryTransfer::Copy,
+                drop: BoundaryDropPlan::SnapshotRelease,
+                source: ValueProvenance::CallerParameter { index: 0 },
+            });
     }
     skiff_artifact_identity::assign_bytecode_identity(&mut artifact).unwrap();
     Arc::new(ValidatedBytecodeArtifact::admit(artifact).unwrap())
@@ -558,11 +561,8 @@ fn root_body(
             vec![source_map(2, 4), source_map(6, 8)],
         ),
         RootProgram::ServiceOperation => {
-            let (provider_contract, _, provider_operation) = super::records::contract(
-                "example.bytecode-link-provider",
-                "call",
-                false,
-            );
+            let (provider_contract, _, provider_operation) =
+                super::records::contract("example.bytecode-link-provider", "call", false);
             let service_call = ServiceCallRef {
                 service_requirement_slot: 7,
                 contract_operation_id: provider_operation,

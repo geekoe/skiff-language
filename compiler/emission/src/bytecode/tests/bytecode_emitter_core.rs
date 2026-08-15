@@ -5,8 +5,7 @@ mod tests {
     use crate::bytecode::{
         emitter::{
             emit_bytecode_artifact_unchecked as emit_bytecode_artifact,
-            emit_bytecode_artifact_unchecked_with_service_boundary_plans
-                as emit_bytecode_artifact_with_service_boundary_plans,
+            emit_bytecode_artifact_unchecked_with_service_boundary_plans as emit_bytecode_artifact_with_service_boundary_plans,
         },
         plans::{
             derive_bytecode_value_transfer_plans_unchecked as derive_bytecode_value_transfer_plans,
@@ -21,16 +20,16 @@ mod tests {
         DbOperationIr, DbTargetIr, ExprIr, ExprRefIr, ExternalRefTable, FileIrUnit,
         FunctionTypeParamIr, InstructionSourceSite, InterfaceInstantiationRef,
         InterfaceMethodSlotSignatureIr, LiteralIr, NativeTarget, PackageCallableId, PatternIr,
-        RemoteOperationSlotPlanIr, RemoteOperationTablePlanIr, ResourceDropPlan, ServiceBoundaryPlan,
-        ServiceCallRef, ServiceProtocolIdentity, ServiceSymbolRef, SourcePosition, SourceSpanRef,
-        SyntheticInstructionSiteReason, TypeDeclIr, TypeDescriptorIr, TypeRefIr, ValueDropPlan,
-        ValueTransferPlan,
+        RemoteOperationSlotPlanIr, RemoteOperationTablePlanIr, ResourceDropPlan,
+        ServiceBoundaryPlan, ServiceCallRef, ServiceProtocolIdentity, ServiceSymbolRef,
+        SourcePosition, SourceSpanRef, SyntheticInstructionSiteReason, TypeDeclIr,
+        TypeDescriptorIr, TypeRefIr, ValueDropPlan, ValueTransferPlan,
     };
     use skiff_artifact_model::{
         BoundaryDropPlan, BoundaryErrorAdmission, BoundaryErrorFallbackIdentity, BoundaryErrorPlan,
         BoundaryErrorPolicy, BoundaryTransfer, BoundaryValueCarrier, BoundaryValueEncoding,
-        BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ValueProvenance,
-        ServiceCallbackPlan,
+        BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ServiceCallbackPlan,
+        ValueProvenance,
     };
     use skiff_compiler_lowering::{
         mir::{

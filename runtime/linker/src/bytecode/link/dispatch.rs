@@ -2,21 +2,21 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     self, BoundaryDropPlan, BoundaryTransfer, BoundaryValueFact, BoundaryValuePlan,
-    BytecodeIntrinsicRef, BytecodeRelocation, CallableEffectSummary, CallableRegistryTypeExpression,
-    ContractLiteral, ContractOperationId, ContractTypeRef, HostEffectExecutorIdentity,
-    HostEffectRegistryEntry, InterfaceInstantiationRef, LiteralIr, PackageBuildId,
-    PackageLocalAbiSymbol, PackageRefIr, PackageSchemaTypeId, PackageSymbolRef, ParamModeIr,
-    ResolvedPackageValueType, ServiceBoundaryPlan, ServiceCallbackPlan, ServiceRequirementKey,
-    TypeRefIr, ValueLifecycleFactResolver, ValueLifecyclePolicyBudget, ValueLifecycleResolverError,
-    ValueProvenance,
+    BytecodeIntrinsicRef, BytecodeRelocation, CallableEffectSummary,
+    CallableRegistryTypeExpression, ContractLiteral, ContractOperationId, ContractTypeRef,
+    HostEffectExecutorIdentity, HostEffectRegistryEntry, InterfaceInstantiationRef, LiteralIr,
+    PackageBuildId, PackageLocalAbiSymbol, PackageRefIr, PackageSchemaTypeId, PackageSymbolRef,
+    ParamModeIr, ResolvedPackageValueType, ServiceBoundaryPlan, ServiceCallbackPlan,
+    ServiceRequirementKey, TypeRefIr, ValueLifecycleFactResolver, ValueLifecyclePolicyBudget,
+    ValueLifecycleResolverError, ValueProvenance,
 };
 use skiff_runtime_linked_bytecode::{
     ArtifactFunctionKey, FunctionIndex, LinkedActorCreateTarget, LinkedActorImplementationRef,
-    LinkedActorMethodTarget, LinkedCallableSignature, LinkedFrameLayout, LinkedHostEffectAdapterTarget,
-    LinkedInterfaceTable, LinkedInterfaceTableKind, LinkedNativeCallableSignature,
-    LinkedServiceBoundaryErrorPlan, LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue,
-    LinkedServiceCallbackPlan, LinkedServiceOperationTarget, LinkedSyntheticCallbackTarget,
-    ServiceOperationIndex, SpecializationKey,
+    LinkedActorMethodTarget, LinkedCallableSignature, LinkedFrameLayout,
+    LinkedHostEffectAdapterTarget, LinkedInterfaceTable, LinkedInterfaceTableKind,
+    LinkedNativeCallableSignature, LinkedServiceBoundaryErrorPlan, LinkedServiceBoundaryPlan,
+    LinkedServiceBoundaryValue, LinkedServiceCallbackPlan, LinkedServiceOperationTarget,
+    LinkedSyntheticCallbackTarget, ServiceOperationIndex, SpecializationKey,
 };
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
@@ -113,13 +113,8 @@ impl DeploymentLinker<'_> {
                 caller_package_build_id: caller_package_build_id.clone(),
                 service_requirement_slot: service_call.service_requirement_slot,
             };
-            let location = BytecodeLinkLocation::ServiceDependency {
-                key: key.clone(),
-            };
-            if !seen.insert((
-                key.clone(),
-                service_call.contract_operation_id.clone(),
-            )) {
+            let location = BytecodeLinkLocation::ServiceDependency { key: key.clone() };
+            if !seen.insert((key.clone(), service_call.contract_operation_id.clone())) {
                 return Err(unsatisfied(
                     BytecodeLinkObligation::ConcreteTargetTables,
                     location,
@@ -134,11 +129,13 @@ impl DeploymentLinker<'_> {
                     unsatisfied(
                         BytecodeLinkObligation::ConcreteTargetTables,
                         location.clone(),
-                        "compiler-emitted service call has no hydrated dependency slot"
-                            .to_string(),
+                        "compiler-emitted service call has no hydrated dependency slot".to_string(),
                     )
                 })?;
-            if !dependency.used_operations().contains(&service_call.contract_operation_id) {
+            if !dependency
+                .used_operations()
+                .contains(&service_call.contract_operation_id)
+            {
                 return Err(unsatisfied(
                     BytecodeLinkObligation::ConcreteTargetTables,
                     location.clone(),
@@ -259,8 +256,7 @@ impl DeploymentLinker<'_> {
             type_linker,
             location.clone(),
         )?;
-        let linked_error =
-            LinkedServiceBoundaryErrorPlan::new(plan.error.clone(), fallback);
+        let linked_error = LinkedServiceBoundaryErrorPlan::new(plan.error.clone(), fallback);
         let stream_item = plan
             .stream_item
             .as_deref()
@@ -472,8 +468,7 @@ fn validate_service_plan_against_contract(
         .zip(contract.parameters.iter())
         .enumerate()
     {
-        if plan_value.contract_type != parameter.ty
-            || plan_value.value_plan != parameter.value_plan
+        if plan_value.contract_type != parameter.ty || plan_value.value_plan != parameter.value_plan
         {
             return Err(unsatisfied(
                 BytecodeLinkObligation::ConcreteTargetTables,
@@ -561,16 +556,19 @@ fn link_service_signature(
         .arguments()
         .iter()
         .map(|value| {
-            type_linker.linked_type_plan(value.caller_type()).cloned().ok_or_else(|| {
-                unsatisfied(
-                    BytecodeLinkObligation::FrameAndValueTransferPlan,
-                    location.clone(),
-                    format!(
-                        "service boundary caller type {} has no linked transfer plan",
-                        value.caller_type().get()
-                    ),
-                )
-            })
+            type_linker
+                .linked_type_plan(value.caller_type())
+                .cloned()
+                .ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::FrameAndValueTransferPlan,
+                        location.clone(),
+                        format!(
+                            "service boundary caller type {} has no linked transfer plan",
+                            value.caller_type().get()
+                        ),
+                    )
+                })
         })
         .collect::<Result<Vec<_>, _>>()?;
     let result_types = linked_plan
@@ -582,16 +580,19 @@ fn link_service_signature(
         .results()
         .iter()
         .map(|value| {
-            type_linker.linked_type_plan(value.caller_type()).cloned().ok_or_else(|| {
-                unsatisfied(
-                    BytecodeLinkObligation::FrameAndValueTransferPlan,
-                    location.clone(),
-                    format!(
-                        "service boundary result type {} has no linked transfer plan",
-                        value.caller_type().get()
-                    ),
-                )
-            })
+            type_linker
+                .linked_type_plan(value.caller_type())
+                .cloned()
+                .ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::FrameAndValueTransferPlan,
+                        location.clone(),
+                        format!(
+                            "service boundary result type {} has no linked transfer plan",
+                            value.caller_type().get()
+                        ),
+                    )
+                })
         })
         .collect::<Result<Vec<_>, _>>()?;
     LinkedCallableSignature::new(
@@ -645,12 +646,7 @@ fn contract_type_ref_to_ir(
         ContractTypeRef::Record { fields } => {
             let fields = fields
                 .iter()
-                .map(|(name, field)| {
-                    Ok((
-                        name.clone(),
-                        contract_type_ref_to_ir(field, location)?,
-                    ))
-                })
+                .map(|(name, field)| Ok((name.clone(), contract_type_ref_to_ir(field, location)?)))
                 .collect::<Result<BTreeMap<_, _>, BytecodeLinkError>>()?;
             Ok(TypeRefIr::Record { fields })
         }
