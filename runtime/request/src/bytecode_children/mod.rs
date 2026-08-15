@@ -73,6 +73,24 @@ pub trait BytecodeChildHeapFactory: Send + Sync + 'static {
     ) -> Result<ChildHeapCarrier, BytecodeChildError>;
 }
 
+#[cfg(test)]
+pub(crate) struct FailClosedChildHeapFactory;
+
+#[cfg(test)]
+impl BytecodeChildHeapFactory for FailClosedChildHeapFactory {
+    fn create_child_heap(
+        &self,
+        _owner: &DeploymentOwnerIdentity,
+        _limits: RequestHeapLimits,
+        _resources: RequestResourceTable,
+        _ledger: Arc<RequestMemoryLedger>,
+    ) -> Result<ChildHeapCarrier, BytecodeChildError> {
+        Err(BytecodeChildError::Construction {
+            message: "child heap factory is not configured".to_string(),
+        })
+    }
+}
+
 #[derive(Clone)]
 pub struct BytecodeRequestChildComposition {
     pub memory_ledger: Arc<RequestMemoryLedger>,

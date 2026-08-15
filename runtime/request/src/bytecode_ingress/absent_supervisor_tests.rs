@@ -395,6 +395,7 @@ fn phase_5_absent_stream_supervisor_release_failure_reaches_terminal_retry_escro
         http_client: start.http_client.clone(),
         execution_control: start.execution_control.clone(),
         stream_registrar,
+        child_composition: Default::default(),
         cleanup_roots: Mutex::new(Vec::new()),
         materialization_escrows: Mutex::new(Vec::new()),
         manual_sleep_completion: Mutex::new(None),
@@ -402,6 +403,12 @@ fn phase_5_absent_stream_supervisor_release_failure_reaches_terminal_retry_escro
     let mut context = context.with_ports(BytecodeSchedulerPorts {
         child_executor: Some(Arc::new(BytecodeHostExecutor {
             runtime: Arc::clone(&runtime),
+            child_composition: Default::default(),
+            child_heap_factory: Arc::new(crate::bytecode_children::FailClosedChildHeapFactory),
+            observer: BytecodeExecutionObserver::noop(BytecodeExecutionCorrelation {
+                router_session_id: "phase-5-absent-stream".to_string(),
+                request_id: "request".to_string(),
+            }),
         })),
         // The request passed the real server-stream admission above. Omitting
         // only this port drives the production absent-supervisor rejection.

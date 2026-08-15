@@ -267,12 +267,13 @@ struct ServiceChildFinish {
     boundary_plan: skiff_runtime_linked_bytecode::LinkedServiceBoundaryPlan,
 }
 
-impl ChildFinish<VmFiber> for ServiceChildFinish {
+impl ChildFinish<VmFiber, VmResumeToken> for ServiceChildFinish {
     fn finish(
         &self,
+        resume: &VmResumeToken,
         child_result: VmCompletion,
         child_heap: &mut skiff_runtime_scheduler::ChildHeapCarrier,
-        _parent_heap: &mut dyn VmHeap,
+        parent_heap: &mut dyn VmHeap,
         _budget: &mut dyn VmBudget,
     ) -> Result<ResumeOutcome, ChildFinishError<VmFiber>> {
         if child_result.thrown_diagnostic().is_some() {
@@ -295,14 +296,56 @@ impl ChildFinish<VmFiber> for ServiceChildFinish {
             }
         };
         let outcome = match outcome {
-            ResumeOutcome::Values(values) => {
-                if !values.is_empty() {
-                    let mut escrow = values.into_terminal_escrow();
-                    let _ = escrow.release_all(child_heap.heap_mut());
-                    return Err(ChildFinishError::Failure(BytecodeSchedulerError::Port(
-                        "service result materialization requires K6 ChildFinish resume token API"
-                            .to_string(),
-                    )));
+            ResumeOutcome::Values(child_values) => {
+                if !child_values.is_empty() {
+                    let mut caller_values = Vec::with_capacity(child_values.len());
+                    for (index, (source, plan)) in child_values
+                        .values()
+                        .iter()
+                        .zip(self.boundary_plan.results())
+                        .enumerate()
+                    {
+                        match materialize_linked_value(
+                            child_heap.heap_mut(),
+                            source,
+                            parent_heap,
+                            resume.image(),
+                            plan.caller_type(),
+                            plan,
+                        ) {
+                            Ok(value) => caller_values.push(value),
+                            Err(error) => {
+                                for root in &caller_values {
+                                    let _ = parent_heap.release_snapshot(root);
+                                }
+                                return Err(ChildFinishError::Failure(
+                                    BytecodeSchedulerError::Port(format!(
+                                        "service result {index} materialization failed: {error}"
+                                    )),
+                                ));
+                            }
+                        }
+                    }
+                    let caller_values_owned = match skiff_runtime_vm::VmOwnedValues::try_from_resume(
+                        resume,
+                        caller_values.into_boxed_slice(),
+                    ) {
+                        Ok(values) => values,
+                        Err(rejected) => {
+                            let message = rejected.error().to_string();
+                            for root in rejected.values() {
+                                let _ = parent_heap.release_snapshot(root);
+                            }
+                            return Err(ChildFinishError::Failure(BytecodeSchedulerError::Port(
+                                message,
+                            )));
+                        }
+                    };
+                    let mut child_escrow = child_values.into_terminal_escrow();
+                    if let Err(error) = child_escrow.release_all(child_heap.heap_mut()) {
+                        return Err(ChildFinishError::Failure(BytecodeSchedulerError::Vm(error)));
+                    }
+                    return Ok(ResumeOutcome::Values(caller_values_owned));
                 }
                 if !self.boundary_plan.results().is_empty() {
                     return Err(ChildFinishError::Failure(BytecodeSchedulerError::Port(
@@ -310,7 +353,7 @@ impl ChildFinish<VmFiber> for ServiceChildFinish {
                             .to_string(),
                     )));
                 }
-                let _ = values
+                let _ = child_values
                     .into_terminal_escrow()
                     .release_all(child_heap.heap_mut());
                 ResumeOutcome::Empty
