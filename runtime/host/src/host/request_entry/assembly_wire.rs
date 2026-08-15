@@ -552,9 +552,10 @@ pub(super) fn production_bytecode_request_child_composition(
     image: &DeploymentExecutionImage,
     db_source: Option<&DbCapabilitySource>,
     request_id: &str,
+    sender: mpsc::UnboundedSender<RouterWriterMessage>,
 ) -> BytecodeRequestChildComposition {
     crate::host::bytecode_capability_adapter::bytecode_request_child_composition(
-        host, image, db_source, request_id,
+        host, image, db_source, request_id, sender,
     )
 }
 

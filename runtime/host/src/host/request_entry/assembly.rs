@@ -118,6 +118,7 @@ impl RuntimeHost {
             target.image().as_ref(),
             db_source.as_ref(),
             &request_envelope.request_id,
+            sender.clone(),
         );
         let child_composition_probe = child_composition.clone();
         tokio::spawn(async move {
@@ -210,6 +211,7 @@ impl RuntimeHost {
             target.image().as_ref(),
             db_source.as_ref(),
             &request_envelope.request_id,
+            sender.clone(),
         );
         tokio::spawn(async move {
             let request_runner::DrivenBytecodeRequest {
@@ -326,6 +328,7 @@ impl RuntimeHost {
             target.image().as_ref(),
             db_source.as_ref(),
             &request_envelope.request_id,
+            sender.clone(),
         );
         tokio::spawn(async move {
             let request_runner::DrivenBytecodeRequest {
@@ -379,7 +382,7 @@ impl RuntimeHost {
         reservation: RequestReservation,
         request: AdmittedBytecodeWebSocketConnectionClosedRequest,
         http_response_max_bytes: usize,
-        _sender: mpsc::UnboundedSender<RouterWriterMessage>,
+        sender: mpsc::UnboundedSender<RouterWriterMessage>,
     ) {
         let AdmittedBytecodeWebSocketConnectionClosedRequest {
             route,
@@ -414,6 +417,7 @@ impl RuntimeHost {
             target.image().as_ref(),
             db_source.as_ref(),
             &request_envelope.request_id,
+            sender.clone(),
         );
         tokio::spawn(async move {
             let request_runner::DrivenBytecodeRequest {

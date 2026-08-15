@@ -52,7 +52,11 @@ pub(crate) use db_intrinsic::{
 };
 pub(crate) use interface::execute_interface_child;
 pub(crate) use service::execute_service_child;
-pub(crate) use task::{is_task_request, task_arguments};
+pub(crate) use task::{execute_task_child, is_task_request, task_arguments};
+pub use task::{
+    BytecodeTaskChildComposition, BytecodeTaskSubmitError, BytecodeTaskSubmitter,
+    FailClosedTaskSubmitter,
+};
 
 /// Routing decision for one VM child target. This is the single X6-owned
 /// registration point for the flat child mux; capability lanes either register
@@ -63,6 +67,7 @@ pub(crate) enum BytecodeChildLane {
     Interface,
     Db,
     Actor,
+    Task,
     Disabled,
 }
 
@@ -73,9 +78,8 @@ impl BytecodeChildLane {
             ChildTarget::Interface { .. } => Self::Interface,
             ChildTarget::Db(_) => Self::Db,
             ChildTarget::Actor(_) => Self::Actor,
-            ChildTarget::Callback(_) | ChildTarget::Task(_) | ChildTarget::StreamNext => {
-                Self::Disabled
-            }
+            ChildTarget::Task(_) => Self::Task,
+            ChildTarget::Callback(_) | ChildTarget::StreamNext => Self::Disabled,
         }
     }
 }
@@ -255,6 +259,10 @@ pub struct BytecodeRequestChildComposition {
     /// stays fail-closed until F6 emits `DbObjectTargetId` and K6 owns the
     /// transaction token.
     pub db_child: BytecodeDbChildComposition,
+    /// Fresh durable task submission seam. Task children are not VM child
+    /// heaps: the parent dispatches a fresh request through the same task
+    /// control-plane writer and remains independent of the task attempt.
+    pub task_child: BytecodeTaskChildComposition,
 }
 
 impl Default for BytecodeRequestChildComposition {
@@ -270,6 +278,7 @@ impl Default for BytecodeRequestChildComposition {
             callback_child: BytecodeCallbackChildComposition::default(),
             actor_child: BytecodeActorChildComposition::default(),
             db_child: BytecodeDbChildComposition::default(),
+            task_child: BytecodeTaskChildComposition::default(),
         }
     }
 }
@@ -351,7 +360,7 @@ mod tests {
     use skiff_runtime_linked_bytecode::{
         ActorMethodIndex, InterfaceTableIndex, IntrinsicIndex, SyntheticCallbackIndex,
     };
-    use skiff_runtime_vm::ChildTarget;
+    use skiff_runtime_vm::{ChildTarget, TaskDispatchIndex};
 
     use super::db::db_child_required_fact;
     use super::*;
@@ -376,6 +385,12 @@ mod tests {
         assert_eq!(
             BytecodeChildLane::for_target(ChildTarget::Actor(ActorMethodIndex::new(0))),
             BytecodeChildLane::Actor
+        );
+        assert_eq!(
+            BytecodeChildLane::for_target(ChildTarget::Task(
+                TaskDispatchIndex::try_new(1).expect("one is valid")
+            )),
+            BytecodeChildLane::Task
         );
         assert_eq!(
             BytecodeChildLane::for_target(ChildTarget::Callback(SyntheticCallbackIndex::new(0))),

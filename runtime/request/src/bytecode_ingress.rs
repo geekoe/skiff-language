@@ -56,10 +56,10 @@ use skiff_runtime_vm::{
 
 use crate::{
     bytecode_children::{
-        execute_actor_child, execute_interface_child, execute_service_child, is_task_request,
-        linked_db_target, materialize_db_result_to_vm, require_db_operation, task_arguments,
-        BytecodeChildHeapFactory, BytecodeChildLane, BytecodeRequestChildComposition,
-        RequestChildHeapFactory,
+        execute_actor_child, execute_interface_child, execute_service_child, execute_task_child,
+        is_task_request, linked_db_target, materialize_db_result_to_vm, require_db_operation,
+        task_arguments, BytecodeChildHeapFactory, BytecodeChildLane,
+        BytecodeRequestChildComposition, RequestChildHeapFactory,
     },
     bytecode_host_effects::{
         BytecodeHttpFailure, BytecodeHttpRequest, BytecodeHttpResponse,
@@ -1248,6 +1248,9 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                 self.observer.clone(),
                 vm_limits(),
             ),
+            BytecodeChildLane::Task => {
+                execute_task_child(invocation, heap, budget, &self.child_composition.task_child)
+            }
             BytecodeChildLane::Db => self.execute_db_child(invocation, heap, budget),
             BytecodeChildLane::Disabled => Err(BytecodePortFailure::input(
                 BytecodeSchedulerError::UnsupportedChild,

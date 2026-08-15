@@ -96,6 +96,7 @@ impl RuntimeHost {
             target.image().as_ref(),
             db_source.as_ref(),
             &request_envelope.request_id,
+            sender.clone(),
         );
         tokio::spawn(async move {
             let request_runner::DrivenBytecodeRequest {

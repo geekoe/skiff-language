@@ -1,6 +1,10 @@
 //! Typed bytecode host-effect adapters over the production capability lowers.
 
-use std::{future, sync::Arc};
+use std::{
+    future::{self, Future},
+    pin::Pin,
+    sync::Arc,
+};
 
 use serde_json::{Map, Value};
 use skiff_runtime_boundary::recoverable::FailClosedRecoverableBehaviorHooks;
@@ -8,7 +12,10 @@ use skiff_runtime_boundary::service_linkable::ServiceLinkableCapabilityHooks;
 use skiff_runtime_boundary::value::{bytes_payload, bytes_value};
 use skiff_runtime_capability_context::{
     CancellationToken, DbCapabilitySource, DbRecoverableRuntimeContext,
-    DbRecoverableRuntimeExpectedPlans, HttpRuntimeOptions,
+    DbRecoverableRuntimeExpectedPlans, HttpRuntimeOptions, OutboundControlMessage,
+    OutboundRequestCancelSendError, OutboundRequestCancelSender, OutboundRequestRegistry,
+    OutboundResponse, RequestCancelControl, RouterWriterMessage, TaskSubmitControlMessage,
+    TaskSubmitResponseControl,
 };
 use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_model::{
@@ -25,9 +32,12 @@ use skiff_runtime_request::{
     BytecodeHttpClientPort, BytecodeHttpFailure, BytecodeHttpFuture, BytecodeHttpRequest,
     BytecodeHttpResponse, BytecodeHttpStreamRegistrar, BytecodeHttpStreamResponse,
     BytecodeRequestChildComposition, BytecodeServiceChildError, BytecodeServiceResolver,
+    BytecodeTaskChildComposition, BytecodeTaskSubmitError, BytecodeTaskSubmitter,
     FailClosedServiceChildThrowMaterializer, HttpNameValue, OwnedExecutionControl,
     RequestMemoryLedger,
 };
+use skiff_runtime_transport::protocol::TaskSubmitResponseFrameHeader;
+use tokio::sync::mpsc;
 
 use crate::{
     capability_context::{
@@ -368,11 +378,134 @@ impl BytecodeServiceResolver for ProductionBytecodeServiceResolver {
     }
 }
 
+#[derive(Clone)]
+struct ProductionBytecodeTaskSubmitter {
+    sender: mpsc::UnboundedSender<RouterWriterMessage>,
+    outbound_requests: Arc<OutboundRequestRegistry>,
+}
+
+impl ProductionBytecodeTaskSubmitter {
+    fn new(
+        sender: mpsc::UnboundedSender<RouterWriterMessage>,
+        outbound_requests: Arc<OutboundRequestRegistry>,
+    ) -> Self {
+        Self {
+            sender,
+            outbound_requests,
+        }
+    }
+}
+
+impl BytecodeTaskSubmitter for ProductionBytecodeTaskSubmitter {
+    fn submit<'a>(
+        &'a self,
+        message: TaskSubmitControlMessage,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<TaskSubmitResponseControl, BytecodeTaskSubmitError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let rpc_id = message.request.rpc_id.clone();
+            let (response_tx, mut response_rx) = mpsc::unbounded_channel();
+            let cancel_sender: Option<OutboundRequestCancelSender> = {
+                let sender = self.sender.clone();
+                Some(Arc::new(move |request_id, reason| {
+                    sender
+                        .send(RouterWriterMessage::Control(
+                            OutboundControlMessage::RequestCancel {
+                                request: RequestCancelControl {
+                                    request_id: request_id.to_string(),
+                                    reason: reason.to_string(),
+                                },
+                            },
+                        ))
+                        .map_err(|_| OutboundRequestCancelSendError::Closed)
+                }))
+            };
+            let lease = self
+                .outbound_requests
+                .insert_with_lease(
+                    rpc_id.clone(),
+                    response_tx,
+                    cancel_sender,
+                    "task_child_submit",
+                )
+                .map_err(|error| BytecodeTaskSubmitError::Protocol(error.to_string()))?;
+            if self
+                .sender
+                .send(RouterWriterMessage::TaskSubmit(message))
+                .is_err()
+            {
+                let _ = lease.cancel("runtime_disconnect");
+                return Err(BytecodeTaskSubmitError::Closed);
+            }
+            match response_rx.recv().await {
+                Some(OutboundResponse::End { payload }) => {
+                    lease.complete();
+                    parse_task_submit_response(&payload, &rpc_id)
+                }
+                Some(OutboundResponse::Error(error)) => {
+                    lease.complete();
+                    Err(BytecodeTaskSubmitError::Rejected {
+                        code: error.code,
+                        message: error.message,
+                    })
+                }
+                None => {
+                    let _ = lease.cancel("response_channel_closed");
+                    Err(BytecodeTaskSubmitError::Protocol(
+                        "task submit response channel closed".to_string(),
+                    ))
+                }
+            }
+        })
+    }
+}
+
+fn parse_task_submit_response(
+    payload: &[u8],
+    expected_rpc_id: &str,
+) -> Result<TaskSubmitResponseControl, BytecodeTaskSubmitError> {
+    let header: TaskSubmitResponseFrameHeader =
+        serde_json::from_slice(payload).map_err(|error| {
+            BytecodeTaskSubmitError::Protocol(format!(
+                "task.submit.response header is not valid JSON: {error}"
+            ))
+        })?;
+    if header.envelope_type != "task.submit.response" {
+        return Err(BytecodeTaskSubmitError::Protocol(format!(
+            "task.submit.response envelope type is {}, expected task.submit.response",
+            header.envelope_type
+        )));
+    }
+    if header.rpc_id != expected_rpc_id {
+        return Err(BytecodeTaskSubmitError::Protocol(format!(
+            "task.submit.response rpcId {} does not match request {}",
+            header.rpc_id, expected_rpc_id
+        )));
+    }
+    if header.status != "submitted" {
+        return Err(BytecodeTaskSubmitError::Protocol(format!(
+            "task.submit.response status must be submitted, got {}",
+            header.status
+        )));
+    }
+    Ok(TaskSubmitResponseControl {
+        task_ref: header.task_ref.into_string(),
+        task_id: header.task_id,
+        request_id: header.request_id,
+    })
+}
+
 pub(crate) fn bytecode_request_child_composition(
     host: &RuntimeHost,
     image: &DeploymentExecutionImage,
     db_source: Option<&DbCapabilitySource>,
     request_id: &str,
+    sender: mpsc::UnboundedSender<RouterWriterMessage>,
 ) -> BytecodeRequestChildComposition {
     let owner = image.owner();
     let deployment = owner.deployment();
@@ -384,13 +517,36 @@ pub(crate) fn bytecode_request_child_composition(
         // an absent exact target must fail closed before any provider call.
         exact_target: None,
     };
-    bytecode_request_child_composition_with_db_child(host, db_child, request_id)
+    let task_child = BytecodeTaskChildComposition {
+        submitter: Arc::new(ProductionBytecodeTaskSubmitter::new(
+            sender,
+            Arc::clone(&host.outbound_requests),
+        )),
+        caller_request_id: request_id.to_string(),
+        runtime_id: host.base_runtime_id.clone(),
+        activation_identity: None,
+    };
+    bytecode_request_child_composition_with_parts(host, db_child, request_id, task_child)
 }
 
 pub(crate) fn bytecode_request_child_composition_with_db_child(
     host: &RuntimeHost,
     db_child: BytecodeDbChildComposition,
     request_id: &str,
+) -> BytecodeRequestChildComposition {
+    bytecode_request_child_composition_with_parts(
+        host,
+        db_child,
+        request_id,
+        BytecodeTaskChildComposition::default(),
+    )
+}
+
+fn bytecode_request_child_composition_with_parts(
+    host: &RuntimeHost,
+    db_child: BytecodeDbChildComposition,
+    request_id: &str,
+    task_child: BytecodeTaskChildComposition,
 ) -> BytecodeRequestChildComposition {
     let limits = host.request_heap_limits();
     BytecodeRequestChildComposition {
@@ -407,6 +563,7 @@ pub(crate) fn bytecode_request_child_composition_with_db_child(
         },
         actor_child: BytecodeActorChildComposition::default(),
         db_child,
+        task_child,
     }
 }
 
