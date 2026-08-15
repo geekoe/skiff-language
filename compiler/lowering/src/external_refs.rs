@@ -344,7 +344,8 @@ fn collect_call_target_external_refs(target: &CallTargetIr, refs: &mut ExternalR
         CallTargetIr::Native { target } => {
             push_unique(&mut refs.native_targets, target.clone());
         }
-        CallTargetIr::InterfaceMethod { interface, .. } => {
+        CallTargetIr::InterfaceMethod { interface, .. }
+        | CallTargetIr::CallbackMethod { interface, .. } => {
             for arg in &interface.canonical_type_args {
                 collect_type_ref_external_refs(arg, refs);
             }

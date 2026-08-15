@@ -3,15 +3,15 @@ use std::collections::BTreeMap;
 use skiff_artifact_model::{
     derive_bytecode_statement_manifest_identity, derive_package_schema_type_id,
     http_boundary::canonical_http_boundary_type,
-    validate_current_platform_error_projection_registry_ref, BoundaryDropPlan,
-    BoundaryErrorAdmission, BoundaryErrorFallbackIdentity, BoundaryErrorPlan, BoundaryErrorPolicy,
-    BoundaryTransfer, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueFact,
-    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, BytecodeArtifactRef,
-    BytecodeFunctionStatementManifest, CallableEffectSummary, CallableMayEffects, ContractLiteral,
-    ContractTypeRef, GatewayDispatchMode, GatewayProtocolSurface, LiteralIr, PackageArtifact,
-    PackageLocalAbiSymbol, PackageRefIr, PackageSchemaTypeRecord, PackageTypeRef,
-    PendingEffectCategory, ServiceBoundaryPlan, ServiceCallRef, ServiceCallbackPlan,
-    TypeDescriptorIr, TypeRefIr, ValueProvenance,
+    validate_current_platform_error_projection_registry_ref, BoundaryCallbackContract,
+    BoundaryDropPlan, BoundaryErrorAdmission, BoundaryErrorFallbackIdentity, BoundaryErrorPlan,
+    BoundaryErrorPolicy, BoundaryTransfer, BoundaryValueCarrier, BoundaryValueEncoding,
+    BoundaryValueFact, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+    BytecodeArtifactRef, BytecodeFunctionStatementManifest, CallableEffectSummary,
+    CallableMayEffects, ContractLiteral, ContractTypeRef, GatewayDispatchMode,
+    GatewayProtocolSurface, LiteralIr, PackageArtifact, PackageLocalAbiSymbol, PackageRefIr,
+    PackageSchemaTypeRecord, PackageTypeRef, PendingEffectCategory, ServiceBoundaryPlan,
+    ServiceCallRef, ServiceCallbackPlan, TypeDescriptorIr, TypeRefIr, ValueProvenance,
 };
 use skiff_compiler_compiled::{
     BytecodeCompilationHandoff, BytecodeCompilationOutcome, BytecodeCompilationReceipt,
@@ -352,7 +352,10 @@ fn compile_service_boundary_plan(
                 .to_string(),
         });
     }
-    if contract.callbacks != skiff_artifact_model::BoundaryCallbackContract::None {
+    if matches!(
+        contract.callbacks,
+        BoundaryCallbackContract::Unsupported { .. }
+    ) {
         return Err(PackageCompileError::ContractValidation {
             message: "service callback boundary plans are disabled in the first service lane"
                 .to_string(),

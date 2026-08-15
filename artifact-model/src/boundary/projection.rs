@@ -271,5 +271,6 @@ pub struct CallableSemanticFacts {
 pub enum CallableTargetFact {
     PackageDirect { package_callable_id: String },
     ContractOperation { operation_id: ContractOperationId },
+    InterfaceMethod { method_abi_id: String, slot: u32 },
     Unknown,
 }

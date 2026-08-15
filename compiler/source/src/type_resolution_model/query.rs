@@ -578,7 +578,10 @@ impl TypeResolutionModel {
             }
             TypeRefIr::PackageSymbol { symbol } => {
                 let package_interface = self
-                    .package_interface_for_type_ref(&TypeRefIr::PackageSymbol { symbol })
+                    .package_interface_for_type_ref(&TypeRefIr::PackageSymbol {
+                        symbol: symbol.clone(),
+                    })
+                    .or_else(|| self.service_api_interface_for_package_symbol(&symbol))
                     .ok_or_else(|| {
                         "interface ABI id does not resolve to a package interface".to_string()
                     })?
@@ -1870,14 +1873,6 @@ impl TypeResolutionModel {
                 context,
             );
         }
-        if let Some(key) = self.external_type_symbols.resolve_source_text(name) {
-            return self.resolve_source_interface_selector_from_key(
-                key.clone(),
-                args,
-                selector_text,
-                context,
-            );
-        }
         if let Some((alias, schema_type)) = self.service_api_type(name)? {
             let Some(interface) = self.service_api_interface(alias, &schema_type.stable_schema_key)
             else {
@@ -1893,6 +1888,14 @@ impl TypeResolutionModel {
                 instantiation_ref: interface_instantiation_ref(interface.identity, args.clone()),
                 args,
             });
+        }
+        if let Some(key) = self.external_type_symbols.resolve_source_text(name) {
+            return self.resolve_source_interface_selector_from_key(
+                key.clone(),
+                args,
+                selector_text,
+                context,
+            );
         }
         if let Some(package_symbol) = self.resolve_package_type_symbol_path(name) {
             if let Some(interface) = self.resolve_package_interface(name) {
@@ -2099,9 +2102,10 @@ impl TypeResolutionModel {
                     object_safety_diagnostics_display(&diagnostics)
                 ))
             }
-            TypeRefIr::PackageSymbol { .. } => {
+            TypeRefIr::PackageSymbol { symbol } => {
                 let package_interface = self
                     .package_interface_for_type_ref(&selector.identity)
+                    .or_else(|| self.service_api_interface_for_package_symbol(symbol))
                     .ok_or_else(|| {
                         format!(
                             "interface selector `{}` does not resolve to a package interface",
@@ -2560,7 +2564,7 @@ impl TypeResolutionModel {
                     is_native: false,
                     is_provider: false,
                     is_static: false,
-                    implicit_self: None,
+                    implicit_self: Some(TypeRefIr::builtin("Self")),
                 })
             })
             .collect::<Option<Vec<_>>>()?;
@@ -2578,6 +2582,27 @@ impl TypeResolutionModel {
             methods,
             source_module: alias.to_string(),
         })
+    }
+
+    pub(super) fn service_api_interface_for_package_symbol(
+        &self,
+        symbol: &skiff_artifact_model::PackageSymbolRef,
+    ) -> Option<PackageInterfaceResolution> {
+        let package_id = match &symbol.package {
+            PackageRefIr::Dependency { dependency_ref } => {
+                self.package_dependencies.get(dependency_ref)?
+            }
+            PackageRefIr::PackageId { package_id } => package_id,
+        };
+        for (alias, records) in &self.service_api_schemas {
+            if records
+                .get(&symbol.symbol_path)
+                .is_some_and(|record| &record.package_id == package_id)
+            {
+                return self.service_api_interface(alias, &symbol.symbol_path);
+            }
+        }
+        None
     }
 
     pub(super) fn package_symbol_resolution<'a, V>(
@@ -2919,8 +2944,18 @@ impl TypeResolutionModel {
                     },
                 }
             }
-            None => CanonicalInterfaceOwnerResolution::InvalidOrUnresolved {
-                message: format!("implements entry `{raw}` is not an interface"),
+            None => match self.resolve_interface_instantiation_text(raw, context) {
+                Ok(Some(interface))
+                    if matches!(&interface.identity, TypeRefIr::PackageSymbol { .. }) =>
+                {
+                    CanonicalInterfaceOwnerResolution::TypedPackage {
+                        identity: interface.identity,
+                        arguments: interface.args,
+                    }
+                }
+                _ => CanonicalInterfaceOwnerResolution::InvalidOrUnresolved {
+                    message: format!("implements entry `{raw}` is not an interface"),
+                },
             },
         }
     }

@@ -227,6 +227,12 @@ impl TypeResolutionModel {
     ) -> Result<Option<Vec<InterfaceMethodSlotFact>>, String> {
         let package_interface = self
             .package_interface_for_type_ref(&interface.identity)
+            .or_else(|| match &interface.identity {
+                skiff_artifact_model::TypeRefIr::PackageSymbol { symbol } => {
+                    self.service_api_interface_for_package_symbol(symbol)
+                }
+                _ => None,
+            })
             .ok_or_else(|| {
                 format!(
                     "local interface boxing package selector {} does not resolve to a package interface",
@@ -236,6 +242,12 @@ impl TypeResolutionModel {
             .instantiate_methods(&interface.args)?;
         let package_interface_module = self
             .package_interface_for_type_ref(&interface.identity)
+            .or_else(|| match &interface.identity {
+                skiff_artifact_model::TypeRefIr::PackageSymbol { symbol } => {
+                    self.service_api_interface_for_package_symbol(symbol)
+                }
+                _ => None,
+            })
             .expect("package interface was resolved above")
             .source_module
             .clone();

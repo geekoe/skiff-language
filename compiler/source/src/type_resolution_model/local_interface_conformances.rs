@@ -327,6 +327,14 @@ impl TypeResolutionModel {
             }
             TypeRefIr::PackageSymbol { symbol } => {
                 if let Some(schema) = self.service_schema_for_package_symbol(symbol, location)? {
+                    if matches!(
+                        schema.canonical_descriptor.descriptor,
+                        skiff_artifact_model::ContractTypeDescriptor::CallbackInterface { .. }
+                    ) {
+                        return Ok(TypeRefIr::PackageSymbol {
+                            symbol: symbol.clone(),
+                        });
+                    }
                     return Ok(package_type_ref_to_ir_exact(
                         &PackageTypeRef::PackageSchema {
                             package_id: schema.package_id.clone(),

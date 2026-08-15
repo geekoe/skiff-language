@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
-use skiff_artifact_model::{CallTargetIr, ExprIr};
+use skiff_artifact_model::{CallTargetIr, ExprIr, StatementAttributionId};
 use skiff_compiler_input::CompilerPlatformSources;
 use skiff_compiler_source::{
     build_package_from_parsed_sources_with_dependency_analysis,
@@ -113,4 +113,107 @@ fn direct_call_indices(function: &MirFunction) -> Vec<u32> {
             _ => None,
         })
         .collect()
+}
+
+#[test]
+fn actor_self_field_assignment_keeps_source_event_plan_available() {
+    let module = "internal.actor_events";
+    let lowered = lower_sources(&[(
+        "internal/actor_events.skiff",
+        module,
+        r#"
+          type Counter {
+            id: string,
+            count: number,
+          }
+
+          actor Counter {
+            key(id)
+            create()
+          }
+
+          impl Counter {
+            function create(self: Counter) -> void {
+              self.count = 0
+            }
+          }
+        "#,
+    )]);
+    let create = function(&lowered, module, "Counter.create");
+    let events = create.source_event_plan.events().unwrap_or_else(|| {
+        panic!(
+            "actor create source-event plan must be available, got {:?}",
+            create.source_event_plan.unavailable_reason()
+        )
+    });
+    assert!(!events.is_empty());
+    let rhs = create
+        .expressions
+        .iter()
+        .find(|expression| matches!(&expression.expression, ExprIr::Literal { .. }))
+        .expect("assignment RHS literal lowers to an expression")
+        .index;
+    assert!(
+        events.iter().any(|event| matches!(
+            event.attribution_id,
+            StatementAttributionId::Expression {
+                expression_index,
+                occurrence_ordinal: 0,
+            } if expression_index == rhs
+        )),
+        "ActorSelfField assignment target must remain a represented expression event"
+    );
+}
+
+#[test]
+fn callback_any_interface_parameter_call_lowers_with_callback_method_facts() {
+    let module = "internal.callback_events";
+    let lowered = lower_sources(&[(
+        "internal/callback_events.skiff",
+        module,
+        r#"
+          interface Handler {
+            function handle(self: Self, value: number) -> number
+          }
+
+          function invoke(handler: any Handler, value: number) -> number {
+            return handler.handle(value)
+          }
+        "#,
+    )]);
+    let invoke = function(&lowered, module, "invoke");
+    let call = invoke
+        .expressions
+        .iter()
+        .find_map(|expression| {
+            let ExprIr::Call { call } = &expression.expression else {
+                return None;
+            };
+            matches!(&call.target, CallTargetIr::CallbackMethod { .. }).then_some(call)
+        })
+        .expect("any-interface parameter call must lower to CallbackMethod");
+    let CallTargetIr::CallbackMethod {
+        interface,
+        method_abi_id,
+        slot,
+        methods,
+    } = &call.target
+    else {
+        unreachable!("find_map only returns CallbackMethod calls")
+    };
+    assert!(!interface.interface_abi_id.is_empty());
+    assert!(!method_abi_id.is_empty());
+    assert_eq!(*slot, 0);
+    assert_eq!(methods.len(), 1);
+    assert_eq!(methods[0].slot, 0);
+    assert_eq!(methods[0].method_abi_id, *method_abi_id);
+    assert_eq!(methods[0].signature.params.len(), 2);
+    assert_eq!(
+        methods[0].signature.return_type,
+        skiff_artifact_model::TypeRefIr::builtin("number")
+    );
+    assert!(matches!(
+        &methods[0].effects,
+        skiff_artifact_model::CallableEffectSummary::Analyzed { .. }
+    ));
 }

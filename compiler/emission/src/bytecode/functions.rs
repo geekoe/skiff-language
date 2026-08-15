@@ -1447,6 +1447,38 @@ impl<'a> FunctionEmitter<'a> {
                     true,
                 )
             }
+            CallTargetIr::CallbackMethod {
+                interface,
+                slot,
+                methods,
+                ..
+            } => {
+                let relocation = BytecodeRelocation::InterfaceRequirementRef {
+                    interface: qualified_interface_instantiation(
+                        self.unit.module_path.as_str(),
+                        interface,
+                    ),
+                    methods: methods
+                        .iter()
+                        .map(|method| InterfaceRequirementMethod {
+                            slot: method.slot,
+                            method_abi_id: method.method_abi_id.clone(),
+                            signature: qualified_interface_signature(
+                                self.unit.module_path.as_str(),
+                                &method.signature,
+                            ),
+                            effects: method.effects.clone(),
+                        })
+                        .collect::<Vec<_>>(),
+                };
+                self.emit_pending_call(
+                    expression,
+                    Opcode::InvokeCallback,
+                    relocation,
+                    Some(*slot),
+                    true,
+                )
+            }
             CallTargetIr::Native { target }
                 if static_intrinsic_canonical_key(
                     target.binding_key.as_deref().unwrap_or_default(),
@@ -4910,6 +4942,29 @@ impl<'a> FunctionEmitter<'a> {
             slot_plans.push(self.bind_privileged_plan(&ty, &plan, None)?);
         }
         let mut parameter_slots = Vec::new();
+        if let Some(receiver) = &self.function.receiver {
+            if !self
+                .function
+                .params
+                .iter()
+                .any(|parameter| parameter.slot == receiver.slot)
+            {
+                let slot = receiver.slot as usize;
+                let plan = slot_plans.get(slot).cloned().ok_or_else(|| {
+                    unsupported(
+                        &self.key,
+                        "receiver transfer plan",
+                        &format!("receiver slot {slot} has no slot plan"),
+                    )
+                })?;
+                parameter_slots.push(ParameterSlotDecl {
+                    slot: receiver.slot,
+                    mode: ParamModeIr::Value,
+                    plan,
+                    dense_record_shape_ref: None,
+                });
+            }
+        }
         for parameter in &self.function.params {
             let slot = parameter.slot as usize;
             let plan = slot_plans.get(slot).cloned().ok_or_else(|| {
@@ -4981,27 +5036,6 @@ impl<'a> FunctionEmitter<'a> {
                 plan,
                 dense_record_shape_ref,
             });
-        }
-        if let Some(receiver) = &self.function.receiver {
-            if !parameter_slots
-                .iter()
-                .any(|parameter| parameter.slot == receiver.slot)
-            {
-                let slot = receiver.slot as usize;
-                let plan = slot_plans.get(slot).cloned().ok_or_else(|| {
-                    unsupported(
-                        &self.key,
-                        "receiver transfer plan",
-                        &format!("receiver slot {slot} has no slot plan"),
-                    )
-                })?;
-                parameter_slots.push(ParameterSlotDecl {
-                    slot: receiver.slot,
-                    mode: ParamModeIr::Value,
-                    plan,
-                    dense_record_shape_ref: None,
-                });
-            }
         }
         let is_stream_producer = self.function.stream_result.is_some();
         let result_count = if is_stream_producer {
@@ -5240,7 +5274,7 @@ fn stack_effect(
             let results = instruction.operands[2] as usize;
             (arguments, results)
         }
-        Opcode::CallInterface => {
+        Opcode::CallInterface | Opcode::InvokeCallback => {
             let arguments = instruction.operands[2] as usize;
             let results = instruction.operands[3] as usize;
             (arguments + 1, results)

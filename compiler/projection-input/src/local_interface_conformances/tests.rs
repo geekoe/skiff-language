@@ -254,7 +254,7 @@ fn unstable_local_identity_is_rejected_but_publication_identity_is_allowed() {
 }
 
 #[test]
-fn package_symbols_require_package_id_and_nonempty_abi_expectation() {
+fn package_symbols_reject_aliases_and_empty_abi_but_allow_service_schema_package_ids() {
     let dependency_alias = exact_interface(
         TypeRefIr::PackageSymbol {
             symbol: PackageSymbolRef {
@@ -291,17 +291,13 @@ fn package_symbols_require_package_id_and_nonempty_abi_expectation() {
         },
         Vec::new(),
     );
-    let error = ProjectionLocalInterfaceConformance::try_new(
+    ProjectionLocalInterfaceConformance::try_new(
         Vec::new(),
         ProjectionSourceSymbolKey::new("root.models", "User"),
         missing_expectation,
         Vec::new(),
     )
-    .unwrap_err();
-    assert!(matches!(
-        error,
-        ProjectionLocalInterfaceConformanceError::MissingPackageAbiExpectation { .. }
-    ));
+    .expect("exact service schema package symbols may omit a package-local ABI");
 }
 
 #[test]

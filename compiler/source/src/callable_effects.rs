@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{CallableEffectSummary, CallableProvenanceSummary};
+use skiff_compiler_core::source_role::PublicationSourceRole;
 
 use crate::{parsed_sources::ParsedCompilerSource, SourceSymbolKey};
 
@@ -35,6 +36,7 @@ pub(super) struct CallableDefinition<'a> {
     pub key: SourceSymbolKey,
     pub function: &'a crate::shared::ast::FunctionDecl,
     pub module_path: &'a str,
+    pub role: PublicationSourceRole,
     pub type_params: Vec<String>,
     pub is_test_source: bool,
 }

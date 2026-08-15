@@ -478,6 +478,31 @@ fn rewrite_call_target(
                 }
             }
         }
+        CallTargetIr::CallbackMethod {
+            interface,
+            method_abi_id,
+            methods,
+            ..
+        } => {
+            let changed = rewrite_interface_instantiation_ref(index, module_path, interface);
+            for method in methods {
+                for parameter in &mut method.signature.params {
+                    rewrite_type_ref(index, module_path, &mut parameter.ty);
+                }
+                rewrite_type_ref(index, module_path, &mut method.signature.return_type);
+                if changed {
+                    if let Some((_, method_name)) = method.method_abi_id.rsplit_once(':') {
+                        method.method_abi_id =
+                            canonical_interface_method_abi_id(interface, method_name);
+                    }
+                }
+            }
+            if changed {
+                if let Some((_, method_name)) = method_abi_id.rsplit_once(':') {
+                    *method_abi_id = canonical_interface_method_abi_id(interface, method_name);
+                }
+            }
+        }
         CallTargetIr::LocalExecutable { .. }
         | CallTargetIr::PublicationExecutable { .. }
         | CallTargetIr::ServiceDependencySymbol { .. }

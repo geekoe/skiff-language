@@ -4,7 +4,8 @@ use skiff_artifact_model::{
     builtin_receiver_callable_semantics, host_effect_registry, native_callable_semantics,
     BoundaryCallbackContract, BoundaryOperationDescriptor, BoundaryStreamContract,
     BuiltinReceiverOp, CallableMayEffects, CallableProvenanceUnknownReason,
-    HostEffectExecutorIdentity, PackageCallableId, PendingEffectCategory, ValueProjectionPath,
+    HostEffectExecutorIdentity, PackageCallableId, PendingEffectCategory, TypeRefIr,
+    ValueProjectionPath,
 };
 use skiff_compiler_core::{id::SKIFF_STD_PUBLICATION_ID, public_package_callable_id};
 
@@ -42,8 +43,10 @@ impl Evaluator<'_, '_> {
         } else {
             self.eval_expr(callee, env)
         };
-        let receiver = receiver_object_index(callee_start, callee)
-            .and_then(|index| self.value_at(index).cloned());
+        let receiver_index = receiver_object_index(callee_start, callee);
+        let receiver = receiver_index.and_then(|index| self.value_at(index).cloned());
+        let callback_receiver =
+            self.is_callback_carrier_receiver_call(call_key, callee, receiver_index);
         let mut actuals = args
             .iter()
             .map(|arg| self.eval_expr(arg.expr(), env))
@@ -154,12 +157,32 @@ impl Evaluator<'_, '_> {
                             .push(PendingEffectCategory::Unknown);
                     }
                 }
-                self.apply_callee(
+                let result = self.apply_callee(
                     &callee,
                     &actuals,
                     return_reference,
                     Some(package_callable_id.to_string()),
-                )
+                );
+                if package_callable_id.as_str().ends_with(":std.actor.get") {
+                    self.state
+                        .effects
+                        .pending_effect_categories
+                        .retain(|category| {
+                            !matches!(
+                                category,
+                                PendingEffectCategory::NativeCall
+                                    | PendingEffectCategory::HostEffect
+                            )
+                        });
+                    record_pending_category(
+                        &mut self.state.effects,
+                        PendingEffectCategory::ActorCall,
+                    );
+                }
+                result
+            }
+            Some(ResolvedCallTarget::InterfaceMethod { .. }) if callback_receiver => {
+                self.apply_callback_interface_call(&callee_value, &actuals, return_reference)
             }
             Some(ResolvedCallTarget::InterfaceMethod { .. }) => self
                 .apply_unknown_call_with_callee(
@@ -354,6 +377,79 @@ impl Evaluator<'_, '_> {
         reachable.push(callee_value.clone());
         reachable.extend_from_slice(actuals);
         self.apply_unknown_call(&reachable, return_reference, lane)
+    }
+
+    fn apply_callback_interface_call(
+        &mut self,
+        _callee_value: &AbstractValue,
+        actuals: &[AbstractValue],
+        return_reference: bool,
+    ) -> AbstractValue {
+        let mut callee = CallableState::bottom();
+        callee.effects = CallableMayEffects {
+            escapes_caller_value: false,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_pending: true,
+            pending_effect_categories: vec![PendingEffectCategory::InterfaceCall],
+            inout_path_effects: Vec::new(),
+        };
+        callee.return_origins.insert(Origin::Fresh);
+        callee.return_direct_origins.insert(Origin::Fresh);
+        callee.throw_origins.insert(Origin::Fresh);
+        self.apply_callee(&callee, actuals, return_reference, None)
+    }
+
+    fn is_callback_carrier_receiver_call(
+        &self,
+        call_key: &ExpressionKey,
+        callee: &Expr,
+        receiver_index: Option<u32>,
+    ) -> bool {
+        if self.definition.has_receiver()
+            || !matches!(
+                self.definition.role,
+                skiff_compiler_core::source_role::PublicationSourceRole::Package
+            )
+        {
+            return false;
+        }
+        let Expr::Field { object, .. } = callee else {
+            return false;
+        };
+        let Expr::Identifier(name) = object.as_ref() else {
+            return false;
+        };
+        if !self
+            .definition
+            .function
+            .params
+            .iter()
+            .any(|parameter| parameter.name == *name)
+        {
+            return false;
+        }
+        let Some(receiver_index) = receiver_index else {
+            return false;
+        };
+        let receiver_key = ExpressionKey::new(
+            call_key.module_path().to_string(),
+            call_key.owner().clone(),
+            receiver_index,
+        );
+        let Some(receiver_type) = self
+            .expression_types
+            .fact(&receiver_key)
+            .and_then(|fact| fact.ty.as_ref())
+            .map(|resolved| &resolved.ir)
+        else {
+            return false;
+        };
+        matches!(
+            receiver_type,
+            TypeRefIr::AnyInterface { interface }
+                if interface.canonical_type_args.is_empty()
+        )
     }
 
     fn apply_unknown_call(
@@ -727,7 +823,10 @@ fn detached_contract_callee(operation: &BoundaryOperationDescriptor) -> Option<C
     let contract = &operation.contract;
     let guarantee = contract.effect_guarantee;
     if !matches!(contract.stream, BoundaryStreamContract::Unary)
-        || !matches!(contract.callbacks, BoundaryCallbackContract::None)
+        || matches!(
+            contract.callbacks,
+            BoundaryCallbackContract::Unsupported { .. }
+        )
         || !guarantee.detached_parameters
         || !guarantee.detached_return
         || !guarantee.detached_error

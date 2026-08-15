@@ -219,6 +219,9 @@ impl TypeResolutionModel {
             service_api_schemas: BTreeMap::new(),
         };
         model.local_impl_methods = model.index_local_impl_methods(parsed_sources)?;
+        if let Some(dependencies) = compiler_owned_dependencies {
+            model.index_service_api_contracts(dependencies)?;
+        }
         model.interface_conformances = model.index_source_interface_conformances(parsed_sources)?;
         Ok(model)
     }

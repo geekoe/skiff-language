@@ -135,6 +135,7 @@ pub(super) struct HostEffectAdmissions {
     db_body_expressions: BTreeSet<u32>,
     service_calls: BTreeSet<u32>,
     interface_calls: BTreeSet<u32>,
+    callback_calls: BTreeSet<u32>,
     actor_calls: BTreeSet<u32>,
     task_categories: BTreeMap<u32, PendingEffectCategory>,
     expressions: BTreeMap<u32, Vec<RegistryValueAuthority>>,
@@ -228,6 +229,13 @@ impl HostEffectAdmissions {
                 skiff_artifact_model::CallTargetIr::InterfaceMethod { .. }
             ) {
                 admissions.interface_calls.insert(expression.index);
+                continue;
+            }
+            if matches!(
+                call.target,
+                skiff_artifact_model::CallTargetIr::CallbackMethod { .. }
+            ) {
+                admissions.callback_calls.insert(expression.index);
                 continue;
             }
             let skiff_artifact_model::CallTargetIr::Native { target } = &call.target else {
@@ -735,6 +743,9 @@ impl HostEffectAdmissions {
         }
         if !self.interface_calls.is_empty() {
             expected.insert(PendingEffectCategory::Unknown);
+        }
+        if !self.callback_calls.is_empty() {
+            expected.insert(PendingEffectCategory::InterfaceCall);
         }
         if !self.actor_calls.is_empty() {
             expected.insert(PendingEffectCategory::ActorCall);

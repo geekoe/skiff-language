@@ -207,6 +207,7 @@ fn callable_definitions<'a>(
                     key,
                     function,
                     module_path,
+                    role: parsed.role(),
                     type_params: function.type_params.clone(),
                     is_test_source,
                 },
@@ -225,6 +226,7 @@ fn callable_definitions<'a>(
                         key,
                         function: method,
                         module_path,
+                        role: parsed.role(),
                         type_params: inherited
                             .iter()
                             .chain(&method.type_params)

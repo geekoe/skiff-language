@@ -6,6 +6,7 @@ use crate::{
     actor_declaration::{ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity},
     builtin_receiver_ops::BuiltinReceiverOp,
     compile_identity::PackageCallableId,
+    effects::CallableEffectSummary,
     file_ir::{DbIndexDirectionIr, FieldPathIr, ServiceCallRefIndex},
     metadata::MetadataValue,
     publication_abi::InterfaceInstantiationRef,
@@ -997,6 +998,26 @@ pub enum CallTargetIr {
         method_abi_id: String,
         slot: u32,
     },
+    /// Exact same-Runtime callback invocation. The requirement rows are
+    /// carried here so the emitter does not need to reconstruct a local
+    /// concrete implementation table for a callback carrier.
+    CallbackMethod {
+        interface: InterfaceInstantiationRef,
+        method_abi_id: String,
+        slot: u32,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        methods: Vec<CallbackInterfaceMethodIr>,
+    },
+}
+
+/// One exact callback interface requirement row.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CallbackInterfaceMethodIr {
+    pub slot: u32,
+    pub method_abi_id: String,
+    pub signature: InterfaceMethodSlotSignatureIr,
+    pub effects: CallableEffectSummary,
 }
 
 pub(crate) fn visit_executable_type_refs<E>(
@@ -1108,8 +1129,22 @@ fn visit_expression_type_refs<E>(
             for argument in call.type_args.values() {
                 visit_type_ref(argument, visitor)?;
             }
-            if let CallTargetIr::InterfaceMethod { interface, .. } = &call.target {
-                visit_interface_type_args(interface, visitor)?;
+            match &call.target {
+                CallTargetIr::InterfaceMethod { interface, .. } => {
+                    visit_interface_type_args(interface, visitor)?;
+                }
+                CallTargetIr::CallbackMethod {
+                    interface, methods, ..
+                } => {
+                    visit_interface_type_args(interface, visitor)?;
+                    for method in methods {
+                        for parameter in &method.signature.params {
+                            visit_type_ref(&parameter.ty, visitor)?;
+                        }
+                        visit_type_ref(&method.signature.return_type, visitor)?;
+                    }
+                }
+                _ => {}
             }
         }
         ExprIr::Throw { payload_type, .. } => visit_type_ref(payload_type, visitor)?,

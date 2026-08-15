@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Number;
 use skiff_artifact_model::{
     builtin_receiver_op_by_name, validate_supported_receiver_builtin_op, BoundaryStreamContract,
-    ReceiverCallAbi,
+    CallableEffectSummary, CallableMayEffects, PendingEffectCategory, ReceiverCallAbi,
 };
 use skiff_compiler_source::{
     package_type_ref_from_contract_type,
@@ -27,12 +27,13 @@ use skiff_syntax::{
 };
 
 use crate::file_ir::{
-    AssignTargetIr, BinaryOpIr, BlockIr, BoxSourceIr, CallIr, CallTargetIr, ExecutableBody, ExprIr,
-    ExprRefIr, FunctionTypeParamIr, InOutArgIr, InOutPathSegmentIr, InstructionSourceSite,
-    InterfaceMethodSlotPlanIr, InterfaceMethodSlotSignatureIr, InterfaceMethodSlotTargetIr,
-    InterfaceMethodTablePlanIr, LiteralIr, MatchArmIr, MetadataValue, NativeTarget, PackageRefIr,
-    PackageSymbolRef, ParamModeIr, PatternIr, RecordPatternFieldIr, ServiceSymbolRef, SlotIr,
-    SlotKind, SourceSpanRef, StmtIr, StmtRefIr, TestEffectExpectedIr, TestEffectOutcomeIr,
+    AssignTargetIr, BinaryOpIr, BlockIr, BoxSourceIr, CallIr, CallTargetIr,
+    CallbackInterfaceMethodIr, ExecutableBody, ExprIr, ExprRefIr, FunctionTypeParamIr, InOutArgIr,
+    InOutPathSegmentIr, InstructionSourceSite, InterfaceMethodSlotPlanIr,
+    InterfaceMethodSlotSignatureIr, InterfaceMethodSlotTargetIr, InterfaceMethodTablePlanIr,
+    LiteralIr, MatchArmIr, MetadataValue, NativeTarget, PackageRefIr, PackageSymbolRef,
+    ParamModeIr, PatternIr, RecordPatternFieldIr, ServiceSymbolRef, SlotIr, SlotKind,
+    SourceSpanRef, StmtIr, StmtRefIr, TestEffectExpectedIr, TestEffectOutcomeIr,
     TestEffectRegisterTargetIr, TypeRefIr, UnaryOpIr,
 };
 use crate::mir::{
@@ -637,19 +638,27 @@ impl<'a> FunctionLowerer<'a> {
                 StmtIr::InitSlot { slot, value }
             }
             Stmt::Assign { target, value } => {
-                let (target, target_key) = self.lower_assign_target(target)?;
+                let (target, target_key, collapsed_keys) = self.lower_assign_target(target)?;
                 let value = self.lower_expr(value)?;
                 let target_anchor = match &target {
-                    AssignTargetIr::Slot { .. } => Some(value.expression),
+                    AssignTargetIr::Slot { .. } | AssignTargetIr::ActorSelfField { .. } => {
+                        Some(value.expression)
+                    }
                     AssignTargetIr::Field { object, .. } | AssignTargetIr::Index { object, .. } => {
                         Some(object.expression)
                     }
-                    AssignTargetIr::ActorSelfField { .. } => None,
                 };
                 if let (Some(key), Some(anchor)) = (target_key, target_anchor) {
                     self.source_event_collector
                         .record_expression(Some(key), anchor, ExpressionEventKind::Expression)
                         .map_err(source_event_error)?;
+                }
+                if let Some(anchor) = target_anchor {
+                    for key in collapsed_keys {
+                        self.source_event_collector
+                            .record_expression(Some(key), anchor, ExpressionEventKind::Expression)
+                            .map_err(source_event_error)?;
+                    }
                 }
                 StmtIr::Assign { target, value }
             }
@@ -1136,7 +1145,7 @@ impl<'a> FunctionLowerer<'a> {
     fn lower_assign_target(
         &mut self,
         target: &Expr,
-    ) -> Result<(AssignTargetIr, Option<ExpressionKey>)> {
+    ) -> Result<(AssignTargetIr, Option<ExpressionKey>, Vec<ExpressionKey>)> {
         match target {
             Expr::Identifier(name) => {
                 let key = self.take_expression_key()?;
@@ -1150,7 +1159,7 @@ impl<'a> FunctionLowerer<'a> {
                         "cannot assign to immutable binding `{name}` in File IR unit function"
                     )));
                 }
-                Ok((AssignTargetIr::Slot { slot: binding.slot }, key))
+                Ok((AssignTargetIr::Slot { slot: binding.slot }, key, Vec::new()))
             }
             Expr::Field { object, field } => {
                 let key = self.take_expression_key()?;
@@ -1164,16 +1173,16 @@ impl<'a> FunctionLowerer<'a> {
                             )));
                         }
                         // The ActorSelfField target does not lower the object
-                        // expression, so consume the `self` identifier's
-                        // preorder expression key here to keep every later
-                        // fact lookup aligned.
-                        self.consume_expression_key()?;
+                        // expression. Retain the `self` identifier key so it
+                        // is represented on the same RHS emission anchor.
+                        let self_key = self.take_expression_key()?;
                         return Ok((
                             AssignTargetIr::ActorSelfField {
                                 field: field.clone(),
                                 field_type: field_type.clone(),
                             },
                             key,
+                            self_key.into_iter().collect(),
                         ));
                     }
                 }
@@ -1195,6 +1204,7 @@ impl<'a> FunctionLowerer<'a> {
                         field: field.clone(),
                     },
                     key,
+                    Vec::new(),
                 ))
             }
             Expr::Index { object, index } => {
@@ -1223,6 +1233,7 @@ impl<'a> FunctionLowerer<'a> {
                         index: selector_ref,
                     },
                     expression_key,
+                    Vec::new(),
                 ))
             }
             _ => Err(unsupported(
@@ -1936,10 +1947,12 @@ impl<'a> FunctionLowerer<'a> {
                         .and_then(|fields| fields.get(field))
                     {
                         // The ActorSelfField expression does not lower the
-                        // object expression, so consume the `self`
-                        // identifier's preorder expression key here to keep
-                        // every later fact lookup aligned.
-                        self.consume_expression_key()?;
+                        // object expression. Retain the `self` identifier key
+                        // so it is represented on the ActorSelfField anchor.
+                        let self_key = self.take_expression_key()?;
+                        if let Some(self_key) = self_key {
+                            collapsed_keys.push(self_key);
+                        }
                         ExprIr::ActorSelfField {
                             field: field.clone(),
                             field_type: field_type.clone(),
@@ -2962,7 +2975,7 @@ impl<'a> FunctionLowerer<'a> {
         };
 
         if let Some(target) =
-            self.lower_any_interface_receiver_call_target(&receiver_ty, method_name)
+            self.lower_any_interface_receiver_call_target(&receiver_ty, method_name, object)?
         {
             return Ok(Some(target));
         }
@@ -3041,15 +3054,74 @@ impl<'a> FunctionLowerer<'a> {
         &self,
         receiver_ty: &TypeRefIr,
         method_name: &str,
-    ) -> Option<CallTargetIr> {
-        let resolution = self
+        receiver: &Expr,
+    ) -> Result<Option<CallTargetIr>> {
+        let Some(resolution) = self
             .type_resolution
-            .any_interface_method_signature(receiver_ty, method_name)?;
-        Some(CallTargetIr::InterfaceMethod {
+            .any_interface_method_signature(receiver_ty, method_name)
+        else {
+            return Ok(None);
+        };
+        if self.is_callback_carrier_receiver(receiver) {
+            let slots = self
+                .type_resolution
+                .interface_method_slots_for_instantiation(&resolution.interface)
+                .map_err(|error| {
+                    CompileError::Semantic(format!(
+                        "callback interface method table for `{method_name}` at ExpressionKey {:?} cannot resolve exact requirement facts: {error}",
+                        self.expression_owner
+                    ))
+                })?;
+            let methods = slots
+                .into_iter()
+                .map(|slot| CallbackInterfaceMethodIr {
+                    slot: slot.slot,
+                    method_abi_id: slot.method_abi_id,
+                    signature: InterfaceMethodSlotSignatureIr {
+                        params: slot.params,
+                        return_type: slot.return_type,
+                    },
+                    effects: callback_method_effects(),
+                })
+                .collect::<Vec<_>>();
+            if methods.is_empty() {
+                return Err(CompileError::Semantic(format!(
+                    "callback interface `{resolution:?}` has no exact method rows"
+                )));
+            }
+            return Ok(Some(CallTargetIr::CallbackMethod {
+                interface: resolution.interface,
+                method_abi_id: resolution.method_abi_id,
+                slot: resolution.slot,
+                methods,
+            }));
+        }
+        Ok(Some(CallTargetIr::InterfaceMethod {
             interface: resolution.interface,
             method_abi_id: resolution.method_abi_id,
             slot: resolution.slot,
-        })
+        }))
+    }
+
+    fn is_callback_carrier_receiver(&self, receiver: &Expr) -> bool {
+        if !matches!(self.expression_owner, Some(ExpressionOwnerKey::Function(_))) {
+            return false;
+        }
+        let Expr::Identifier(name) = receiver else {
+            return false;
+        };
+        let Some(binding) = self.bindings.get(name) else {
+            return false;
+        };
+        let Some(slot) = self.slots.get(binding.slot as usize) else {
+            return false;
+        };
+        slot.kind == SlotKind::Param
+            && matches!(
+                &slot.ty,
+                Some(TypeRefIr::AnyInterface { interface, .. })
+                    if interface.canonical_type_args.is_empty()
+            )
     }
 
     fn receiver_type_for_call_object(&self, object: &Expr) -> Result<Option<(String, TypeRefIr)>> {
@@ -3903,6 +3975,19 @@ fn positional_type_arguments(
 
 fn source_event_error(error: crate::mir::MirSourceEventPlanError) -> CompileError {
     CompileError::Semantic(format!("invalid MIR source event plan: {error}"))
+}
+
+fn callback_method_effects() -> CallableEffectSummary {
+    CallableEffectSummary::Analyzed {
+        effects: CallableMayEffects {
+            escapes_caller_value: true,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_pending: true,
+            pending_effect_categories: vec![PendingEffectCategory::InterfaceCall],
+            inout_path_effects: Vec::new(),
+        },
+    }
 }
 
 fn is_receiver_call_object(object: &Expr, is_local_binding: &impl Fn(&str) -> bool) -> bool {

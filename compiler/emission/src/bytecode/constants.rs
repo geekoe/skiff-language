@@ -830,11 +830,13 @@ fn collect_function_types(
                     &format!("expression {} concrete receiver", expression.index),
                 )?;
             }
-            for ty in call.type_args.values() {
-                insert(
-                    ty,
-                    &format!("expression {} type argument", expression.index),
-                )?;
+            if !is_std_actor_registry_get_call(call) {
+                for ty in call.type_args.values() {
+                    insert(
+                        ty,
+                        &format!("expression {} type argument", expression.index),
+                    )?;
+                }
             }
         }
     }
@@ -1311,6 +1313,19 @@ fn check_limit(
         });
     }
     Ok(())
+}
+
+fn is_std_actor_registry_get_call(call: &skiff_artifact_model::CallIr) -> bool {
+    match &call.target {
+        skiff_artifact_model::CallTargetIr::Native { target } => {
+            target.binding_key.as_deref() == Some("std.actor.get")
+        }
+        skiff_artifact_model::CallTargetIr::PackageCallable {
+            package_callable_id,
+            ..
+        } => package_callable_id.as_str().ends_with(":std.actor.get"),
+        _ => false,
+    }
 }
 
 #[cfg(test)]

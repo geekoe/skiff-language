@@ -2,11 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     ActorAbiIdentity, ActorDeclarationIr, ActorImplementationIdentity, ActorMethodIdentity,
-    AssignTargetIr, BinaryOpIr, BoxSourceIr, CallIr, CallTargetIr, CallableEffectSummary, DbBodyIr,
-    DbOpKindIr, DbTargetIr, ExprIr, ExprRefIr, FunctionTypeParamIr, InterfaceInstantiationRef,
-    InterfaceMethodSlotSignatureIr, LiteralIr, MetadataValue, NamedUnionBranchIr, NativeTarget,
-    ReceiverCallAbi, ServiceBoundaryPlan, ServiceCallRef, ServiceSymbolRef, StatementAttributionId,
-    TypeDescriptorIr, TypeRefIr,
+    AssignTargetIr, BinaryOpIr, BoxSourceIr, CallIr, CallTargetIr, CallableEffectSummary,
+    CallbackInterfaceMethodIr, DbBodyIr, DbOpKindIr, DbTargetIr, ExprIr, ExprRefIr,
+    FunctionTypeParamIr, InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr, LiteralIr,
+    MetadataValue, NamedUnionBranchIr, NativeTarget, ReceiverCallAbi, ServiceBoundaryPlan,
+    ServiceCallRef, ServiceSymbolRef, StatementAttributionId, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_compiler_lowering::mir::{
     MirCallArgument, MirEmissionAnchor, MirExecutableKind, MirFunction, MirParamMode, MirSlotKind,
@@ -295,6 +295,8 @@ pub(crate) struct ActorMethodFact {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ActorFacts {
     declarations: BTreeMap<(String, String), ActorDeclarationFact>,
+    local_type_indices: BTreeSet<u32>,
+    publication_type_indices: BTreeSet<(String, u32)>,
     methods: BTreeMap<u32, ActorMethodFact>,
 }
 
@@ -323,11 +325,17 @@ impl ActorFacts {
     }
 
     pub(crate) fn is_actor_handle(&self, ty: &TypeRefIr) -> bool {
-        matches!(
-            ty,
-            TypeRefIr::ServiceSymbol { symbol }
-                if self.actor(symbol).is_some()
-        )
+        match ty {
+            TypeRefIr::ServiceSymbol { symbol } => self.actor(symbol).is_some(),
+            TypeRefIr::LocalType { type_index } => self.local_type_indices.contains(type_index),
+            TypeRefIr::PublicationType {
+                module_path,
+                type_index,
+            } => self
+                .publication_type_indices
+                .contains(&(module_path.clone(), *type_index)),
+            _ => false,
+        }
     }
 }
 
@@ -365,7 +373,8 @@ fn collect_actor_declaration(
     let attached_type = unit
         .type_table
         .iter()
-        .find(|declaration| declaration.name == actor_name)
+        .enumerate()
+        .find(|(_, declaration)| declaration.name == actor_name)
         .ok_or_else(|| {
             rejected(
                 unit,
@@ -376,6 +385,15 @@ fn collect_actor_declaration(
                 ),
             )
         })?;
+    let attached_type_index = u32::try_from(attached_type.0).map_err(|_| {
+        rejected(
+            unit,
+            None,
+            Phase1UnsupportedCapability::Actor,
+            "actor attached record type index exceeds u32::MAX",
+        )
+    })?;
+    let attached_type = attached_type.1;
     let TypeDescriptorIr::Record {
         fields: attached_fields,
     } = &attached_type.descriptor
@@ -540,6 +558,10 @@ fn collect_actor_declaration(
         method_implementations: declaration.method_implementations.clone(),
         create_identity,
     };
+    facts.local_type_indices.insert(attached_type_index);
+    facts
+        .publication_type_indices
+        .insert((unit.module_path.clone(), attached_type_index));
     let key = (actor.module_path.clone(), actor.symbol.clone());
     if facts.declarations.insert(key, declaration_fact).is_some() {
         return Err(rejected(
@@ -2144,6 +2166,7 @@ fn admit_expression_with_host_effects(
         && !host_effects.is_db_expression(expression.index)
         && !host_effects.is_db_body_expression(expression.index)
         && !actor_facts.is_actor_handle(&expression.ty)
+        && !is_actor_registry_get_string_literal(function, expression.index)
     {
         admit_type_with_discriminator_flag(
             units,
@@ -2206,6 +2229,11 @@ fn admit_expression_with_host_effects(
             LiteralIr::String { .. } if local_interface_exact_face => None,
             LiteralIr::String { .. } if server_stream.admits_scalar_carrier(&expression.ty) => None,
             LiteralIr::String { .. } if host_effects.is_db_body_expression(expression.index) => {
+                None
+            }
+            LiteralIr::String { .. }
+                if is_actor_registry_get_string_literal(function, expression.index) =>
+            {
                 None
             }
             LiteralIr::String { .. } => Some(Phase1UnsupportedCapability::ValueShape),
@@ -2747,6 +2775,24 @@ fn admit_call(
             }
             return Ok(());
         }
+        CallTargetIr::CallbackMethod {
+            interface: _,
+            method_abi_id,
+            slot,
+            methods,
+        } => {
+            admit_callback_method_call(
+                unit,
+                function_key,
+                function,
+                expression,
+                call,
+                method_abi_id,
+                *slot,
+                methods,
+            )?;
+            return Ok(());
+        }
     };
     let Some(facts) = expression.direct_call.as_ref() else {
         return Err(rejected_function(
@@ -2793,6 +2839,114 @@ fn admit_call(
         callee,
     )?;
     admit_local_call_source_event(unit, function_key, function, expression, call)?;
+    Ok(())
+}
+
+fn admit_callback_method_call(
+    unit: &MirUnit,
+    function_key: &str,
+    function: &MirFunction,
+    expression: &skiff_compiler_lowering::mir::MirExpression,
+    call: &skiff_artifact_model::CallIr,
+    method_abi_id: &str,
+    selected_slot: u32,
+    methods: &[CallbackInterfaceMethodIr],
+) -> Result<(), BytecodeEmissionError> {
+    let mut previous_slot = None;
+    for method in methods {
+        if previous_slot.is_some_and(|slot| slot >= method.slot) || method.method_abi_id.is_empty()
+        {
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::Callback,
+                &format!(
+                    "expression {} callback method table is not dense or canonical",
+                    expression.index
+                ),
+            ));
+        }
+        previous_slot = Some(method.slot);
+    }
+    let method = methods
+        .iter()
+        .find(|method| method.slot == selected_slot && method.method_abi_id == method_abi_id)
+        .ok_or_else(|| {
+            rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::Callback,
+                &format!(
+                    "expression {} callback method slot {selected_slot} ABI {method_abi_id:?} is absent from exact callback rows",
+                    expression.index
+                ),
+            )
+        })?;
+    if call.args.len() != method.signature.params.len() {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::Callback,
+            &format!(
+                "expression {} callback call arity {} diverges from exact callback row {}",
+                expression.index,
+                call.args.len(),
+                method.signature.params.len()
+            ),
+        ));
+    }
+    if expression.ty != method.signature.return_type {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::Callback,
+            &format!(
+                "expression {} callback call result type {:?} diverges from exact callback row {:?}",
+                expression.index, expression.ty, method.signature.return_type
+            ),
+        ));
+    }
+    let receiver = call.args.first().copied().ok_or_else(|| {
+        rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::Callback,
+            &format!(
+                "expression {} callback call has no carrier argument",
+                expression.index
+            ),
+        )
+    })?;
+    let receiver_expression = function.expression(receiver)?;
+    let ExprIr::LoadSlot { slot } = receiver_expression.expression else {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::Callback,
+            &format!(
+                "expression {} callback carrier must be an exact callback parameter slot",
+                expression.index
+            ),
+        ));
+    };
+    let receiver_slot = function.slot(slot)?;
+    if receiver_slot.kind != MirSlotKind::Param
+        || !matches!(
+            &receiver_slot.ty,
+            Some(TypeRefIr::AnyInterface { interface, .. })
+                if interface.canonical_type_args.is_empty()
+        )
+    {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::Callback,
+            &format!(
+                "expression {} callback carrier is not an exact non-generic any-interface parameter",
+                expression.index
+            ),
+        ));
+    }
     Ok(())
 }
 
@@ -2892,8 +3046,8 @@ fn admit_actor_registry_get(
     target: &NativeTarget,
     actor_facts: &ActorFacts,
 ) -> Result<(), BytecodeEmissionError> {
-    if target.namespace != "std"
-        || target.symbol != "actor.get"
+    if target.namespace != "std.actor"
+        || target.symbol != "get"
         || target.binding_key.as_deref() != Some("std.actor.get")
         || !target.metadata.is_empty()
         || !call.inout_args.is_empty()
@@ -2962,7 +3116,9 @@ fn admit_actor_registry_get(
         ));
     }
     let argument_type = &function.expression(call.args[0])?.ty;
-    if argument_type != &declaration.actor_id_type() {
+    if argument_type != &declaration.actor_id_type()
+        && !is_actor_registry_get_string_literal(function, call.args[0].expression)
+    {
         return Err(rejected_function(
             unit,
             function_key,
@@ -2973,11 +3129,7 @@ fn admit_actor_registry_get(
             ),
         ));
     }
-    if expression.ty
-        != (TypeRefIr::ServiceSymbol {
-            symbol: actor.clone(),
-        })
-    {
+    if !actor_facts.is_actor_handle(&expression.ty) {
         return Err(rejected_function(
             unit,
             function_key,
@@ -2989,6 +3141,44 @@ fn admit_actor_registry_get(
         ));
     }
     Ok(())
+}
+
+fn is_actor_registry_get_string_literal(function: &MirFunction, expression_index: u32) -> bool {
+    let expression = match function.expression(ExprRefIr {
+        expression: expression_index,
+    }) {
+        Ok(expression) => expression,
+        Err(_) => return false,
+    };
+    if !matches!(
+        &expression.expression,
+        ExprIr::Literal {
+            value: LiteralIr::String { .. }
+        }
+    ) {
+        return false;
+    }
+    function.expressions.iter().any(|candidate| {
+        let ExprIr::Call { call } = &candidate.expression else {
+            return false;
+        };
+        is_std_actor_registry_get_target(call)
+            && call
+                .args
+                .iter()
+                .any(|argument| argument.expression == expression_index)
+    })
+}
+
+fn is_std_actor_registry_get_target(call: &CallIr) -> bool {
+    match &call.target {
+        CallTargetIr::Native { target } => target.binding_key.as_deref() == Some("std.actor.get"),
+        CallTargetIr::PackageCallable {
+            package_callable_id,
+            ..
+        } => package_callable_id.as_str().ends_with(":std.actor.get"),
+        _ => false,
+    }
 }
 
 fn admit_task_submit_call(

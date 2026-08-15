@@ -243,14 +243,16 @@ fn collect_exact_type_plans(
                             ),
                         )?;
                     }
-                    for ty in call.type_args.values() {
-                        register(
-                            ty,
-                            &format!(
-                                "function `{function_key}` expression {} type argument",
-                                expression.index
-                            ),
-                        )?;
+                    if !is_std_actor_registry_get_call(call) {
+                        for ty in call.type_args.values() {
+                            register(
+                                ty,
+                                &format!(
+                                    "function `{function_key}` expression {} type argument",
+                                    expression.index
+                                ),
+                            )?;
+                        }
                     }
                 }
                 match &expression.expression {
@@ -552,6 +554,19 @@ fn unsupported_slot_type(function_key: &str, slot: &MirSlot) -> BytecodeEmission
         function_key: function_key.to_string(),
         construct: "slot without an exact type",
         location: format!(" slot `{}`", slot.name),
+    }
+}
+
+fn is_std_actor_registry_get_call(call: &skiff_artifact_model::CallIr) -> bool {
+    match &call.target {
+        skiff_artifact_model::CallTargetIr::Native { target } => {
+            target.binding_key.as_deref() == Some("std.actor.get")
+        }
+        skiff_artifact_model::CallTargetIr::PackageCallable {
+            package_callable_id,
+            ..
+        } => package_callable_id.as_str().ends_with(":std.actor.get"),
+        _ => false,
     }
 }
 

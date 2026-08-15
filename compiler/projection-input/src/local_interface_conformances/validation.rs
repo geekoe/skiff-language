@@ -169,7 +169,7 @@ fn validate_package_symbol(symbol: &PackageSymbolRef) -> Result<(), Error> {
             });
         }
     }
-    if symbol.abi_expectation.as_deref().is_none_or(str::is_empty) {
+    if symbol.abi_expectation.as_deref().is_some_and(str::is_empty) {
         return Err(Error::MissingPackageAbiExpectation {
             symbol_path: symbol.symbol_path.clone(),
         });

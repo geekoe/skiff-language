@@ -164,7 +164,14 @@ fn callable_target_fact(target: &ResolvedCallTarget) -> Option<CallableTargetFac
         } => Some(CallableTargetFact::ContractOperation {
             operation_id: contract_operation_id.clone(),
         }),
-        ResolvedCallTarget::InterfaceMethod { .. } => Some(CallableTargetFact::Unknown),
+        ResolvedCallTarget::InterfaceMethod {
+            method_abi_id,
+            slot,
+            ..
+        } => Some(CallableTargetFact::InterfaceMethod {
+            method_abi_id: method_abi_id.clone(),
+            slot: *slot,
+        }),
         ResolvedCallTarget::Unknown { .. } => Some(CallableTargetFact::Unknown),
         ResolvedCallTarget::ConfigIntrinsic { .. }
         | ResolvedCallTarget::LocalFunction { .. }
@@ -1091,7 +1098,7 @@ mod callable_target_tests {
     use super::*;
 
     #[test]
-    fn interface_method_projects_to_public_unknown_without_losing_internal_target_kind() {
+    fn interface_method_projects_to_exact_interface_target_fact() {
         let target = ResolvedCallTarget::InterfaceMethod {
             interface: InterfaceInstantiationRef {
                 interface_abi_id: "interface:reader".to_string(),
@@ -1103,7 +1110,10 @@ mod callable_target_tests {
 
         assert_eq!(
             callable_target_fact(&target),
-            Some(CallableTargetFact::Unknown)
+            Some(CallableTargetFact::InterfaceMethod {
+                method_abi_id: "method:read".to_string(),
+                slot: 2,
+            })
         );
         assert!(matches!(
             target,

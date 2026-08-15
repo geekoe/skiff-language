@@ -1990,14 +1990,23 @@ fn validate_boundary_value_plan(
     plan: &BoundaryValuePlan,
     location: &str,
 ) -> Result<(), StructuralValidationError> {
-    if !matches!(
+    let canonical = matches!(
         plan,
         BoundaryValuePlan::Linkable {
             carrier: BoundaryValueCarrier::DetachedValueGraph,
             encoding: BoundaryValueEncoding::CanonicalValue,
             ..
         }
-    ) {
+    );
+    let callback = matches!(
+        plan,
+        BoundaryValuePlan::Linkable {
+            carrier: BoundaryValueCarrier::CallbackCapability,
+            encoding: BoundaryValueEncoding::OpaqueCapability,
+            ..
+        }
+    );
+    if !canonical && !callback {
         return Err(table_error(
             "",
             format!("{location} must be a detached canonical boundary value plan"),
@@ -2109,12 +2118,13 @@ fn validate_boundary_contract_type(
                 ));
             }
         }
-        crate::ContractTypeRef::TypeParam { .. } | crate::ContractTypeRef::AnyInterface { .. } => {
+        crate::ContractTypeRef::TypeParam { .. } => {
             return Err(table_error(
                 "",
                 format!("{location} contains a type unsupported by the first service lane"),
             ));
         }
+        crate::ContractTypeRef::AnyInterface { .. } => {}
     }
     Ok(())
 }

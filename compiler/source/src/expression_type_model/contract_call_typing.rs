@@ -267,7 +267,10 @@ fn operation_shape_diagnostics(
             "contract call `{path}` uses unsupported stream semantics"
         ));
     }
-    if !matches!(operation.callbacks, BoundaryCallbackContract::None) {
+    if matches!(
+        operation.callbacks,
+        BoundaryCallbackContract::Unsupported { .. }
+    ) {
         diagnostics.push(format!(
             "contract call `{path}` uses a callback contract unsupported by source calls"
         ));
