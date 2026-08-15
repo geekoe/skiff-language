@@ -47,8 +47,8 @@ use skiff_runtime_scheduler::{
 use skiff_runtime_vm::{
     AdapterInvocation, ChildInvocation, PendingOperation, ResumeOutcome, Vm, VmBudget,
     VmBudgetClosed, VmBudgetTerminal, VmCompletion, VmError, VmFiber, VmHostEffectArguments,
-    VmHostEffectArgumentsReleaseError, VmInternalTerminal, VmLimits, VmOwnedValues,
-    VmResumeToken, VmTerminalCause, VmTerminalEscrow,
+    VmHostEffectArgumentsReleaseError, VmInternalTerminal, VmLimits, VmOwnedValues, VmResumeToken,
+    VmTerminalCause, VmTerminalEscrow,
 };
 
 use crate::{
@@ -1016,7 +1016,9 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                     Err(HostArgumentUseFailure::Release { primary, failure }) => {
                         return Err(match primary {
                             Some(primary) => {
-                                BytecodePortFailure::terminal_host_arguments_release_with_primary(primary, failure)
+                                BytecodePortFailure::terminal_host_arguments_release_with_primary(
+                                    primary, failure,
+                                )
                             }
                             None => BytecodePortFailure::terminal_host_arguments_release(failure),
                         });
@@ -1065,11 +1067,13 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                         }
                         Err(HostArgumentUseFailure::Release { primary, failure }) => {
                             return Err(match primary {
-                                Some(primary) => {
-                                    BytecodePortFailure::terminal_host_arguments_release_with_primary(primary, failure)
-                                }
-                                None => BytecodePortFailure::terminal_host_arguments_release(failure),
-                            });
+                            Some(primary) => {
+                                BytecodePortFailure::terminal_host_arguments_release_with_primary(
+                                    primary, failure,
+                                )
+                            }
+                            None => BytecodePortFailure::terminal_host_arguments_release(failure),
+                        });
                         }
                     };
                 match first_poll {
@@ -1128,11 +1132,13 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                         }
                         Err(HostArgumentUseFailure::Release { primary, failure }) => {
                             return Err(match primary {
-                                Some(primary) => {
-                                    BytecodePortFailure::terminal_host_arguments_release_with_primary(primary, failure)
-                                }
-                                None => BytecodePortFailure::terminal_host_arguments_release(failure),
-                            });
+                            Some(primary) => {
+                                BytecodePortFailure::terminal_host_arguments_release_with_primary(
+                                    primary, failure,
+                                )
+                            }
+                            None => BytecodePortFailure::terminal_host_arguments_release(failure),
+                        });
                         }
                     };
                 match first_poll {

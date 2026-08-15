@@ -362,7 +362,40 @@ fn linked_value_matches(
         actual,
         actual_type,
         actual_row_plan,
-    )
+    ) || union_branch_value_matches(context, expected, actual)
+}
+
+/// Narrow anonymous-union branch assignability: the destination type is an
+/// anonymous union and the source runtime leaf type is one of its branches
+/// (nested anonymous unions recurse). Lifecycle plans must still be exact.
+fn union_branch_value_matches(
+    context: &StackMapContext<'_, '_>,
+    expected: &LinkedStackValue,
+    actual: &LinkedStackValue,
+) -> bool {
+    let Some(expected_ref) = context.type_linker.linked_type_ref(expected.ty()) else {
+        return false;
+    };
+    let Some(actual_ref) = context.type_linker.linked_type_ref(actual.ty()) else {
+        return false;
+    };
+    union_branch_assignable_refs(&expected_ref, &actual_ref) && expected.plan() == actual.plan()
+}
+
+fn union_branch_assignable_refs(expected: &TypeRefIr, actual: &TypeRefIr) -> bool {
+    match expected {
+        TypeRefIr::Union { items } => items
+            .iter()
+            .any(|branch| union_contains_leaf(branch, actual)),
+        _ => false,
+    }
+}
+
+fn union_contains_leaf(union: &TypeRefIr, leaf: &TypeRefIr) -> bool {
+    match union {
+        TypeRefIr::Union { items } => items.iter().any(|item| union_contains_leaf(item, leaf)),
+        other => other == leaf,
+    }
 }
 
 fn exact_linked_value_facts_match(
@@ -566,7 +599,29 @@ fn validate_slot_write(
             ),
         ));
     }
-    Ok(expected)
+    let expected_ref = context
+        .type_linker
+        .linked_type_ref(expected.ty())
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                "expected union slot type is absent from the linked image".to_string(),
+            )
+        })?;
+    let actual_ref = context
+        .type_linker
+        .linked_type_ref(value.ty())
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                "actual union-branch slot type is absent from the linked image".to_string(),
+            )
+        })?;
+    if union_branch_assignable_refs(expected_ref, actual_ref) {
+        Ok(value.clone())
+    } else {
+        Ok(expected)
+    }
 }
 
 fn resolve_arity(

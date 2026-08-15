@@ -28,9 +28,8 @@ pub use control::{
     PendingOperation, PendingTicket, ResumeOutcome, StreamEndpointRef, StreamInvocation,
     StreamItem, StreamItemReleaseError, VmCompletion, VmControl, VmHostEffectArguments,
     VmHostEffectArgumentsReleaseError, VmInternalTerminal, VmOwnedException, VmOwnedValues,
-    VmOwnedValuesRejected, VmResult,
-    VmResumeFailure, VmResumeKind, VmResumeToken, VmTerminalCause, VmTerminalEscrow,
-    VmThrownDiagnostic,
+    VmOwnedValuesRejected, VmResult, VmResumeFailure, VmResumeKind, VmResumeToken, VmTerminalCause,
+    VmTerminalEscrow, VmThrownDiagnostic,
 };
 pub use error::{VmEntryArgumentRejection, VmError, VmValueLocation, VmVerifiedInvariant};
 pub use fiber::{Vm, VmFiber, VmFiberState};

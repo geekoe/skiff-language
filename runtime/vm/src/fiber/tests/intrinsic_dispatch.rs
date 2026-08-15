@@ -1359,7 +1359,10 @@ fn host_arguments_release_failure_returns_unreleased_suffix_escrow() {
     let failure = arguments
         .release(&mut heap)
         .expect_err("the injected second release must return its suffix carrier");
-    assert_eq!(heap.owner_count(first.as_request_heap_ref().unwrap().get()), 0);
+    assert_eq!(
+        heap.owner_count(first.as_request_heap_ref().unwrap().get()),
+        0
+    );
     assert_eq!(
         heap.owner_count(second.as_request_heap_ref().unwrap().get()),
         1

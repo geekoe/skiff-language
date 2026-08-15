@@ -67,10 +67,7 @@ impl VmHostEffectArguments {
     /// mutation. A heap failure returns the failing owner and every later
     /// suffix owner in an explicit carrier, so request terminal retention can
     /// retry or keep those roots ahead of heap teardown.
-    pub fn release(
-        self,
-        heap: &mut dyn VmHeap,
-    ) -> Result<(), VmHostEffectArgumentsReleaseError> {
+    pub fn release(self, heap: &mut dyn VmHeap) -> Result<(), VmHostEffectArgumentsReleaseError> {
         let Self {
             values,
             plans,
@@ -87,11 +84,7 @@ impl VmHostEffectArguments {
             let escrow = VmTerminalEscrow::from_slots(
                 image,
                 values.values().to_vec(),
-                plans
-                    .iter()
-                    .cloned()
-                    .map(Some)
-                    .collect::<Vec<_>>(),
+                plans.iter().cloned().map(Some).collect::<Vec<_>>(),
                 site,
             );
             return Err(VmHostEffectArgumentsReleaseError {
@@ -107,11 +100,7 @@ impl VmHostEffectArguments {
         for (index, (value, plan)) in values.values().iter().zip(plans.iter()).enumerate() {
             if let Err(error) = executor.release(value, plan) {
                 let remaining = values.values()[index..].to_vec();
-                let remaining_plans = plans[index..]
-                    .iter()
-                    .cloned()
-                    .map(Some)
-                    .collect::<Vec<_>>();
+                let remaining_plans = plans[index..].iter().cloned().map(Some).collect::<Vec<_>>();
                 let escrow = VmTerminalEscrow::from_slots(image, remaining, remaining_plans, site);
                 return Err(VmHostEffectArgumentsReleaseError {
                     error: error.into_vm_error(function, instruction, Opcode::InvokeHost),

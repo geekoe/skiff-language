@@ -3,7 +3,7 @@ use skiff_artifact_model::TypeRefIr;
 use crate::{
     CandidateLocation, CandidateReferenceKind, CandidateTable, FrameSlotIndex,
     LinkedBytecodeCandidateError, LinkedBytecodeCandidateParts, LinkedInstructionTarget,
-    LinkedSlotState,
+    LinkedSlotState, LinkedValueTransferPlan,
 };
 
 use super::{check_boundary, check_index, plans::validate_type_plan, position_u32};
@@ -534,7 +534,7 @@ fn validate_stack_map(
                 validate_stack_value(value, location, parts)?;
                 let expected_type = function.frame().slot_types()[slot_position];
                 let expected_plan = &function.frame().slot_plans()[slot_position];
-                if value.ty() != expected_type || value.plan() != expected_plan {
+                if !live_slot_value_matches(value, expected_type, expected_plan, parts) {
                     let slot = FrameSlotIndex::new(position_u32(
                         CandidateTable::Functions,
                         slot_position,
@@ -576,6 +576,54 @@ fn validate_stack_map(
         }
     }
     Ok(())
+}
+
+fn live_slot_value_matches(
+    value: &crate::LinkedStackValue,
+    expected_type: crate::TypeIndex,
+    expected_plan: &LinkedValueTransferPlan,
+    parts: &LinkedBytecodeCandidateParts,
+) -> bool {
+    if value.ty() == expected_type && value.plan() == expected_plan {
+        return true;
+    }
+    if value.plan() != expected_plan {
+        return false;
+    }
+    let Some(expected_ref) = linked_type_ref(parts, expected_type) else {
+        return false;
+    };
+    let Some(actual_ref) = linked_type_ref(parts, value.ty()) else {
+        return false;
+    };
+    union_branch_assignable_refs(expected_ref, actual_ref)
+}
+
+fn linked_type_ref(
+    parts: &LinkedBytecodeCandidateParts,
+    ty: crate::TypeIndex,
+) -> Option<&TypeRefIr> {
+    parts
+        .types
+        .get(ty.get() as usize)
+        .filter(|entry| entry.index() == ty)
+        .map(|entry| entry.type_ref())
+}
+
+fn union_branch_assignable_refs(expected: &TypeRefIr, actual: &TypeRefIr) -> bool {
+    match expected {
+        TypeRefIr::Union { items } => items
+            .iter()
+            .any(|branch| union_contains_leaf(branch, actual)),
+        _ => false,
+    }
+}
+
+fn union_contains_leaf(union: &TypeRefIr, leaf: &TypeRefIr) -> bool {
+    match union {
+        TypeRefIr::Union { items } => items.iter().any(|item| union_contains_leaf(item, leaf)),
+        other => other == leaf,
+    }
 }
 
 fn validate_stack_value(

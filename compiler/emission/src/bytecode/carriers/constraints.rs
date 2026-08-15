@@ -318,13 +318,16 @@ impl<'a> Analyzer<'a> {
                     }
                 }
                 ExprIr::Construct { type_ref, fields } => {
-                    self.assign(output, type_ref.clone(), "record constructor")?;
+                    self.assign(output, expression.ty.clone(), "record constructor")?;
                     let shape = self.ensure_construct_shape(
                         function_index,
                         expression.index,
                         type_ref,
                         fields,
                     )?;
+                    if expression.ty == *type_ref {
+                        self.nodes[output].shape = Some(shape);
+                    }
                     for (name, value) in fields {
                         let field =
                             self.shapes[shape]
@@ -1023,6 +1026,17 @@ impl<'a> Analyzer<'a> {
             }
             return Ok(shape);
         }
+        let shape = self.add_shape(function_index, owner, declared)?;
+        self.nodes[node].shape = Some(shape);
+        Ok(shape)
+    }
+
+    fn add_shape(
+        &mut self,
+        function_index: usize,
+        owner: &TypeRefIr,
+        declared: BTreeMap<String, TypeRefIr>,
+    ) -> Result<usize, BytecodeEmissionError> {
         let key = self.functions[function_index].key.clone();
         let mut fields = BTreeMap::new();
         for (name, ty) in declared {
@@ -1040,7 +1054,6 @@ impl<'a> Analyzer<'a> {
             owner: owner.clone(),
             fields,
         });
-        self.nodes[node].shape = Some(shape);
         Ok(shape)
     }
 
@@ -1075,7 +1088,13 @@ impl<'a> Analyzer<'a> {
         owner: &TypeRefIr,
         values: &BTreeMap<String, ExprRefIr>,
     ) -> Result<usize, BytecodeEmissionError> {
-        let output = self.expression_node(function_index, expression_index)?;
+        if let Some(shape) = self.functions[function_index]
+            .construct_shape_indices
+            .get(&expression_index)
+            .copied()
+        {
+            return Ok(shape);
+        }
         let unit_index = self.functions[function_index].unit;
         let mir_index = self.functions[function_index].function;
         let declared = declared_record_fields(self.units, unit_index, owner)
@@ -1096,7 +1115,7 @@ impl<'a> Analyzer<'a> {
                     })
                     .collect()
             })?;
-        let shape = self.attach_shape(function_index, output, owner, declared)?;
+        let shape = self.add_shape(function_index, owner, declared)?;
         self.functions[function_index]
             .construct_shape_indices
             .insert(expression_index, shape);

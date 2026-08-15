@@ -337,9 +337,7 @@ impl<I, R> BytecodePortFailure<I, R> {
 
     /// Constructs the sole terminal port failure after a host-argument release
     /// failed while consuming an adapter invocation.
-    pub fn terminal_host_arguments_release(
-        failure: VmHostEffectArgumentsReleaseError,
-    ) -> Self {
+    pub fn terminal_host_arguments_release(failure: VmHostEffectArgumentsReleaseError) -> Self {
         let owner = BytecodeTerminalOwner::from_host_arguments_release(failure);
         Self::from_terminal_stream_release_owner(owner)
     }
@@ -856,10 +854,7 @@ impl<U: BytecodeUnit> BytecodeSchedulerFailureOwner<U> {
     /// are dropped heap-free before the caller can freeze the owner inventory.
     /// Exact terminal escrow and the retained affine input survive for request
     /// retention and a monotonic retry.
-    pub fn normalize_terminal(
-        self,
-        abandon_pending: impl FnOnce(&U::PendingOperation),
-    ) -> Self {
+    pub fn normalize_terminal(self, abandon_pending: impl FnOnce(&U::PendingOperation)) -> Self {
         let Self {
             kind,
             terminal_escrow,
@@ -998,27 +993,25 @@ impl VmRootSource for BytecodeSchedulerFailureOwner<VmFiber> {
             BytecodeSchedulerFailureOwnerKind::MappedWake { guard, .. } => {
                 guard.visit_roots(visitor)?;
             }
-            BytecodeSchedulerFailureOwnerKind::Terminal { retained } => {
-                match retained {
-                    BytecodeSchedulerRetainedOwner::None
-                    | BytecodeSchedulerRetainedOwner::PortContinuation(_) => {}
-                    BytecodeSchedulerRetainedOwner::Complete(completion) => {
-                        completion.visit_roots(visitor)?;
-                    }
-                    BytecodeSchedulerRetainedOwner::ChildInput(invocation) => {
-                        invocation.visit_roots(visitor)?;
-                    }
-                    BytecodeSchedulerRetainedOwner::AdapterInput(invocation) => {
-                        invocation.visit_roots(visitor)?;
-                    }
-                    BytecodeSchedulerRetainedOwner::StreamInput(item) => {
-                        item.visit_roots(visitor)?;
-                    }
-                    BytecodeSchedulerRetainedOwner::ResumeRejected { outcome, .. } => {
-                        outcome.visit_roots(visitor)?;
-                    }
+            BytecodeSchedulerFailureOwnerKind::Terminal { retained } => match retained {
+                BytecodeSchedulerRetainedOwner::None
+                | BytecodeSchedulerRetainedOwner::PortContinuation(_) => {}
+                BytecodeSchedulerRetainedOwner::Complete(completion) => {
+                    completion.visit_roots(visitor)?;
                 }
-            }
+                BytecodeSchedulerRetainedOwner::ChildInput(invocation) => {
+                    invocation.visit_roots(visitor)?;
+                }
+                BytecodeSchedulerRetainedOwner::AdapterInput(invocation) => {
+                    invocation.visit_roots(visitor)?;
+                }
+                BytecodeSchedulerRetainedOwner::StreamInput(item) => {
+                    item.visit_roots(visitor)?;
+                }
+                BytecodeSchedulerRetainedOwner::ResumeRejected { outcome, .. } => {
+                    outcome.visit_roots(visitor)?;
+                }
+            },
         }
         // The cleanup diagnostic is rootless by construction: it can only be
         // captured together with a sealed StreamItemReleaseError owner.
@@ -1058,10 +1051,7 @@ impl<U: BytecodeUnit> BytecodeSchedulerFailure<U> {
     /// Consumes every scheduler/pending/resource lease in this terminal
     /// failure. The caller supplies the pending-registry abandon authority so
     /// an unaccepted park cannot leave an open completion cell.
-    pub fn normalize_terminal(
-        self,
-        abandon_pending: impl FnOnce(&U::PendingOperation),
-    ) -> Self {
+    pub fn normalize_terminal(self, abandon_pending: impl FnOnce(&U::PendingOperation)) -> Self {
         let Self { owner, reason } = self;
         Self {
             owner: owner.normalize_terminal(abandon_pending),
