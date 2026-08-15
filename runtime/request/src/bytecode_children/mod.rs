@@ -1,12 +1,17 @@
 //! X6 child mux for flat-scheduler bytecode children.
 //!
-//! Service, local interface and the K6 DB intrinsic child are the accepted J2
-//! child lanes. Remote interface, callback, task and actor remain fail-closed.
+//! Service, local/remote interface, callback registration and the K6 DB
+//! intrinsic child are the X6 child mux lanes. Actor remains fail-closed until
+//! the A6 executor/arena seam supplies an executable callback, and task is
+//! wired through the fresh request seam rather than a VM child target.
 
+mod actor;
+mod callback;
 mod db;
 mod db_intrinsic;
 mod interface;
 mod service;
+mod task;
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -14,18 +19,31 @@ use std::sync::{
 };
 
 use skiff_artifact_model::{ContractOperationId, ServiceProtocolIdentity};
+use skiff_runtime_boundary::service_linkable::ServiceLinkableCapabilityHooks;
 use skiff_runtime_deployment_image::{DeploymentOwnerIdentity, ServiceDependencySlot};
 use skiff_runtime_linked_bytecode::ServiceOperationIndex;
 use skiff_runtime_linker::DeploymentExecutionImage;
-use skiff_runtime_model::{request_heap::RequestHeapLimits, vm_heap::VmHeap};
-use skiff_runtime_scheduler::{
-    BytecodeSchedulerError, ChildFinishError, ChildHeapCarrier, ChildHeapOwnerRegistration,
-    OwnerCreationError, RequestResourceTable,
+use skiff_runtime_model::{
+    bytecode_execution_observation::BytecodeExecutionObserver, request_heap::RequestHeapLimits,
+    vm_heap::VmHeap,
 };
-use skiff_runtime_vm::{ChildTarget, ResumeOutcome, VmCompletion, VmFiber};
+use skiff_runtime_scheduler::{
+    BytecodeChildHandoff, BytecodePortFailure, BytecodeSchedulerError, ChildFinishError,
+    ChildHeapCarrier, ChildHeapOwnerRegistration, OwnerCreationError, RequestResourceTable,
+};
+use skiff_runtime_vm::{
+    ChildInvocation, ChildTarget, ResumeOutcome, VmBudget, VmCompletion, VmFiber, VmLimits,
+    VmResumeToken,
+};
 
 use crate::{memory_ledger::MemoryLedgerError, vm_heap::RequestVmHeap, RequestMemoryLedger};
 
+pub use actor::{ActorChildError, BytecodeActorChildComposition};
+pub(crate) use callback::execute_callback_child;
+pub use callback::{
+    BytecodeCallbackChildComposition, BytecodeCallbackChildError, BytecodeCallbackResolver,
+    CallbackExecution,
+};
 pub use db::{
     BytecodeDbChildComposition, BytecodeDbChildError, DbObjectTargetId, DbTransactionSession,
 };
@@ -34,6 +52,7 @@ pub(crate) use db_intrinsic::{
 };
 pub(crate) use interface::execute_interface_child;
 pub(crate) use service::execute_service_child;
+pub(crate) use task::{is_task_request, task_arguments};
 
 /// Routing decision for one VM child target. This is the single X6-owned
 /// registration point for the flat child mux; capability lanes either register
@@ -43,6 +62,7 @@ pub(crate) enum BytecodeChildLane {
     Service,
     Interface,
     Db,
+    Actor,
     Disabled,
 }
 
@@ -52,12 +72,47 @@ impl BytecodeChildLane {
             ChildTarget::Service(_) => Self::Service,
             ChildTarget::Interface { .. } => Self::Interface,
             ChildTarget::Db(_) => Self::Db,
-            ChildTarget::Actor(_)
-            | ChildTarget::Callback(_)
+            ChildTarget::Actor(_) => Self::Actor,
+            ChildTarget::Callback(_)
             | ChildTarget::Task(_)
             | ChildTarget::StreamNext => Self::Disabled,
         }
     }
+}
+
+/// Central Actor child routing seam.
+///
+/// The A6 leaf supplies exact-build/arena composition facts, but the concrete
+/// K6/A6 executor is not installed yet. Registration therefore routes the lane
+/// explicitly and keeps every reachable Actor child fail-closed instead of
+/// falling through to `UnsupportedChild` with no owner diagnostic.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_actor_child(
+    invocation: ChildInvocation,
+    _heap: &mut dyn VmHeap,
+    _budget: &mut dyn VmBudget,
+    actor_composition: &BytecodeActorChildComposition,
+    _child_heap_factory: Arc<dyn BytecodeChildHeapFactory>,
+    _resources: RequestResourceTable,
+    _observer: BytecodeExecutionObserver,
+    _limits: VmLimits,
+) -> Result<BytecodeChildHandoff<VmFiber>, BytecodePortFailure<ChildInvocation, VmResumeToken>> {
+    let ChildTarget::Actor(index) = invocation.target() else {
+        return Err(BytecodePortFailure::input(
+            BytecodeSchedulerError::UnsupportedChild,
+            invocation,
+        ));
+    };
+    let _ = index;
+    let reason = if !actor_composition.is_available() {
+        "Actor child requires exact build and arena lease facts before execution".to_string()
+    } else {
+        "Actor child executor seam is not installed by K6/A6".to_string()
+    };
+    Err(BytecodePortFailure::input(
+        BytecodeSchedulerError::Port(reason),
+        invocation,
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -186,6 +241,16 @@ pub struct BytecodeRequestChildComposition {
     /// back into the caller. The host uses this to classify a successful unary
     /// service response as start/chunk/end instead of a bare unary end.
     pub unary_response_start: Arc<AtomicBool>,
+    /// C6 host projection hooks for same-Runtime callback capabilities. The
+    /// concrete host type is injected by the host composition; request code
+    /// only retains the boundary trait.
+    pub callback_hooks: Option<Arc<dyn ServiceLinkableCapabilityHooks>>,
+    /// C6 child resolver. It stays fail-closed until the host can provide an
+    /// exact same-Runtime provider entry from the F6 callback table.
+    pub callback_child: BytecodeCallbackChildComposition,
+    /// A6 child composition. It stays fail-closed until exact build and arena
+    /// lease facts are joined.
+    pub actor_child: BytecodeActorChildComposition,
     /// D6R capability/recoverable contexts registered by X6. The exact target
     /// stays fail-closed until F6 emits `DbObjectTargetId` and K6 owns the
     /// transaction token.
@@ -201,6 +266,9 @@ impl Default for BytecodeRequestChildComposition {
             heap_limits: RequestHeapLimits::default(),
             throw_materializer: Arc::new(FailClosedServiceChildThrowMaterializer),
             unary_response_start: Arc::new(AtomicBool::new(false)),
+            callback_hooks: None,
+            callback_child: BytecodeCallbackChildComposition::default(),
+            actor_child: BytecodeActorChildComposition::default(),
             db_child: BytecodeDbChildComposition::default(),
         }
     }
@@ -289,7 +357,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn child_lane_registers_service_and_interface_and_disables_remaining_targets() {
+    fn child_lane_registers_service_interface_actor_and_disables_remaining_targets() {
         assert_eq!(
             BytecodeChildLane::for_target(ChildTarget::Service(ServiceOperationIndex::new(0))),
             BytecodeChildLane::Service
@@ -307,7 +375,7 @@ mod tests {
         );
         assert_eq!(
             BytecodeChildLane::for_target(ChildTarget::Actor(ActorMethodIndex::new(0))),
-            BytecodeChildLane::Disabled
+            BytecodeChildLane::Actor
         );
         assert_eq!(
             BytecodeChildLane::for_target(ChildTarget::Callback(SyntheticCallbackIndex::new(0))),
@@ -327,6 +395,14 @@ mod tests {
             db_child_required_fact().contains("DbObjectTargetId"),
             "DB registration must require the exact target identity"
         );
+    }
+
+    #[test]
+    fn callback_and_actor_compositions_default_fail_closed() {
+        let composition = BytecodeRequestChildComposition::default();
+        assert!(composition.callback_hooks.is_none());
+        assert!(!composition.callback_child.is_available());
+        assert!(!composition.actor_child.is_available());
     }
 
     #[test]

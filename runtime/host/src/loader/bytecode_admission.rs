@@ -6,11 +6,13 @@ use std::{
 
 use skiff_artifact_model::{
     ContractOperationId, DeploymentArtifactIdentity, GatewayAdapterKind, GatewayAdapterSource,
-    GatewayEntryIdentity, GatewayEntryKey, IngressSelector, ServiceDeploymentRef,
+    GatewayEntryIdentity, GatewayEntryKey, IngressSelector, PackageCallableId,
+    ServiceDeploymentRef,
 };
 use skiff_runtime_deployment_image::{
     DeploymentImageCache, DeploymentLoadError, DeploymentLoadFailureReason, DeploymentOwnerIdentity,
 };
+use skiff_runtime_linked_bytecode::FunctionIndex;
 use skiff_runtime_linker::{
     link_deployment_execution_image, DeploymentExecutionEntry, DeploymentExecutionImage,
     DeploymentExecutionImageError, LinkLimits,
@@ -46,6 +48,9 @@ pub(crate) enum BytecodeDeploymentLoadError {
 pub(crate) enum BytecodeRouteSelector {
     Operation {
         contract_operation_id: ContractOperationId,
+    },
+    PackageFunction {
+        target: String,
     },
     Gateway {
         ingress: IngressSelector,
@@ -246,6 +251,10 @@ struct AdmissionObservations {
 #[derive(Debug, Clone)]
 enum BytecodeRouteTarget {
     Operation(ContractOperationId),
+    PackageFunction {
+        callable: String,
+        function: FunctionIndex,
+    },
     Gateway {
         ingress: IngressSelector,
         gateway_entry_key: GatewayEntryKey,
@@ -279,6 +288,10 @@ impl BytecodeRoute {
                         anyhow::anyhow!("bytecode operation lookup failed: {error}")
                     })?;
                 BytecodeRouteTarget::Operation(contract_operation_id)
+            }
+            BytecodeRouteSelector::PackageFunction { target } => {
+                let (callable, function) = resolve_package_function(&image, &target)?;
+                BytecodeRouteTarget::PackageFunction { callable, function }
             }
             BytecodeRouteSelector::Gateway {
                 ingress,
@@ -346,6 +359,7 @@ impl BytecodeRoute {
     pub(crate) fn target_label(&self) -> String {
         match &self.target {
             BytecodeRouteTarget::Operation(operation_id) => operation_id.as_str().to_string(),
+            BytecodeRouteTarget::PackageFunction { callable, .. } => callable.clone(),
             BytecodeRouteTarget::Gateway {
                 gateway_entry_identity,
                 ..
@@ -369,6 +383,9 @@ impl BytecodeRoute {
                 ..
             } => (gateway_entry_key, adapter_plan),
             BytecodeRouteTarget::Operation(_) => {
+                anyhow::bail!("HTTP adapter requires a gateway route")
+            }
+            BytecodeRouteTarget::PackageFunction { .. } => {
                 anyhow::bail!("HTTP adapter requires a gateway route")
             }
         };
@@ -416,6 +433,10 @@ impl BytecodeRoute {
                 .image
                 .operation_entry(operation_id)
                 .map_err(|error| anyhow::anyhow!("bytecode operation lookup failed: {error}")),
+            BytecodeRouteTarget::PackageFunction { function, .. } => self
+                .image
+                .function_entry(*function)
+                .map_err(|error| anyhow::anyhow!("bytecode task function lookup failed: {error}")),
             BytecodeRouteTarget::Gateway {
                 ingress,
                 gateway_entry_identity,
@@ -427,35 +448,38 @@ impl BytecodeRoute {
         }?;
         let (selector, gateway_key, gateway_identity, callable_role) = match &self.target {
             BytecodeRouteTarget::Operation(operation_id) => (
-                BytecodeRouteEntrySelector::Operation(operation_id.clone()),
+                Some(BytecodeRouteEntrySelector::Operation(operation_id.clone())),
                 None,
                 None,
                 None,
             ),
+            BytecodeRouteTarget::PackageFunction { .. } => (None, None, None, None),
             BytecodeRouteTarget::Gateway {
                 ingress,
                 gateway_entry_key,
                 gateway_entry_identity,
                 ..
             } => (
-                BytecodeRouteEntrySelector::Gateway(ingress.clone()),
+                Some(BytecodeRouteEntrySelector::Gateway(ingress.clone())),
                 Some(gateway_entry_key.clone()),
                 Some(gateway_entry_identity.clone()),
                 Some(BytecodeGatewayCallableRole::Handler),
             ),
         };
-        let entry = BytecodeExecutionEvent::RouteEntryPinned(RouteEntryPinned {
-            image_owner: self.image.owner().deployment().clone(),
-            selector,
-            gateway_key,
-            gateway_identity,
-            callable_role,
-            verified_function_index: target.function().get(),
-        });
-        self.admission_observations
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .entry = Some(entry);
+        if let Some(selector) = selector {
+            let entry = BytecodeExecutionEvent::RouteEntryPinned(RouteEntryPinned {
+                image_owner: self.image.owner().deployment().clone(),
+                selector,
+                gateway_key,
+                gateway_identity,
+                callable_role,
+                verified_function_index: target.function().get(),
+            });
+            self.admission_observations
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .entry = Some(entry);
+        }
         Ok(target)
     }
 
@@ -471,16 +495,63 @@ impl BytecodeRoute {
                 .deployment
                 .take()
                 .expect("admitted route retains its deployment observation");
-            let entry = staged
-                .entry
-                .take()
-                .expect("admitted route retains its entry observation");
-            [deployment, entry]
+            if let Some(entry) = staged.entry.take() {
+                vec![deployment, entry]
+            } else {
+                vec![deployment]
+            }
         };
         for observation in observations {
             self.observer.observe(observation);
         }
     }
+}
+
+fn resolve_package_function(
+    image: &DeploymentExecutionImage,
+    target: &str,
+) -> anyhow::Result<(String, FunctionIndex)> {
+    let (label, matches): (String, Vec<FunctionIndex>) =
+        if let Some(symbol) = target.strip_prefix("function:") {
+            if symbol.is_empty() {
+                anyhow::bail!("task function target is empty");
+            }
+            let matches = image
+                .functions()
+                .iter()
+                .filter(|function| {
+                    function.key().artifact_function_key().as_str() == symbol
+                        || function.key().template_function_key().as_str() == symbol
+                })
+                .map(|function| function.index())
+                .collect();
+            (format!("function:{symbol}"), matches)
+        } else if let Some(callable) = target.strip_prefix("package:") {
+            if callable.is_empty() {
+                anyhow::bail!("task package callable target is empty");
+            }
+            let callable = PackageCallableId::new(callable);
+            let matches = image
+                .functions()
+                .iter()
+                .filter(|function| {
+                    function.key().template_function_key() == &callable
+                        || function.effect_summary_ref() == &callable
+                })
+                .map(|function| function.index())
+                .collect();
+            (format!("package:{}", callable.as_str()), matches)
+        } else {
+            anyhow::bail!("task target must start with function: or package:")
+        };
+    let mut matches = matches.into_iter();
+    let function = matches.next().ok_or_else(|| {
+        anyhow::anyhow!("task target {target} has no exact linked package function")
+    })?;
+    if matches.next().is_some() {
+        anyhow::bail!("task target {target} resolves to multiple linked functions");
+    }
+    Ok((label, function))
 }
 
 fn production_link_limits() -> LinkLimits {

@@ -4,6 +4,7 @@ use std::{future, sync::Arc};
 
 use serde_json::{Map, Value};
 use skiff_runtime_boundary::recoverable::FailClosedRecoverableBehaviorHooks;
+use skiff_runtime_boundary::service_linkable::ServiceLinkableCapabilityHooks;
 use skiff_runtime_boundary::value::{bytes_payload, bytes_value};
 use skiff_runtime_capability_context::{
     CancellationToken, DbCapabilitySource, DbRecoverableRuntimeContext,
@@ -20,17 +21,18 @@ use skiff_runtime_model::{
     type_plan::leaf_bytes_plan,
 };
 use skiff_runtime_request::{
-    BytecodeDbChildComposition, BytecodeHttpClientPort, BytecodeHttpFailure, BytecodeHttpFuture,
-    BytecodeHttpRequest, BytecodeHttpResponse, BytecodeHttpStreamRegistrar,
-    BytecodeHttpStreamResponse, BytecodeRequestChildComposition, BytecodeServiceChildError,
-    BytecodeServiceResolver, FailClosedServiceChildThrowMaterializer, HttpNameValue,
-    OwnedExecutionControl, RequestMemoryLedger,
+    BytecodeActorChildComposition, BytecodeCallbackChildComposition, BytecodeDbChildComposition,
+    BytecodeHttpClientPort, BytecodeHttpFailure, BytecodeHttpFuture, BytecodeHttpRequest,
+    BytecodeHttpResponse, BytecodeHttpStreamRegistrar, BytecodeHttpStreamResponse,
+    BytecodeRequestChildComposition, BytecodeServiceChildError, BytecodeServiceResolver,
+    FailClosedServiceChildThrowMaterializer, HttpNameValue, OwnedExecutionControl,
+    RequestMemoryLedger,
 };
 
 use crate::{
     capability_context::{
-        EffectDispatchContext, HttpClientCapabilityContext, HttpEffectContext,
-        TelemetryCapabilityContext,
+        BytecodeCallbackCapabilityHooks, BytecodeCallbackCapabilityTable, EffectDispatchContext,
+        HttpClientCapabilityContext, HttpEffectContext, TelemetryCapabilityContext,
     },
     error::{OrdinaryRuntimeError, RuntimeError},
 };
@@ -382,12 +384,13 @@ pub(crate) fn bytecode_request_child_composition(
         // an absent exact target must fail closed before any provider call.
         exact_target: None,
     };
-    bytecode_request_child_composition_with_db_child(host, db_child)
+    bytecode_request_child_composition_with_db_child(host, db_child, request_id)
 }
 
 pub(crate) fn bytecode_request_child_composition_with_db_child(
     host: &RuntimeHost,
     db_child: BytecodeDbChildComposition,
+    request_id: &str,
 ) -> BytecodeRequestChildComposition {
     let limits = host.request_heap_limits();
     BytecodeRequestChildComposition {
@@ -397,8 +400,25 @@ pub(crate) fn bytecode_request_child_composition_with_db_child(
         heap_limits: limits,
         throw_materializer: Arc::new(FailClosedServiceChildThrowMaterializer),
         unary_response_start: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        callback_hooks: Some(bytecode_callback_hooks(host, request_id)),
+        callback_child: BytecodeCallbackChildComposition {
+            runtime_replica_id: host.base_runtime_id.clone(),
+            resolver: None,
+        },
+        actor_child: BytecodeActorChildComposition::default(),
         db_child,
     }
+}
+
+fn bytecode_callback_hooks(
+    host: &RuntimeHost,
+    request_id: &str,
+) -> Arc<dyn ServiceLinkableCapabilityHooks> {
+    let table = BytecodeCallbackCapabilityTable::new(
+        host.base_runtime_id.clone(),
+        format!("{}-{}", host.base_runtime_id, request_id),
+    );
+    Arc::new(BytecodeCallbackCapabilityHooks::new(table, 1))
 }
 
 fn bytecode_db_recoverable_context(

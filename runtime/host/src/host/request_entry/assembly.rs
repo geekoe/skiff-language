@@ -1,5 +1,6 @@
 use std::{num::NonZeroUsize, sync::Arc};
 
+use serde_json::Value;
 use skiff_artifact_model::{IngressProtocol, IngressSelector};
 use skiff_runtime_request::{
     self as request_runner, BinaryHttpRequest, BinaryHttpRequestMetadata, BoundaryResponse,
@@ -890,6 +891,8 @@ fn bytecode_task_request_envelope(
     header: &BytecodeTaskRequestStartFrameHeader,
     payload: Vec<u8>,
 ) -> RequestEnvelope {
+    let mut extra = bytecode_deadline_extra(header.deadline.as_ref());
+    extra.insert("task".to_string(), Value::Bool(true));
     RequestEnvelope {
         request_id: header.request_id.clone(),
         mode: header.mode.clone(),
@@ -907,7 +910,7 @@ fn bytecode_task_request_envelope(
         test_effects_enabled: header.test_effects_enabled || header.test_case_capability.is_some(),
         test_effect_doubles: Default::default(),
         payload_bytes: payload,
-        extra: bytecode_deadline_extra(header.deadline.as_ref()),
+        extra,
     }
 }
 

@@ -11,7 +11,7 @@ use std::{
 };
 
 use skiff_artifact_model::ActorImplementationIdentity;
-use skiff_runtime_capability_context::ActorInvocationOutcome;
+use skiff_runtime_capability_context::{ActorInvocationError, ActorInvocationOutcome};
 use tokio::sync::oneshot;
 use tokio::sync::Notify;
 
@@ -100,6 +100,26 @@ impl ActorMethodOutboundRegistry {
         };
         entry.response_committed.commit();
         entry.sender.send(Ok(outcome)).is_ok()
+    }
+
+    /// Completes one runtime-visible `actor.method.error` after Router
+    /// admission has already correlated the invocation and fence. The registry
+    /// only needs its invocation entry; it does not accept a caller-supplied
+    /// fence for this terminal because the error frame does not carry one.
+    pub fn complete_actor_error(&self, invocation_id: &str, error: ActorInvocationError) -> bool {
+        let Some(entry) = self
+            .inner
+            .lock()
+            .ok()
+            .and_then(|mut entries| entries.remove(invocation_id))
+        else {
+            return false;
+        };
+        entry.response_committed.commit();
+        entry
+            .sender
+            .send(Ok(ActorInvocationOutcome::ActorError(error)))
+            .is_ok()
     }
 
     pub fn complete_failure(

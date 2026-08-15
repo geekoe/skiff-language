@@ -56,9 +56,10 @@ use skiff_runtime_vm::{
 
 use crate::{
     bytecode_children::{
-        execute_interface_child, execute_service_child, linked_db_target,
-        materialize_db_result_to_vm, require_db_operation, BytecodeChildHeapFactory,
-        BytecodeChildLane, BytecodeRequestChildComposition, RequestChildHeapFactory,
+        execute_actor_child, execute_interface_child, execute_service_child, is_task_request,
+        linked_db_target, materialize_db_result_to_vm, require_db_operation, task_arguments,
+        BytecodeChildHeapFactory, BytecodeChildLane, BytecodeRequestChildComposition,
+        RequestChildHeapFactory,
     },
     bytecode_host_effects::{
         BytecodeHttpFailure, BytecodeHttpRequest, BytecodeHttpResponse,
@@ -1232,6 +1233,16 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                 heap,
                 budget,
                 &self.child_composition,
+                Arc::clone(&self.child_heap_factory),
+                self.runtime.resources.clone(),
+                self.observer.clone(),
+                vm_limits(),
+            ),
+            BytecodeChildLane::Actor => execute_actor_child(
+                invocation,
+                heap,
+                budget,
+                &self.child_composition.actor_child,
                 Arc::clone(&self.child_heap_factory),
                 self.runtime.resources.clone(),
                 self.observer.clone(),
@@ -3224,6 +3235,9 @@ fn gateway_entry_arguments(
     heap: &mut dyn VmHeap,
 ) -> RequestResult<Vec<ValueSlot>> {
     let Some(adapter) = &request.http_adapter else {
+        if is_task_request(request) {
+            return task_arguments(request, entry, heap);
+        }
         return Ok(Vec::new());
     };
     let binary = request.binary_http.as_ref().ok_or_else(|| {
@@ -3819,7 +3833,7 @@ fn validate_bytecode_request(
 }
 
 fn validate_bytecode_request_metadata(request: &RequestEnvelope) -> RequestResult<()> {
-    if request.ingress_selector.is_none() {
+    if request.ingress_selector.is_none() && !is_task_request(request) {
         return Err(RequestError::Unsupported(
             "bytecode ingress requires request.start ingress_selector".to_string(),
         ));
@@ -4812,6 +4826,19 @@ mod tests {
         let error = validate_bytecode_request_metadata(&selector_request)
             .expect_err("selector is required");
         assert!(error.to_string().contains("ingress_selector"));
+    }
+
+    #[test]
+    fn validation_accepts_exact_task_marker_without_http_selector() {
+        let mut task_request = request();
+        task_request.ingress_selector = None;
+        task_request.http_adapter = None;
+        task_request.payload_bytes = vec![1, 2, 3];
+        task_request
+            .extra
+            .insert("task".to_string(), serde_json::json!(true));
+        validate_bytecode_request_metadata(&task_request)
+            .expect("task marker must replace the HTTP ingress selector requirement");
     }
 
     #[test]

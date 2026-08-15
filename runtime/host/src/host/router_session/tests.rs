@@ -1,4 +1,8 @@
 use skiff_runtime_transport::{
+    actor_method::{
+        encode_actor_method_frame, ActorMethodFrame, ActorMethodReturnFrameHeader,
+        ACTOR_RETURN_ENCODING_V1,
+    },
     connection_protocol::{
         encode_connection_response_frame, ConnectionResponseFrameHeader, ConnectionResponseOutcome,
     },
@@ -54,6 +58,49 @@ async fn connection_request_response_demux_uses_exact_router_session() {
     assert_eq!(host.connection_requests.pending_count(), 0);
     assert_eq!(host.connection_requests.active_lease_count(), 0);
     assert_eq!(host.connection_requests.active_timer_count(), 0);
+}
+
+#[tokio::test]
+async fn actor_method_return_frame_demuxes_to_outbound_registry() {
+    let host = test_host();
+    let mut lease = host
+        .actor_method_outbound
+        .register(
+            "invoke-return".to_string(),
+            "cancel-return".to_string(),
+            1,
+            skiff_artifact_model::ActorImplementationIdentity::new(format!(
+                "skiff-actor-implementation-v1:sha256:{}",
+                "a".repeat(64)
+            )),
+        )
+        .expect("register actor return lease");
+    let header = ActorMethodReturnFrameHeader {
+        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+        envelope_type: "actor.method.return".to_string(),
+        invocation_id: "invoke-return".to_string(),
+        return_encoding_version: ACTOR_RETURN_ENCODING_V1.to_string(),
+    };
+    let frame = encode_actor_method_frame(&ActorMethodFrame::Return(header, b"ok".to_vec()))
+        .expect("encode actor return frame");
+    let (sender, _receiver) = mpsc::unbounded_channel();
+    let mut control = None;
+    let mut artifact_fingerprint = None;
+
+    dispatch_router_binary_frame(
+        &host,
+        &frame,
+        &sender,
+        &mut control,
+        &mut artifact_fingerprint,
+    )
+    .await
+    .expect("actor.method.return should dispatch");
+
+    assert_eq!(
+        lease.receive().await.unwrap().unwrap(),
+        ActorInvocationOutcome::Returned(b"ok".to_vec())
+    );
 }
 
 mod control_response_lifecycle;

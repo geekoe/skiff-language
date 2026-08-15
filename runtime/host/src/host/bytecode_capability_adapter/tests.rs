@@ -135,10 +135,18 @@ fn host_composition_injects_real_db_child_composition() {
         recoverable_context: Some(recoverable_db_context()),
         exact_target: Some(exact_db_target()),
     };
-    let composition = bytecode_request_child_composition_with_db_child(&host, db_child);
+    let composition =
+        bytecode_request_child_composition_with_db_child(&host, db_child, "test-request");
 
     assert!(composition.db_child.is_available());
     assert!(composition.db_child.exact_target().is_ok());
+    assert!(composition.callback_hooks.is_some());
+    assert_eq!(
+        composition.callback_child.runtime_replica_id,
+        host.base_runtime_id.as_str()
+    );
+    assert!(!composition.callback_child.is_available());
+    assert!(!composition.actor_child.is_available());
 }
 
 #[test]
@@ -149,7 +157,8 @@ fn host_composition_db_child_fails_closed_when_capability_is_missing() {
         recoverable_context: Some(recoverable_db_context()),
         exact_target: Some(exact_db_target()),
     };
-    let composition = bytecode_request_child_composition_with_db_child(&host, db_child);
+    let composition =
+        bytecode_request_child_composition_with_db_child(&host, db_child, "test-request");
 
     assert!(!composition.db_child.is_available());
 }
@@ -164,7 +173,8 @@ fn host_composition_db_child_fails_closed_when_exact_target_is_missing() {
         recoverable_context: Some(recoverable_db_context()),
         exact_target: None,
     };
-    let composition = bytecode_request_child_composition_with_db_child(&host, db_child);
+    let composition =
+        bytecode_request_child_composition_with_db_child(&host, db_child, "test-request");
 
     assert!(!composition.db_child.is_available());
 }

@@ -1,3 +1,4 @@
+mod actor_method_handoff;
 pub mod blob_store;
 mod bytecode_capability_adapter;
 mod bytecode_execution_observation;

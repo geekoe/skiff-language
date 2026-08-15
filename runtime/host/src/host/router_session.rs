@@ -4,12 +4,18 @@ use futures_util::{Sink, SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
 use skiff_runtime_capability_context::{
+    ActorInvocationCancellation, ActorInvocationError, ActorInvocationOutcome,
     ConnectionRequestSession, ConnectionRequestTerminal, RouterWriteFailure,
 };
 use skiff_runtime_request::{OutboundResponse, ResponseError};
 #[cfg(test)]
 use skiff_runtime_transport::protocol::RouterControlEnvelope;
 use skiff_runtime_transport::{
+    actor_method::{
+        decode_actor_method_frame, ActorMethodErrorFramePayload, ActorMethodFrame,
+        ACTOR_RETURN_ENCODING_V1,
+    },
+    actor_owner::decode_actor_owner_failure_frame,
     connection_protocol::{decode_connection_response_frame, ConnectionResponseOutcome},
     control_mapper::encode_outbound_control_message,
     protocol::{
@@ -32,6 +38,7 @@ use tokio::{
 use tokio_tungstenite::{connect_async, tungstenite::Message, WebSocketStream};
 use tracing::{info, warn};
 
+use crate::capability_context::actor_method_outbound::ActorInvocationTransportError;
 use crate::error::{Result, RuntimeError};
 
 mod handshake;
@@ -756,15 +763,83 @@ async fn dispatch_router_binary_frame_inner(
                 );
             }
         }
-        "actor.owner.invoke"
-        | "actor.owner.control"
-        | "actor.owner.failure"
-        | "actor.method.return"
-        | "actor.method.error"
-        | "actor.method.cancel" => {
+        "actor.owner.invoke" | "actor.owner.control" => {
             return Err(RuntimeError::Unsupported(
-                "legacy actor frames are not supported by bytecode runtime".to_string(),
+                "actor owner invoke/control execution is not installed by the bytecode runtime"
+                    .to_string(),
             ));
+        }
+        "actor.owner.failure" => {
+            let header = decode_actor_owner_failure_frame(bytes)
+                .map_err(super::transport_error_into_runtime_error)?;
+            host.actor_method_outbound.complete_failure(
+                &header.invocation_id,
+                header.epoch,
+                &header.actor_implementation_identity,
+                ActorInvocationTransportError {
+                    code: header.reason.code,
+                    message: header.reason.message,
+                },
+            );
+        }
+        "actor.method.return" => {
+            let (header, payload) = match decode_actor_method_frame(bytes)
+                .map_err(super::transport_error_into_runtime_error)?
+            {
+                ActorMethodFrame::Return(header, payload) => (header, payload),
+                other => {
+                    return Err(RuntimeError::Decode(format!(
+                        "actor.method.return frame routed as {other:?}"
+                    )));
+                }
+            };
+            if header.return_encoding_version != ACTOR_RETURN_ENCODING_V1 {
+                return Err(RuntimeError::Decode(
+                    "actor.method.return encoding is unsupported".to_string(),
+                ));
+            }
+            host.actor_method_outbound.complete(
+                &header.invocation_id,
+                ActorInvocationOutcome::Returned(payload),
+            );
+        }
+        "actor.method.error" => {
+            let header = match decode_actor_method_frame(bytes)
+                .map_err(super::transport_error_into_runtime_error)?
+            {
+                ActorMethodFrame::Error(header) => header,
+                other => {
+                    return Err(RuntimeError::Decode(format!(
+                        "actor.method.error frame routed as {other:?}"
+                    )));
+                }
+            };
+            host.actor_method_outbound
+                .complete_actor_error(&header.invocation_id, actor_invocation_error(header.error));
+        }
+        "actor.method.cancel" => {
+            let header = match decode_actor_method_frame(bytes)
+                .map_err(super::transport_error_into_runtime_error)?
+            {
+                ActorMethodFrame::Cancel(header) => header,
+                other => {
+                    return Err(RuntimeError::Decode(format!(
+                        "actor.method.cancel frame routed as {other:?}"
+                    )));
+                }
+            };
+            let cancellation = match header.reason {
+                skiff_runtime_transport::actor_method::ActorMethodCancelReason::Cancelled => {
+                    ActorInvocationCancellation::Cancelled
+                }
+                skiff_runtime_transport::actor_method::ActorMethodCancelReason::DeadlineExceeded => {
+                    ActorInvocationCancellation::DeadlineExceeded
+                }
+            };
+            host.actor_method_outbound.complete(
+                &header.invocation_id,
+                ActorInvocationOutcome::Cancelled(cancellation),
+            );
         }
         "actor.getOrCreate.response" => {
             let (header, payload) =
@@ -1000,6 +1075,30 @@ fn response_error_from_frame(error: RuntimeErrorFramePayload) -> ResponseError {
         message: error.message,
         status: error.status,
         details: error.details,
+    }
+}
+
+fn actor_invocation_error(error: ActorMethodErrorFramePayload) -> ActorInvocationError {
+    match error {
+        ActorMethodErrorFramePayload::ActorUpgradingError { retry_after_ms, .. } => {
+            ActorInvocationError::ActorUpgrading { retry_after_ms }
+        }
+        ActorMethodErrorFramePayload::ActorVersionRejectedError {
+            requested_implementation_identity,
+            accepted_implementation_identity,
+            ..
+        } => ActorInvocationError::ActorVersionRejected {
+            requested: requested_implementation_identity,
+            accepted: accepted_implementation_identity,
+        },
+        ActorMethodErrorFramePayload::ActorIncarnationReplacedError { current_epoch, .. } => {
+            ActorInvocationError::ActorIncarnationReplaced {
+                // The runtime response frame does not carry the caller's
+                // requested epoch; Router has already correlated the fence.
+                requested_epoch: 0,
+                current_epoch,
+            }
+        }
     }
 }
 

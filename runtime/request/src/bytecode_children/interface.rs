@@ -32,8 +32,8 @@ use skiff_runtime_vm::{
 };
 
 use super::{
-    BytecodeChildHeapFactory, BytecodeRequestChildComposition, BytecodeServiceChildError,
-    ServiceChildThrowMaterializer,
+    execute_callback_child, BytecodeChildHeapFactory, BytecodeRequestChildComposition,
+    BytecodeServiceChildError, ServiceChildThrowMaterializer,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -80,10 +80,17 @@ pub(crate) fn execute_interface_child(
             );
         }
         if matches!(row.kind(), LinkedInterfaceTableKind::Callback(_)) {
-            return Err(BytecodePortFailure::input(
-                BytecodeSchedulerError::UnsupportedChild,
+            return execute_callback_child(
                 invocation,
-            ));
+                heap,
+                _budget,
+                &composition.callback_child,
+                composition,
+                child_heap_factory,
+                resources,
+                observer,
+                limits,
+            );
         }
         unreachable!("callback is the only non-executable interface kind")
     };

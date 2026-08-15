@@ -443,10 +443,10 @@ impl RuntimeHost {
 
     async fn task_request_from_wire(
         &self,
-        header: BytecodeTaskRequestStartFrameHeader,
+        mut header: BytecodeTaskRequestStartFrameHeader,
         payload: Vec<u8>,
-        _bootstrap: &ConnectionBootstrap,
-        _observer: &BytecodeExecutionObserver,
+        bootstrap: &ConnectionBootstrap,
+        observer: &BytecodeExecutionObserver,
     ) -> Result<AdmittedBytecodeRequest> {
         validate_task_header(&header, &payload)?;
         let deployment = &header.routing.deployment;
@@ -458,12 +458,35 @@ impl RuntimeHost {
                 });
             }
         }
-        let _ = payload;
-        Err(RuntimeError::Protocol {
-            target: header.invocation.target,
-            message: "task bytecode routing does not carry an exact typed ContractOperationId"
-                .to_string(),
-        })
+        header.deadline =
+            effective_request_deadline(header.deadline.as_ref(), "durable task request")?;
+        if header
+            .deadline
+            .as_ref()
+            .is_some_and(|deadline| deadline.timeout_ms == 0)
+        {
+            return Err(deadline_exceeded());
+        }
+        let route = self
+            .resolve_bytecode_request_route(
+                &header.routing.deployment,
+                bootstrap,
+                BytecodeRouteSelector::PackageFunction {
+                    target: header.invocation.target.clone(),
+                },
+                observer,
+            )
+            .await?
+            .expect("bytecode route is required after resolution");
+        let target = bytecode_route_target(&route)?;
+        let db_source = self.db_source_for_route(&route, bootstrap);
+        Ok(AdmittedBytecodeRequest::Task(AdmittedBytecodeTaskRequest {
+            route,
+            header,
+            target,
+            payload,
+            db_source,
+        }))
     }
 
     async fn websocket_jsonrpc_request_from_wire(

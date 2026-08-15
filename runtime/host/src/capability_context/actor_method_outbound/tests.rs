@@ -68,6 +68,37 @@ async fn actor_pending_response_requires_exact_epoch_and_implementation() {
 }
 
 #[tokio::test]
+async fn actor_method_error_routes_typed_outcome_once() {
+    let registry = ActorMethodOutboundRegistry::default();
+    let mut lease = registry
+        .register(
+            "invoke-error".into(),
+            "cancel-error".into(),
+            7,
+            implementation(),
+        )
+        .unwrap();
+    assert!(registry.complete_actor_error(
+        "invoke-error",
+        ActorInvocationError::ActorIncarnationReplaced {
+            requested_epoch: 6,
+            current_epoch: 7,
+        }
+    ));
+    assert_eq!(
+        lease.receive().await.unwrap().unwrap(),
+        ActorInvocationOutcome::ActorError(ActorInvocationError::ActorIncarnationReplaced {
+            requested_epoch: 6,
+            current_epoch: 7,
+        })
+    );
+    assert!(!registry.complete_actor_error(
+        "invoke-error",
+        ActorInvocationError::ActorUpgrading { retry_after_ms: 1 }
+    ));
+}
+
+#[tokio::test]
 async fn fail_all_delivers_connection_error_and_fences_late_response() {
     let registry = ActorMethodOutboundRegistry::default();
     let mut lease = registry

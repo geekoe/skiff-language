@@ -17,10 +17,13 @@ mod runner;
 pub mod vm_heap;
 
 pub use bytecode_children::{
-    BytecodeChildError, BytecodeChildHeapFactory, BytecodeDbChildComposition, BytecodeDbChildError,
+    ActorChildError, BytecodeActorChildComposition, BytecodeCallbackChildComposition,
+    BytecodeCallbackChildError, BytecodeCallbackResolver, BytecodeChildError,
+    BytecodeChildHeapFactory, BytecodeDbChildComposition, BytecodeDbChildError,
     BytecodeRequestChildComposition, BytecodeServiceChildError, BytecodeServiceResolver,
-    DbObjectTargetId, DbTransactionSession, FailClosedServiceChildThrowMaterializer,
-    RequestChildHeapFactory, ServiceChildThrowMaterializer,
+    CallbackExecution, DbObjectTargetId, DbTransactionSession,
+    FailClosedServiceChildThrowMaterializer, RequestChildHeapFactory,
+    ServiceChildThrowMaterializer,
 };
 pub use bytecode_host_effects::{
     BytecodeHttpClientPort, BytecodeHttpFailure, BytecodeHttpFuture, BytecodeHttpRequest,

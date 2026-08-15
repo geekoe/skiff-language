@@ -307,15 +307,16 @@ fn decode_server_stream_frame(
     }
 }
 
-fn prepare_root_server_stream_frame<T>(
-    depth: usize,
+/// Prepares one server-stream frame from any producer depth.
+///
+/// Root HTTP producers and remote-interface child producers both emit the same
+/// linked `std.http.HttpResponseStreamEvent` frame shape. X6's child mux routes
+/// nested remote stream frames through the same transport supervisor instead of
+/// closing them at depth > 0.
+fn prepare_server_stream_frame<T>(
+    _depth: usize,
     decode: impl FnOnce() -> Result<T, BytecodeSchedulerError>,
 ) -> Result<T, BytecodeSchedulerError> {
-    if depth != 0 {
-        return Err(BytecodeSchedulerError::Port(
-            "server-stream response emission is restricted to the exact root producer".to_string(),
-        ));
-    }
     decode()
 }
 
@@ -433,7 +434,7 @@ impl BytecodeStreamSupervisor<VmFiber> for BytecodeServerStreamSupervisor {
         _budget: &mut dyn VmBudget,
     ) -> Result<BytecodeStreamHandoff<VmFiber>, BytecodePortFailure<StreamItem, VmResumeToken>>
     {
-        let prepared = prepare_root_server_stream_frame(depth, || {
+        let prepared = prepare_server_stream_frame(depth, || {
             decode_server_stream_frame(
                 item.resume().image(),
                 item.item_type(),
@@ -682,6 +683,16 @@ mod tests {
     use skiff_runtime_scheduler::{BytecodeSchedulerPorts, RequestExecutionContext};
 
     use super::*;
+
+    #[test]
+    fn nested_remote_stream_frames_share_the_server_stream_seam() {
+        for depth in [0, 1, 3] {
+            let decoded =
+                prepare_server_stream_frame(depth, || Ok::<_, BytecodeSchedulerError>(depth))
+                    .expect("nested child stream emission must use the same frame seam");
+            assert_eq!(decoded, depth);
+        }
+    }
 
     #[test]
     fn phase_5_stream_decode_failure_with_successful_release_returns_continuation() {
