@@ -494,34 +494,40 @@ fn write_chunk_fallible(stream: &mut TcpStream, chunk: &[u8]) -> std::io::Result
     stream.flush()
 }
 
-#[test]
-fn deterministic_tcp_server_gates_unary_and_distinguishes_streams() {
-    let server = Phase5TcpServer::start();
-    let address = server.address;
-    let unary = thread::spawn(move || simple_get(address, "/request"));
-    assert!(server.wait_for_path("/request", Duration::from_secs(1)));
-    assert!(
-        !unary.is_finished(),
-        "unary response crossed the closed gate"
-    );
-    server.release("/request");
-    assert!(String::from_utf8(unary.join().expect("join unary client"))
-        .expect("unary response UTF-8")
-        .ends_with("UNARY"));
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let address = server.address;
-    let left = thread::spawn(move || simple_get(address, "/stream/left"));
-    let address = server.address;
-    let right = thread::spawn(move || simple_get(address, "/stream/right"));
-    assert!(server.wait_for_path("/stream/left", Duration::from_secs(1)));
-    assert!(server.wait_for_path("/stream/right", Duration::from_secs(1)));
-    server.release("/stream/right");
-    server.release("/stream/left");
-    let left = String::from_utf8(left.join().expect("join left client")).expect("left UTF-8");
-    let right = String::from_utf8(right.join().expect("join right client")).expect("right UTF-8");
-    assert!(left.contains("LEFT-1") && left.contains("LEFT-2"));
-    assert!(right.contains("RIGHT-1") && right.contains("RIGHT-2"));
-    assert!(!left.contains("RIGHT") && !right.contains("LEFT"));
+    #[test]
+    fn deterministic_tcp_server_gates_unary_and_distinguishes_streams() {
+        let server = Phase5TcpServer::start();
+        let address = server.address;
+        let unary = thread::spawn(move || simple_get(address, "/request"));
+        assert!(server.wait_for_path("/request", Duration::from_secs(1)));
+        assert!(
+            !unary.is_finished(),
+            "unary response crossed the closed gate"
+        );
+        server.release("/request");
+        assert!(String::from_utf8(unary.join().expect("join unary client"))
+            .expect("unary response UTF-8")
+            .ends_with("UNARY"));
+
+        let address = server.address;
+        let left = thread::spawn(move || simple_get(address, "/stream/left"));
+        let address = server.address;
+        let right = thread::spawn(move || simple_get(address, "/stream/right"));
+        assert!(server.wait_for_path("/stream/left", Duration::from_secs(1)));
+        assert!(server.wait_for_path("/stream/right", Duration::from_secs(1)));
+        server.release("/stream/right");
+        server.release("/stream/left");
+        let left = String::from_utf8(left.join().expect("join left client")).expect("left UTF-8");
+        let right =
+            String::from_utf8(right.join().expect("join right client")).expect("right UTF-8");
+        assert!(left.contains("LEFT-1") && left.contains("LEFT-2"));
+        assert!(right.contains("RIGHT-1") && right.contains("RIGHT-2"));
+        assert!(!left.contains("RIGHT") && !right.contains("LEFT"));
+    }
 }
 
 fn simple_get(address: SocketAddr, path: &str) -> Vec<u8> {

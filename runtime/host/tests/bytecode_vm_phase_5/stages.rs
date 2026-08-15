@@ -25,442 +25,448 @@ pub fn published_positive(prefix: &str) -> PublishedFixture {
     }
 }
 
-#[test]
-fn phase_5_stage_sentinel_admission_to_emission() {
-    let fixture = published_positive("s2-emission");
-    let bytecode = fixture.bytecode();
-    let package = fixture.package_artifact();
-    let deployment = fixture.deployment_artifact();
-    let function = gateway_artifact_function(&package, &deployment, bytecode.view(), VCP_PATH);
-    let drop_left_function =
-        gateway_artifact_function(&package, &deployment, bytecode.view(), DROP_PATH);
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    for (handler, emitted) in [("run", function), ("dropLeft", drop_left_function)] {
-        assert_eq!(
-            emitted
-                .instructions
-                .iter()
-                .filter(|instruction| instruction.descriptor.kind == Opcode::NewArrayBuilder)
-                .count(),
-            1,
-            "{handler} response.start headers use the typed empty-array builder"
-        );
-        assert_eq!(
-            emitted
-                .instructions
-                .iter()
-                .filter(|instruction| instruction.descriptor.kind == Opcode::FreezeArray)
-                .count(),
-            1,
-            "{handler} response.start headers freeze the typed empty array"
-        );
-    }
-    let static_intrinsics = bytecode
-        .view()
-        .functions()
-        .iter()
-        .flat_map(|function| function.relocations.iter())
-        .filter_map(|relocation| {
-            let BytecodeRelocation::IntrinsicRef { intrinsic } = relocation else {
-                return None;
-            };
-            let skiff_artifact_model::BytecodeIntrinsicRef::Static { canonical_key, .. } =
-                &intrinsic.target
-            else {
-                return None;
-            };
-            Some(canonical_key.as_str())
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        static_intrinsics
-            .iter()
-            .filter(|key| **key == "core.bytes.fromUtf8")
-            .count(),
-        7,
-        "each source bytes.fromUtf8 call retains the compiler-owned static intrinsic"
-    );
-    assert!(
-        static_intrinsics
-            .iter()
-            .all(|key| !matches!(*key, "core.array.empty" | "core.map.empty")),
-        "the Phase 5 response carrier must not mint collection intrinsic authority"
-    );
+    #[test]
+    fn phase_5_stage_sentinel_admission_to_emission() {
+        let fixture = published_positive("s2-emission");
+        let bytecode = fixture.bytecode();
+        let package = fixture.package_artifact();
+        let deployment = fixture.deployment_artifact();
+        let function = gateway_artifact_function(&package, &deployment, bytecode.view(), VCP_PATH);
+        let drop_left_function =
+            gateway_artifact_function(&package, &deployment, bytecode.view(), DROP_PATH);
 
-    let host_bindings = function
-        .instructions
-        .iter()
-        .filter(|instruction| instruction.descriptor.kind == Opcode::InvokeHost)
-        .map(|instruction| {
-            let relocation = function
-                .relocations
-                .get(instruction.operand(0) as usize)
-                .expect("InvokeHost relocation index");
-            let BytecodeRelocation::HostEffectRef(effect) = relocation else {
-                panic!("InvokeHost must retain a typed HostEffectRef relocation")
-            };
-            effect
-                .target
-                .binding_key
-                .as_deref()
-                .expect("HostEffectRef exact canonical binding")
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        host_bindings,
-        [
-            "std.http.client.request",
-            "std.http.client.stream",
-            "std.http.client.stream",
-        ],
-        "the exact VCP gateway must carry one request and two stream callsites"
-    );
-
-    let body_takes = function
-        .instructions
-        .windows(2)
-        .filter(|pair| {
-            pair[0].descriptor.kind == Opcode::TakeSlot
-                && pair[1].descriptor.kind == Opcode::TakeDenseField
-        })
-        .map(|pair| &pair[1])
-        .collect::<Vec<_>>();
-    assert_eq!(
-        body_takes.len(),
-        2,
-        "left.body and right.body need two consume-whole affine takes"
-    );
-    for take in &body_takes {
-        assert_eq!(take.operand(1), 0, "body is exact dense ordinal zero");
-        let shape_ref = take.operand(0);
-        let Some(BytecodePoolEntry::ShapeRef { shape }) =
-            bytecode.view().pools().shapes.get(shape_ref as usize)
-        else {
-            panic!("TakeDenseField does not retain a typed shape declaration")
-        };
-        assert_eq!(
-            shape.privileged_affine_composite,
-            Some(PrivilegedAffineCompositeIdentity::HttpClientStreamHandle)
-        );
-        assert_eq!(
-            shape
-                .fields
-                .iter()
-                .map(|field| field.name.as_str())
-                .collect::<Vec<_>>(),
-            ["body", "headers", "status"]
-        );
-        assert_eq!(
-            shape.fields[0].plan,
-            ValueTransferPlan::AffineResource {
-                drop: ResourceDropPlan::ResourceTableRelease,
-            }
-        );
-        assert!(function.instructions.iter().all(|instruction| {
-            instruction.descriptor.kind != Opcode::GetDenseField
-                || instruction.operand(0) != shape_ref
-                || instruction.operand(1) != 0
-        }));
-    }
-
-    let stream_next_sites = function
-        .instructions
-        .iter()
-        .filter(|instruction| instruction.descriptor.kind == Opcode::StreamNext)
-        .collect::<Vec<_>>();
-    assert_eq!(
-        stream_next_sites.len(),
-        2,
-        "A and B need independent StreamNext sites"
-    );
-    for instruction in stream_next_sites {
-        let resume_index = instruction.operand(1);
-        let resume = bytecode
+        for (handler, emitted) in [("run", function), ("dropLeft", drop_left_function)] {
+            assert_eq!(
+                emitted
+                    .instructions
+                    .iter()
+                    .filter(|instruction| instruction.descriptor.kind == Opcode::NewArrayBuilder)
+                    .count(),
+                1,
+                "{handler} response.start headers use the typed empty-array builder"
+            );
+            assert_eq!(
+                emitted
+                    .instructions
+                    .iter()
+                    .filter(|instruction| instruction.descriptor.kind == Opcode::FreezeArray)
+                    .count(),
+                1,
+                "{handler} response.start headers freeze the typed empty array"
+            );
+        }
+        let static_intrinsics = bytecode
             .view()
-            .resume_sites()
+            .functions()
             .iter()
-            .find(|resume| {
-                resume.function_key == function.function_key
-                    && resume.descriptor_index == resume_index
+            .flat_map(|function| function.relocations.iter())
+            .filter_map(|relocation| {
+                let BytecodeRelocation::IntrinsicRef { intrinsic } = relocation else {
+                    return None;
+                };
+                let skiff_artifact_model::BytecodeIntrinsicRef::Static { canonical_key, .. } =
+                    &intrinsic.target
+                else {
+                    return None;
+                };
+                Some(canonical_key.as_str())
             })
-            .expect("StreamNext carries an admitted resume descriptor");
+            .collect::<Vec<_>>();
+        assert_eq!(
+            static_intrinsics
+                .iter()
+                .filter(|key| **key == "core.bytes.fromUtf8")
+                .count(),
+            7,
+            "each source bytes.fromUtf8 call retains the compiler-owned static intrinsic"
+        );
         assert!(
-            resume.end_resume_pc.is_some(),
-            "StreamNext certifies natural end"
+            static_intrinsics
+                .iter()
+                .all(|key| !matches!(*key, "core.array.empty" | "core.map.empty")),
+            "the Phase 5 response carrier must not mint collection intrinsic authority"
+        );
+
+        let host_bindings = function
+            .instructions
+            .iter()
+            .filter(|instruction| instruction.descriptor.kind == Opcode::InvokeHost)
+            .map(|instruction| {
+                let relocation = function
+                    .relocations
+                    .get(instruction.operand(0) as usize)
+                    .expect("InvokeHost relocation index");
+                let BytecodeRelocation::HostEffectRef(effect) = relocation else {
+                    panic!("InvokeHost must retain a typed HostEffectRef relocation")
+                };
+                effect
+                    .target
+                    .binding_key
+                    .as_deref()
+                    .expect("HostEffectRef exact canonical binding")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            host_bindings,
+            [
+                "std.http.client.request",
+                "std.http.client.stream",
+                "std.http.client.stream",
+            ],
+            "the exact VCP gateway must carry one request and two stream callsites"
+        );
+
+        let body_takes = function
+            .instructions
+            .windows(2)
+            .filter(|pair| {
+                pair[0].descriptor.kind == Opcode::TakeSlot
+                    && pair[1].descriptor.kind == Opcode::TakeDenseField
+            })
+            .map(|pair| &pair[1])
+            .collect::<Vec<_>>();
+        assert_eq!(
+            body_takes.len(),
+            2,
+            "left.body and right.body need two consume-whole affine takes"
+        );
+        for take in &body_takes {
+            assert_eq!(take.operand(1), 0, "body is exact dense ordinal zero");
+            let shape_ref = take.operand(0);
+            let Some(BytecodePoolEntry::ShapeRef { shape }) =
+                bytecode.view().pools().shapes.get(shape_ref as usize)
+            else {
+                panic!("TakeDenseField does not retain a typed shape declaration")
+            };
+            assert_eq!(
+                shape.privileged_affine_composite,
+                Some(PrivilegedAffineCompositeIdentity::HttpClientStreamHandle)
+            );
+            assert_eq!(
+                shape
+                    .fields
+                    .iter()
+                    .map(|field| field.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["body", "headers", "status"]
+            );
+            assert_eq!(
+                shape.fields[0].plan,
+                ValueTransferPlan::AffineResource {
+                    drop: ResourceDropPlan::ResourceTableRelease,
+                }
+            );
+            assert!(function.instructions.iter().all(|instruction| {
+                instruction.descriptor.kind != Opcode::GetDenseField
+                    || instruction.operand(0) != shape_ref
+                    || instruction.operand(1) != 0
+            }));
+        }
+
+        let stream_next_sites = function
+            .instructions
+            .iter()
+            .filter(|instruction| instruction.descriptor.kind == Opcode::StreamNext)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            stream_next_sites.len(),
+            2,
+            "A and B need independent StreamNext sites"
+        );
+        for instruction in stream_next_sites {
+            let resume_index = instruction.operand(1);
+            let resume = bytecode
+                .view()
+                .resume_sites()
+                .iter()
+                .find(|resume| {
+                    resume.function_key == function.function_key
+                        && resume.descriptor_index == resume_index
+                })
+                .expect("StreamNext carries an admitted resume descriptor");
+            assert!(
+                resume.end_resume_pc.is_some(),
+                "StreamNext certifies natural end"
+            );
+        }
+
+        let recursive_move_slots = function
+            .frame_layout
+            .slot_plans
+            .iter()
+            .filter(|plan| {
+                matches!(
+                    plan,
+                    ValueTransferPlan::MoveOnly {
+                        drop: ValueDropPlan::RecursiveShape { .. }
+                    }
+                )
+            })
+            .count();
+        assert_eq!(
+            recursive_move_slots, 2,
+            "the two HTTP stream handle locals require recursive remainder-drop plans"
         );
     }
 
-    let recursive_move_slots = function
-        .frame_layout
-        .slot_plans
-        .iter()
-        .filter(|plan| {
-            matches!(
-                plan,
-                ValueTransferPlan::MoveOnly {
-                    drop: ValueDropPlan::RecursiveShape { .. }
-                }
-            )
-        })
-        .count();
-    assert_eq!(
-        recursive_move_slots, 2,
-        "the two HTTP stream handle locals require recursive remainder-drop plans"
-    );
-}
+    #[test]
+    fn phase_5_stage_sentinel_emission_to_atomic_link_input() {
+        let fixture = published_positive("s3-atomic-link-input");
+        let gateway = fixture.gateway(VCP_PATH);
+        let image = fixture.link();
+        let entry = image
+            .http_gateway_entry(&gateway.ingress, &gateway.identity)
+            .expect("production linker resolves the exact VCP gateway");
+        let function = image
+            .functions()
+            .get(entry.function().get() as usize)
+            .filter(|function| function.index() == entry.function())
+            .expect("gateway function index resolves exactly in the atomic image");
 
-#[test]
-fn phase_5_stage_sentinel_emission_to_atomic_link_input() {
-    let fixture = published_positive("s3-atomic-link-input");
-    let gateway = fixture.gateway(VCP_PATH);
-    let image = fixture.link();
-    let entry = image
-        .http_gateway_entry(&gateway.ingress, &gateway.identity)
-        .expect("production linker resolves the exact VCP gateway");
-    let function = image
-        .functions()
-        .get(entry.function().get() as usize)
-        .filter(|function| function.index() == entry.function())
-        .expect("gateway function index resolves exactly in the atomic image");
+        let executor_identities = function
+            .instructions()
+            .iter()
+            .filter(|instruction| instruction.opcode() == Opcode::InvokeHost)
+            .map(|instruction| {
+                let index = instruction
+                    .resolved_operands()
+                    .iter()
+                    .find_map(|operand| match operand.target() {
+                        LinkedInstructionTarget::HostEffectAdapter(index) => Some(index),
+                        _ => None,
+                    })
+                    .expect("InvokeHost retains an exact typed host target index");
+                image
+                    .host_effect_target(index)
+                    .expect("typed host target index resolves in the production image")
+                    .executor_identity()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            executor_identities,
+            [
+                HostEffectExecutorIdentity::HttpClientRequest,
+                HostEffectExecutorIdentity::HttpClientStream,
+                HostEffectExecutorIdentity::HttpClientStream,
+            ],
+            "the linked image must expose only registry-owned executor identities"
+        );
+        assert_eq!(
+            executor_identities
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+                .len(),
+            2,
+            "two stream calls share one exact typed target while request remains distinct"
+        );
+    }
 
-    let executor_identities = function
-        .instructions()
-        .iter()
-        .filter(|instruction| instruction.opcode() == Opcode::InvokeHost)
-        .map(|instruction| {
-            let index = instruction
+    #[test]
+    fn phase_5_stage_sentinel_atomic_link_to_image() {
+        let fixture = published_positive("s4-image");
+        let gateway = fixture.gateway(VCP_PATH);
+        let image = fixture.link();
+        let entry = image
+            .http_gateway_entry(&gateway.ingress, &gateway.identity)
+            .expect("atomic image resolves exact VCP gateway");
+        let function_index = entry.function();
+        let function = image
+            .functions()
+            .get(function_index.get() as usize)
+            .filter(|function| function.index() == function_index)
+            .expect("gateway function index resolves exactly in the atomic image");
+        let mut host_identities = Vec::new();
+        for (ordinal, instruction) in function.instructions().iter().enumerate() {
+            if instruction.opcode() != Opcode::InvokeHost {
+                continue;
+            }
+            let target_index = instruction
                 .resolved_operands()
                 .iter()
                 .find_map(|operand| match operand.target() {
                     LinkedInstructionTarget::HostEffectAdapter(index) => Some(index),
                     _ => None,
                 })
-                .expect("InvokeHost retains an exact typed host target index");
-            image
-                .host_effect_target(index)
-                .expect("typed host target index resolves in the production image")
-                .executor_identity()
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(
-        executor_identities,
-        [
-            HostEffectExecutorIdentity::HttpClientRequest,
-            HostEffectExecutorIdentity::HttpClientStream,
-            HostEffectExecutorIdentity::HttpClientStream,
-        ],
-        "the linked image must expose only registry-owned executor identities"
-    );
-    assert_eq!(
-        executor_identities
-            .into_iter()
-            .collect::<BTreeSet<_>>()
-            .len(),
-        2,
-        "two stream calls share one exact typed target while request remains distinct"
-    );
-}
-
-#[test]
-fn phase_5_stage_sentinel_atomic_link_to_image() {
-    let fixture = published_positive("s4-image");
-    let gateway = fixture.gateway(VCP_PATH);
-    let image = fixture.link();
-    let entry = image
-        .http_gateway_entry(&gateway.ingress, &gateway.identity)
-        .expect("atomic image resolves exact VCP gateway");
-    let function_index = entry.function();
-    let function = image
-        .functions()
-        .get(function_index.get() as usize)
-        .filter(|function| function.index() == function_index)
-        .expect("gateway function index resolves exactly in the atomic image");
-    let mut host_identities = Vec::new();
-    for (ordinal, instruction) in function.instructions().iter().enumerate() {
-        if instruction.opcode() != Opcode::InvokeHost {
-            continue;
-        }
-        let target_index = instruction
-            .resolved_operands()
-            .iter()
-            .find_map(|operand| match operand.target() {
-                LinkedInstructionTarget::HostEffectAdapter(index) => Some(index),
-                _ => None,
-            })
-            .expect("image InvokeHost retains its typed target index");
-        let resume_index = instruction
-            .resolved_operands()
-            .iter()
-            .find_map(|operand| match operand.target() {
-                LinkedInstructionTarget::ResumeSite(index) => Some(index),
-                _ => None,
-            })
-            .expect("image InvokeHost retains its typed resume index");
-        let target = image
-            .host_effect_target(target_index)
-            .expect("image target remains accessible only by its typed index");
-        let resume = image
-            .resume_sites()
-            .get(resume_index)
-            .expect("image retains the exact host resume view");
-        assert_eq!(resume.function(), function_index);
-        assert_eq!(
-            resume.site(),
-            InstructionIndex::new(u32::try_from(ordinal).expect("instruction ordinal fits u32"))
-        );
-        assert_eq!(resume.kind(), &ExecutionResumeKind::HostEffect);
-        assert_eq!(
-            resume.result_types().len(),
-            target.signature().result_types().len(),
-            "resume and typed target must retain the same result arity"
-        );
-        for (result_ordinal, (resume_type, target_type)) in resume
-            .result_types()
-            .iter()
-            .zip(target.signature().result_types())
-            .enumerate()
-        {
-            let resume_type =
-                exact_linked_type_ref(&image, *resume_type, "specialized host resume result");
-            let target_type =
-                exact_linked_type_ref(&image, *target_type, "typed host target result");
+                .expect("image InvokeHost retains its typed target index");
+            let resume_index = instruction
+                .resolved_operands()
+                .iter()
+                .find_map(|operand| match operand.target() {
+                    LinkedInstructionTarget::ResumeSite(index) => Some(index),
+                    _ => None,
+                })
+                .expect("image InvokeHost retains its typed resume index");
+            let target = image
+                .host_effect_target(target_index)
+                .expect("image target remains accessible only by its typed index");
+            let resume = image
+                .resume_sites()
+                .get(resume_index)
+                .expect("image retains the exact host resume view");
+            assert_eq!(resume.function(), function_index);
             assert_eq!(
+                resume.site(),
+                InstructionIndex::new(
+                    u32::try_from(ordinal).expect("instruction ordinal fits u32")
+                )
+            );
+            assert_eq!(resume.kind(), &ExecutionResumeKind::HostEffect);
+            assert_eq!(
+                resume.result_types().len(),
+                target.signature().result_types().len(),
+                "resume and typed target must retain the same result arity"
+            );
+            for (result_ordinal, (resume_type, target_type)) in resume
+                .result_types()
+                .iter()
+                .zip(target.signature().result_types())
+                .enumerate()
+            {
+                let resume_type =
+                    exact_linked_type_ref(&image, *resume_type, "specialized host resume result");
+                let target_type =
+                    exact_linked_type_ref(&image, *target_type, "typed host target result");
+                assert_eq!(
                 resume_type, target_type,
                 "host result {result_ordinal} may use distinct TypeIndex rows but must retain one exact TypeRef"
             );
-            assert_eq!(
+                assert_eq!(
                 exact_package_abi(resume_type, "specialized host resume result"),
                 exact_package_abi(target_type, "typed host target result"),
                 "host result {result_ordinal} specialization must preserve the exact package ABI"
             );
+            }
+            assert_eq!(resume.result_plans(), target.signature().result_plans());
+            host_identities.push(target.executor_identity());
         }
-        assert_eq!(resume.result_plans(), target.signature().result_plans());
-        host_identities.push(target.executor_identity());
-    }
-    assert_eq!(
-        host_identities,
-        [
-            HostEffectExecutorIdentity::HttpClientRequest,
-            HostEffectExecutorIdentity::HttpClientStream,
-            HostEffectExecutorIdentity::HttpClientStream,
-        ]
-    );
+        assert_eq!(
+            host_identities,
+            [
+                HostEffectExecutorIdentity::HttpClientRequest,
+                HostEffectExecutorIdentity::HttpClientStream,
+                HostEffectExecutorIdentity::HttpClientStream,
+            ]
+        );
 
-    let sites = image
-        .resume_sites()
-        .rows()
-        .iter()
-        .filter(|site| site.function() == function_index)
-        .collect::<Vec<_>>();
-    assert_eq!(
-        sites
+        let sites = image
+            .resume_sites()
+            .rows()
             .iter()
-            .filter(|site| matches!(site.kind(), ExecutionResumeKind::HostEffect))
-            .count(),
-        3,
-        "the atomic image retains every HTTP host call resume"
-    );
-    let stream_reads = sites
-        .iter()
-        .filter(|site| matches!(site.kind(), ExecutionResumeKind::StreamRead { .. }))
-        .collect::<Vec<_>>();
-    assert_eq!(stream_reads.len(), 2, "the image retains A/B item resumes");
-    assert!(
-        stream_reads.iter().all(|site| site.end_resume().is_some()),
-        "the image retains the distinct natural-end continuation"
-    );
-    assert!(
-        sites
-            .iter()
-            .any(|site| matches!(site.kind(), ExecutionResumeKind::StreamBackpressure)),
-        "serverStream emit must retain an actual backpressure resume view"
-    );
-
-    let privileged_shape = image
-        .shapes()
-        .iter()
-        .find(|shape| {
-            shape.privileged_affine_composite()
-                == Some(PrivilegedAffineCompositeIdentity::HttpClientStreamHandle)
-        })
-        .expect("linked image retains the registry-owned privileged stream shape");
-    assert_eq!(
-        privileged_shape
-            .fields()
-            .iter()
-            .map(|field| field.name())
-            .collect::<Vec<_>>(),
-        ["body", "headers", "status"]
-    );
-    assert!(matches!(
-        privileged_shape.fields()[0].plan(),
-        LinkedValueTransferPlan::AffineResource {
-            drop: LinkedResourceDropPlan::ResourceTableRelease,
-        }
-    ));
-
-    let body_takes = function
-        .instructions()
-        .iter()
-        .enumerate()
-        .filter(|(_, instruction)| instruction.opcode() == Opcode::TakeDenseField)
-        .collect::<Vec<_>>();
-    assert_eq!(
-        body_takes.len(),
-        2,
-        "the atomic image retains both affine body takes"
-    );
-    for (ordinal, take) in body_takes {
-        assert_eq!(take.operands()[1], 0, "body is exact dense ordinal zero");
-        let resolved_shapes = take
-            .resolved_operands()
-            .iter()
-            .filter_map(|operand| match operand.target() {
-                LinkedInstructionTarget::Shape(shape) => Some(shape),
-                _ => None,
-            })
+            .filter(|site| site.function() == function_index)
             .collect::<Vec<_>>();
         assert_eq!(
-            resolved_shapes,
-            [privileged_shape.index()],
-            "TakeDenseField must reference the one exact privileged shape S"
+            sites
+                .iter()
+                .filter(|site| matches!(site.kind(), ExecutionResumeKind::HostEffect))
+                .count(),
+            3,
+            "the atomic image retains every HTTP host call resume"
         );
-        let [root] = function.stack_map().entries()[ordinal].stack_before() else {
-            panic!("TakeDenseField must consume exactly one aggregate root")
-        };
-        let root_type = exact_linked_type_ref(&image, root.ty(), "TakeDenseField stack root");
-        let shape_type = exact_linked_type_ref(
-            &image,
-            privileged_shape.nominal_type(),
-            "privileged shape nominal",
+        let stream_reads = sites
+            .iter()
+            .filter(|site| matches!(site.kind(), ExecutionResumeKind::StreamRead { .. }))
+            .collect::<Vec<_>>();
+        assert_eq!(stream_reads.len(), 2, "the image retains A/B item resumes");
+        assert!(
+            stream_reads.iter().all(|site| site.end_resume().is_some()),
+            "the image retains the distinct natural-end continuation"
         );
+        assert!(
+            sites
+                .iter()
+                .any(|site| matches!(site.kind(), ExecutionResumeKind::StreamBackpressure)),
+            "serverStream emit must retain an actual backpressure resume view"
+        );
+
+        let privileged_shape = image
+            .shapes()
+            .iter()
+            .find(|shape| {
+                shape.privileged_affine_composite()
+                    == Some(PrivilegedAffineCompositeIdentity::HttpClientStreamHandle)
+            })
+            .expect("linked image retains the registry-owned privileged stream shape");
         assert_eq!(
+            privileged_shape
+                .fields()
+                .iter()
+                .map(|field| field.name())
+                .collect::<Vec<_>>(),
+            ["body", "headers", "status"]
+        );
+        assert!(matches!(
+            privileged_shape.fields()[0].plan(),
+            LinkedValueTransferPlan::AffineResource {
+                drop: LinkedResourceDropPlan::ResourceTableRelease,
+            }
+        ));
+
+        let body_takes = function
+            .instructions()
+            .iter()
+            .enumerate()
+            .filter(|(_, instruction)| instruction.opcode() == Opcode::TakeDenseField)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            body_takes.len(),
+            2,
+            "the atomic image retains both affine body takes"
+        );
+        for (ordinal, take) in body_takes {
+            assert_eq!(take.operands()[1], 0, "body is exact dense ordinal zero");
+            let resolved_shapes = take
+                .resolved_operands()
+                .iter()
+                .filter_map(|operand| match operand.target() {
+                    LinkedInstructionTarget::Shape(shape) => Some(shape),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                resolved_shapes,
+                [privileged_shape.index()],
+                "TakeDenseField must reference the one exact privileged shape S"
+            );
+            let [root] = function.stack_map().entries()[ordinal].stack_before() else {
+                panic!("TakeDenseField must consume exactly one aggregate root")
+            };
+            let root_type = exact_linked_type_ref(&image, root.ty(), "TakeDenseField stack root");
+            let shape_type = exact_linked_type_ref(
+                &image,
+                privileged_shape.nominal_type(),
+                "privileged shape nominal",
+            );
+            assert_eq!(
             root_type, shape_type,
             "specialized stack root and privileged shape may use distinct TypeIndex rows but must retain one exact TypeRef/ABI"
         );
-        assert_eq!(
-            exact_package_abi(root_type, "TakeDenseField stack root"),
-            exact_package_abi(shape_type, "privileged shape nominal"),
-            "specialization must preserve the exact package ABI"
-        );
-        let LinkedValueTransferPlan::MoveOnly {
-            drop: LinkedValueDropPlan::RecursiveShape { shape: root_shape },
-        } = root.plan()
-        else {
-            panic!("TakeDenseField stack root must carry its recursive privileged-shape plan")
-        };
-        assert_eq!(
-            *root_shape, resolved_shapes[0],
-            "the stack root plan and instruction must reference the same privileged shape S"
-        );
-        let body = function.stack_map().entries()[ordinal + 1]
-            .stack_before()
-            .last()
-            .expect("TakeDenseField produces the exact affine body value");
-        assert_eq!(body.ty(), privileged_shape.fields()[0].ty());
-        assert_eq!(body.plan(), privileged_shape.fields()[0].plan());
-    }
-    assert!(
+            assert_eq!(
+                exact_package_abi(root_type, "TakeDenseField stack root"),
+                exact_package_abi(shape_type, "privileged shape nominal"),
+                "specialization must preserve the exact package ABI"
+            );
+            let LinkedValueTransferPlan::MoveOnly {
+                drop: LinkedValueDropPlan::RecursiveShape { shape: root_shape },
+            } = root.plan()
+            else {
+                panic!("TakeDenseField stack root must carry its recursive privileged-shape plan")
+            };
+            assert_eq!(
+                *root_shape, resolved_shapes[0],
+                "the stack root plan and instruction must reference the same privileged shape S"
+            );
+            let body = function.stack_map().entries()[ordinal + 1]
+                .stack_before()
+                .last()
+                .expect("TakeDenseField produces the exact affine body value");
+            assert_eq!(body.ty(), privileged_shape.fields()[0].ty());
+            assert_eq!(body.plan(), privileged_shape.fields()[0].plan());
+        }
+        assert!(
         function.instructions().iter().all(|instruction| {
             instruction.opcode() != Opcode::GetDenseField
                 || !instruction.resolved_operands().iter().any(|operand| {
@@ -469,21 +475,22 @@ fn phase_5_stage_sentinel_atomic_link_to_image() {
         }),
         "production code must not GetDenseField any body, headers, or status ordinal from the privileged stream shape"
     );
-    assert_eq!(
-        function
-            .frame()
-            .slot_plans()
-            .iter()
-            .filter(|plan| matches!(
-                plan,
-                LinkedValueTransferPlan::MoveOnly {
-                    drop: LinkedValueDropPlan::RecursiveShape { shape },
-                } if *shape == privileged_shape.index()
-            ))
-            .count(),
-        2,
-        "the atomic image retains two exact recursive remainder-drop plans"
-    );
+        assert_eq!(
+            function
+                .frame()
+                .slot_plans()
+                .iter()
+                .filter(|plan| matches!(
+                    plan,
+                    LinkedValueTransferPlan::MoveOnly {
+                        drop: LinkedValueDropPlan::RecursiveShape { shape },
+                    } if *shape == privileged_shape.index()
+                ))
+                .count(),
+            2,
+            "the atomic image retains two exact recursive remainder-drop plans"
+        );
+    }
 }
 
 fn exact_linked_type_ref<'a>(
