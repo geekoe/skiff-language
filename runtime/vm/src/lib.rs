@@ -27,9 +27,9 @@ pub use control::{
     AdapterControl, AdapterInvocation, BoundaryStart, ChildInvocation, ChildTarget, EffectStart,
     PendingOperation, PendingTicket, ResumeOutcome, StreamEndpointRef, StreamInvocation,
     StreamItem, StreamItemReleaseError, VmCompletion, VmControl, VmHostEffectArguments,
-    VmHostEffectArgumentsReleaseError, VmInternalTerminal, VmOwnedException, VmOwnedValues,
-    VmOwnedValuesRejected, VmResult, VmResumeFailure, VmResumeKind, VmResumeToken, VmTerminalCause,
-    VmTerminalEscrow, VmThrownDiagnostic,
+    VmHostEffectArgumentsReleaseError, VmInternalTerminal, VmLifecycleSite, VmOwnedException,
+    VmOwnedExceptionRejected, VmOwnedValues, VmOwnedValuesRejected, VmResult, VmResumeFailure,
+    VmResumeKind, VmResumeToken, VmTerminalCause, VmTerminalEscrow, VmThrownDiagnostic,
 };
 pub use error::{VmEntryArgumentRejection, VmError, VmValueLocation, VmVerifiedInvariant};
 pub use fiber::{Vm, VmFiber, VmFiberState};

@@ -17,11 +17,11 @@ use crate::{lifecycle::LifecycleExecutor, VmBudgetClosed, VmError};
 
 pub type VmResult = Result<VmOwnedValues, VmError>;
 
+pub(crate) use crate::terminal_ownership::VmTerminalOwner;
 pub use crate::terminal_ownership::{
-    VmCompletion, VmOwnedException, VmOwnedValues, VmOwnedValuesRejected, VmResumeFailure,
-    VmTerminalCause, VmTerminalEscrow, VmThrownDiagnostic,
+    VmCompletion, VmLifecycleSite, VmOwnedException, VmOwnedExceptionRejected, VmOwnedValues,
+    VmOwnedValuesRejected, VmResumeFailure, VmTerminalCause, VmTerminalEscrow, VmThrownDiagnostic,
 };
-pub(crate) use crate::terminal_ownership::{VmLifecycleSite, VmTerminalOwner};
 
 /// Arguments transferred out of the operand stack for one verified host
 /// effect, paired with their exact linked lifecycle plans.
