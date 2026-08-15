@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    BoundaryCallbackOperation, ContractLiteral, ContractTypeRef, PackageSchemaTypeRef,
+    BoundaryCallbackOperation, BoundaryValueLifetime, ContractLiteral, ContractTypeRef,
+    PackageSchemaTypeRef,
 };
 
 use crate::runtime_value::{
@@ -259,6 +260,77 @@ fn contract_type_matches_local(contract: &ContractTypeRef, local: &InterfaceMeth
     }
 }
 
+/// Exact callback capability lifetime. A request-scoped capability lives to
+/// the top-level request terminal; a stream-scoped capability remains alive
+/// until its owning stream terminal or cancellation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CallbackLifetime {
+    Request,
+    Stream,
+}
+
+impl CallbackLifetime {
+    pub fn from_boundary(
+        lifetime: BoundaryValueLifetime,
+    ) -> Result<Self, CallbackContractProjectionError> {
+        match lifetime {
+            BoundaryValueLifetime::Request => Ok(Self::Request),
+            BoundaryValueLifetime::Stream => Ok(Self::Stream),
+            BoundaryValueLifetime::Call => {
+                Err(CallbackContractProjectionError::UnsupportedLifetime { lifetime })
+            }
+        }
+    }
+}
+
+/// Pure invocation-scoped state used by callback capability tables.
+///
+/// The table owns cancellation and expiry; this value only records the exact
+/// lifetime/generation facts that determine whether a carrier is still
+/// admissible.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallbackInvocationState {
+    request_generation: u64,
+    lifetime: CallbackLifetime,
+    active: bool,
+}
+
+impl CallbackInvocationState {
+    pub fn new(request_generation: u64, lifetime: CallbackLifetime) -> Self {
+        Self {
+            request_generation,
+            lifetime,
+            active: true,
+        }
+    }
+
+    pub const fn request_generation(&self) -> u64 {
+        self.request_generation
+    }
+
+    pub const fn lifetime(&self) -> CallbackLifetime {
+        self.lifetime
+    }
+
+    pub const fn is_active(&self) -> bool {
+        self.active
+    }
+
+    pub fn expire(&mut self) -> bool {
+        let was_active = self.active;
+        self.active = false;
+        was_active
+    }
+
+    pub fn cancel(&mut self) -> bool {
+        self.expire()
+    }
+
+    pub fn matches_carrier(&self, request_generation: u64, lifetime: CallbackLifetime) -> bool {
+        self.request_generation == request_generation && self.lifetime == lifetime
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum CallbackContractProjectionError {
     #[error("callback projection source must be an owner-local interface")]
@@ -292,6 +364,8 @@ pub enum CallbackContractProjectionError {
         "callback contract operation {contract_operation} signature does not match local method"
     )]
     SignatureMismatch { contract_operation: String },
+    #[error("callback capability lifetime {lifetime:?} is not supported")]
+    UnsupportedLifetime { lifetime: BoundaryValueLifetime },
 }
 
 #[cfg(test)]

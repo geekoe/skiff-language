@@ -310,6 +310,17 @@ impl InProcessCallbackAdapter {
         self.projection.canonical_package_schema_type()
     }
 
+    /// Canonical contract identity for an opaque carrier. The carrier stores
+    /// this exact string rather than a runtime-inferred name or method-table
+    /// summary.
+    pub fn canonical_contract_identity(&self) -> Result<String, CallbackAdapterError> {
+        serde_json::to_string(self.canonical_package_schema_type()).map_err(|error| {
+            CallbackAdapterError::CanonicalIdentity {
+                message: error.to_string(),
+            }
+        })
+    }
+
     pub fn source_interface(&self) -> &str {
         self.projection.local_interface_abi_id()
     }
@@ -404,6 +415,8 @@ pub enum CallbackAdapterError {
     OwnerStateUnavailable,
     #[error("callback adapter package schema is invalid: {message}")]
     InvalidPackageSchema { message: String },
+    #[error("callback adapter canonical contract identity cannot be encoded: {message}")]
+    CanonicalIdentity { message: String },
     #[error("callback operation {method_abi_id} at slot {slot} is unavailable")]
     OperationUnavailable { slot: u32, method_abi_id: String },
     #[error(transparent)]

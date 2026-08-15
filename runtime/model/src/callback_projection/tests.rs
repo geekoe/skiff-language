@@ -185,3 +185,38 @@ fn callback_contract_projection_rejects_package_nominal_without_exact_execution_
         ));
     }
 }
+
+#[test]
+fn callback_lifetime_rejects_call_lifetime_and_preserves_request_stream() {
+    assert_eq!(
+        CallbackLifetime::from_boundary(skiff_artifact_model::BoundaryValueLifetime::Request)
+            .unwrap(),
+        CallbackLifetime::Request
+    );
+    assert_eq!(
+        CallbackLifetime::from_boundary(skiff_artifact_model::BoundaryValueLifetime::Stream)
+            .unwrap(),
+        CallbackLifetime::Stream
+    );
+    assert!(matches!(
+        CallbackLifetime::from_boundary(skiff_artifact_model::BoundaryValueLifetime::Call),
+        Err(CallbackContractProjectionError::UnsupportedLifetime { .. })
+    ));
+}
+
+#[test]
+fn callback_invocation_state_cancel_and_expire_are_terminal_once() {
+    let mut request = CallbackInvocationState::new(7, CallbackLifetime::Request);
+    assert!(request.is_active());
+    assert!(request.matches_carrier(7, CallbackLifetime::Request));
+    assert!(!request.matches_carrier(8, CallbackLifetime::Request));
+    assert!(!request.matches_carrier(7, CallbackLifetime::Stream));
+    assert!(request.cancel());
+    assert!(!request.is_active());
+    assert!(!request.cancel());
+
+    let mut stream = CallbackInvocationState::new(9, CallbackLifetime::Stream);
+    assert!(stream.expire());
+    assert!(!stream.is_active());
+    assert!(!stream.expire());
+}

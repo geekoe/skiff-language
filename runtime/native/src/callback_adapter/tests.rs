@@ -259,6 +259,26 @@ fn callback_adapter_owned_owner_heap_guard_is_exclusive_and_released_once() {
 }
 
 #[test]
+fn callback_adapter_canonical_identity_is_exact_and_opaque() {
+    let adapter = InProcessCallbackAdapter::from_local_interface(
+        package_schema_type(),
+        &interface("local:canonical-identity".to_string()),
+        &operations(),
+        &schema(),
+        &RequestHeap::default(),
+    )
+    .expect("callback adapter should construct");
+    let identity = adapter
+        .canonical_contract_identity()
+        .expect("canonical contract identity should encode");
+    assert!(identity.contains(PACKAGE));
+    assert!(identity.contains(STABLE_KEY));
+    assert!(identity.contains(CONTRACT));
+    assert!(!identity.contains(INTERFACE));
+    assert!(!identity.contains(METHOD));
+}
+
+#[test]
 fn callback_adapter_rejects_explicit_native_mapping_that_disagrees_with_admitted_abi() {
     let identity = "builtin:wrong-mapping";
     let wrong_mapping = BTreeMap::from([(

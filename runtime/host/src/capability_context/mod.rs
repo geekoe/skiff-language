@@ -5,6 +5,7 @@
 
 mod actor;
 pub(crate) mod actor_method_outbound;
+mod bytecode_callback;
 mod effect_context;
 mod http;
 mod native_projection;
@@ -32,6 +33,9 @@ pub(crate) use skiff_runtime_native_contract::{
 
 pub use actor::{
     ActorCapabilityContext, ActorClient, ActorClientContext, RequestClient, RequestClientContext,
+};
+pub use bytecode_callback::{
+    BytecodeCallbackCapabilityHooks, BytecodeCallbackCapabilityTable, BytecodeCallbackError,
 };
 pub use effect_context::{EffectDispatchContext, HttpEffectContext};
 pub use http::HttpClientCapabilityContext;
