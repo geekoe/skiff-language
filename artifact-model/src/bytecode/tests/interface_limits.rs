@@ -85,6 +85,7 @@ fn artifact_with_local_method(
                     method_name: "read".to_string(),
                     method_abi_id: "method:limit:local:read".to_string(),
                     signature,
+                    effects: analyzed_no_effects(),
                     function_key: "module::helper".to_string(),
                     receiver_call_abi: crate::ReceiverCallAbi::ExplicitSelfFirst,
                 }],

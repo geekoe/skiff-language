@@ -2185,8 +2185,9 @@ fn validate_relocation_facts(
                 ));
             }
         }
-        BytecodeRelocation::InterfaceRequirementRef { interface } => {
+        BytecodeRelocation::InterfaceRequirementRef { interface, methods } => {
             validate_interface_ref(interface, &format!("{location}.interface"))?;
+            validate_interface_requirement_methods(key, &location, methods)?;
         }
         BytecodeRelocation::LocalInterfaceRef { interface } => {
             validate_interface_ref(
@@ -2313,7 +2314,44 @@ fn validate_local_interface_methods(
                 format!("{method_location} is not canonical or complete"),
             ));
         }
+        validate_interface_effect_summary(key, &method_location, &method.effects)?;
         previous_slot = Some(method.slot);
+    }
+    Ok(())
+}
+
+fn validate_interface_requirement_methods(
+    key: &str,
+    location: &str,
+    methods: &[crate::bytecode::dto::InterfaceRequirementMethod],
+) -> Result<(), StructuralValidationError> {
+    let mut previous_slot = None;
+    for (index, method) in methods.iter().enumerate() {
+        let method_location = format!("{location}.interface.methods[{index}]");
+        validate_interface_method_bounds(method.slot, &method.signature, &method_location)?;
+        if previous_slot.is_some_and(|slot| slot >= method.slot) || method.method_abi_id.is_empty()
+        {
+            return Err(table_error(
+                key,
+                format!("{method_location} is not canonical or complete"),
+            ));
+        }
+        validate_interface_effect_summary(key, &method_location, &method.effects)?;
+        previous_slot = Some(method.slot);
+    }
+    Ok(())
+}
+
+fn validate_interface_effect_summary(
+    key: &str,
+    location: &str,
+    effects: &crate::CallableEffectSummary,
+) -> Result<(), StructuralValidationError> {
+    if matches!(effects, crate::CallableEffectSummary::Unknown { .. }) {
+        return Err(table_error(
+            key,
+            format!("{location}.effects must carry a completed analyzed summary"),
+        ));
     }
     Ok(())
 }

@@ -49,3 +49,6 @@ mod phase_1_admission_tests;
 #[cfg(test)]
 #[path = "tests/phase_5_host_effects.rs"]
 mod phase_5_host_effect_tests;
+#[cfg(test)]
+#[path = "tests/phase_6_local_interface.rs"]
+mod phase_6_local_interface_tests;

@@ -24,11 +24,12 @@ use skiff_compiler::{
     CompilerPlatformSources,
 };
 use skiff_runtime_linked_bytecode::{
-    HostEffectAdapterIndex, InstructionIndex, LinkedBytecodeCandidate,
+    FunctionIndex, HostEffectAdapterIndex, InstructionIndex, LinkedBytecodeCandidate,
     LinkedBytecodeCandidateError, LinkedBytecodeCandidateParts, LinkedContainerLayoutKind,
-    LinkedFunction, LinkedFunctionTables, LinkedInstructionTarget, LinkedPackageBytecodeProvenance,
-    LinkedResumeResultMaterialization, LinkedResumeSite, LinkedShapeEntry, LinkedSlotState,
-    LinkedValueDropPlan, LinkedValueTransferPlan, ShapeIndex, TypeIndex,
+    LinkedFunction, LinkedFunctionTables, LinkedInstructionTarget, LinkedInterfaceTableKind,
+    LinkedPackageBytecodeProvenance, LinkedResumeResultMaterialization, LinkedResumeSite,
+    LinkedShapeEntry, LinkedSlotState, LinkedValueDropPlan, LinkedValueTransferPlan, ShapeIndex,
+    TypeIndex,
 };
 use skiff_runtime_loader::{
     DeploymentBytecodeLoader, FilesystemDeploymentBytecodeContentResolver, HydratedBytecodePackage,
@@ -1196,15 +1197,72 @@ fn production_entry_prunes_unreachable_private_interface_and_callback_authority(
 }
 
 #[test]
-fn production_entry_fails_closed_for_reachable_interface_without_compiler_target_facts() {
+fn production_entry_fails_closed_for_reachable_interface_without_method_facts() {
     let fixture = Fixture::interface();
     let hydrated = fixture.hydrate();
+    let error = link_deployment(&hydrated, &generous_limits())
+        .expect_err("missing interface method facts must fail closed");
     assert!(matches!(
-        link_deployment(&hydrated, &generous_limits()),
-        Err(BytecodeLinkError::ImplementationUnavailable {
-            obligation: BytecodeLinkObligation::ConcreteTargetTables,
+        error,
+        BytecodeLinkError::UnsatisfiedObligation {
+            obligation: BytecodeLinkObligation::ControlFlowAndStackMap,
             location: BytecodeLinkLocation::Instruction { artifact_pc: 2, .. },
+            ref detail,
+        } if detail.contains("interface method ordinal")
+    ));
+}
+
+#[test]
+fn production_entry_links_local_interface_tables_from_exact_compiler_facts() {
+    let hydrated = Fixture::local_interface().hydrate();
+    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+
+    let local = candidate
+        .interface_tables()
+        .iter()
+        .find_map(|table| match table.kind() {
+            LinkedInterfaceTableKind::Local(local) => Some((table, local)),
+            _ => None,
         })
+        .expect("local interface table exists");
+    let requirement = candidate
+        .interface_tables()
+        .iter()
+        .find_map(|table| match table.kind() {
+            LinkedInterfaceTableKind::Requirement(requirement) => Some((table, requirement)),
+            _ => None,
+        })
+        .expect("interface requirement table exists");
+
+    assert_eq!(local.1.methods().len(), 1);
+    assert_eq!(requirement.1.methods().len(), 1);
+    assert_eq!(
+        requirement.1.methods()[0].signature(),
+        local.1.methods()[0].signature(),
+        "requirement rows must come from the same exact compiler method facts"
+    );
+    assert_eq!(
+        requirement.1.methods()[0].method_abi_id(),
+        local.1.methods()[0].method_abi_id()
+    );
+
+    let image = Arc::new(
+        link_deployment_execution_image(hydrated, &super::generous_execution_limits()).unwrap(),
+    );
+    let function = local.1.methods()[0].function();
+    let entry = image.function_entry(function).unwrap();
+    assert_eq!(entry.function(), function);
+    assert_eq!(
+        entry.signature().parameter_types().len(),
+        local.1.methods()[0].signature().parameter_types().len()
+    );
+    assert_eq!(
+        entry.signature().result_types().len(),
+        local.1.methods()[0].signature().result_types().len()
+    );
+    assert!(matches!(
+        image.function_entry(FunctionIndex::new(u32::MAX)),
+        Err(CodeEntryLookupError::FunctionNotFound { .. })
     ));
 }
 

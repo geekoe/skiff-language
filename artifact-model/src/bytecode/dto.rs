@@ -751,6 +751,7 @@ pub enum BytecodeRelocation {
     },
     InterfaceRequirementRef {
         interface: crate::InterfaceInstantiationRef,
+        methods: Vec<InterfaceRequirementMethod>,
     },
     LocalInterfaceRef {
         interface: LocalInterfaceRef,
@@ -842,8 +843,23 @@ pub struct LocalInterfaceMethod {
     pub method_name: String,
     pub method_abi_id: String,
     pub signature: crate::InterfaceMethodSlotSignatureIr,
+    pub effects: CallableEffectSummary,
     pub function_key: String,
     pub receiver_call_abi: crate::ReceiverCallAbi,
+}
+
+/// Exact requirement table row carried by an interface call relocation.
+///
+/// The compiler emits these rows from its local interface table facts. The
+/// linker consumes the slot, ABI, signature and effect summary verbatim; it
+/// never derives them from a nominal type, name or implementation function.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InterfaceRequirementMethod {
+    pub slot: u32,
+    pub method_abi_id: String,
+    pub signature: crate::InterfaceMethodSlotSignatureIr,
+    pub effects: CallableEffectSummary,
 }
 
 /// Exact symbolic remote interface table. It remains consumer-owned and

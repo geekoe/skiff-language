@@ -5,18 +5,21 @@ use skiff_artifact_model::{
     BytecodeIntrinsicRef, BytecodeRelocation, CallableEffectSummary,
     CallableRegistryTypeExpression, ContractLiteral, ContractOperationId, ContractTypeRef,
     HostEffectExecutorIdentity, HostEffectRegistryEntry, InterfaceInstantiationRef, LiteralIr,
-    PackageBuildId, PackageLocalAbiSymbol, PackageRefIr, PackageSchemaTypeId, PackageSymbolRef,
-    ParamModeIr, ResolvedPackageValueType, ServiceBoundaryPlan, ServiceCallbackPlan,
-    ServiceRequirementKey, TypeRefIr, ValueLifecycleFactResolver, ValueLifecyclePolicyBudget,
-    ValueLifecycleResolverError, ValueProvenance,
+    Opcode, PackageBuildId, PackageLocalAbiSymbol, PackageRefIr, PackageSchemaTypeId,
+    PackageSymbolRef, ParamModeIr, ResolvedPackageValueType, ServiceBoundaryPlan,
+    ServiceCallbackPlan, ServiceRequirementKey, TypeRefIr, ValueLifecycleFactResolver,
+    ValueLifecyclePolicyBudget, ValueLifecycleResolverError, ValueProvenance,
 };
 use skiff_runtime_linked_bytecode::{
-    ArtifactFunctionKey, FunctionIndex, LinkedActorCreateTarget, LinkedActorImplementationRef,
-    LinkedActorMethodTarget, LinkedCallableSignature, LinkedFrameLayout,
-    LinkedHostEffectAdapterTarget, LinkedInterfaceTable, LinkedInterfaceTableKind,
-    LinkedNativeCallableSignature, LinkedServiceBoundaryErrorPlan, LinkedServiceBoundaryPlan,
-    LinkedServiceBoundaryValue, LinkedServiceCallbackPlan, LinkedServiceOperationTarget,
-    LinkedSyntheticCallbackTarget, ServiceOperationIndex, SpecializationKey,
+    ArtifactFunctionKey, FunctionIndex, InterfaceTableIndex, LinkedActorCreateTarget,
+    LinkedActorImplementationRef, LinkedActorMethodTarget, LinkedCallableSignature,
+    LinkedFrameLayout, LinkedHostEffectAdapterTarget, LinkedInterfaceInstantiation,
+    LinkedInterfaceMethodAbiId, LinkedInterfaceRequirementMethod, LinkedInterfaceRequirementTable,
+    LinkedInterfaceTable, LinkedInterfaceTableKind, LinkedLocalInterfaceMethod,
+    LinkedLocalInterfaceTable, LinkedNativeCallableSignature, LinkedServiceBoundaryErrorPlan,
+    LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue, LinkedServiceCallbackPlan,
+    LinkedServiceOperationTarget, LinkedSyntheticCallbackTarget, ServiceOperationIndex,
+    SpecializationKey,
 };
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
@@ -32,6 +35,7 @@ pub(in crate::bytecode) struct LinkedDispatchTables {
     pub(in crate::bytecode) actor_creates: Vec<LinkedActorCreateTarget>,
     pub(in crate::bytecode) actor_methods: Vec<LinkedActorMethodTarget>,
     pub(in crate::bytecode) interface_tables: Vec<LinkedInterfaceTable>,
+    pub(in crate::bytecode) requirement_keys: BTreeMap<String, InterfaceTableIndex>,
     pub(in crate::bytecode) synthetic_callbacks: Vec<LinkedSyntheticCallbackTarget>,
     pub(in crate::bytecode) synthetic_callback_origins:
         BTreeMap<(PackageBuildId, String), skiff_runtime_linked_bytecode::SyntheticCallbackIndex>,
@@ -50,7 +54,7 @@ impl DeploymentLinker<'_> {
         let service_operations = self.link_service_operations(reachable, type_linker)?;
         let (actor_creates, actor_methods) =
             self.link_actor_targets(reachable, indices, frames, type_linker)?;
-        let interface_tables =
+        let (interface_tables, requirement_keys) =
             self.link_interface_tables(reachable, indices, frames, type_linker)?;
         let synthetic_callbacks =
             self.link_synthetic_callbacks(reachable, indices, frames, type_linker)?;
@@ -87,6 +91,7 @@ impl DeploymentLinker<'_> {
             actor_creates,
             actor_methods,
             interface_tables,
+            requirement_keys,
             synthetic_callbacks,
             synthetic_callback_origins,
             host_effect_adapters,
@@ -1138,24 +1143,393 @@ impl DeploymentLinker<'_> {
     fn link_interface_tables(
         &self,
         reachable: &[ReachableRelocation],
-        _indices: &BTreeMap<SpecializationKey, FunctionIndex>,
+        indices: &BTreeMap<SpecializationKey, FunctionIndex>,
         _frames: &[LinkedFrameLayout],
-        _type_linker: &mut TypeLinker<'_>,
-    ) -> Result<Vec<LinkedInterfaceTable>, BytecodeLinkError> {
-        if let Some(reference) = reachable.iter().find(|reference| {
-            matches!(
-                &reference.relocation,
-                BytecodeRelocation::InterfaceRequirementRef { .. }
-                    | BytecodeRelocation::LocalInterfaceRef { .. }
-                    | BytecodeRelocation::RemoteInterfaceRef { .. }
-            )
-        }) {
-            return Err(BytecodeLinkError::ImplementationUnavailable {
-                obligation: BytecodeLinkObligation::ConcreteTargetTables,
-                location: self.reachable_relocation_location(reference),
-            });
+        type_linker: &mut TypeLinker<'_>,
+    ) -> Result<
+        (
+            Vec<LinkedInterfaceTable>,
+            BTreeMap<String, InterfaceTableIndex>,
+        ),
+        BytecodeLinkError,
+    > {
+        let mut tables = Vec::<LinkedInterfaceTable>::new();
+        let mut requirement_keys = BTreeMap::<String, InterfaceTableIndex>::new();
+        for reference in reachable {
+            match &reference.relocation {
+                BytecodeRelocation::LocalInterfaceRef { interface } => {
+                    let package = self
+                        .deployment
+                        .packages()
+                        .get(reference.specialization.package_build_id())
+                        .ok_or_else(|| {
+                            unsatisfied(
+                                BytecodeLinkObligation::ExactPackageClosure,
+                                self.deployment_location(),
+                                "local interface relocation owner is absent".to_string(),
+                            )
+                        })?;
+                    let location = self.reachable_relocation_location(reference);
+                    let linked_interface = self.link_interface_instantiation(
+                        package,
+                        &reference.specialization,
+                        &interface.interface,
+                        type_linker,
+                        location.clone(),
+                    )?;
+                    let concrete_type = type_linker.intern_concrete_type(
+                        package,
+                        &reference.specialization,
+                        &interface.concrete_type,
+                        &BTreeMap::new(),
+                        location.clone(),
+                    )?;
+                    let mut methods = Vec::with_capacity(interface.methods.len());
+                    for method in &interface.methods {
+                        let key = self.key_for_local_interface_method(
+                            package,
+                            method,
+                            type_linker,
+                            location.clone(),
+                        )?;
+                        let function = indices.get(&key).copied().ok_or_else(|| {
+                            unsatisfied(
+                                BytecodeLinkObligation::ConcreteTargetTables,
+                                location.clone(),
+                                format!(
+                                    "local interface method {} targets an absent closure function",
+                                    method.function_key
+                                ),
+                            )
+                        })?;
+                        let signature = self.link_interface_signature(
+                            package,
+                            &reference.specialization,
+                            &method.signature,
+                            &method.effects,
+                            type_linker,
+                            location.clone(),
+                        )?;
+                        let method_abi =
+                            LinkedInterfaceMethodAbiId::parse(method.method_abi_id.clone())
+                                .map_err(|error| {
+                                    unsatisfied(
+                                        BytecodeLinkObligation::ConcreteTargetTables,
+                                        location.clone(),
+                                        error.to_string(),
+                                    )
+                                })?;
+                        methods.push(
+                            LinkedLocalInterfaceMethod::new(
+                                method.slot,
+                                method.method_name.clone(),
+                                method_abi,
+                                signature,
+                                function,
+                                method.receiver_call_abi,
+                            )
+                            .map_err(|error| {
+                                unsatisfied(
+                                    BytecodeLinkObligation::ConcreteTargetTables,
+                                    location.clone(),
+                                    error.to_string(),
+                                )
+                            })?,
+                        );
+                    }
+                    let local =
+                        LinkedLocalInterfaceTable::new(concrete_type, methods.into_boxed_slice())
+                            .map_err(|error| {
+                            unsatisfied(
+                                BytecodeLinkObligation::ConcreteTargetTables,
+                                location.clone(),
+                                error.to_string(),
+                            )
+                        })?;
+                    if let Some(existing) = tables.iter().find(|table| {
+                        table.interface().artifact() == &interface.interface
+                            && matches!(
+                                table.kind(),
+                                LinkedInterfaceTableKind::Local(row)
+                                    if row.concrete_type() == local.concrete_type()
+                            )
+                    }) {
+                        let LinkedInterfaceTableKind::Local(row) = existing.kind() else {
+                            unreachable!("local table predicate only matches Local");
+                        };
+                        if row != &local {
+                            return Err(unsatisfied(
+                                BytecodeLinkObligation::ConcreteTargetTables,
+                                location,
+                                "duplicate local interface table facts drift".to_string(),
+                            ));
+                        }
+                        continue;
+                    }
+                    tables.push(LinkedInterfaceTable::new(
+                        InterfaceTableIndex::new(tables.len() as u32),
+                        linked_interface,
+                        LinkedInterfaceTableKind::Local(local),
+                    ));
+                }
+                BytecodeRelocation::InterfaceRequirementRef { interface, methods } => {
+                    let package = self
+                        .deployment
+                        .packages()
+                        .get(reference.specialization.package_build_id())
+                        .ok_or_else(|| {
+                            unsatisfied(
+                                BytecodeLinkObligation::ExactPackageClosure,
+                                self.deployment_location(),
+                                "interface requirement relocation owner is absent".to_string(),
+                            )
+                        })?;
+                    let location = self.reachable_relocation_location(reference);
+                    let linked_interface = self.link_interface_instantiation(
+                        package,
+                        &reference.specialization,
+                        interface,
+                        type_linker,
+                        location.clone(),
+                    )?;
+                    let mut linked_methods = Vec::with_capacity(methods.len());
+                    for method in methods {
+                        let signature = self.link_interface_signature(
+                            package,
+                            &reference.specialization,
+                            &method.signature,
+                            &method.effects,
+                            type_linker,
+                            location.clone(),
+                        )?;
+                        let method_abi =
+                            LinkedInterfaceMethodAbiId::parse(method.method_abi_id.clone())
+                                .map_err(|error| {
+                                    unsatisfied(
+                                        BytecodeLinkObligation::ConcreteTargetTables,
+                                        location.clone(),
+                                        error.to_string(),
+                                    )
+                                })?;
+                        linked_methods.push(LinkedInterfaceRequirementMethod::new(
+                            method.slot,
+                            method_abi,
+                            signature,
+                        ));
+                    }
+                    let requirement =
+                        LinkedInterfaceRequirementTable::new(linked_methods.into_boxed_slice())
+                            .map_err(|error| {
+                                unsatisfied(
+                                    BytecodeLinkObligation::ConcreteTargetTables,
+                                    location.clone(),
+                                    error.to_string(),
+                                )
+                            })?;
+                    let kind = if reference.opcode == Opcode::InvokeCallback {
+                        LinkedInterfaceTableKind::Callback(requirement)
+                    } else {
+                        LinkedInterfaceTableKind::Requirement(requirement)
+                    };
+                    let key = self.requirement_table_key(interface, methods)?;
+                    if let Some(existing) = requirement_keys.get(&key) {
+                        if tables
+                            .get(existing.get() as usize)
+                            .is_none_or(|table| table.interface().artifact() != interface)
+                        {
+                            return Err(unsatisfied(
+                                BytecodeLinkObligation::ConcreteTargetTables,
+                                location.clone(),
+                                "interface requirement key maps to an absent table".to_string(),
+                            ));
+                        }
+                        continue;
+                    }
+                    if let Some(existing) = tables.iter().find(|table| {
+                        table.interface().artifact() == interface
+                            && matches!(
+                                (table.kind(), &kind),
+                                (LinkedInterfaceTableKind::Requirement(a), LinkedInterfaceTableKind::Requirement(b))
+                                    | (LinkedInterfaceTableKind::Callback(a), LinkedInterfaceTableKind::Callback(b))
+                                    if a == b
+                            )
+                    }) {
+                        let _ = existing;
+                        continue;
+                    }
+                    tables.push(LinkedInterfaceTable::new(
+                        InterfaceTableIndex::new(tables.len() as u32),
+                        linked_interface,
+                        kind,
+                    ));
+                    let index = InterfaceTableIndex::new(tables.len() as u32 - 1);
+                    requirement_keys.insert(key, index);
+                }
+                BytecodeRelocation::RemoteInterfaceRef { .. } => {
+                    return Err(BytecodeLinkError::ImplementationUnavailable {
+                        obligation: BytecodeLinkObligation::ConcreteTargetTables,
+                        location: self.reachable_relocation_location(reference),
+                    });
+                }
+                _ => {}
+            }
         }
-        Ok(Vec::new())
+        Ok((tables, requirement_keys))
+    }
+
+    fn requirement_table_key(
+        &self,
+        interface: &InterfaceInstantiationRef,
+        methods: &[skiff_artifact_model::InterfaceRequirementMethod],
+    ) -> Result<String, BytecodeLinkError> {
+        serde_json::to_string(&(interface, methods)).map_err(|error| {
+            unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                self.deployment_location(),
+                format!("interface requirement facts are not canonically serializable: {error}"),
+            )
+        })
+    }
+
+    fn link_interface_instantiation(
+        &self,
+        package: &HydratedBytecodePackage,
+        specialization: &SpecializationKey,
+        interface: &InterfaceInstantiationRef,
+        type_linker: &mut TypeLinker<'_>,
+        location: BytecodeLinkLocation,
+    ) -> Result<LinkedInterfaceInstantiation, BytecodeLinkError> {
+        let arguments = interface
+            .canonical_type_args
+            .iter()
+            .map(|argument| {
+                type_linker.intern_concrete_type(
+                    package,
+                    specialization,
+                    argument,
+                    &BTreeMap::new(),
+                    location.clone(),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        LinkedInterfaceInstantiation::new(interface.clone(), arguments.into_boxed_slice()).map_err(
+            |error| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location,
+                    error.to_string(),
+                )
+            },
+        )
+    }
+
+    fn key_for_local_interface_method(
+        &self,
+        package: &HydratedBytecodePackage,
+        method: &skiff_artifact_model::LocalInterfaceMethod,
+        type_linker: &mut TypeLinker<'_>,
+        location: BytecodeLinkLocation,
+    ) -> Result<SpecializationKey, BytecodeLinkError> {
+        let canonical = package
+            .canonical_implementation_callable_for_function_key(&method.function_key)
+            .ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    format!(
+                        "local interface method {} has no canonical implementation callable",
+                        method.function_key
+                    ),
+                )
+            })?;
+        self.key_for_receiver_callable(package, canonical, type_linker)
+            .map_err(|error| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    format!(
+                        "local interface method {} receiver join failed: {error}",
+                        method.function_key
+                    ),
+                )
+            })
+    }
+
+    fn link_interface_signature(
+        &self,
+        package: &HydratedBytecodePackage,
+        specialization: &SpecializationKey,
+        signature: &skiff_artifact_model::InterfaceMethodSlotSignatureIr,
+        effects: &CallableEffectSummary,
+        type_linker: &mut TypeLinker<'_>,
+        location: BytecodeLinkLocation,
+    ) -> Result<LinkedCallableSignature, BytecodeLinkError> {
+        let mut parameter_types = Vec::with_capacity(signature.params.len());
+        let mut parameter_plans = Vec::with_capacity(signature.params.len());
+        for parameter in &signature.params {
+            let index = type_linker.intern_concrete_type(
+                package,
+                specialization,
+                &parameter.ty,
+                &BTreeMap::new(),
+                location.clone(),
+            )?;
+            let plan = type_linker
+                .linked_type_plan(index)
+                .cloned()
+                .ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::FrameAndValueTransferPlan,
+                        location.clone(),
+                        format!(
+                            "interface parameter type {} has no linked transfer plan",
+                            index.get()
+                        ),
+                    )
+                })?;
+            parameter_types.push(index);
+            parameter_plans.push(plan);
+        }
+        let result_types = vec![type_linker.intern_concrete_type(
+            package,
+            specialization,
+            &signature.return_type,
+            &BTreeMap::new(),
+            location.clone(),
+        )?];
+        let result_plans = result_types
+            .iter()
+            .map(|index| {
+                type_linker
+                    .linked_type_plan(*index)
+                    .cloned()
+                    .ok_or_else(|| {
+                        unsatisfied(
+                            BytecodeLinkObligation::FrameAndValueTransferPlan,
+                            location.clone(),
+                            format!(
+                                "interface result type {} has no linked transfer plan",
+                                index.get()
+                            ),
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        LinkedCallableSignature::new(
+            parameter_types.into_boxed_slice(),
+            vec![ParamModeIr::Value; signature.params.len()].into_boxed_slice(),
+            parameter_plans.into_boxed_slice(),
+            result_types.into_boxed_slice(),
+            result_plans.into_boxed_slice(),
+            effects.clone(),
+        )
+        .map_err(|error| {
+            unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location,
+                error.to_string(),
+            )
+        })
     }
 
     fn link_synthetic_callbacks(
@@ -2280,6 +2654,26 @@ impl LinkedDispatchTables {
                     )
             })
             .map(|table| table.index())
+    }
+
+    pub(in crate::bytecode) fn requirement_index(
+        &self,
+        key: &str,
+        kind: &InterfaceKind,
+    ) -> Option<skiff_runtime_linked_bytecode::InterfaceTableIndex> {
+        let index = self.requirement_keys.get(key).copied()?;
+        let table = self.interface_tables.get(index.get() as usize)?;
+        matches!(
+            (kind, table.kind()),
+            (
+                InterfaceKind::Requirement,
+                LinkedInterfaceTableKind::Requirement(_)
+            ) | (
+                InterfaceKind::Callback,
+                LinkedInterfaceTableKind::Callback(_)
+            )
+        )
+        .then_some(index)
     }
 
     pub(in crate::bytecode) fn synthetic_callback_index(

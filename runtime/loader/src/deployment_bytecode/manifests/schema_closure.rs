@@ -171,8 +171,11 @@ fn collect_relocation(
         | BytecodeRelocation::PackageCallableRef { specialization, .. } => {
             collect_specialization(package, specialization, roots)?;
         }
-        BytecodeRelocation::InterfaceRequirementRef { interface } => {
+        BytecodeRelocation::InterfaceRequirementRef { interface, methods } => {
             collect_interface(package, interface, roots)?;
+            for method in methods {
+                collect_interface_signature(package, &method.signature, roots)?;
+            }
         }
         BytecodeRelocation::LocalInterfaceRef { interface } => {
             collect_interface(package, &interface.interface, roots)?;

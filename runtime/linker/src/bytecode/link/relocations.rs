@@ -483,7 +483,7 @@ impl<'a, 'deployment, 'limits> RelocationContext<'a, 'deployment, 'limits> {
                         "actor method target is absent from the linked dispatch table".to_string(),
                     )
                 }),
-            BytecodeRelocation::InterfaceRequirementRef { interface } => {
+            BytecodeRelocation::InterfaceRequirementRef { interface, methods } => {
                 let kind = if instruction.descriptor.kind
                     == skiff_artifact_model::Opcode::InvokeCallback
                 {
@@ -491,8 +491,15 @@ impl<'a, 'deployment, 'limits> RelocationContext<'a, 'deployment, 'limits> {
                 } else {
                     InterfaceKind::Requirement
                 };
+                let key = serde_json::to_string(&(interface, methods)).map_err(|error| {
+                    unsatisfied(
+                        BytecodeLinkObligation::RelocationResolution,
+                        location.clone(),
+                        format!("interface requirement facts are not serializable: {error}"),
+                    )
+                })?;
                 self.dispatch_tables
-                    .interface_index(interface, &kind)
+                    .requirement_index(&key, &kind)
                     .map(LinkedInstructionTarget::InterfaceTable)
                     .ok_or_else(|| {
                         unsatisfied(

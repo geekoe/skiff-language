@@ -215,9 +215,10 @@ fn same_interface_target(left: &LinkedInterfaceTable, right: &LinkedInterfaceTab
         return false;
     }
     match (left.kind(), right.kind()) {
-        (LinkedInterfaceTableKind::Requirement(_), LinkedInterfaceTableKind::Requirement(_)) => {
-            true
-        }
+        (
+            LinkedInterfaceTableKind::Requirement(left),
+            LinkedInterfaceTableKind::Requirement(right),
+        ) => left == right,
         (LinkedInterfaceTableKind::Local(left), LinkedInterfaceTableKind::Local(right)) => {
             left.concrete_type() == right.concrete_type()
         }
@@ -225,7 +226,9 @@ fn same_interface_target(left: &LinkedInterfaceTable, right: &LinkedInterfaceTab
             left.service_requirement_key() == right.service_requirement_key()
                 && left.public_instance_key() == right.public_instance_key()
         }
-        (LinkedInterfaceTableKind::Callback(_), LinkedInterfaceTableKind::Callback(_)) => true,
+        (LinkedInterfaceTableKind::Callback(left), LinkedInterfaceTableKind::Callback(right)) => {
+            left == right
+        }
         _ => false,
     }
 }

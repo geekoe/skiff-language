@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use skiff_artifact_model::{
-    contract_for_opcode, BytecodeRelocation, OperandKind, ValidatedFunction, BYTECODE_MAGIC,
+    contract_for_opcode, BytecodeRelocation, Opcode, OperandKind, ValidatedFunction, BYTECODE_MAGIC,
 };
 use skiff_runtime_linked_bytecode::{
     BytecodePackageIndex, LinkedBytecodeAuthorityPins, LinkedPackageBytecodeProvenance,
@@ -20,6 +20,7 @@ use super::{unsatisfied, DeploymentLinker};
 pub(super) struct ReachableRelocation {
     pub(super) specialization: SpecializationKey,
     pub(super) pc: u32,
+    pub(super) opcode: Opcode,
     pub(super) relocation: BytecodeRelocation,
 }
 
@@ -287,6 +288,7 @@ impl<'a> DeploymentLinker<'a> {
                 result.push(ReachableRelocation {
                     specialization: key.clone(),
                     pc: instruction.pc,
+                    opcode: instruction.descriptor.kind,
                     relocation: relocation.clone(),
                 });
             }

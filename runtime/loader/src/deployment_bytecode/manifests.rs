@@ -1511,8 +1511,11 @@ fn validate_relocation(
             actor_implementation_identity,
             method_identity,
         )?,
-        BytecodeRelocation::InterfaceRequirementRef { interface } => {
+        BytecodeRelocation::InterfaceRequirementRef { interface, methods } => {
             validate_interface_ref(package, interface, deployment, packages)?;
+            for method in methods {
+                validate_interface_signature(package, &method.signature, deployment, packages)?;
+            }
         }
         BytecodeRelocation::LocalInterfaceRef { interface } => {
             validate_interface_ref(package, &interface.interface, deployment, packages)?;

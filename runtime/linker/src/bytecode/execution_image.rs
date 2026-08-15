@@ -45,6 +45,7 @@ pub struct DeploymentExecutionImage {
     dependency_slots: BTreeMap<ServiceRequirementKey, ServiceDependencySlot>,
     operation_entries: BTreeMap<ContractOperationId, CallableEntryFacts>,
     http_gateway_entries: BTreeMap<GatewayEntryKey, HttpGatewayEntryFacts>,
+    function_entries: BTreeMap<FunctionIndex, CallableEntryFacts>,
     constant_heap: ExecutionConstantHeap,
     statement_schedule: ExecutionStatementSchedule,
     resume_sites: ExecutionResumeSites,
@@ -245,6 +246,23 @@ impl DeploymentExecutionImage {
         })
     }
 
+    pub fn function_entry(
+        self: &Arc<Self>,
+        function: FunctionIndex,
+    ) -> Result<DeploymentExecutionEntry, CodeEntryLookupError> {
+        let entry = self
+            .function_entries
+            .get(&function)
+            .ok_or_else(|| CodeEntryLookupError::FunctionNotFound { function })?;
+        Ok(DeploymentExecutionEntry {
+            image: Arc::clone(self),
+            _kind: DeploymentExecutionEntryKind::Function { function },
+            function: entry.function,
+            signature: entry.signature.clone(),
+            parameter_dense_record_shape: None,
+        })
+    }
+
     pub fn http_gateway_entry(
         self: &Arc<Self>,
         ingress: &IngressSelector,
@@ -305,6 +323,9 @@ enum DeploymentExecutionEntryKind {
         gateway_entry_key: GatewayEntryKey,
         gateway_entry_identity: GatewayEntryIdentity,
     },
+    Function {
+        function: FunctionIndex,
+    },
 }
 
 #[derive(Debug)]
@@ -355,6 +376,9 @@ pub enum CodeEntryLookupError {
         expected: GatewayEntryIdentity,
         actual: GatewayEntryIdentity,
     },
+    FunctionNotFound {
+        function: FunctionIndex,
+    },
 }
 
 impl fmt::Display for CodeEntryLookupError {
@@ -384,6 +408,10 @@ impl fmt::Display for CodeEntryLookupError {
             } => write!(
                 formatter,
                 "deployment HTTP gateway entry {gateway_entry_key} identity mismatch: expected {expected}, got {actual}"
+            ),
+            Self::FunctionNotFound { function } => write!(
+                formatter,
+                "deployment function entry {function:?} does not exist"
             ),
         }
     }
@@ -433,6 +461,13 @@ pub enum ExecutionImageConstructionError {
     ResumeFunctionMissing {
         resume_site: ResumeSiteIndex,
         function: FunctionIndex,
+    },
+    #[error("function {function:?} references a missing parameter slot")]
+    FunctionParameterSlotMissing { function: FunctionIndex },
+    #[error("function {function:?} signature is invalid: {detail}")]
+    FunctionSignatureInvalid {
+        function: FunctionIndex,
+        detail: String,
     },
     #[error(
         "resume site {resume_site:?} references missing instruction {function:?}/{instruction:?}"
@@ -546,6 +581,20 @@ pub fn link_deployment_execution_image(
             })
         })
         .collect();
+    let function_entries = linked
+        .functions()
+        .iter()
+        .map(|function| {
+            let signature = linked_function_signature(function)?;
+            Ok((
+                function.index(),
+                CallableEntryFacts {
+                    function: function.index(),
+                    signature,
+                },
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, DeploymentExecutionImageError>>()?;
     Ok(DeploymentExecutionImage {
         linked,
         owner,
@@ -554,10 +603,49 @@ pub fn link_deployment_execution_image(
         dependency_slots,
         operation_entries,
         http_gateway_entries,
+        function_entries,
         constant_heap,
         statement_schedule,
         resume_sites,
     })
+}
+
+fn linked_function_signature(
+    function: &skiff_runtime_linked_bytecode::LinkedFunction,
+) -> Result<LinkedCallableSignature, ExecutionImageConstructionError> {
+    let frame = function.frame();
+    let mut parameter_types = Vec::with_capacity(frame.parameters().len());
+    let mut parameter_modes = Vec::with_capacity(frame.parameters().len());
+    let mut parameter_plans = Vec::with_capacity(frame.parameters().len());
+    for parameter in frame.parameters() {
+        parameter_types.push(
+            frame
+                .slot_types()
+                .get(parameter.slot().get() as usize)
+                .copied()
+                .ok_or(
+                    ExecutionImageConstructionError::FunctionParameterSlotMissing {
+                        function: function.index(),
+                    },
+                )?,
+        );
+        parameter_modes.push(parameter.mode());
+        parameter_plans.push(parameter.plan().clone());
+    }
+    LinkedCallableSignature::new(
+        parameter_types.into_boxed_slice(),
+        parameter_modes.into_boxed_slice(),
+        parameter_plans.into_boxed_slice(),
+        frame.result_types().to_vec().into_boxed_slice(),
+        frame.result_plans().to_vec().into_boxed_slice(),
+        function.declarative_effect_summary().clone(),
+    )
+    .map_err(
+        |error| ExecutionImageConstructionError::FunctionSignatureInvalid {
+            function: function.index(),
+            detail: error.to_string(),
+        },
+    )
 }
 
 pub(super) fn compact_type_tag(

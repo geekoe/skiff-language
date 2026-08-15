@@ -6,10 +6,12 @@ use skiff_artifact_model::{
     BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueFact, BoundaryValueLifetime,
     BoundaryValueOwner, BoundaryValuePlan, BytecodeArtifact, BytecodeFunctionOrigin, BytecodeImage,
     BytecodeIntrinsicRef, BytecodePoolEntry, BytecodePools, BytecodeRelocation,
-    BytecodeSpecialization, CallbackCaptureLayout, ContractTypeRef, FrameLayout,
-    FrozenConstantGraph, HostEffectReference, HostEffectSignature, InstructionSourceSite,
-    IntrinsicReference, NativeTarget, PackageCallableId, PackageExecutableCoordinate,
-    ParameterSlotDecl, RelocatableBytecodeFunction, ResourceDropPlan, ResumeDescriptor,
+    BytecodeSpecialization, CallableEffectSummary, CallableMayEffects, CallbackCaptureLayout,
+    ContractTypeRef, FrameLayout, FrozenConstantGraph, FunctionTypeParamIr, HostEffectReference,
+    HostEffectSignature, InstructionSourceSite, InterfaceMethodSlotSignatureIr,
+    InterfaceRequirementMethod, IntrinsicReference, LocalInterfaceMethod, LocalInterfaceRef,
+    NativeTarget, PackageCallableId, PackageExecutableCoordinate, ParameterSlotDecl,
+    ReceiverCallAbi, RelocatableBytecodeFunction, ResourceDropPlan, ResumeDescriptor,
     ResumeErrorMode, ServiceCallBoundaryFacts, ServiceCallRef, SourceMapEntry, SourcePosition,
     SourceSpanRef, StatementAttributionId, StatementEntry, SyntheticInstructionSiteReason,
     TypeRefIr, ValueDropPlan, ValueProvenance, ValueTransferPlan, BYTECODE_ISA_VERSION,
@@ -151,7 +153,10 @@ fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
         RootProgram::StreamProducer | RootProgram::ReorderedStreamResumePool
     ) {
         stream_item_plan()
-    } else if matches!(program, RootProgram::Interface | RootProgram::RecordShape) {
+    } else if matches!(
+        program,
+        RootProgram::Interface | RootProgram::LocalInterface | RootProgram::RecordShape
+    ) {
         stream_item_plan()
     } else {
         snapshot_plan()
@@ -200,7 +205,9 @@ fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
                         RootProgram::StreamProducer | RootProgram::ReorderedStreamResumePool => {
                             stream_item_plan()
                         }
-                        RootProgram::Interface | RootProgram::RecordShape => stream_item_plan(),
+                        RootProgram::Interface
+                        | RootProgram::LocalInterface
+                        | RootProgram::RecordShape => stream_item_plan(),
                         _ => snapshot_plan(),
                     },
                     dense_record_shape_ref: None,
@@ -217,6 +224,7 @@ fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
         max_operand_depth: match program {
             RootProgram::RecordShape => 2,
             RootProgram::Interface
+            | RootProgram::LocalInterface
             | RootProgram::ReorderedStreamNextResumePool
             | RootProgram::Host
             | RootProgram::Intrinsic
@@ -240,6 +248,9 @@ fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
 fn helper_function(program: RootProgram) -> RelocatableBytecodeFunction {
     if program == RootProgram::UnreachableInterface {
         return private_interface_function();
+    }
+    if program == RootProgram::LocalInterface {
+        return local_interface_helper_function();
     }
     if program == RootProgram::UnreachableCallback {
         return callback_maker_function(HELPER_FUNCTION, HELPER_CALLABLE, coordinate(1));
@@ -306,6 +317,7 @@ fn private_interface_function() -> RelocatableBytecodeFunction {
                 interface_abi_id: interface_identity(),
                 canonical_type_args: Vec::new(),
             },
+            methods: Vec::new(),
         }],
         call_loan_layouts: Vec::new(),
         frame_layout: FrameLayout {
@@ -331,6 +343,43 @@ fn private_interface_function() -> RelocatableBytecodeFunction {
         switch_tables: Vec::new(),
         statement_entries: Vec::new(),
         source_map: vec![source_map(2, 8)],
+    }
+}
+
+fn local_interface_helper_function() -> RelocatableBytecodeFunction {
+    RelocatableBytecodeFunction {
+        function_key: HELPER_FUNCTION.to_string(),
+        origin: BytecodeFunctionOrigin::Executable {
+            executable: coordinate(1),
+        },
+        type_parameters: Vec::new(),
+        self_type_ref: Some(0),
+        words: vec![0x06, 0, 0x25],
+        relocations: Vec::new(),
+        call_loan_layouts: Vec::new(),
+        frame_layout: FrameLayout {
+            slot_count: 1,
+            slot_type_refs: vec![0],
+            parameter_slots: vec![ParameterSlotDecl {
+                slot: 0,
+                mode: skiff_artifact_model::ParamModeIr::Value,
+                plan: stream_item_plan(),
+                dense_record_shape_ref: None,
+            }],
+            writable_local_slots: Vec::new(),
+            result_count: 1,
+            result_type_refs: vec![0],
+            result_plans: vec![stream_item_plan()],
+            stream_result_type_ref: None,
+            slot_plans: vec![stream_item_plan()],
+        },
+        max_operand_depth: 1,
+        effect_summary_ref: PackageCallableId::new(HELPER_CALLABLE),
+        exception_regions: Vec::new(),
+        active_regions: Vec::new(),
+        switch_tables: Vec::new(),
+        statement_entries: Vec::new(),
+        source_map: Vec::new(),
     }
 }
 
@@ -503,10 +552,71 @@ fn root_body(
                     interface_abi_id: interface_identity(),
                     canonical_type_args: Vec::new(),
                 },
+                methods: Vec::new(),
             }],
             Some(interface_resume_descriptor(ROOT_FUNCTION)),
             vec![source_map(2, 8)],
         ),
+        RootProgram::LocalInterface => {
+            let interface = skiff_artifact_model::InterfaceInstantiationRef {
+                interface_abi_id: interface_identity(),
+                canonical_type_args: Vec::new(),
+            };
+            let signature = InterfaceMethodSlotSignatureIr {
+                params: vec![FunctionTypeParamIr {
+                    name: "self".to_string(),
+                    ty: TypeRefIr::builtin("string"),
+                }],
+                return_type: TypeRefIr::builtin("string"),
+            };
+            let effects = CallableEffectSummary::Analyzed {
+                effects: CallableMayEffects {
+                    escapes_caller_value: false,
+                    requires_same_heap_identity: false,
+                    invokes_unknown_target: false,
+                    may_pending: false,
+                    pending_effect_categories: Vec::new(),
+                    inout_path_effects: Vec::new(),
+                },
+            };
+            let local_methods = vec![LocalInterfaceMethod {
+                slot: 0,
+                method_name: "label".to_string(),
+                method_abi_id: skiff_artifact_identity::canonical_interface_method_abi_id(
+                    &interface, "label",
+                ),
+                signature: signature.clone(),
+                effects: effects.clone(),
+                function_key: HELPER_FUNCTION.to_string(),
+                receiver_call_abi: ReceiverCallAbi::ExplicitSelfFirst,
+            }];
+            let requirement_methods = vec![InterfaceRequirementMethod {
+                slot: 0,
+                method_abi_id: skiff_artifact_identity::canonical_interface_method_abi_id(
+                    &interface, "label",
+                ),
+                signature,
+                effects,
+            }];
+            (
+                vec![0x06, 0, 0x30, 0, 0x24, 1, 0, 0, 1, 0, 0x08, 0x25],
+                vec![
+                    BytecodeRelocation::LocalInterfaceRef {
+                        interface: LocalInterfaceRef {
+                            interface: interface.clone(),
+                            concrete_type: TypeRefIr::builtin("string"),
+                            methods: local_methods,
+                        },
+                    },
+                    BytecodeRelocation::InterfaceRequirementRef {
+                        interface,
+                        methods: requirement_methods,
+                    },
+                ],
+                Some(interface_resume_descriptor_at(ROOT_FUNCTION, 4, 10)),
+                vec![source_map(4, 10)],
+            )
+        }
         RootProgram::Host => (
             vec![0x80, 0, 0, 1, 0, 0x25],
             vec![BytecodeRelocation::HostEffectRef(valid_host_effect())],
@@ -588,7 +698,7 @@ fn root_body(
     }
 }
 
-fn interface_identity() -> String {
+pub(super) fn interface_identity() -> String {
     let identity = TypeRefIr::ServiceSymbol {
         symbol: skiff_artifact_model::ServiceSymbolRef {
             module_path: MODULE.to_string(),
@@ -615,7 +725,9 @@ fn pools(program: RootProgram) -> BytecodePools {
                 ),
                 type_entry(TypeRefIr::builtin("string"), stream_item_plan()),
             ],
-            RootProgram::Interface | RootProgram::UnreachableInterface => vec![
+            RootProgram::Interface
+            | RootProgram::LocalInterface
+            | RootProgram::UnreachableInterface => vec![
                 type_entry(TypeRefIr::builtin("string"), stream_item_plan()),
                 type_entry(
                     TypeRefIr::AnyInterface {

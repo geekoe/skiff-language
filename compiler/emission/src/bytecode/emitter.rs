@@ -41,6 +41,7 @@ pub fn emit_bytecode_artifact(
         admitted.machine_carriers(),
         admitted.representation_carriers(),
         admitted.service_boundary_plans(),
+        admitted.local_interface_tables(),
         SourceAttributionMode::AdmittedPhase1,
     )
 }
@@ -69,6 +70,7 @@ pub(super) fn emit_bytecode_artifact_unchecked_with_service_boundary_plans(
     service_boundary_plans: &BTreeMap<ServiceCallRef, ServiceBoundaryPlan>,
 ) -> Result<BytecodeArtifact, BytecodeEmissionError> {
     let machine_carriers = analyze_machine_carriers(units)?;
+    let local_interface_tables = super::admission::collect_local_interface_tables(units)?;
     emit_bytecode_artifact_with_mode(
         units,
         constants,
@@ -77,6 +79,7 @@ pub(super) fn emit_bytecode_artifact_unchecked_with_service_boundary_plans(
         &machine_carriers,
         &[],
         service_boundary_plans,
+        &local_interface_tables,
         SourceAttributionMode::PrivateBackend,
     )
 }
@@ -92,6 +95,7 @@ fn emit_bytecode_artifact_with_mode(
     machine_carriers: &PackageMachineCarrierFacts,
     representation_carriers: &[super::admission::RepresentationCarrierFact],
     service_boundary_plans: &BTreeMap<ServiceCallRef, ServiceBoundaryPlan>,
+    local_interface_tables: &super::admission::LocalInterfaceFacts,
     source_attribution: SourceAttributionMode,
 ) -> Result<BytecodeArtifact, BytecodeEmissionError> {
     let inputs = ValidatedEmissionInputs::validate(
@@ -106,7 +110,12 @@ fn emit_bytecode_artifact_with_mode(
 
     let mut constants = build_constant_image(&inputs)?;
     emit_service_fallback_type_facts(&mut constants, service_boundary_plans)?;
-    let emitted_functions = emit_functions(&inputs, &mut constants, source_attribution)?;
+    let emitted_functions = emit_functions(
+        &inputs,
+        &mut constants,
+        source_attribution,
+        local_interface_tables,
+    )?;
 
     let mut artifact = BytecodeArtifact {
         magic: BYTECODE_MAGIC.to_string(),

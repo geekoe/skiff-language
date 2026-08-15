@@ -130,6 +130,7 @@ impl RegistryValueAuthority {
 pub(super) struct HostEffectAdmissions {
     calls: BTreeMap<u32, HostEffectExecutorIdentity>,
     service_calls: BTreeSet<u32>,
+    interface_calls: BTreeSet<u32>,
     expressions: BTreeMap<u32, Vec<RegistryValueAuthority>>,
     slots: BTreeMap<u32, Vec<RegistryValueAuthority>>,
     stream_for_in_statements: BTreeSet<u32>,
@@ -154,6 +155,13 @@ impl HostEffectAdmissions {
                 skiff_artifact_model::CallTargetIr::ServiceCall { .. }
             ) {
                 admissions.service_calls.insert(expression.index);
+                continue;
+            }
+            if matches!(
+                call.target,
+                skiff_artifact_model::CallTargetIr::InterfaceMethod { .. }
+            ) {
+                admissions.interface_calls.insert(expression.index);
                 continue;
             }
             let skiff_artifact_model::CallTargetIr::Native { target } = &call.target else {
@@ -619,6 +627,10 @@ impl HostEffectAdmissions {
         !self.stream_for_in_statements.is_empty() || !self.stream_next_statements.is_empty()
     }
 
+    pub(super) fn has_interface_calls(&self) -> bool {
+        !self.interface_calls.is_empty()
+    }
+
     pub(super) fn validate_effect_coverage(
         &self,
         actual: &CallableMayEffects,
@@ -637,6 +649,9 @@ impl HostEffectAdmissions {
         }
         if !self.service_calls.is_empty() {
             expected.insert(PendingEffectCategory::ServiceCall);
+        }
+        if !self.interface_calls.is_empty() {
+            expected.insert(PendingEffectCategory::Unknown);
         }
 
         let actual_categories = actual

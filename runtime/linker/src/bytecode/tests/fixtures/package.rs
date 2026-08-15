@@ -4,19 +4,20 @@ use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
     derive_bytecode_statement_manifest_identity, BoundaryCallableProjection,
     BoundaryImplementationRequirements, BytecodeFunctionStatementManifest, ExecutableExport,
-    ExecutableSignatureIr, FileIrRef, InterfaceMethodSignature, OperationCallableKind,
-    OperationTargetRef, PackageArtifact, PackageBuildId, PackageCallableId,
+    ExecutableSignatureIr, FileIrRef, InterfaceInstantiationRef, InterfaceMethodSignature,
+    OperationCallableKind, OperationTargetRef, PackageArtifact, PackageBuildId, PackageCallableId,
     PackageCallableLinkFact, PackageCallableSignature, PackageExecutableCoordinate,
     PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
-    PackageRuntimeRequirements, PackageSchemaIndexIdentity, PackageSchemaIndexRef,
-    PackageSyntheticCallbackOwner, PackageTypeRef, TypeDescriptorIr, TypeExport, TypeRefIr,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    PackageLocalInterfaceConformance, PackageRuntimeRequirements, PackageSchemaIndexIdentity,
+    PackageSchemaIndexRef, PackageSyntheticCallbackOwner, PackageTypeRef, TypeDescriptorIr,
+    TypeExport, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 use super::{
-    analyzed_facts, constants, no_effects, schema_record, synthetic_callback_callable_for,
-    DependencyTypeSurfaceConflict, RootProgram, DEPENDENCY_PACKAGE_ID, HELPER_CALLABLE,
-    OWNER_IMPLEMENTATION_PATH, OWNER_PUBLIC_PATH, PRIVATE_IMPLEMENTATION_PATH, ROOT_CALLABLE,
+    analyzed_facts, artifact::interface_identity, constants, no_effects, schema_record,
+    synthetic_callback_callable_for, DependencyTypeSurfaceConflict, RootProgram,
+    DEPENDENCY_PACKAGE_ID, HELPER_CALLABLE, OWNER_IMPLEMENTATION_PATH, OWNER_PUBLIC_PATH,
+    PRIVATE_IMPLEMENTATION_PATH, ROOT_CALLABLE,
 };
 
 pub(super) fn package(
@@ -45,7 +46,11 @@ pub(super) fn package(
             callable_link(
                 helper_callable.clone(),
                 1,
-                OperationCallableKind::InternalFunction,
+                if program == RootProgram::LocalInterface {
+                    OperationCallableKind::ImplMethod
+                } else {
+                    OperationCallableKind::InternalFunction
+                },
             ),
         ),
     ]);
@@ -59,7 +64,11 @@ pub(super) fn package(
             "fixture.helper".to_string(),
             callable_symbol(
                 helper_callable.clone(),
-                callable_signature(program == RootProgram::UnreachableInterface),
+                if program == RootProgram::LocalInterface {
+                    receiver_callable_signature()
+                } else {
+                    callable_signature(program == RootProgram::UnreachableInterface)
+                },
             ),
         ),
     ]);
@@ -70,7 +79,7 @@ pub(super) fn package(
     }
     if matches!(
         program,
-        RootProgram::Interface | RootProgram::UnreachableInterface
+        RootProgram::Interface | RootProgram::LocalInterface | RootProgram::UnreachableInterface
     ) {
         implementation_symbols.insert(
             "fixture.Reader".to_string(),
@@ -198,7 +207,9 @@ pub(super) fn package(
                 };
                 if matches!(
                     program,
-                    RootProgram::Interface | RootProgram::UnreachableInterface
+                    RootProgram::Interface
+                        | RootProgram::LocalInterface
+                        | RootProgram::UnreachableInterface
                 ) {
                     types.insert(
                         "fixture.Reader".to_string(),
@@ -231,6 +242,20 @@ pub(super) fn package(
                 })
                 .into_iter()
                 .collect(),
+            impl_methods: (program == RootProgram::LocalInterface)
+                .then(|| {
+                    (
+                        "fixture.helper".to_string(),
+                        ExecutableExport {
+                            file: file_ref(),
+                            executable_index: 1,
+                            symbol: "fixture.helper".to_string(),
+                            signature: receiver_executable_signature(),
+                        },
+                    )
+                })
+                .into_iter()
+                .collect(),
             constants: constants::implementation_links(bytecode),
             ..PackageImplementationLinks::default()
         },
@@ -253,7 +278,18 @@ pub(super) fn package(
             .into_iter()
             .collect(),
         actor_implementations: Vec::new(),
-        local_interface_conformances: Vec::new(),
+        local_interface_conformances: (program == RootProgram::LocalInterface)
+            .then(|| PackageLocalInterfaceConformance {
+                type_parameters: Vec::new(),
+                receiver: TypeRefIr::builtin("string"),
+                interface: InterfaceInstantiationRef {
+                    interface_abi_id: interface_identity(),
+                    canonical_type_args: Vec::new(),
+                },
+                methods: vec![PackageCallableId::new(HELPER_CALLABLE)],
+            })
+            .into_iter()
+            .collect(),
         package_requirements: Vec::new(),
         contract_requirements: Vec::new(),
         service_requirements: Vec::new(),
@@ -575,6 +611,23 @@ fn callable_signature(has_parameter: bool) -> PackageCallableSignature {
     }
 }
 
+fn receiver_callable_signature() -> PackageCallableSignature {
+    PackageCallableSignature {
+        type_params: Vec::new(),
+        parameters: vec![skiff_artifact_model::PackageCallableParameter {
+            name: "self".to_string(),
+            ty: PackageTypeRef::Local {
+                local_type: TypeRefIr::builtin("string"),
+            },
+            mode: skiff_artifact_model::ParamModeIr::Value,
+        }],
+        return_type: PackageTypeRef::Local {
+            local_type: TypeRefIr::builtin("string"),
+        },
+        may_suspend: false,
+    }
+}
+
 fn executable_signature(has_parameter: bool) -> ExecutableSignatureIr {
     ExecutableSignatureIr {
         params: has_parameter
@@ -588,6 +641,15 @@ fn executable_signature(has_parameter: bool) -> ExecutableSignatureIr {
             .collect(),
         return_type: TypeRefIr::builtin("void"),
         self_type: None,
+        may_suspend: false,
+    }
+}
+
+fn receiver_executable_signature() -> ExecutableSignatureIr {
+    ExecutableSignatureIr {
+        params: Vec::new(),
+        return_type: TypeRefIr::builtin("string"),
+        self_type: Some(TypeRefIr::builtin("string")),
         may_suspend: false,
     }
 }

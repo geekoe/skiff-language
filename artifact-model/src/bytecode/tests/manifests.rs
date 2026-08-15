@@ -50,6 +50,7 @@ fn local_interface_relocation(target: &str) -> BytecodeRelocation {
                     params: Vec::new(),
                     return_type: string_type(),
                 },
+                effects: analyzed_no_effects(),
                 function_key: target.to_string(),
                 receiver_call_abi: crate::ReceiverCallAbi::ExplicitSelfFirst,
             }],

@@ -72,6 +72,19 @@ pub(crate) fn snapshot_share() -> ValueTransferPlan {
     plan(ValueTransferPlanKind::SnapshotShare)
 }
 
+pub(crate) fn analyzed_no_effects() -> CallableEffectSummary {
+    CallableEffectSummary::Analyzed {
+        effects: CallableMayEffects {
+            escapes_caller_value: false,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_pending: false,
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),
+        },
+    }
+}
+
 pub(crate) fn string_type() -> TypeRefIr {
     TypeRefIr::builtin("string")
 }
@@ -261,6 +274,7 @@ pub(crate) fn main_function() -> RelocatableBytecodeFunction {
                     interface_abi_id: "interface:reader".to_string(),
                     canonical_type_args: Vec::new(),
                 },
+                methods: Vec::new(),
             },
             BytecodeRelocation::ServiceOperationRef {
                 service_call: crate::bytecode::dto::ServiceCallBoundaryFacts::new(

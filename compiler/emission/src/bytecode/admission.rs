@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    AssignTargetIr, BinaryOpIr, CallTargetIr, CallableEffectSummary, ExprIr, ExprRefIr, LiteralIr,
-    NamedUnionBranchIr, NativeTarget, ServiceBoundaryPlan, ServiceCallRef, StatementAttributionId,
-    TypeDescriptorIr, TypeRefIr,
+    AssignTargetIr, BinaryOpIr, BoxSourceIr, CallIr, CallTargetIr, CallableEffectSummary, ExprIr,
+    ExprRefIr, FunctionTypeParamIr, InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr,
+    LiteralIr, NamedUnionBranchIr, NativeTarget, ReceiverCallAbi, ServiceBoundaryPlan,
+    ServiceCallRef, StatementAttributionId, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_compiler_lowering::mir::{
     MirCallArgument, MirEmissionAnchor, MirExecutableKind, MirFunction, MirParamMode, MirSlotKind,
@@ -48,6 +49,7 @@ pub struct AdmittedPhase1BytecodeMir {
     machine_carriers: PackageMachineCarrierFacts,
     representation_carriers: Vec<RepresentationCarrierFact>,
     service_boundary_plans: BTreeMap<ServiceCallRef, ServiceBoundaryPlan>,
+    local_interface_tables: LocalInterfaceFacts,
 }
 
 impl AdmittedPhase1BytecodeMir {
@@ -73,11 +75,337 @@ impl AdmittedPhase1BytecodeMir {
         &self.service_boundary_plans
     }
 
+    pub(crate) fn local_interface_tables(&self) -> &LocalInterfaceFacts {
+        &self.local_interface_tables
+    }
+
     /// Returns the normalized, admitted MIR used to project source-owned
     /// value-transfer facts.
     pub fn source_value_transfer_units(&self) -> &[MirUnit] {
         &self.units
     }
+}
+
+/// One exact compiler-owned local interface method row.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LocalInterfaceMethodFact {
+    pub(crate) slot: u32,
+    pub(crate) method_name: String,
+    pub(crate) method_abi_id: String,
+    pub(crate) signature: InterfaceMethodSlotSignatureIr,
+    pub(crate) effects: CallableEffectSummary,
+    pub(crate) executable_index: u32,
+    pub(crate) function_key: String,
+    pub(crate) receiver_call_abi: ReceiverCallAbi,
+}
+
+/// One exact local interface table emitted from `InterfaceBox` source facts.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LocalInterfaceTableFact {
+    pub(crate) interface: InterfaceInstantiationRef,
+    pub(crate) concrete_type: TypeRefIr,
+    pub(crate) methods: Vec<LocalInterfaceMethodFact>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct LocalInterfaceFacts {
+    tables: Vec<LocalInterfaceTableFact>,
+}
+
+impl LocalInterfaceFacts {
+    pub(crate) fn empty() -> Self {
+        Self { tables: Vec::new() }
+    }
+
+    pub(crate) fn tables(&self) -> &[LocalInterfaceTableFact] {
+        &self.tables
+    }
+
+    pub(crate) fn table(
+        &self,
+        interface: &InterfaceInstantiationRef,
+        concrete_type: &TypeRefIr,
+    ) -> Option<&LocalInterfaceTableFact> {
+        self.tables
+            .iter()
+            .find(|table| &table.interface == interface && &table.concrete_type == concrete_type)
+    }
+
+    fn tables_for_interface(
+        &self,
+        interface: &InterfaceInstantiationRef,
+    ) -> Vec<&LocalInterfaceTableFact> {
+        self.tables
+            .iter()
+            .filter(move |table| &table.interface == interface)
+            .collect()
+    }
+}
+
+pub(crate) fn collect_local_interface_tables(
+    units: &[MirUnit],
+) -> Result<LocalInterfaceFacts, BytecodeEmissionError> {
+    let mut tables = Vec::<LocalInterfaceTableFact>::new();
+    for unit in units {
+        for function in &unit.functions {
+            let function_key = canonical_function_key(&unit.module_path, &function.symbol)?;
+            for expression in &function.expressions {
+                let ExprIr::InterfaceBox {
+                    interface,
+                    source:
+                        BoxSourceIr::Local {
+                            concrete_type,
+                            method_table,
+                        },
+                    ..
+                } = &expression.expression
+                else {
+                    continue;
+                };
+                if &method_table.interface != interface {
+                    return Err(BytecodeEmissionError::UnsupportedConstruct {
+                        function_key: function_key.clone(),
+                        construct: "local interface method table",
+                        location: format!(
+                            " expression {} table interface {:?} diverges from box interface {interface:?}",
+                            expression.index, method_table.interface
+                        ),
+                    });
+                }
+                let mut methods = Vec::with_capacity(method_table.slots.len());
+                for (ordinal, slot) in method_table.slots.iter().enumerate() {
+                    if slot.slot != ordinal as u32 {
+                        return Err(BytecodeEmissionError::UnsupportedConstruct {
+                            function_key: function_key.clone(),
+                            construct: "local interface method table",
+                            location: format!(
+                                " expression {} slot {} is not dense from zero",
+                                expression.index, slot.slot
+                            ),
+                        });
+                    }
+                    let target = unit
+                        .function_by_executable_index(slot.target.executable_index)
+                        .map_err(|_| BytecodeEmissionError::UnsupportedConstruct {
+                            function_key: function_key.clone(),
+                            construct: "local interface method table",
+                            location: format!(
+                                " expression {} slot {} target executable {} is absent",
+                                expression.index, slot.slot, slot.target.executable_index
+                            ),
+                        })?;
+                    if target.kind != MirExecutableKind::ImplMethod {
+                        return Err(BytecodeEmissionError::UnsupportedConstruct {
+                            function_key: function_key.clone(),
+                            construct: "local interface method table",
+                            location: format!(
+                                " expression {} slot {} target is not an impl method",
+                                expression.index, slot.slot
+                            ),
+                        });
+                    }
+                    let mut expected_params = Vec::with_capacity(target.params.len() + 1);
+                    if let Some(receiver) = target.receiver.as_ref() {
+                        expected_params.push(FunctionTypeParamIr {
+                            name: "self".to_string(),
+                            ty: receiver.ty.clone(),
+                        });
+                        if matches!(
+                            target.slots.first().map(|slot| slot.kind),
+                            Some(MirSlotKind::Param)
+                        ) {
+                            expected_params.extend(target.params.iter().skip(1).map(|parameter| {
+                                FunctionTypeParamIr {
+                                    name: parameter.name.clone(),
+                                    ty: parameter.ty.clone(),
+                                }
+                            }));
+                        } else {
+                            expected_params.extend(target.params.iter().map(|parameter| {
+                                FunctionTypeParamIr {
+                                    name: parameter.name.clone(),
+                                    ty: parameter.ty.clone(),
+                                }
+                            }));
+                        }
+                    } else {
+                        expected_params.extend(target.params.iter().map(|parameter| {
+                            FunctionTypeParamIr {
+                                name: parameter.name.clone(),
+                                ty: parameter.ty.clone(),
+                            }
+                        }));
+                    }
+                    let expected_signature = InterfaceMethodSlotSignatureIr {
+                        params: expected_params,
+                        return_type: target.return_type.clone(),
+                    };
+                    if slot.signature != expected_signature
+                        || target.receiver.as_ref().is_some_and(|receiver| {
+                            receiver.call_abi != slot.target.receiver_call_abi
+                        })
+                    {
+                        return Err(BytecodeEmissionError::UnsupportedConstruct {
+                            function_key: function_key.clone(),
+                            construct: "local interface method table",
+                            location: format!(
+                                " expression {} slot {} signature drifts from implementation function",
+                                expression.index, slot.slot
+                            ),
+                        });
+                    }
+                    if matches!(target.effect_summary, CallableEffectSummary::Unknown { .. }) {
+                        return Err(BytecodeEmissionError::UnsupportedConstruct {
+                            function_key: function_key.clone(),
+                            construct: "local interface method effects",
+                            location: format!(
+                                " expression {} slot {} target has an unknown effect summary",
+                                expression.index, slot.slot
+                            ),
+                        });
+                    }
+                    methods.push(LocalInterfaceMethodFact {
+                        slot: slot.slot,
+                        method_name: slot.method_name.clone(),
+                        method_abi_id: slot.method_abi_id.clone(),
+                        signature: slot.signature.clone(),
+                        effects: target.effect_summary.clone(),
+                        executable_index: slot.target.executable_index,
+                        function_key: canonical_function_key(&unit.module_path, &target.symbol)?,
+                        receiver_call_abi: slot.target.receiver_call_abi,
+                    });
+                }
+                let table = LocalInterfaceTableFact {
+                    interface: interface.clone(),
+                    concrete_type: concrete_type.clone(),
+                    methods,
+                };
+                if let Some(previous) = tables.iter().find(|existing| {
+                    existing.interface == table.interface
+                        && existing.concrete_type == table.concrete_type
+                }) {
+                    if previous != &table {
+                        return Err(BytecodeEmissionError::UnsupportedConstruct {
+                            function_key: function_key.clone(),
+                            construct: "local interface method table",
+                            location: format!(
+                                " duplicate table for interface {interface:?} concrete type {concrete_type:?} diverges"
+                            ),
+                        });
+                    }
+                } else {
+                    tables.push(table);
+                }
+            }
+        }
+    }
+    Ok(LocalInterfaceFacts { tables })
+}
+
+pub(crate) fn resolve_local_interface_table_for_call<'a>(
+    unit: &MirUnit,
+    function: &MirFunction,
+    call: &CallIr,
+    facts: &'a LocalInterfaceFacts,
+) -> Result<&'a LocalInterfaceTableFact, BytecodeEmissionError> {
+    let CallTargetIr::InterfaceMethod { interface, .. } = &call.target else {
+        return Err(BytecodeEmissionError::UnsupportedConstruct {
+            function_key: String::new(),
+            construct: "local interface call target",
+            location: " call is not an interface method".to_string(),
+        });
+    };
+    let receiver =
+        call.args
+            .first()
+            .ok_or_else(|| BytecodeEmissionError::UnsupportedConstruct {
+                function_key: String::new(),
+                construct: "local interface call target",
+                location: " interface call has no receiver argument".to_string(),
+            })?;
+    let concrete_type =
+        local_interface_receiver_concrete_type(unit, function, *receiver).map_err(|error| {
+            BytecodeEmissionError::UnsupportedConstruct {
+                function_key: String::new(),
+                construct: "local interface call target",
+                location: format!(" receiver join failed: {error}"),
+            }
+        })?;
+    facts.table(interface, &concrete_type).ok_or_else(|| {
+        BytecodeEmissionError::UnsupportedConstruct {
+            function_key: String::new(),
+            construct: "local interface call target",
+            location: format!(
+                " interface {interface:?} concrete type {concrete_type:?} has no exact local table"
+            ),
+        }
+    })
+}
+
+fn local_interface_receiver_concrete_type(
+    unit: &MirUnit,
+    function: &MirFunction,
+    receiver: ExprRefIr,
+) -> Result<TypeRefIr, String> {
+    let expression = function
+        .expression(receiver)
+        .map_err(|error| format!("receiver expression is absent: {error}"))?;
+    if let ExprIr::InterfaceBox {
+        source: BoxSourceIr::Local { concrete_type, .. },
+        ..
+    } = &expression.expression
+    {
+        return Ok(concrete_type.clone());
+    }
+    let ExprIr::LoadSlot { slot } = &expression.expression else {
+        return Err("interface receiver is not an exact local box or slot".to_string());
+    };
+    let mut found = None;
+    for block in &function.blocks {
+        for statement in &block.statements {
+            let value = match &statement.kind {
+                MirStmtKind::InitSlot {
+                    slot: candidate,
+                    value,
+                } if candidate == slot => Some(*value),
+                MirStmtKind::Assign {
+                    target: AssignTargetIr::Slot { slot: candidate },
+                    value,
+                    ..
+                } if candidate == slot => Some(*value),
+                _ => None,
+            };
+            let Some(value) = value else {
+                continue;
+            };
+            let value_expression = function
+                .expression(value)
+                .map_err(|error| format!("slot initializer expression is absent: {error}"))?;
+            let ExprIr::InterfaceBox {
+                source: BoxSourceIr::Local { concrete_type, .. },
+                ..
+            } = &value_expression.expression
+            else {
+                return Err(
+                    "interface receiver slot is not initialized from an exact local box"
+                        .to_string(),
+                );
+            };
+            if let Some(previous) = found.as_ref() {
+                if previous != concrete_type {
+                    return Err(
+                        "interface receiver slot has ambiguous concrete local tables".to_string(),
+                    );
+                }
+            } else {
+                found = Some(concrete_type.clone());
+            }
+        }
+    }
+    found.ok_or_else(|| {
+        let _ = unit;
+        "interface receiver slot has no exact local box initializer".to_string()
+    })
 }
 
 /// Admits the Phase 2 record/array MIR surface plus the retained Phase 1
@@ -196,6 +524,13 @@ pub fn admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_
         },
     )?;
     validate_service_boundary_plan_coverage(&units, service_boundary_plans)?;
+    let local_interface_tables = collect_local_interface_tables(&units)?;
+    let local_interface_method_functions = local_interface_tables
+        .tables()
+        .iter()
+        .flat_map(|table| table.methods.iter())
+        .map(|method| method.executable_index)
+        .collect::<BTreeSet<_>>();
     for unit in &units {
         unit.validate_executable_indices()?;
         if !unit.actor_declarations.is_empty() {
@@ -223,29 +558,42 @@ pub fn admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_
                     &format!("type declaration `{}`", declaration.name),
                 ));
             }
-            if !declaration.implements.is_empty() {
-                return Err(rejected(
-                    unit,
-                    None,
-                    Phase1UnsupportedCapability::Interface,
-                    &format!(
-                        "type declaration `{}` interface conformance",
-                        declaration.name
-                    ),
-                ));
+            for implemented in &declaration.implements {
+                let TypeRefIr::AnyInterface { interface } = implemented else {
+                    return Err(rejected(
+                        unit,
+                        None,
+                        Phase1UnsupportedCapability::Interface,
+                        &format!(
+                            "type declaration `{}` implements non-local interface {implemented:?}",
+                            declaration.name
+                        ),
+                    ));
+                };
+                if local_interface_tables
+                    .tables_for_interface(interface)
+                    .is_empty()
+                {
+                    return Err(rejected(
+                        unit,
+                        None,
+                        Phase1UnsupportedCapability::Interface,
+                        &format!(
+                            "type declaration `{}` implements local interface {interface:?} without an exact local method table",
+                            declaration.name
+                        ),
+                    ));
+                }
             }
             if !matches!(declaration.descriptor, TypeDescriptorIr::Record { .. }) {
-                let capability = if matches!(declaration.descriptor, TypeDescriptorIr::Interface) {
-                    Phase1UnsupportedCapability::Interface
-                } else {
-                    Phase1UnsupportedCapability::ValueShape
-                };
-                return Err(rejected(
-                    unit,
-                    None,
-                    capability,
-                    &format!("type declaration `{}`", declaration.name),
-                ));
+                if !matches!(declaration.descriptor, TypeDescriptorIr::Interface) {
+                    return Err(rejected(
+                        unit,
+                        None,
+                        Phase1UnsupportedCapability::ValueShape,
+                        &format!("type declaration `{}`", declaration.name),
+                    ));
+                }
             }
         }
         for function in &unit.functions {
@@ -257,6 +605,8 @@ pub fn admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_
                 function,
                 &dense_parameter_materializations,
                 server_stream_authorities,
+                &local_interface_tables,
+                &local_interface_method_functions,
             )?;
         }
     }
@@ -268,6 +618,7 @@ pub fn admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_
         machine_carriers,
         representation_carriers,
         service_boundary_plans: service_boundary_plans.clone(),
+        local_interface_tables,
     })
 }
 
@@ -317,15 +668,75 @@ fn admit_function(
     function: &MirFunction,
     dense_parameter_materializations: &BTreeMap<String, DenseParameterMaterializationFact>,
     server_stream_authorities: &[ServerStreamGatewayAuthority],
+    local_interface_tables: &LocalInterfaceFacts,
+    local_interface_method_functions: &BTreeSet<u32>,
 ) -> Result<(), BytecodeEmissionError> {
     function.validate_expression_indices()?;
     function.validate_slot_types()?;
-    if function.kind != MirExecutableKind::Function {
+    let interface_impl = local_interface_method_functions.contains(&function.executable_index);
+    match function.kind {
+        MirExecutableKind::Function => {}
+        MirExecutableKind::ImplMethod if interface_impl => {}
+        MirExecutableKind::ImplMethod => {
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::Receiver,
+                "implementation method outside an exact local interface table",
+            ));
+        }
+    }
+    if interface_impl {
+        let Some(receiver) = function.receiver.as_ref() else {
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::Receiver,
+                "local interface implementation has no receiver facts",
+            ));
+        };
+        let Some(self_type) = function.self_type.as_ref() else {
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::Receiver,
+                "local interface implementation has no self type",
+            ));
+        };
+        if receiver.ty != *self_type
+            || receiver.slot != 0
+            || receiver.parameter_ordinal != 0
+            || receiver.call_abi != ReceiverCallAbi::ExplicitSelfFirst
+        {
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::Receiver,
+                "local interface implementation receiver facts are not exact",
+            ));
+        }
+        let slot_zero = function.slots.first().ok_or_else(|| {
+            rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::Receiver,
+                "local interface implementation has no receiver slot zero",
+            )
+        })?;
+        if slot_zero.slot != 0 || slot_zero.ty.as_ref() != Some(self_type) {
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::Receiver,
+                "local interface implementation receiver slot disagrees with self type",
+            ));
+        }
+    } else if function.self_type.is_some() || function.receiver.is_some() {
         return Err(rejected_function(
             unit,
             function_key,
             Phase1UnsupportedCapability::Receiver,
-            "executable kind",
+            "receiver facts",
         ));
     }
     if function.native {
@@ -342,14 +753,6 @@ fn admit_function(
             function_key,
             Phase1UnsupportedCapability::Generic,
             "function type parameters",
-        ));
-    }
-    if function.self_type.is_some() || function.receiver.is_some() {
-        return Err(rejected_function(
-            unit,
-            function_key,
-            Phase1UnsupportedCapability::Receiver,
-            "receiver facts",
         ));
     }
     let host_effects =
@@ -401,16 +804,33 @@ fn admit_function(
             ));
         }
     } else if !server_stream.admits_closure_carrier(&function.return_type) {
-        admit_type(
+        admit_type_with_local_facts(
             units,
             unit,
             function_key,
             &function.return_type,
             true,
             "return type",
+            local_interface_tables,
         )?;
     }
     let mut parameter_slots = BTreeSet::new();
+    let parameter_ordinal_offset = if function.receiver.is_some() {
+        match function.slots.first().map(|slot| slot.kind) {
+            Some(MirSlotKind::SelfValue) => 1,
+            Some(MirSlotKind::Param) => 0,
+            _ => {
+                return Err(rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::Receiver,
+                    "receiver function has an invalid slot zero kind",
+                ));
+            }
+        }
+    } else {
+        0
+    };
     for (parameter_index, parameter) in function.params.iter().enumerate() {
         if parameter.mode == MirParamMode::InOut {
             return Err(rejected_function(
@@ -434,9 +854,11 @@ fn admit_function(
                 false,
                 &format!("parameter {parameter_index} type"),
                 host_effects.slot_authorities(parameter.slot),
+                local_interface_tables,
             )?;
         }
-        if usize::try_from(parameter.slot).ok() != Some(parameter_index) {
+        if usize::try_from(parameter.slot).ok() != Some(parameter_index + parameter_ordinal_offset)
+        {
             return Err(fact_mismatch(
                 unit,
                 function_key,
@@ -496,6 +918,7 @@ fn admit_function(
                 false,
                 &format!("slot {} type", slot.slot),
                 host_effects.slot_authorities(slot.slot),
+                local_interface_tables,
             )?;
         }
     }
@@ -526,6 +949,7 @@ fn admit_function(
             &discriminator_literals,
             &host_effects,
             &server_stream,
+            local_interface_tables,
         )?;
     }
     for block in &function.blocks {
@@ -757,9 +1181,12 @@ fn admit_effects_with_authority(
                 &format!("registry host-effect summary mismatch: {detail}"),
             )
         })?;
-    if effects.escapes_caller_value
-        || effects.requires_same_heap_identity
-        || effects.invokes_unknown_target
+    let interface_call_conservative_effects = host_effects.has_interface_calls()
+        && (effects.escapes_caller_value || effects.invokes_unknown_target);
+    if effects.requires_same_heap_identity
+        || (interface_call_conservative_effects && !host_effects.has_interface_calls())
+        || (!host_effects.has_interface_calls()
+            && (effects.escapes_caller_value || effects.invokes_unknown_target))
     {
         return Err(rejected_function(
             unit,
@@ -1132,6 +1559,7 @@ fn admit_expression(
         discriminator_literals,
         &host_effects,
         &ServerStreamAdmissions::default(),
+        &LocalInterfaceFacts::empty(),
     )
 }
 
@@ -1144,6 +1572,7 @@ fn admit_expression_with_host_effects(
     discriminator_literals: &BTreeSet<u32>,
     host_effects: &HostEffectAdmissions,
     server_stream: &ServerStreamAdmissions,
+    local_interface_tables: &LocalInterfaceFacts,
 ) -> Result<(), BytecodeEmissionError> {
     let registry_authorities = host_effects.expression_authorities(expression.index);
     if let ExprIr::Call { call } = &expression.expression {
@@ -1155,6 +1584,7 @@ fn admit_expression_with_host_effects(
             call,
             host_effects,
             server_stream,
+            local_interface_tables,
         )?;
     }
     if let ExprIr::Construct { type_ref, .. } = &expression.expression {
@@ -1169,6 +1599,7 @@ fn admit_expression_with_host_effects(
                 false,
                 &format!("expression {} construct type", expression.index),
                 registry_authorities,
+                local_interface_tables,
             )?;
         }
     }
@@ -1194,6 +1625,7 @@ fn admit_expression_with_host_effects(
             true,
             &format!("expression {} type", expression.index),
             discriminator_context,
+            local_interface_tables,
         )?;
     }
     if expression.writable.is_some() {
@@ -1273,6 +1705,46 @@ fn admit_expression_with_host_effects(
             Some(Phase1UnsupportedCapability::Constant)
         }
         ExprIr::ActorSelfField { .. } => Some(Phase1UnsupportedCapability::Actor),
+        ExprIr::InterfaceBox {
+            interface,
+            source:
+                BoxSourceIr::Local {
+                    concrete_type,
+                    method_table: _,
+                },
+            ..
+        } => {
+            if expression.ty
+                != (TypeRefIr::AnyInterface {
+                    interface: interface.clone(),
+                })
+            {
+                return Err(rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::Interface,
+                    &format!(
+                        "expression {} local interface box type {:?} diverges from interface {interface:?}",
+                        expression.index, expression.ty
+                    ),
+                ));
+            }
+            if local_interface_tables
+                .table(interface, concrete_type)
+                .is_none()
+            {
+                return Err(rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::Interface,
+                    &format!(
+                        "expression {} local interface table facts are missing",
+                        expression.index
+                    ),
+                ));
+            }
+            None
+        }
         ExprIr::InterfaceBox { .. } => Some(Phase1UnsupportedCapability::Interface),
         ExprIr::Throw { payload_type, .. } => {
             admit_throw_payload_type(
@@ -1293,13 +1765,14 @@ fn admit_expression_with_host_effects(
             catch_type,
             ..
         } => {
-            admit_type(
+            admit_type_with_local_facts(
                 units,
                 unit,
                 function_key,
                 catch_type,
                 false,
                 &format!("expression {} catch type", expression.index),
+                local_interface_tables,
             )?;
             let slot_type = function.slot_type(*catch_slot).map_err(|_| {
                 BytecodeEmissionError::UnsupportedConstruct {
@@ -1358,6 +1831,7 @@ fn admit_call(
     call: &skiff_artifact_model::CallIr,
     host_effects: &HostEffectAdmissions,
     server_stream: &ServerStreamAdmissions,
+    local_interface_tables: &LocalInterfaceFacts,
 ) -> Result<(), BytecodeEmissionError> {
     if !call.type_args.is_empty() {
         return Err(rejected_function(
@@ -1467,13 +1941,62 @@ fn admit_call(
                 &format!("expression {} call target", expression.index),
             ));
         }
-        CallTargetIr::InterfaceMethod { .. } => {
-            return Err(rejected_function(
+        CallTargetIr::InterfaceMethod {
+            interface: _,
+            method_abi_id,
+            slot,
+        } => {
+            let table = resolve_local_interface_table_for_call(
                 unit,
-                function_key,
-                Phase1UnsupportedCapability::Interface,
-                &format!("expression {} call target", expression.index),
-            ));
+                function,
+                call,
+                local_interface_tables,
+            )
+            .map_err(|error| BytecodeEmissionError::UnsupportedConstruct {
+                function_key: function_key.to_string(),
+                construct: "local interface call target",
+                location: format!(" expression {}: {}", expression.index, error),
+            })?;
+            let method = table
+                .methods
+                .iter()
+                .find(|method| method.slot == *slot && &method.method_abi_id == method_abi_id)
+                .ok_or_else(|| {
+                    rejected_function(
+                        unit,
+                        function_key,
+                        Phase1UnsupportedCapability::Interface,
+                        &format!(
+                            "expression {} interface call slot {slot} ABI {method_abi_id:?} is absent from exact local table",
+                            expression.index
+                        ),
+                    )
+                })?;
+            if call.args.len() != method.signature.params.len() {
+                return Err(rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::Interface,
+                    &format!(
+                        "expression {} interface call arity {} diverges from exact local row {}",
+                        expression.index,
+                        call.args.len(),
+                        method.signature.params.len()
+                    ),
+                ));
+            }
+            if expression.ty != method.signature.return_type {
+                return Err(rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::Interface,
+                    &format!(
+                        "expression {} interface call result type {:?} diverges from exact local row {:?}",
+                        expression.index, expression.ty, method.signature.return_type
+                    ),
+                ));
+            }
+            return Ok(());
         }
     };
     let Some(facts) = expression.direct_call.as_ref() else {
@@ -1855,7 +2378,36 @@ fn admit_type(
     allow_void: bool,
     location: &str,
 ) -> Result<(), BytecodeEmissionError> {
-    admit_type_with_discriminator_flag(units, unit, function_key, ty, allow_void, location, false)
+    admit_type_with_local_facts(
+        units,
+        unit,
+        function_key,
+        ty,
+        allow_void,
+        location,
+        &LocalInterfaceFacts::empty(),
+    )
+}
+
+fn admit_type_with_local_facts(
+    units: &[MirUnit],
+    unit: &MirUnit,
+    function_key: &str,
+    ty: &TypeRefIr,
+    allow_void: bool,
+    location: &str,
+    local_interface_tables: &LocalInterfaceFacts,
+) -> Result<(), BytecodeEmissionError> {
+    admit_type_with_discriminator_flag(
+        units,
+        unit,
+        function_key,
+        ty,
+        allow_void,
+        location,
+        false,
+        local_interface_tables,
+    )
 }
 
 fn admit_type_with_registry_authority(
@@ -1866,11 +2418,20 @@ fn admit_type_with_registry_authority(
     allow_void: bool,
     location: &str,
     authorities: &[RegistryValueAuthority],
+    local_interface_tables: &LocalInterfaceFacts,
 ) -> Result<(), BytecodeEmissionError> {
     if authorities.iter().any(|authority| authority.admits(ty)) {
         return Ok(());
     }
-    admit_type(units, unit, function_key, ty, allow_void, location)
+    admit_type_with_local_facts(
+        units,
+        unit,
+        function_key,
+        ty,
+        allow_void,
+        location,
+        local_interface_tables,
+    )
 }
 
 fn admit_type_with_discriminator_flag(
@@ -1881,12 +2442,14 @@ fn admit_type_with_discriminator_flag(
     allow_void: bool,
     location: &str,
     allow_discriminator_literal: bool,
+    local_interface_tables: &LocalInterfaceFacts,
 ) -> Result<(), BytecodeEmissionError> {
     let mut context = TypeAdmissionContext {
         units,
         function_key,
         nominal_chain: Vec::new(),
         allow_discriminator_literal,
+        local_interface_tables,
     };
     admit_type_nested(&mut context, unit, ty, allow_void, location, false)
 }
@@ -1901,6 +2464,7 @@ struct TypeAdmissionContext<'a> {
     function_key: &'a str,
     nominal_chain: Vec<(String, u32)>,
     allow_discriminator_literal: bool,
+    local_interface_tables: &'a LocalInterfaceFacts,
 }
 
 fn admit_type_nested(
@@ -1991,6 +2555,39 @@ fn admit_type_nested(
         TypeRefIr::Literal {
             value: LiteralIr::String { .. },
         } if context.allow_discriminator_literal => Ok(()),
+        TypeRefIr::AnyInterface { interface } => {
+            if context
+                .local_interface_tables
+                .tables_for_interface(interface)
+                .is_empty()
+            {
+                return if nested {
+                    Err(phase_2_nested_shape_rejection(
+                        context.function_key,
+                        Phase1UnsupportedCapability::Interface,
+                        location,
+                    ))
+                } else {
+                    Err(rejected_function(
+                        unit,
+                        context.function_key,
+                        Phase1UnsupportedCapability::Interface,
+                        location,
+                    ))
+                };
+            }
+            for argument in &interface.canonical_type_args {
+                admit_type_nested(
+                    context,
+                    unit,
+                    argument,
+                    false,
+                    &format!("{location} interface type argument"),
+                    true,
+                )?;
+            }
+            Ok(())
+        }
         TypeRefIr::LocalType { type_index } => {
             admit_nominal_declaration(context, unit, &unit.module_path, *type_index, location)
         }
@@ -2169,7 +2766,6 @@ fn unsupported_type_capability(
         TypeRefIr::TypeParam { .. } | TypeRefIr::AppliedNominal { .. } => {
             Some(Phase1UnsupportedCapability::Generic)
         }
-        TypeRefIr::AnyInterface { .. } => Some(Phase1UnsupportedCapability::Interface),
         TypeRefIr::Function { .. } => Some(Phase1UnsupportedCapability::Callback),
         TypeRefIr::ServiceSymbol { .. } | TypeRefIr::DbObjectSymbol { .. } => {
             Some(Phase1UnsupportedCapability::ServiceTarget)

@@ -591,14 +591,37 @@ fn target_parameter_values(
     {
         return Ok(values);
     }
-    target_signature(context, instruction, role, location).map(|signature| {
-        signature
+    let signature = target_signature(context, instruction, role, location)?;
+    if is_interface_target(instruction, role) {
+        Ok(signature
+            .parameter_types()
+            .iter()
+            .skip(1)
+            .copied()
+            .zip(signature.parameter_plans().iter().skip(1).cloned())
+            .map(|(ty, plan)| LinkedStackValue::new(ty, plan))
+            .collect())
+    } else {
+        Ok(signature
             .parameter_types()
             .iter()
             .copied()
             .zip(signature.parameter_plans().iter().cloned())
             .map(|(ty, plan)| LinkedStackValue::new(ty, plan))
-            .collect()
+            .collect())
+    }
+}
+
+fn is_interface_target(instruction: &LinkedInstruction, role: OperandRole) -> bool {
+    let Some(ordinal) = contract_for_opcode(instruction.opcode()).operand_position(role) else {
+        return false;
+    };
+    instruction.resolved_operands().iter().any(|resolved| {
+        resolved.operand_ordinal() == ordinal as u32
+            && matches!(
+                resolved.target(),
+                LinkedInstructionTarget::InterfaceTable(_)
+            )
     })
 }
 

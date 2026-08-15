@@ -5,12 +5,13 @@ use skiff_artifact_model::{
     AssignTargetIr, BoxSourceIr, BytecodeFunctionOrigin, BytecodeIntrinsicRef, BytecodeRelocation,
     BytecodeSpecialization, CallLoanLayout, CallTargetIr, CatchMatcher, ExceptionRegion, ExprIr,
     ExprRefIr, FrameLayout, HostEffectReference, HostEffectSignature, InstructionSourceSite,
-    IntrinsicReference, LiteralIr, LocalInterfaceMethod, LocalInterfaceRef, NativeTarget, Opcode,
-    ParamModeIr, ParameterSlotDecl, PatternIr, PrivilegedAffineFieldAccess,
-    RelocatableBytecodeFunction, RemoteInterfaceMethod, RemoteInterfaceRef, ResumeDescriptor,
-    ResumeErrorMode, ResumeResultMaterialization, ServiceBoundaryPlan, ServiceCallRef,
-    SourceMapEntry, StatementAttributionId, StatementEntry, SyntheticInstructionSiteReason,
-    TrapFailureKind, TypeRefIr, ValueDropPlan, ValueTransferPlan, WritablePathSegment,
+    InterfaceRequirementMethod, IntrinsicReference, LiteralIr, LocalInterfaceMethod,
+    LocalInterfaceRef, NativeTarget, Opcode, ParamModeIr, ParameterSlotDecl, PatternIr,
+    PrivilegedAffineFieldAccess, RelocatableBytecodeFunction, RemoteInterfaceMethod,
+    RemoteInterfaceRef, ResumeDescriptor, ResumeErrorMode, ResumeResultMaterialization,
+    ServiceBoundaryPlan, ServiceCallRef, SourceMapEntry, StatementAttributionId, StatementEntry,
+    SyntheticInstructionSiteReason, TrapFailureKind, TypeRefIr, ValueDropPlan, ValueTransferPlan,
+    WritablePathSegment,
 };
 use skiff_compiler_lowering::mir::{
     MirCallArgument, MirDirectCallFacts, MirEmissionAnchor, MirExpression, MirForInItemKind,
@@ -20,6 +21,7 @@ use skiff_compiler_lowering::mir::{
 };
 
 use super::{
+    admission::LocalInterfaceFacts,
     carriers::{
         FunctionMachineCarrierFacts, MachineDefaultValueFact, MachineDefaultValueKind,
         MachineShapeCarrierFact, MachineWritableStepFact,
@@ -34,6 +36,7 @@ pub(super) fn emit_functions(
     inputs: &ValidatedEmissionInputs<'_>,
     image: &mut ConstantImage,
     source_attribution: SourceAttributionMode,
+    local_interface_tables: &LocalInterfaceFacts,
 ) -> Result<BTreeMap<String, RelocatableBytecodeFunction>, BytecodeEmissionError> {
     let mut functions = BTreeMap::new();
     for (function_key, function) in &inputs.functions {
@@ -57,6 +60,7 @@ pub(super) fn emit_functions(
             image,
             inputs,
             inputs.service_boundary_plans,
+            local_interface_tables,
             source_attribution,
         )?;
         functions.insert(function_key.clone(), emitter.emit()?);
@@ -79,6 +83,7 @@ struct FunctionEmitter<'a> {
     image: &'a mut ConstantImage,
     inputs: &'a ValidatedEmissionInputs<'a>,
     service_boundary_plans: &'a BTreeMap<ServiceCallRef, ServiceBoundaryPlan>,
+    local_interface_tables: &'a LocalInterfaceFacts,
     source_attribution: SourceAttributionMode,
     instructions: Vec<RawInstruction>,
     relocations: Vec<BytecodeRelocation>,
@@ -166,6 +171,7 @@ impl<'a> FunctionEmitter<'a> {
         image: &'a mut ConstantImage,
         inputs: &'a ValidatedEmissionInputs<'a>,
         service_boundary_plans: &'a BTreeMap<ServiceCallRef, ServiceBoundaryPlan>,
+        local_interface_tables: &'a LocalInterfaceFacts,
         source_attribution: SourceAttributionMode,
     ) -> Result<Self, BytecodeEmissionError> {
         let events = function
@@ -191,6 +197,7 @@ impl<'a> FunctionEmitter<'a> {
             image,
             inputs,
             service_boundary_plans,
+            local_interface_tables,
             source_attribution,
             instructions: Vec::new(),
             relocations: Vec::new(),
@@ -1183,8 +1190,29 @@ impl<'a> FunctionEmitter<'a> {
             CallTargetIr::InterfaceMethod {
                 interface, slot, ..
             } => {
+                let table = super::admission::resolve_local_interface_table_for_call(
+                    self.unit,
+                    self.function,
+                    call,
+                    self.local_interface_tables,
+                )
+                .map_err(|error| {
+                    unsupported(&self.key, "interface call requirement", &error.to_string())
+                })?;
+                let methods = table
+                    .methods
+                    .iter()
+                    .into_iter()
+                    .map(|method| InterfaceRequirementMethod {
+                        slot: method.slot,
+                        method_abi_id: method.method_abi_id.clone(),
+                        signature: method.signature.clone(),
+                        effects: method.effects.clone(),
+                    })
+                    .collect::<Vec<_>>();
                 let relocation = BytecodeRelocation::InterfaceRequirementRef {
                     interface: interface.clone(),
+                    methods,
                 };
                 self.emit_pending_call(
                     expression,
@@ -2908,22 +2936,29 @@ impl<'a> FunctionEmitter<'a> {
                 "remote interface boxing lacks an exact service requirement slot in MIR",
             ));
         };
-        let mut methods = Vec::with_capacity(method_table.slots.len());
-        for slot in &method_table.slots {
-            let target = self
-                .unit
-                .function_by_executable_index(slot.target.executable_index)?;
-            let function_key =
-                super::inputs::canonical_function_key(&self.unit.module_path, &target.symbol)?;
-            methods.push(LocalInterfaceMethod {
-                slot: slot.slot,
-                method_name: slot.method_name.clone(),
-                method_abi_id: slot.method_abi_id.clone(),
-                signature: slot.signature.clone(),
-                function_key,
-                receiver_call_abi: slot.target.receiver_call_abi,
-            });
-        }
+        let facts = self
+            .local_interface_tables
+            .table(&method_table.interface, concrete_type)
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "interface box",
+                    "exact local interface table is absent",
+                )
+            })?;
+        let methods = facts
+            .methods
+            .iter()
+            .map(|method| LocalInterfaceMethod {
+                slot: method.slot,
+                method_name: method.method_name.clone(),
+                method_abi_id: method.method_abi_id.clone(),
+                signature: method.signature.clone(),
+                effects: method.effects.clone(),
+                function_key: method.function_key.clone(),
+                receiver_call_abi: method.receiver_call_abi,
+            })
+            .collect::<Vec<_>>();
         let relocation = BytecodeRelocation::LocalInterfaceRef {
             interface: LocalInterfaceRef {
                 interface: method_table.interface.clone(),
@@ -5242,6 +5277,7 @@ mod tests {
             .function_plans
             .get("main::boom")
             .expect("test function plans are present");
+        let local_interface_tables = LocalInterfaceFacts::empty();
         let emitter = FunctionEmitter::new(
             unit,
             function,
@@ -5250,6 +5286,7 @@ mod tests {
             &mut image,
             &inputs,
             &service_boundary_plans,
+            &local_interface_tables,
             SourceAttributionMode::AdmittedPhase1,
         )
         .expect("test emitter constructs");

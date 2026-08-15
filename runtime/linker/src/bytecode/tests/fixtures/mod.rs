@@ -72,6 +72,7 @@ pub(super) enum RootProgram {
     ServiceDependency,
     ServiceOperation,
     Interface,
+    LocalInterface,
     UnreachableInterface,
     Host,
     Intrinsic,
@@ -91,6 +92,7 @@ impl RootProgram {
         matches!(
             self,
             Self::Interface
+                | Self::LocalInterface
                 | Self::RecordShape
                 | Self::StreamNext
                 | Self::StreamNextLoop
@@ -124,6 +126,10 @@ impl Fixture {
 
     pub(super) fn interface() -> Self {
         Self::new(RootProgram::Interface, false)
+    }
+
+    pub(super) fn local_interface() -> Self {
+        Self::new(RootProgram::LocalInterface, false)
     }
 
     pub(super) fn unreachable_interface() -> Self {
