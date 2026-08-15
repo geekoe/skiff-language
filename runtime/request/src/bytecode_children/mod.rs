@@ -1,8 +1,11 @@
 //! X6 child mux for flat-scheduler bytecode children.
 //!
-//! Service is the first accepted child lane. Every other target remains
-//! fail-closed until its capability lane lands.
+//! Service and local interface are the accepted J2 child lanes. DB is
+//! registered as composition only until F6/K6 provide the VM DB child/effect
+//! vocabulary; remote interface, callback, task and actor remain fail-closed.
 
+mod db;
+mod interface;
 mod service;
 
 use std::sync::{
@@ -19,11 +22,35 @@ use skiff_runtime_scheduler::{
     BytecodeSchedulerError, ChildFinishError, ChildHeapCarrier, ChildHeapOwnerRegistration,
     OwnerCreationError, RequestResourceTable,
 };
-use skiff_runtime_vm::{ResumeOutcome, VmCompletion, VmFiber};
+use skiff_runtime_vm::{ChildTarget, ResumeOutcome, VmCompletion, VmFiber};
 
 use crate::{memory_ledger::MemoryLedgerError, vm_heap::RequestVmHeap, RequestMemoryLedger};
 
+pub use db::BytecodeDbChildComposition;
+pub(crate) use interface::execute_interface_child;
 pub(crate) use service::execute_service_child;
+
+/// Routing decision for one VM child target. This is the single X6-owned
+/// registration point for the flat child mux; capability lanes either register
+/// an executor here or remain explicitly disabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BytecodeChildLane {
+    Service,
+    Interface,
+    Disabled,
+}
+
+impl BytecodeChildLane {
+    pub(crate) fn for_target(target: ChildTarget) -> Self {
+        match target {
+            ChildTarget::Service(_) => Self::Service,
+            ChildTarget::Interface { .. } => Self::Interface,
+            ChildTarget::Actor(_) | ChildTarget::Callback(_) | ChildTarget::StreamNext => {
+                Self::Disabled
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BytecodeServiceChildError {
@@ -151,6 +178,9 @@ pub struct BytecodeRequestChildComposition {
     /// back into the caller. The host uses this to classify a successful unary
     /// service response as start/chunk/end instead of a bare unary end.
     pub unary_response_start: Arc<AtomicBool>,
+    /// D6R capability context registered by X6. It stays fail-closed until F6
+    /// emits a VM DB child/effect and K6 owns the transaction token.
+    pub db_child: BytecodeDbChildComposition,
 }
 
 impl Default for BytecodeRequestChildComposition {
@@ -162,6 +192,7 @@ impl Default for BytecodeRequestChildComposition {
             heap_limits: RequestHeapLimits::default(),
             throw_materializer: Arc::new(FailClosedServiceChildThrowMaterializer),
             unary_response_start: Arc::new(AtomicBool::new(false)),
+            db_child: BytecodeDbChildComposition::default(),
         }
     }
 }
@@ -236,4 +267,65 @@ pub(crate) fn service_operation_by_index(
         .service_operations()
         .get(position)
         .filter(|target| target.index() == index)
+}
+
+#[cfg(test)]
+mod tests {
+    use skiff_runtime_linked_bytecode::{
+        ActorMethodIndex, InterfaceTableIndex, SyntheticCallbackIndex,
+    };
+    use skiff_runtime_vm::ChildTarget;
+
+    use super::db::db_child_required_fact;
+    use super::*;
+
+    #[test]
+    fn child_lane_registers_service_and_interface_and_disables_remaining_targets() {
+        assert_eq!(
+            BytecodeChildLane::for_target(ChildTarget::Service(ServiceOperationIndex::new(0))),
+            BytecodeChildLane::Service
+        );
+        assert_eq!(
+            BytecodeChildLane::for_target(ChildTarget::Interface {
+                table: InterfaceTableIndex::new(0),
+                method_ordinal: 0,
+            }),
+            BytecodeChildLane::Interface
+        );
+        assert_eq!(
+            BytecodeChildLane::for_target(ChildTarget::Actor(ActorMethodIndex::new(0))),
+            BytecodeChildLane::Disabled
+        );
+        assert_eq!(
+            BytecodeChildLane::for_target(ChildTarget::Callback(SyntheticCallbackIndex::new(0))),
+            BytecodeChildLane::Disabled
+        );
+        assert_eq!(
+            BytecodeChildLane::for_target(ChildTarget::StreamNext),
+            BytecodeChildLane::Disabled
+        );
+    }
+
+    #[test]
+    fn db_child_registration_defaults_fail_closed() {
+        let composition = BytecodeRequestChildComposition::default();
+        assert!(!composition.db_child.is_available());
+        assert!(
+            db_child_required_fact().contains("DbObjectTargetId"),
+            "DB registration must require the exact target identity"
+        );
+    }
+
+    #[test]
+    fn unary_response_start_signal_precedes_end_framing() {
+        let composition = BytecodeRequestChildComposition::default();
+        assert!(
+            !composition.unary_response_started(),
+            "a request with no service child result must keep ordinary unary end framing"
+        );
+        composition
+            .unary_response_start
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert!(composition.unary_response_started());
+    }
 }

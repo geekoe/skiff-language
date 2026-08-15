@@ -53,8 +53,8 @@ use skiff_runtime_vm::{
 
 use crate::{
     bytecode_children::{
-        execute_service_child, BytecodeChildHeapFactory, BytecodeRequestChildComposition,
-        RequestChildHeapFactory,
+        execute_interface_child, execute_service_child, BytecodeChildHeapFactory,
+        BytecodeChildLane, BytecodeRequestChildComposition, RequestChildHeapFactory,
     },
     bytecode_host_effects::{
         BytecodeHttpFailure, BytecodeHttpRequest, BytecodeHttpResponse,
@@ -988,8 +988,8 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
         BytecodeChildHandoff<VmFiber>,
         BytecodePortFailure<skiff_runtime_vm::ChildInvocation, VmResumeToken>,
     > {
-        match invocation.target() {
-            skiff_runtime_vm::ChildTarget::Service(_) => execute_service_child(
+        match BytecodeChildLane::for_target(invocation.target()) {
+            BytecodeChildLane::Service => execute_service_child(
                 invocation,
                 heap,
                 budget,
@@ -999,7 +999,17 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                 self.observer.clone(),
                 vm_limits(),
             ),
-            _ => Err(BytecodePortFailure::input(
+            BytecodeChildLane::Interface => execute_interface_child(
+                invocation,
+                heap,
+                budget,
+                &self.child_composition,
+                Arc::clone(&self.child_heap_factory),
+                self.runtime.resources.clone(),
+                self.observer.clone(),
+                vm_limits(),
+            ),
+            BytecodeChildLane::Disabled => Err(BytecodePortFailure::input(
                 BytecodeSchedulerError::UnsupportedChild,
                 invocation,
             )),

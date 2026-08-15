@@ -364,6 +364,7 @@ pub(crate) fn bytecode_request_child_composition(
         heap_limits: limits,
         throw_materializer: Arc::new(FailClosedServiceChildThrowMaterializer),
         unary_response_start: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        db_child: Default::default(),
     }
 }
 
