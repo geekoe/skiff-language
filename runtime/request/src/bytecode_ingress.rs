@@ -1796,7 +1796,7 @@ fn exact_http_result_shape<'a>(
     signature: &LinkedNativeCallableSignature,
     resume: &VmResumeToken,
     stream: bool,
-) -> Result<&'a LinkedShapeEntry, BytecodeSchedulerError> {
+) -> Result<(&'a LinkedShapeEntry, TypeIndex), BytecodeSchedulerError> {
     let [root] = signature.result_types() else {
         return Err(BytecodeSchedulerError::Port(
             "typed HTTP result has no exact linked type".to_string(),
@@ -1869,7 +1869,7 @@ fn exact_http_result_shape<'a>(
                     .to_string(),
             ));
         }
-        return Ok(linked_shape);
+        return Ok((linked_shape, *resume_type));
     }
 
     if !matches!(
@@ -1912,7 +1912,7 @@ fn exact_http_result_shape<'a>(
                 .to_string(),
         ));
     }
-    Ok(linked_shape)
+    Ok((linked_shape, *resume_type))
 }
 
 fn http_result_layout(
@@ -1941,7 +1941,7 @@ fn http_result_layout(
         "typed HTTP result signature",
     )?;
     require_same_http_abi(result_abi, request_abi, "typed HTTP request/result")?;
-    let shape = exact_http_result_shape(image, signature, resume, stream)?;
+    let (shape, resume_type) = exact_http_result_shape(image, signature, resume, stream)?;
     validate_builtin_type(image, string_type, "string")?;
     validate_shape_fields(shape, &["body", "headers", "status"])?;
     let headers = shape_field_type(shape, "headers")?;
@@ -1956,7 +1956,12 @@ fn http_result_layout(
         validate_builtin_type(image, body, "bytes")?;
     }
     Ok(HttpResultLayout {
-        root_tag: scheduler_compact_type_tag(shape.nominal_type(), "typed HTTP result root")?,
+        // The materialization shape may legitimately retain a distinct
+        // duplicate TypeRef row with the same exact ABI and lifecycle plan.
+        // The value crosses this particular continuation, so its physical tag
+        // must be the resume site's exact result TypeIndex, not the shape or
+        // host-signature row.
+        root_tag: scheduler_compact_type_tag(resume_type, "typed HTTP resume result root")?,
         header_tag: scheduler_compact_type_tag(header, "typed HTTP result header")?,
         body_tag: scheduler_compact_type_tag(body, "typed HTTP result body")?,
         string_tag: scheduler_compact_type_tag(string_type, "typed HTTP result string")?,
