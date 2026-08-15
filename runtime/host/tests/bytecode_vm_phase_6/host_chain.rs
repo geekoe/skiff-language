@@ -30,7 +30,17 @@ async fn drive(capability: Capability, prefix: &str) -> HostResponse {
     let path = capability_path(capability);
     let mut host = RuntimeHostHarness::start(prefix, fixture).await;
     let request_id = format!("phase-6-{prefix}-{capability:?}");
-    host.send_http_request(&request_id, path, b"phase6").await;
+    let mode = if capability == Capability::Service {
+        "unary"
+    } else {
+        "serverStream"
+    };
+    let body = if capability == Capability::Service {
+        b"7".as_slice()
+    } else {
+        b"phase6".as_slice()
+    };
+    host.send_http_request(&request_id, path, mode, body).await;
     let response = host.response(&request_id).await;
     host.close().await;
     response
