@@ -13,6 +13,7 @@ use skiff_artifact_model::*;
 
 use super::*;
 
+mod canonical;
 mod eligibility;
 mod operation_bindings;
 

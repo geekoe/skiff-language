@@ -29,10 +29,35 @@ fn missing_forged_and_implementation_only_callable_ids_fail_closed() {
     make_callable_implementation_only(&mut fixture);
     assert!(matches!(
         fixture.project(),
-        Err(ProjectionError::NonPublicPackageCallable {
-            callable_id: rejected,
+        Err(ProjectionError::CanonicalOperationBinding {
+            public_callable: rejected,
+            ..
         }) if rejected == fixture.callable_id
     ));
+}
+
+#[test]
+fn canonical_operation_binding_is_accepted_and_emitted_canonical() {
+    let mut fixture = ProjectionFixture::new();
+    let public_callable = fixture.callable_id.clone();
+    let canonical = make_callable_canonical(&mut fixture, &public_callable);
+    for binding in &mut fixture.input.operation_bindings {
+        binding.package_callable_id = canonical.clone();
+    }
+
+    let deployment = fixture.project().unwrap();
+    assert!(deployment
+        .operation_bindings
+        .iter()
+        .all(|binding| binding.package_callable_id == canonical));
+    assert!(fixture
+        .implementation
+        .boundary_projections
+        .contains_key(&public_callable));
+    assert!(!fixture
+        .implementation
+        .boundary_projections
+        .contains_key(&canonical));
 }
 
 #[test]
@@ -174,6 +199,59 @@ fn make_callable_implementation_only(fixture: &mut ProjectionFixture) {
         binding.package_callable_id = internal_callable_id.clone();
     }
     fixture.refresh_implementation_ref();
+}
+
+fn make_callable_canonical(
+    fixture: &mut ProjectionFixture,
+    public_callable: &PackageCallableId,
+) -> PackageCallableId {
+    let signature = match fixture
+        .implementation
+        .package_local_abi
+        .public_symbols
+        .get("handle")
+        .unwrap()
+    {
+        PackageLocalAbiSymbol::Callable { signature, .. } => signature.clone(),
+        _ => unreachable!("fixture public callable must be a Callable symbol"),
+    };
+    let facts = fixture
+        .implementation
+        .callable_semantic_facts
+        .get(public_callable)
+        .unwrap()
+        .clone();
+    let mut target = fixture.implementation.callable_links[public_callable]
+        .target
+        .clone();
+    let canonical =
+        PackageCallableId::new("pkg-callable:example.provider:top-level:provider.main.handle");
+    target.callable_abi_id = canonical.to_string();
+    target.callable_kind = OperationCallableKind::InternalFunction;
+    fixture
+        .implementation
+        .package_local_abi
+        .implementation_symbols
+        .insert(
+            "provider.main.handle".to_string(),
+            PackageLocalAbiSymbol::Callable {
+                callable_id: canonical.clone(),
+                signature,
+            },
+        );
+    fixture.implementation.callable_links.insert(
+        canonical.clone(),
+        PackageCallableLinkFact {
+            callable_id: canonical.clone(),
+            target,
+        },
+    );
+    fixture
+        .implementation
+        .callable_semantic_facts
+        .insert(canonical.clone(), facts);
+    fixture.refresh_implementation_ref();
+    canonical
 }
 
 fn convert_callable_to_public_instance_method(fixture: &mut ProjectionFixture) {

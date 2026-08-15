@@ -155,14 +155,30 @@ mod tests {
             skiff_artifact_identity::package_artifact_ref(&project.package.artifact).unwrap()
         );
         assert_eq!(deployment.operation_bindings.len(), 1);
+        let public_callable = service_api.available["read"].clone();
+        let canonical_callable = match &project
+            .package
+            .artifact
+            .package_local_abi
+            .implementation_symbols["main.read"]
+        {
+            skiff_artifact_model::PackageLocalAbiSymbol::Callable { callable_id, .. } => {
+                callable_id.clone()
+            }
+            _ => panic!("main.read must be a canonical implementation callable"),
+        };
+        assert_ne!(
+            deployment.operation_bindings[0].package_callable_id,
+            public_callable
+        );
         assert_eq!(
             deployment.operation_bindings[0].package_callable_id,
-            service_api.available["read"]
+            canonical_callable
         );
         let operation_wire = serde_json::to_value(&deployment.operation_bindings[0]).unwrap();
         assert_eq!(
             operation_wire["packageCallableId"],
-            json!(service_api.available["read"].as_str())
+            json!(canonical_callable.as_str())
         );
         assert!(operation_wire.get("packagePublicPath").is_none());
         assert!(deployment.gateway_entries.is_empty());

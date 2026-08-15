@@ -3,6 +3,7 @@
 //! The trust boundary consumes exact callable identities from typed input and
 //! emits only typed, canonical artifact references and callable identities.
 
+mod canonical;
 mod error;
 mod operations;
 pub(crate) mod package_closure;
@@ -19,6 +20,9 @@ use skiff_artifact_model::{
     ServiceDeploymentInput, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
+pub use canonical::{
+    canonical_binding_public_callable, canonical_implementation_callable, CanonicalCallableError,
+};
 pub use error::{ProjectionError, ProjectionResult, RoutingViewError};
 
 /// Project one deployment from exact, already-typed contract and package artifacts.

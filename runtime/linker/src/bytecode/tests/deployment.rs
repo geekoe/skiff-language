@@ -48,7 +48,7 @@ use crate::bytecode::{
 use super::{
     fixtures::{
         corrupt_relocation_artifact, corrupt_relocation_index_artifact, ConstantProgram, Fixture,
-        CALLBACK_FUNCTION, HELPER_FUNCTION, ROOT_FUNCTION,
+        CALLBACK_FUNCTION, HELPER_FUNCTION, ROOT_CALLABLE, ROOT_FUNCTION,
     },
     generous_limits,
 };
@@ -99,6 +99,35 @@ fn production_execution_image_links_distinct_operation_entries_to_shared_image()
             contract_operation_id
         }) if contract_operation_id == unknown
     ));
+}
+
+#[test]
+fn production_atomic_image_accepts_canonical_provider_operation_binding() {
+    let fixture = Fixture::exact_local();
+    let hydrated = fixture.hydrate();
+    assert_eq!(
+        hydrated.deployment().operation_bindings[0]
+            .package_callable_id
+            .as_str(),
+        ROOT_CALLABLE
+    );
+
+    let image = Arc::new(
+        link_deployment_execution_image(hydrated, &super::generous_execution_limits()).unwrap(),
+    );
+    let root = image
+        .functions()
+        .iter()
+        .find(|function| function.key().artifact_function_key().as_str() == ROOT_FUNCTION)
+        .unwrap()
+        .index();
+    assert_eq!(
+        image
+            .operation_entry(&fixture.operation)
+            .unwrap()
+            .function(),
+        root
+    );
 }
 
 #[test]

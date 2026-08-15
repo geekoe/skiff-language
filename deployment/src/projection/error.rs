@@ -58,6 +58,14 @@ pub enum ProjectionError {
     UnknownPackageCallable { callable_id: PackageCallableId },
     #[error("package callable {callable_id} is not a public function or public-instance method")]
     NonPublicPackageCallable { callable_id: PackageCallableId },
+    #[error(
+        "deployment operation {operation_id} canonical callable binding failed for {public_callable}: {detail}"
+    )]
+    CanonicalOperationBinding {
+        operation_id: ContractOperationId,
+        public_callable: PackageCallableId,
+        detail: String,
+    },
     #[error("package callable {callable_id} has an inconsistent callable link: {message}")]
     CallableLinkMismatch {
         callable_id: PackageCallableId,

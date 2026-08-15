@@ -6,7 +6,10 @@ use skiff_artifact_model::{
     PackageLocalAbiSymbol, ServiceContract, ServiceDeploymentInput,
 };
 
-use super::{ProjectionError, ProjectionResult};
+use super::{
+    canonical_binding_public_callable, canonical_implementation_callable, ProjectionError,
+    ProjectionResult,
+};
 
 pub(super) struct ProjectedOperations<'a> {
     pub(super) bindings: Vec<DeploymentOperationBinding>,
@@ -51,12 +54,40 @@ pub(super) fn project_operation_bindings<'a>(
     let mut selected = Vec::with_capacity(input.operation_bindings.len());
     for binding in &input.operation_bindings {
         let callable_id = &binding.package_callable_id;
-        validate_public_callable(implementation, callable_id)?;
+        let descriptor = &contract.operations[&binding.contract_operation_id];
+        let public_callable_id = if public_callable_exists(implementation, callable_id) {
+            callable_id.clone()
+        } else if canonical_callable_exists(implementation, callable_id) {
+            let public_callable = canonical_binding_public_callable(
+                implementation,
+                &descriptor.stable_key,
+                callable_id,
+            )
+            .map_err(|error| canonical_binding_error(binding, callable_id, error.to_string()))?;
+            let expected = canonical_implementation_callable(implementation, &public_callable)
+                .map_err(|error| {
+                    canonical_binding_error(binding, callable_id, error.to_string())
+                })?;
+            if expected != *callable_id {
+                return Err(canonical_binding_error(
+                    binding,
+                    callable_id,
+                    format!(
+                        "binding canonical callable {callable_id} does not match public callable {public_callable} canonical owner {expected}"
+                    ),
+                ));
+            }
+            public_callable
+        } else {
+            validate_public_callable(implementation, callable_id)?;
+            unreachable!("unknown callable must be rejected by validate_public_callable");
+        };
+        validate_public_callable(implementation, &public_callable_id)?;
         let boundary = implementation
             .boundary_projections
-            .get(callable_id)
+            .get(&public_callable_id)
             .ok_or_else(|| ProjectionError::CallableFactsMismatch {
-                callable_id: callable_id.clone(),
+                callable_id: public_callable_id.clone(),
                 message: "boundary projection is absent".to_string(),
             })?;
         let (operation_contract, implementation_requirements) = match boundary {
@@ -67,33 +98,32 @@ pub(super) fn project_operation_bindings<'a>(
             BoundaryCallableProjection::Unavailable { reasons } => {
                 return Err(ProjectionError::BoundaryUnavailable {
                     operation_id: binding.contract_operation_id.clone(),
-                    callable_id: callable_id.clone(),
+                    callable_id: public_callable_id.clone(),
                     reasons: reasons.clone(),
                 });
             }
         };
-        let descriptor = &contract.operations[&binding.contract_operation_id];
         if operation_contract != &descriptor.contract {
             return Err(ProjectionError::OperationContractMismatch {
                 operation_id: binding.contract_operation_id.clone(),
-                callable_id: callable_id.clone(),
+                callable_id: public_callable_id.clone(),
             });
         }
         let facts = implementation
             .callable_semantic_facts
-            .get(callable_id)
+            .get(&public_callable_id)
             .ok_or_else(|| ProjectionError::CallableFactsMismatch {
-                callable_id: callable_id.clone(),
+                callable_id: public_callable_id.clone(),
                 message: "callable semantic facts are absent".to_string(),
             })?;
-        validate_callable_facts(callable_id, facts, implementation_requirements)?;
+        validate_callable_facts(&public_callable_id, facts, implementation_requirements)?;
 
         projected.push(DeploymentOperationBinding {
             contract_operation_id: binding.contract_operation_id.clone(),
-            package_callable_id: binding.package_callable_id.clone(),
+            package_callable_id: callable_id.clone(),
         });
         selected.push(SelectedCallable {
-            callable_id: callable_id.clone(),
+            callable_id: public_callable_id,
             requirements: implementation_requirements,
         });
     }
@@ -102,6 +132,56 @@ pub(super) fn project_operation_bindings<'a>(
         bindings: projected,
         selected,
     })
+}
+
+fn public_callable_exists(
+    implementation: &PackageArtifact,
+    callable_id: &PackageCallableId,
+) -> bool {
+    implementation
+        .package_local_abi
+        .public_symbols
+        .values()
+        .any(|symbol| {
+            matches!(
+                symbol,
+                PackageLocalAbiSymbol::Callable {
+                    callable_id: public_callable_id,
+                    ..
+                } if public_callable_id == callable_id
+            )
+        })
+}
+
+fn canonical_callable_exists(
+    implementation: &PackageArtifact,
+    callable_id: &PackageCallableId,
+) -> bool {
+    implementation
+        .package_local_abi
+        .implementation_symbols
+        .values()
+        .any(|symbol| {
+            matches!(
+                symbol,
+                PackageLocalAbiSymbol::Callable {
+                    callable_id: canonical_callable_id,
+                    ..
+                } if canonical_callable_id == callable_id
+            )
+        })
+}
+
+fn canonical_binding_error(
+    binding: &skiff_artifact_model::ServiceDeploymentOperationInput,
+    callable_id: &PackageCallableId,
+    detail: String,
+) -> ProjectionError {
+    ProjectionError::CanonicalOperationBinding {
+        operation_id: binding.contract_operation_id.clone(),
+        public_callable: callable_id.clone(),
+        detail,
+    }
 }
 
 fn validate_public_callable(

@@ -11,7 +11,8 @@ use skiff_artifact_model::{
 };
 use skiff_compiler_contract::ServiceApiProjection;
 use skiff_deployment::projection::{
-    project_service_deployment_with_validated_packages, ProjectionError,
+    canonical_implementation_callable, project_service_deployment_with_validated_packages,
+    ProjectionError,
 };
 use thiserror::Error;
 
@@ -66,6 +67,14 @@ impl GeneratedServicePackageAdmissions {
 pub enum GeneratedServiceDeploymentError {
     #[error("generated deployment input is inconsistent: {0}")]
     InvalidInput(String),
+    #[error(
+        "generated deployment operation {operation_id} cannot canonicalize public callable {public_callable}: {detail}"
+    )]
+    CanonicalOperationBinding {
+        operation_id: skiff_artifact_model::ContractOperationId,
+        public_callable: skiff_artifact_model::PackageCallableId,
+        detail: String,
+    },
     #[error("service manifest field {field} is invalid: {message}")]
     InvalidManifest {
         field: &'static str,
@@ -285,14 +294,22 @@ fn operation_bindings(
         .operations
         .iter()
         .map(|(operation_id, descriptor)| {
-            let callable_id = input
+            let public_callable = input
                 .service_api
                 .available
                 .get(&descriptor.stable_key)
                 .ok_or_else(|| invalid("automatic operation mapping is missing"))?;
+            let package_callable_id =
+                canonical_implementation_callable(input.implementation, public_callable).map_err(
+                    |error| GeneratedServiceDeploymentError::CanonicalOperationBinding {
+                        operation_id: operation_id.clone(),
+                        public_callable: public_callable.clone(),
+                        detail: error.to_string(),
+                    },
+                )?;
             Ok(ServiceDeploymentOperationInput {
                 contract_operation_id: operation_id.clone(),
-                package_callable_id: callable_id.clone(),
+                package_callable_id,
             })
         })
         .collect()
