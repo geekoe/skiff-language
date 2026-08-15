@@ -10,12 +10,12 @@ use skiff_artifact_model::{
     ContractTypeRef, FrameLayout, FrozenConstantGraph, FunctionTypeParamIr, HostEffectReference,
     HostEffectSignature, InstructionSourceSite, InterfaceMethodSlotSignatureIr,
     InterfaceRequirementMethod, IntrinsicReference, LocalInterfaceMethod, LocalInterfaceRef,
-    NativeTarget, PackageCallableId, PackageExecutableCoordinate, ParameterSlotDecl,
-    ReceiverCallAbi, RelocatableBytecodeFunction, ResourceDropPlan, ResumeDescriptor,
-    ResumeErrorMode, ServiceCallBoundaryFacts, ServiceCallRef, SourceMapEntry, SourcePosition,
-    SourceSpanRef, StatementAttributionId, StatementEntry, SyntheticInstructionSiteReason,
-    TypeRefIr, ValueDropPlan, ValueProvenance, ValueTransferPlan, BYTECODE_ISA_VERSION,
-    BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    NativeTarget, PackageCallableId, PackageExecutableCoordinate, PackageRefIr, PackageSymbolRef,
+    ParameterSlotDecl, ReceiverCallAbi, RelocatableBytecodeFunction, ResourceDropPlan,
+    ResumeDescriptor, ResumeErrorMode, ServiceCallBoundaryFacts, ServiceCallRef, SourceMapEntry,
+    SourcePosition, SourceSpanRef, StatementAttributionId, StatementEntry,
+    SyntheticInstructionSiteReason, TypeRefIr, ValueDropPlan, ValueProvenance, ValueTransferPlan,
+    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 
 use super::{
@@ -699,10 +699,13 @@ fn root_body(
 }
 
 pub(super) fn interface_identity() -> String {
-    let identity = TypeRefIr::ServiceSymbol {
-        symbol: skiff_artifact_model::ServiceSymbolRef {
-            module_path: MODULE.to_string(),
-            symbol: "Reader".to_string(),
+    let identity = TypeRefIr::PackageSymbol {
+        symbol: PackageSymbolRef {
+            package: PackageRefIr::PackageId {
+                package_id: "example.bytecode-link".to_string(),
+            },
+            symbol_path: format!("{MODULE}.Reader"),
+            abi_expectation: None,
         },
     };
     String::from_utf8(skiff_canonical_json::canonical_json_bytes(&identity).unwrap()).unwrap()

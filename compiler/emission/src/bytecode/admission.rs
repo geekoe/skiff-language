@@ -131,6 +131,124 @@ impl LocalInterfaceFacts {
             .find(|table| &table.interface == interface && &table.concrete_type == concrete_type)
     }
 
+    pub(crate) fn method_for_executable(
+        &self,
+        executable_index: u32,
+    ) -> Option<&LocalInterfaceMethodFact> {
+        self.tables
+            .iter()
+            .flat_map(|table| table.methods.iter())
+            .find(|method| method.executable_index == executable_index)
+    }
+
+    pub(crate) fn concrete_type(&self, ty: &TypeRefIr) -> bool {
+        self.tables.iter().any(|table| table.concrete_type == *ty)
+    }
+
+    fn method_for_call<'a>(
+        &'a self,
+        unit: &MirUnit,
+        function: &MirFunction,
+        call: &CallIr,
+    ) -> Option<&'a LocalInterfaceMethodFact> {
+        let CallTargetIr::InterfaceMethod {
+            interface,
+            method_abi_id,
+            slot,
+        } = &call.target
+        else {
+            return None;
+        };
+        let receiver = call.args.first()?;
+        let concrete_type =
+            local_interface_receiver_concrete_type(unit, function, *receiver).ok()?;
+        let table = self.table(interface, &concrete_type)?;
+        table
+            .methods
+            .iter()
+            .find(|method| method.slot == *slot && &method.method_abi_id == method_abi_id)
+    }
+
+    pub(crate) fn exact_call_result(
+        &self,
+        unit: &MirUnit,
+        function: &MirFunction,
+        expression_index: u32,
+        expected: &TypeRefIr,
+    ) -> bool {
+        let Ok(expression) = function.expression(ExprRefIr {
+            expression: expression_index,
+        }) else {
+            return false;
+        };
+        let ExprIr::Call { call } = &expression.expression else {
+            return false;
+        };
+        self.method_for_call(unit, function, call)
+            .is_some_and(|method| &method.signature.return_type == expected)
+    }
+
+    pub(crate) fn exact_concrete_construct_value(
+        &self,
+        function: &MirFunction,
+        expression_index: u32,
+        expected: &TypeRefIr,
+    ) -> bool {
+        if !matches!(
+            expected,
+            TypeRefIr::Builtin { name, args } if name == "string" && args.is_empty()
+        ) && !matches!(
+            expected,
+            TypeRefIr::Literal {
+                value: LiteralIr::String { .. }
+            }
+        ) {
+            return false;
+        }
+        function.expressions.iter().any(|expression| {
+            let ExprIr::Construct { type_ref, fields } = &expression.expression else {
+                return false;
+            };
+            self.concrete_type(type_ref)
+                && fields
+                    .values()
+                    .any(|field| field.expression == expression_index)
+        })
+    }
+
+    pub(crate) fn exact_local_interface_string_length(
+        &self,
+        unit: &MirUnit,
+        function: &MirFunction,
+        call: &CallIr,
+    ) -> bool {
+        let CallTargetIr::ReceiverBuiltin { op } = &call.target else {
+            return false;
+        };
+        if op.canonical_key != "receiver:string.length@1" || call.args.len() != 1 {
+            return false;
+        }
+        let Ok(receiver) = function.expression(call.args[0]) else {
+            return false;
+        };
+        if receiver.ty != TypeRefIr::builtin("string") {
+            return false;
+        }
+        self.method_for_executable(function.executable_index)
+            .is_some()
+            || self.exact_call_result(
+                unit,
+                function,
+                receiver.index,
+                &TypeRefIr::builtin("string"),
+            )
+            || self.exact_concrete_construct_value(
+                function,
+                receiver.index,
+                &TypeRefIr::builtin("string"),
+            )
+    }
+
     fn tables_for_interface(
         &self,
         interface: &InterfaceInstantiationRef,
@@ -804,15 +922,27 @@ fn admit_function(
             ));
         }
     } else if !server_stream.admits_closure_carrier(&function.return_type) {
-        admit_type_with_local_facts(
-            units,
-            unit,
-            function_key,
-            &function.return_type,
-            true,
-            "return type",
-            local_interface_tables,
-        )?;
+        if interface_impl {
+            admit_type_with_exact_local_interface_face(
+                units,
+                unit,
+                function_key,
+                &function.return_type,
+                true,
+                "return type",
+                local_interface_tables,
+            )?;
+        } else {
+            admit_type_with_local_facts(
+                units,
+                unit,
+                function_key,
+                &function.return_type,
+                true,
+                "return type",
+                local_interface_tables,
+            )?;
+        }
     }
     let mut parameter_slots = BTreeSet::new();
     let parameter_ordinal_offset = if function.receiver.is_some() {
@@ -855,6 +985,7 @@ fn admit_function(
                 &format!("parameter {parameter_index} type"),
                 host_effects.slot_authorities(parameter.slot),
                 local_interface_tables,
+                interface_impl,
             )?;
         }
         if usize::try_from(parameter.slot).ok() != Some(parameter_index + parameter_ordinal_offset)
@@ -919,6 +1050,7 @@ fn admit_function(
                 &format!("slot {} type", slot.slot),
                 host_effects.slot_authorities(slot.slot),
                 local_interface_tables,
+                interface_impl,
             )?;
         }
     }
@@ -1575,6 +1707,25 @@ fn admit_expression_with_host_effects(
     local_interface_tables: &LocalInterfaceFacts,
 ) -> Result<(), BytecodeEmissionError> {
     let registry_authorities = host_effects.expression_authorities(expression.index);
+    let local_interface_exact_face = local_interface_tables
+        .method_for_executable(function.executable_index)
+        .is_some()
+        || local_interface_tables.exact_call_result(
+            unit,
+            function,
+            expression.index,
+            &expression.ty,
+        )
+        || local_interface_tables.exact_concrete_construct_value(
+            function,
+            expression.index,
+            &expression.ty,
+        )
+        || matches!(
+            &expression.expression,
+            ExprIr::Construct { type_ref, .. }
+                if local_interface_tables.concrete_type(type_ref)
+        );
     if let ExprIr::Call { call } = &expression.expression {
         admit_call(
             unit,
@@ -1600,6 +1751,7 @@ fn admit_expression_with_host_effects(
                 &format!("expression {} construct type", expression.index),
                 registry_authorities,
                 local_interface_tables,
+                local_interface_exact_face || local_interface_tables.concrete_type(type_ref),
             )?;
         }
     }
@@ -1626,6 +1778,7 @@ fn admit_expression_with_host_effects(
             &format!("expression {} type", expression.index),
             discriminator_context,
             local_interface_tables,
+            local_interface_exact_face,
         )?;
     }
     if expression.writable.is_some() {
@@ -1674,6 +1827,7 @@ fn admit_expression_with_host_effects(
             {
                 None
             }
+            LiteralIr::String { .. } if local_interface_exact_face => None,
             LiteralIr::String { .. } if server_stream.admits_scalar_carrier(&expression.ty) => None,
             LiteralIr::String { .. } => Some(Phase1UnsupportedCapability::ValueShape),
         },
@@ -1929,7 +2083,9 @@ fn admit_call(
         }
         CallTargetIr::ReceiverBuiltin { .. }
             if server_stream.admits_receiver_call(expression.index)
-                || server_stream.admits_intrinsic_call(function, expression.index) =>
+                || server_stream.admits_intrinsic_call(function, expression.index)
+                || local_interface_tables
+                    .exact_local_interface_string_length(unit, function, call) =>
         {
             return Ok(());
         }
@@ -2407,6 +2563,29 @@ fn admit_type_with_local_facts(
         location,
         false,
         local_interface_tables,
+        false,
+    )
+}
+
+fn admit_type_with_exact_local_interface_face(
+    units: &[MirUnit],
+    unit: &MirUnit,
+    function_key: &str,
+    ty: &TypeRefIr,
+    allow_void: bool,
+    location: &str,
+    local_interface_tables: &LocalInterfaceFacts,
+) -> Result<(), BytecodeEmissionError> {
+    admit_type_with_discriminator_flag(
+        units,
+        unit,
+        function_key,
+        ty,
+        allow_void,
+        location,
+        false,
+        local_interface_tables,
+        true,
     )
 }
 
@@ -2419,19 +2598,32 @@ fn admit_type_with_registry_authority(
     location: &str,
     authorities: &[RegistryValueAuthority],
     local_interface_tables: &LocalInterfaceFacts,
+    exact_local_interface_face: bool,
 ) -> Result<(), BytecodeEmissionError> {
     if authorities.iter().any(|authority| authority.admits(ty)) {
         return Ok(());
     }
-    admit_type_with_local_facts(
-        units,
-        unit,
-        function_key,
-        ty,
-        allow_void,
-        location,
-        local_interface_tables,
-    )
+    if exact_local_interface_face {
+        admit_type_with_exact_local_interface_face(
+            units,
+            unit,
+            function_key,
+            ty,
+            allow_void,
+            location,
+            local_interface_tables,
+        )
+    } else {
+        admit_type_with_local_facts(
+            units,
+            unit,
+            function_key,
+            ty,
+            allow_void,
+            location,
+            local_interface_tables,
+        )
+    }
 }
 
 fn admit_type_with_discriminator_flag(
@@ -2443,6 +2635,7 @@ fn admit_type_with_discriminator_flag(
     location: &str,
     allow_discriminator_literal: bool,
     local_interface_tables: &LocalInterfaceFacts,
+    exact_local_interface_face: bool,
 ) -> Result<(), BytecodeEmissionError> {
     let mut context = TypeAdmissionContext {
         units,
@@ -2450,6 +2643,7 @@ fn admit_type_with_discriminator_flag(
         nominal_chain: Vec::new(),
         allow_discriminator_literal,
         local_interface_tables,
+        exact_local_interface_face,
     };
     admit_type_nested(&mut context, unit, ty, allow_void, location, false)
 }
@@ -2465,6 +2659,7 @@ struct TypeAdmissionContext<'a> {
     nominal_chain: Vec<(String, u32)>,
     allow_discriminator_literal: bool,
     local_interface_tables: &'a LocalInterfaceFacts,
+    exact_local_interface_face: bool,
 }
 
 fn admit_type_nested(
@@ -2554,7 +2749,12 @@ fn admit_type_nested(
         // rejected Phase 2 value-shape face.
         TypeRefIr::Literal {
             value: LiteralIr::String { .. },
-        } if context.allow_discriminator_literal => Ok(()),
+        } if context.allow_discriminator_literal || context.exact_local_interface_face => Ok(()),
+        TypeRefIr::Builtin { name, args }
+            if name == "string" && args.is_empty() && context.exact_local_interface_face =>
+        {
+            Ok(())
+        }
         TypeRefIr::AnyInterface { interface } => {
             if context
                 .local_interface_tables

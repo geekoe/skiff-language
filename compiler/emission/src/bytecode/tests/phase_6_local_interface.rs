@@ -55,6 +55,27 @@ function run(seed: number) -> number {
 }
 "#;
 
+const STRING_SOURCE: &str = r#"
+interface Reader {
+  function label(self: Self) -> string
+}
+
+type Impl implements Reader {
+  value: string,
+}
+
+impl Impl {
+  function label() -> string {
+    return self.value
+  }
+}
+
+function run(seed: number) -> number {
+  final reader = Impl { value: "interface-ok" } as Reader
+  return reader.label().length()
+}
+"#;
+
 fn lower(source: &str) -> skiff_compiler_lowering::LoweredPackage {
     let platform_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     lower_single_source_program(SingleSourceProgram {
@@ -125,6 +146,53 @@ fn local_interface_admission_emits_exact_local_and_requirement_tables() {
                 == local_methods[1].signature.params[0].ty),
         "each call requirement retains the exact concrete local table signature"
     );
+}
+
+#[test]
+fn local_interface_impl_emits_exact_string_return_and_receiver_field_layout() {
+    let lowered = lower(STRING_SOURCE);
+    let admitted = admit_phase_1_bytecode_mir(lowered.mir_units())
+        .expect("exact local interface string facts pass admission");
+    let facts = admitted
+        .machine_carriers()
+        .function("main::Impl.label")
+        .expect("local interface implementation carrier row is present");
+    assert_eq!(
+        facts
+            .result()
+            .expect("local interface implementation has a non-void result")
+            .ty(),
+        &TypeRefIr::builtin("string")
+    );
+    let receiver_shape = facts
+        .slot_shape(0)
+        .expect("local interface receiver slot has an analyzed field layout");
+    assert_eq!(
+        receiver_shape.owner(),
+        &TypeRefIr::LocalType { type_index: 0 }
+    );
+    assert_eq!(
+        receiver_shape
+            .fields()
+            .get("value")
+            .expect("receiver field layout carries `value`")
+            .ty(),
+        &TypeRefIr::builtin("string")
+    );
+
+    let plans = derive_test_bytecode_value_transfer_plans(lowered.mir_units())
+        .expect("local interface string plans derive exactly");
+    let bundles = lowered
+        .file_ir_units()
+        .iter()
+        .map(|unit| {
+            ConstEvaluator::new(Bounds::default())
+                .evaluate_unit(unit)
+                .expect("local interface string constants evaluate")
+        })
+        .collect::<Vec<_>>();
+    emit_bytecode_artifact(&admitted, &bundles, &plans)
+        .expect("exact local interface string shapes emit");
 }
 
 #[test]

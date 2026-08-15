@@ -3,7 +3,7 @@ use std::{
     sync::Arc,
 };
 
-use skiff_artifact_identity::ValidatedBytecodeArtifact;
+use skiff_artifact_identity::{type_ref_abi_key, ValidatedBytecodeArtifact};
 use skiff_artifact_model::{
     derive_bytecode_statement_manifest_identity, host_effect_registry_identity,
     intrinsic_registry_identity, native_value_lifecycle_registry_identity,
@@ -807,11 +807,17 @@ fn package_symbol_for_export(
     reference: &PackageArtifactRef,
     export: &skiff_artifact_model::TypeExport,
 ) -> PackageSymbolRef {
+    let module_prefix = format!("{}.", export.file.module_path);
+    let symbol_path = if export.symbol.starts_with(&module_prefix) {
+        export.symbol.clone()
+    } else {
+        format!("{}{}", module_prefix, export.symbol)
+    };
     PackageSymbolRef {
         package: PackageRefIr::PackageId {
             package_id: reference.package_id.clone(),
         },
-        symbol_path: format!("{}.{}", export.file.module_path, export.symbol),
+        symbol_path,
         abi_expectation: None,
     }
 }
@@ -1844,11 +1850,17 @@ fn validate_local_interface_relocation(
             );
         }
     }
+    let normalized_interface = normalize_interface_ref(package, &interface.interface)?;
+    let normalized_receiver = normalize_path_free_type(
+        package.reference(),
+        package.artifact(),
+        &interface.concrete_type,
+    )?;
     let mut matches = package
         .artifact()
         .local_interface_conformances
         .iter()
-        .filter(|row| row.interface == interface.interface)
+        .filter(|row| row.interface == normalized_interface)
         .filter(|row| {
             row.methods.len() == interface.methods.len()
                 && row.methods.iter().enumerate().all(|(slot, callable)| {
@@ -1859,7 +1871,7 @@ fn validate_local_interface_relocation(
                     })
                 })
         })
-        .filter(|row| !row.type_parameters.is_empty() || row.receiver == interface.concrete_type);
+        .filter(|row| !row.type_parameters.is_empty() || row.receiver == normalized_receiver);
     if matches.next().is_none() || matches.next().is_some() {
         return manifest_error(
             package.reference(),
@@ -1871,6 +1883,29 @@ fn validate_local_interface_relocation(
         );
     }
     Ok(())
+}
+
+fn normalize_interface_ref(
+    package: &HydratedBytecodePackage,
+    interface: &InterfaceInstantiationRef,
+) -> Result<InterfaceInstantiationRef, DeploymentBytecodeHydrationError> {
+    let identity =
+        serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id).map_err(|error| {
+            DeploymentBytecodeHydrationError::ManifestMismatch {
+                package: Box::new(package.reference().clone()),
+                kind: DeploymentBytecodeManifestKind::InterfaceConformance,
+                detail: format!("local interface identity is not a canonical TypeRefIr: {error}"),
+            }
+        })?;
+    let identity = normalize_path_free_type(package.reference(), package.artifact(), &identity)?;
+    Ok(InterfaceInstantiationRef {
+        interface_abi_id: type_ref_abi_key(&identity),
+        canonical_type_args: interface
+            .canonical_type_args
+            .iter()
+            .map(|ty| normalize_path_free_type(package.reference(), package.artifact(), ty))
+            .collect::<Result<Vec<_>, _>>()?,
+    })
 }
 
 fn validate_remote_interface(

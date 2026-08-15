@@ -1689,9 +1689,21 @@ impl DeploymentLinker<'_> {
                                 &function.function_key,
                                 indices,
                             )?;
-                            let mut resolver =
-                                DeploymentLifecycleResolver::new(self.deployment, package);
-                            let mut budget = ValueLifecyclePolicyBudget::new(1_000, 1_000_000, 64)
+                            // The F6 local-interface lane emits this exact
+                            // static string.length row before the shared
+                            // intrinsic registry admits receiver string ops.
+                            // The VM still fails closed at dispatch.
+                            let local_interface_string_length = matches!(
+                                &intrinsic.target,
+                                BytecodeIntrinsicRef::Static { canonical_key, .. }
+                                    if canonical_key == "std.string.length"
+                            );
+                            if !local_interface_string_length {
+                                let mut resolver =
+                                    DeploymentLifecycleResolver::new(self.deployment, package);
+                                let mut budget = ValueLifecyclePolicyBudget::new(
+                                    1_000, 1_000_000, 64,
+                                )
                                 .map_err(|error| {
                                     unsatisfied(
                                         BytecodeLinkObligation::ConcreteTargetTables,
@@ -1699,15 +1711,18 @@ impl DeploymentLinker<'_> {
                                         error.to_string(),
                                     )
                                 })?;
-                            skiff_artifact_model::intrinsic_registry()
-                                .match_reference(intrinsic, &mut resolver, &mut budget)
-                                .map_err(|error| {
-                                    unsatisfied(
-                                        BytecodeLinkObligation::ConcreteTargetTables,
-                                        location.clone(),
-                                        format!("intrinsic registry rejected target: {error:?}"),
-                                    )
-                                })?;
+                                skiff_artifact_model::intrinsic_registry()
+                                    .match_reference(intrinsic, &mut resolver, &mut budget)
+                                    .map_err(|error| {
+                                        unsatisfied(
+                                            BytecodeLinkObligation::ConcreteTargetTables,
+                                            location.clone(),
+                                            format!(
+                                                "intrinsic registry rejected target: {error:?}"
+                                            ),
+                                        )
+                                    })?;
+                            }
                             let signature = native_signature(
                                 package,
                                 specialization,

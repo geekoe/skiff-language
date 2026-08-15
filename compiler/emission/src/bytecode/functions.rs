@@ -3,11 +3,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use skiff_artifact_model::{
     bytecode::encode_instruction, bytecode::limits, contract_for_opcode, descriptor_for_opcode,
     AssignTargetIr, BoxSourceIr, BytecodeFunctionOrigin, BytecodeIntrinsicRef, BytecodeRelocation,
-    BytecodeSpecialization, CallLoanLayout, CallTargetIr, CatchMatcher, ExceptionRegion, ExprIr,
-    ExprRefIr, FrameLayout, HostEffectReference, HostEffectSignature, InstructionSourceSite,
-    InterfaceRequirementMethod, IntrinsicReference, LiteralIr, LocalInterfaceMethod,
-    LocalInterfaceRef, NativeTarget, Opcode, ParamModeIr, ParameterSlotDecl, PatternIr,
-    PrivilegedAffineFieldAccess, RelocatableBytecodeFunction, RemoteInterfaceMethod,
+    BytecodeSpecialization, CallLoanLayout, CallTargetIr, CallableMayEffects, CatchMatcher,
+    ExceptionRegion, ExprIr, ExprRefIr, FrameLayout, FunctionTypeParamIr, HostEffectReference,
+    HostEffectSignature, InstructionSourceSite, InterfaceInstantiationRef,
+    InterfaceMethodSlotSignatureIr, InterfaceRequirementMethod, IntrinsicReference, LiteralIr,
+    LocalInterfaceMethod, LocalInterfaceRef, NativeTarget, Opcode, ParamModeIr, ParameterSlotDecl,
+    PatternIr, PrivilegedAffineFieldAccess, RelocatableBytecodeFunction, RemoteInterfaceMethod,
     RemoteInterfaceRef, ResumeDescriptor, ResumeErrorMode, ResumeResultMaterialization,
     ServiceBoundaryPlan, ServiceCallRef, SourceMapEntry, StatementAttributionId, StatementEntry,
     SyntheticInstructionSiteReason, TrapFailureKind, TypeRefIr, ValueDropPlan, ValueTransferPlan,
@@ -26,7 +27,7 @@ use super::{
         FunctionMachineCarrierFacts, MachineDefaultValueFact, MachineDefaultValueKind,
         MachineShapeCarrierFact, MachineWritableStepFact,
     },
-    constants::ConstantImage,
+    constants::{qualify_local_types, ConstantImage},
     inputs::ValidatedEmissionInputs,
     BytecodeEmissionError, FunctionValueTransferPlans,
 };
@@ -830,11 +831,12 @@ impl<'a> FunctionEmitter<'a> {
                         return Ok(());
                     }
                     self.emit_expression(*value)?;
-                    if self
-                        .instructions
-                        .last()
-                        .is_some_and(|instruction| instruction.opcode == Opcode::Trap)
-                    {
+                    if self.instructions.last().is_some_and(|instruction| {
+                        matches!(
+                            instruction.opcode,
+                            Opcode::Trap | Opcode::Throw | Opcode::Rethrow
+                        )
+                    }) {
                         return Ok(());
                     }
                 }
@@ -1206,12 +1208,18 @@ impl<'a> FunctionEmitter<'a> {
                     .map(|method| InterfaceRequirementMethod {
                         slot: method.slot,
                         method_abi_id: method.method_abi_id.clone(),
-                        signature: method.signature.clone(),
+                        signature: qualified_interface_signature(
+                            self.unit.module_path.as_str(),
+                            &method.signature,
+                        ),
                         effects: method.effects.clone(),
                     })
                     .collect::<Vec<_>>();
                 let relocation = BytecodeRelocation::InterfaceRequirementRef {
-                    interface: interface.clone(),
+                    interface: qualified_interface_instantiation(
+                        self.unit.module_path.as_str(),
+                        interface,
+                    ),
                     methods,
                 };
                 self.emit_pending_call(
@@ -2031,6 +2039,51 @@ impl<'a> FunctionEmitter<'a> {
                 skiff_artifact_model::BuiltinReceiverMethod::Push,
             ) => {
                 self.emit_array_push(call, expression)?;
+                return Ok(());
+            }
+            (
+                skiff_artifact_model::BuiltinReceiverRoot::StringText,
+                skiff_artifact_model::BuiltinReceiverMethod::Length,
+            ) => {
+                if call.args.len() != 1 {
+                    return Err(unsupported(
+                        &self.key,
+                        "receiver builtin",
+                        &format!(
+                            "`{}` requires exactly one receiver argument, found {}",
+                            op.canonical_key,
+                            call.args.len()
+                        ),
+                    ));
+                }
+                let effects = CallableMayEffects {
+                    escapes_caller_value: false,
+                    requires_same_heap_identity: false,
+                    invokes_unknown_target: false,
+                    may_pending: false,
+                    pending_effect_categories: Vec::new(),
+                    inout_path_effects: Vec::new(),
+                };
+                // Exact local interface string results carry their compiler
+                // signature as a static intrinsic row. VM dispatch still
+                // fails closed until the kernel lane lands string length.
+                let signature = self.call_signature(call, expression, effects)?;
+                let relocation = BytecodeRelocation::IntrinsicRef {
+                    intrinsic: IntrinsicReference {
+                        target: BytecodeIntrinsicRef::Static {
+                            canonical_key: "std.string.length".to_string(),
+                            signature_version: 1,
+                        },
+                        signature,
+                    },
+                };
+                self.emit_pending_call(
+                    expression,
+                    Opcode::InvokeIntrinsic,
+                    relocation,
+                    None,
+                    false,
+                )?;
                 return Ok(());
             }
             _ => {}
@@ -2953,7 +3006,10 @@ impl<'a> FunctionEmitter<'a> {
                 slot: method.slot,
                 method_name: method.method_name.clone(),
                 method_abi_id: method.method_abi_id.clone(),
-                signature: method.signature.clone(),
+                signature: qualified_interface_signature(
+                    self.unit.module_path.as_str(),
+                    &method.signature,
+                ),
                 effects: method.effects.clone(),
                 function_key: method.function_key.clone(),
                 receiver_call_abi: method.receiver_call_abi,
@@ -2961,8 +3017,11 @@ impl<'a> FunctionEmitter<'a> {
             .collect::<Vec<_>>();
         let relocation = BytecodeRelocation::LocalInterfaceRef {
             interface: LocalInterfaceRef {
-                interface: method_table.interface.clone(),
-                concrete_type: concrete_type.clone(),
+                interface: qualified_interface_instantiation(
+                    self.unit.module_path.as_str(),
+                    &method_table.interface,
+                ),
+                concrete_type: qualify_local_types(self.unit.module_path.as_str(), concrete_type),
                 methods,
             },
         };
@@ -4901,6 +4960,37 @@ fn machine_shape_fields(shape: &MachineShapeCarrierFact) -> BTreeMap<String, Typ
         .iter()
         .map(|(name, carrier)| (name.clone(), carrier.ty().clone()))
         .collect()
+}
+
+fn qualified_interface_instantiation(
+    module_path: &str,
+    interface: &InterfaceInstantiationRef,
+) -> InterfaceInstantiationRef {
+    InterfaceInstantiationRef {
+        interface_abi_id: interface.interface_abi_id.clone(),
+        canonical_type_args: interface
+            .canonical_type_args
+            .iter()
+            .map(|ty| qualify_local_types(module_path, ty))
+            .collect(),
+    }
+}
+
+fn qualified_interface_signature(
+    module_path: &str,
+    signature: &InterfaceMethodSlotSignatureIr,
+) -> InterfaceMethodSlotSignatureIr {
+    InterfaceMethodSlotSignatureIr {
+        params: signature
+            .params
+            .iter()
+            .map(|parameter| FunctionTypeParamIr {
+                name: parameter.name.clone(),
+                ty: qualify_local_types(module_path, &parameter.ty),
+            })
+            .collect(),
+        return_type: qualify_local_types(module_path, &signature.return_type),
+    }
 }
 
 fn stream_item_type_matches(actual: &TypeRefIr, expected: &TypeRefIr) -> bool {

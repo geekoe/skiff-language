@@ -84,13 +84,23 @@ impl<'a> Analyzer<'a> {
             }
         }
         for function_index in 0..self.functions.len() {
-            if locally_called.contains(&function_index) {
-                continue;
-            }
             let (unit_index, mir_index) = (
                 self.functions[function_index].unit,
                 self.functions[function_index].function,
             );
+            let receiver = self.units[unit_index].functions[mir_index].receiver.clone();
+            if let Some(receiver) = receiver {
+                let node = self.slot_node(function_index, receiver.slot)?;
+                self.assign(
+                    node,
+                    receiver.ty.clone(),
+                    "local interface receiver boundary",
+                )?;
+                self.assign_boundary_shape(function_index, node, &receiver.ty)?;
+            }
+            if locally_called.contains(&function_index) {
+                continue;
+            }
             let parameters = self.units[unit_index].functions[mir_index]
                 .params
                 .iter()
@@ -507,8 +517,15 @@ impl<'a> Analyzer<'a> {
                         let Some(result) = self.functions[function_index].result else {
                             continue;
                         };
-                        let value = self.expression_node(function_index, value.expression)?;
-                        self.equal(result, value, "Return value");
+                        let value_ref = *value;
+                        let value = self.expression_node(function_index, value_ref.expression)?;
+                        let value_type = self.units[unit_index].functions[mir_index]
+                            .expression(value_ref)?
+                            .ty
+                            .clone();
+                        if !is_never_type(&value_type) {
+                            self.equal(result, value, "Return value");
+                        }
                     }
                     MirStmtKind::ForIn {
                         iterable, facts, ..
@@ -1158,4 +1175,11 @@ fn exact_array_element(ty: &TypeRefIr) -> Option<&TypeRefIr> {
         TypeRefIr::Builtin { name, args } if name == "Array" && args.len() == 1 => args.first(),
         _ => None,
     }
+}
+
+fn is_never_type(ty: &TypeRefIr) -> bool {
+    matches!(
+        ty,
+        TypeRefIr::Builtin { name, args } if name == "never" && args.is_empty()
+    )
 }
