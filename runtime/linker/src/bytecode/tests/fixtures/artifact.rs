@@ -436,7 +436,7 @@ fn root_statement_entries(program: RootProgram) -> Vec<StatementEntry> {
             site: source_site(2),
         },
         StatementEntry {
-            pc: 4,
+            pc: if program == RootProgram::ServiceOperation { 5 } else { 4 },
             sequence_ordinal: 0,
             attribution_id: StatementAttributionId::Generated { ordinal: 0 },
             site: InstructionSourceSite::Synthetic {

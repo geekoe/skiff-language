@@ -919,7 +919,7 @@ mod tests {
         };
         let (restored, resume, outcome) = resume.into_parts();
         assert_eq!(resume, "resume-root");
-        assert_eq!(outcome, ());
+        assert!(matches!(outcome, ()));
         assert_eq!(restored.active(), &TestUnit("root"));
         assert_eq!(restored.active_heap().unwrap().domain().get(), 1);
     }
