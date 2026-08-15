@@ -82,9 +82,10 @@ fn test_child_heap() -> skiff_runtime_scheduler::ChildHeapCarrier {
 
 struct ChainFinish;
 
-impl ChildFinish<ChainUnit> for ChainFinish {
+impl ChildFinish<ChainUnit, <ChainUnit as BytecodeUnit>::ResumeToken> for ChainFinish {
     fn finish(
         &self,
+        _resume: &<ChainUnit as BytecodeUnit>::ResumeToken,
         child_result: usize,
         _child_heap: &mut skiff_runtime_scheduler::ChildHeapCarrier,
         _parent_heap: &mut dyn VmHeap,
