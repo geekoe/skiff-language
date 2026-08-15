@@ -1082,6 +1082,41 @@ fn production_entry_ignores_unreachable_symbolic_service_authority() {
 }
 
 #[test]
+fn production_entry_links_reachable_service_operation_from_compiler_plan() {
+    let fixture = Fixture::service_operation();
+    let hydrated = fixture.hydrate();
+    let candidate = link_deployment(&hydrated, &generous_limits()).unwrap();
+
+    assert_eq!(candidate.service_operations().len(), 1);
+    let target = &candidate.service_operations()[0];
+    assert_eq!(
+        target.service_requirement_key().service_requirement_slot,
+        7
+    );
+    assert_eq!(target.boundary_plan().arguments().len(), 0);
+    assert_eq!(target.boundary_plan().results().len(), 0);
+    assert_eq!(
+        target.boundary_plan().callbacks(),
+        skiff_runtime_linked_bytecode::LinkedServiceCallbackPlan::None
+    );
+}
+
+#[test]
+fn production_entry_rejects_drifted_service_boundary_plan() {
+    let fixture = Fixture::service_operation_drifted();
+    let hydrated = fixture.hydrate();
+
+    assert!(matches!(
+        link_deployment(&hydrated, &generous_limits()),
+        Err(BytecodeLinkError::UnsatisfiedObligation {
+            obligation: BytecodeLinkObligation::ConcreteTargetTables,
+            location: BytecodeLinkLocation::ServiceDependency { .. },
+            detail,
+        }) if detail.contains("argument count")
+    ));
+}
+
+#[test]
 fn production_entry_prunes_unreachable_private_interface_and_callback_authority() {
     // A reachable MakeCallback currently fails earlier in ControlFlowAndStackMap:
     // the artifact has no callback-interface correlation from which the linker

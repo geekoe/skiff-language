@@ -199,6 +199,17 @@ pub enum BytecodeEmissionError {
     )]
     UnexpectedValueTransferPlans { function_key: String },
 
+    #[error("bytecode emitter has no explicit service boundary plan for service call {service_call:?}")]
+    MissingServiceBoundaryPlan { service_call: String },
+
+    #[error(
+        "bytecode emitter received a service boundary plan for unknown service call {service_call:?}"
+    )]
+    UnexpectedServiceBoundaryPlan { service_call: String },
+
+    #[error("bytecode service boundary plan at {location} is unsupported: {detail}")]
+    UnsupportedServiceBoundaryPlan { location: String, detail: String },
+
     #[error("bytecode emitter has no explicit value-transfer plan for constant `{symbol}`")]
     MissingConstantValueTransferPlan { symbol: String },
 

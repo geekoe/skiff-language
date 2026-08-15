@@ -4,8 +4,9 @@
 use crate::bytecode::dto::{
     limits, BytecodeConstantRef, BytecodePoolEntry, BytecodeRelocation, CatchMatcher,
     ExceptionRegion, FrozenBehaviorBinding, FrozenConstantNode, ResumeDescriptor, ResumeErrorMode,
-    ShapeFieldDeclaration, SourceMapEntry, SwitchCase, ValueTransferPlan,
+    ServiceCallbackPlan, ShapeFieldDeclaration, SourceMapEntry, SwitchCase, ValueTransferPlan,
 };
+use crate::BoundaryFeatureUnavailableReason;
 
 use super::*;
 
@@ -161,11 +162,14 @@ fn corpus_rejects_wrong_relocation_and_pool_entry_kinds() {
         .get_mut("module::main")
         .unwrap()
         .relocations[0] = BytecodeRelocation::ServiceOperationRef {
-        service_call: crate::ServiceCallRef {
+        service_call: crate::bytecode::dto::ServiceCallBoundaryFacts::new(
+            crate::ServiceCallRef {
             service_requirement_slot: 0,
             contract_operation_id: crate::ContractOperationId::new("operation:wrong"),
             expected_protocol_identity: crate::ServiceProtocolIdentity::new("protocol:wrong"),
-        },
+            },
+            service_boundary_plan(),
+        ),
     };
     let error = assert_rejected(&relocation);
     assert!(matches!(error, StructuralValidationError::Operand { .. }));
@@ -248,6 +252,27 @@ fn corpus_validates_positional_specialization_and_service_facts() {
     assert!(assert_rejected(&empty_operation)
         .to_string()
         .contains("must not be empty"));
+}
+
+#[test]
+fn corpus_rejects_disabled_service_boundary_surfaces() {
+    let mut artifact = canonical_artifact();
+    let BytecodeRelocation::ServiceOperationRef { service_call } = &mut artifact
+        .image
+        .functions
+        .get_mut("module::main")
+        .unwrap()
+        .relocations[2]
+    else {
+        unreachable!();
+    };
+    service_call.boundary_plan_mut().callbacks = ServiceCallbackPlan::Unsupported {
+        reason: BoundaryFeatureUnavailableReason::UnknownSemantics,
+    };
+
+    let error = assert_rejected(&artifact);
+    assert!(matches!(error, StructuralValidationError::Table { .. }));
+    assert!(error.to_string().contains("callbacks"));
 }
 
 #[test]

@@ -8,9 +8,9 @@ use skiff_artifact_model::{
     IntrinsicReference, LiteralIr, LocalInterfaceMethod, LocalInterfaceRef, NativeTarget, Opcode,
     ParamModeIr, ParameterSlotDecl, PatternIr, PrivilegedAffineFieldAccess,
     RelocatableBytecodeFunction, RemoteInterfaceMethod, RemoteInterfaceRef, ResumeDescriptor,
-    ResumeErrorMode, ResumeResultMaterialization, SourceMapEntry, StatementAttributionId,
-    StatementEntry, SyntheticInstructionSiteReason, TrapFailureKind, TypeRefIr, ValueDropPlan,
-    ValueTransferPlan, WritablePathSegment,
+    ResumeErrorMode, ResumeResultMaterialization, ServiceBoundaryPlan, ServiceCallRef,
+    SourceMapEntry, StatementAttributionId, StatementEntry, SyntheticInstructionSiteReason,
+    TrapFailureKind, TypeRefIr, ValueDropPlan, ValueTransferPlan, WritablePathSegment,
 };
 use skiff_compiler_lowering::mir::{
     MirCallArgument, MirDirectCallFacts, MirEmissionAnchor, MirExpression, MirForInItemKind,
@@ -56,6 +56,7 @@ pub(super) fn emit_functions(
             plans,
             image,
             inputs,
+            inputs.service_boundary_plans,
             source_attribution,
         )?;
         functions.insert(function_key.clone(), emitter.emit()?);
@@ -77,6 +78,7 @@ struct FunctionEmitter<'a> {
     machine_carriers: &'a FunctionMachineCarrierFacts,
     image: &'a mut ConstantImage,
     inputs: &'a ValidatedEmissionInputs<'a>,
+    service_boundary_plans: &'a BTreeMap<ServiceCallRef, ServiceBoundaryPlan>,
     source_attribution: SourceAttributionMode,
     instructions: Vec<RawInstruction>,
     relocations: Vec<BytecodeRelocation>,
@@ -163,6 +165,7 @@ impl<'a> FunctionEmitter<'a> {
         plans: &'a FunctionValueTransferPlans,
         image: &'a mut ConstantImage,
         inputs: &'a ValidatedEmissionInputs<'a>,
+        service_boundary_plans: &'a BTreeMap<ServiceCallRef, ServiceBoundaryPlan>,
         source_attribution: SourceAttributionMode,
     ) -> Result<Self, BytecodeEmissionError> {
         let events = function
@@ -183,11 +186,12 @@ impl<'a> FunctionEmitter<'a> {
             unit,
             function,
             key: key.to_string(),
-            plans,
-            machine_carriers,
-            image,
-            inputs,
-            source_attribution,
+        plans,
+        machine_carriers,
+        image,
+        inputs,
+        service_boundary_plans,
+        source_attribution,
             instructions: Vec::new(),
             relocations: Vec::new(),
             pending_branches: Vec::new(),
@@ -1132,10 +1136,29 @@ impl<'a> FunctionEmitter<'a> {
                         )
                     })?
                     .clone();
+                let boundary_plan = self
+                    .service_boundary_plans
+                    .get(&service_call)
+                    .ok_or_else(|| {
+                        unsupported(
+                            &self.key,
+                            "service call target",
+                            &format!(
+                                "service call ref {} has no compiler-emitted boundary plan",
+                                service_call_ref_index.index()
+                            ),
+                        )
+                    })?
+                    .clone();
                 self.emit_pending_call(
                     expression,
                     Opcode::CallService,
-                    BytecodeRelocation::ServiceOperationRef { service_call },
+                    BytecodeRelocation::ServiceOperationRef {
+                        service_call: skiff_artifact_model::ServiceCallBoundaryFacts::new(
+                            service_call,
+                            boundary_plan,
+                        ),
+                    },
                     None,
                     true,
                 )

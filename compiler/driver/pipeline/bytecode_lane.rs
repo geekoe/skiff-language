@@ -1,9 +1,16 @@
+use std::collections::BTreeMap;
+
 use skiff_artifact_model::{
     derive_bytecode_statement_manifest_identity, http_boundary::canonical_http_boundary_type,
     validate_current_platform_error_projection_registry_ref, BytecodeArtifactRef,
-    BytecodeFunctionStatementManifest, ContractLiteral, ContractTypeRef, GatewayDispatchMode,
-    GatewayProtocolSurface, LiteralIr, PackageArtifact, PackageLocalAbiSymbol, PackageRefIr,
-    PackageTypeRef, TypeDescriptorIr, TypeRefIr,
+    BytecodeFunctionStatementManifest, BoundaryDropPlan, BoundaryErrorAdmission,
+    BoundaryErrorFallbackIdentity, BoundaryErrorPlan, BoundaryErrorPolicy, BoundaryTransfer,
+    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueFact, BoundaryValueLifetime,
+    BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary, CallableMayEffects,
+    ContractLiteral, ContractTypeRef, GatewayDispatchMode, GatewayProtocolSurface, LiteralIr,
+    PackageArtifact, PackageLocalAbiSymbol, PackageRefIr, PackageTypeRef, PendingEffectCategory,
+    ServiceBoundaryPlan, ServiceCallbackPlan, ServiceCallRef, TypeDescriptorIr, TypeRefIr,
+    ValueProvenance,
 };
 use skiff_compiler_compiled::{
     BytecodeCompilationHandoff, BytecodeCompilationOutcome, BytecodeCompilationReceipt,
@@ -11,9 +18,9 @@ use skiff_compiler_compiled::{
 };
 use skiff_compiler_contract::ServicePublicInstanceOperationFacts;
 use skiff_compiler_emission::bytecode::{
-    admit_phase_1_bytecode_mir_with_gateway_authorities, derive_bytecode_value_transfer_plans,
-    emit_bytecode_artifact, GatewayParameterAuthority, ServerStreamEmitFact,
-    ServerStreamGatewayAuthority,
+    admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_plans,
+    derive_bytecode_value_transfer_plans, emit_bytecode_artifact, GatewayParameterAuthority,
+    ServerStreamEmitFact, ServerStreamGatewayAuthority,
 };
 use skiff_compiler_emission::package_artifact::PublishedPackageArtifact;
 use skiff_compiler_lowering::{
@@ -170,10 +177,12 @@ fn emit_enabled_bytecode(
     let server_stream_authorities =
         server_stream_gateway_authorities(projected_gateway, unattached_package, units)?;
     let gateway_parameter_authorities = gateway_parameter_authorities(projected_gateway);
-    let admitted = admit_phase_1_bytecode_mir_with_gateway_authorities(
+    let service_boundary_plans = service_boundary_plans(compiled)?;
+    let admitted = admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_plans(
         units,
         &gateway_parameter_authorities,
         &server_stream_authorities,
+        &service_boundary_plans,
     )?;
     let mut bundles = Vec::new();
     for unit in compiled.lowered().file_ir_units() {
@@ -219,6 +228,137 @@ fn emit_enabled_bytecode(
         artifact,
         reference,
     )?)
+}
+
+fn service_boundary_plans(
+    compiled: &CompiledPackage,
+) -> Result<BTreeMap<ServiceCallRef, ServiceBoundaryPlan>, PackageCompileError> {
+    let mut plans = BTreeMap::new();
+    let fallback_contract_type = if compiled.lowered().service_calls().call_sites().next().is_some() {
+        let fallback_record = compiled
+            .compile_model()
+            .dependency_analysis()
+            .package_type_by_owner_and_stable_key(
+                "skiff.run/std",
+                "std.service.InternalError",
+            )
+            .ok_or_else(|| {
+                PackageCompileError::ContractValidation {
+                    message: "service bytecode lane cannot resolve std.service.InternalError"
+                        .to_string(),
+                }
+            })?;
+        Some(ContractTypeRef::package_schema(
+            fallback_record.package_id.clone(),
+            fallback_record.stable_schema_key.clone(),
+            fallback_record.package_schema_type_id.clone(),
+        ))
+    } else {
+        None
+    };
+    for site in compiled.lowered().service_calls().call_sites() {
+        let operation = compiled
+            .compile_model()
+            .resolved_call_targets()
+            .contract_operation(site.expression())
+            .ok_or_else(|| PackageCompileError::ContractValidation {
+                message: format!(
+                    "service call {} has no exact contract operation descriptor",
+                    site.call_ref().contract_operation_id
+                ),
+            })?;
+        let fallback_contract_type = fallback_contract_type
+            .clone()
+            .expect("service call sites imply a resolved std.service.InternalError fallback");
+        let plan = compile_service_boundary_plan(&operation.contract, &fallback_contract_type)?;
+        let service_call = site.call_ref().clone();
+        if let Some(previous) = plans.get(&service_call) {
+            if previous != &plan {
+                return Err(PackageCompileError::ContractValidation {
+                    message: "the same service call reference resolves to conflicting boundary plans"
+                        .to_string(),
+                });
+            }
+        } else {
+            plans.insert(service_call, plan);
+        }
+    }
+    Ok(plans)
+}
+
+fn compile_service_boundary_plan(
+    contract: &skiff_artifact_model::BoundaryOperationContract,
+    fallback_contract_type: &ContractTypeRef,
+) -> Result<ServiceBoundaryPlan, PackageCompileError> {
+    if !matches!(
+        contract.stream,
+        skiff_artifact_model::BoundaryStreamContract::Unary
+    ) {
+        return Err(PackageCompileError::ContractValidation {
+            message: "service stream boundary plans are disabled in the first service lane"
+                .to_string(),
+        });
+    }
+    if contract.callbacks != skiff_artifact_model::BoundaryCallbackContract::None {
+        return Err(PackageCompileError::ContractValidation {
+            message: "service callback boundary plans are disabled in the first service lane"
+                .to_string(),
+        });
+    }
+    let arguments = contract
+        .parameters
+        .iter()
+        .enumerate()
+        .map(|(index, parameter)| BoundaryValueFact {
+            contract_type: parameter.ty.clone(),
+            value_plan: parameter.value_plan.clone(),
+            transfer: BoundaryTransfer::Copy,
+            drop: BoundaryDropPlan::SnapshotRelease,
+            source: ValueProvenance::CallerParameter {
+                index: index as u32,
+            },
+        })
+        .collect::<Vec<_>>();
+    let results = if contract.return_value.ty == ContractTypeRef::builtin("void") {
+        Vec::new()
+    } else {
+        vec![BoundaryValueFact {
+            contract_type: contract.return_value.ty.clone(),
+            value_plan: contract.return_value.value_plan.clone(),
+            transfer: BoundaryTransfer::Move,
+            drop: BoundaryDropPlan::SnapshotRelease,
+            source: ValueProvenance::Fresh,
+        }]
+    };
+    Ok(ServiceBoundaryPlan {
+        arguments,
+        results,
+        error: BoundaryErrorPlan {
+            fallback_contract_type: fallback_contract_type.clone(),
+            fallback: BoundaryValuePlan::Linkable {
+                carrier: BoundaryValueCarrier::DetachedValueGraph,
+                encoding: BoundaryValueEncoding::CanonicalValue,
+                owner: BoundaryValueOwner::Caller,
+                lifetime: BoundaryValueLifetime::Call,
+            },
+            policy: BoundaryErrorPolicy::DynamicPublicSchema {
+                admission: BoundaryErrorAdmission::PublicNameableSchemaClosed,
+                fallback_identity: BoundaryErrorFallbackIdentity::StdServiceInternalError,
+            },
+            transfer: BoundaryTransfer::Move,
+            drop: BoundaryDropPlan::SnapshotRelease,
+            source: ValueProvenance::Fresh,
+        },
+        stream_item: None,
+        callbacks: ServiceCallbackPlan::None,
+        effects: CallableEffectSummary::Analyzed {
+            effects: CallableMayEffects {
+                may_pending: true,
+                pending_effect_categories: vec![PendingEffectCategory::ServiceCall],
+                ..CallableMayEffects::default()
+            },
+        },
+    })
 }
 
 fn gateway_parameter_authorities(

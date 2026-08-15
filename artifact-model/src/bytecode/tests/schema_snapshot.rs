@@ -108,12 +108,16 @@ fn canonical_fixture_matches_v14_wire_shape_snapshot() {
     );
     assert!(main["relocations"][0]["specialization"]["concreteReceiver"].is_null());
     assert_eq!(
-        main["relocations"][2]["serviceCall"]["serviceRequirementSlot"],
+        main["relocations"][2]["serviceRequirementSlot"],
         0
     );
     assert_eq!(
-        main["relocations"][2]["serviceCall"]["contractOperationId"],
+        main["relocations"][2]["contractOperationId"],
         "operation:svc:call"
+    );
+    assert_eq!(
+        main["relocations"][2]["callbacks"]["kind"],
+        "none"
     );
     assert_eq!(value["image"]["constantRoots"]["module.implementation"], 2);
     assert_eq!(

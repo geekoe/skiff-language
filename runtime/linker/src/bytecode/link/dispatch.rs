@@ -1,19 +1,22 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    self, BytecodeIntrinsicRef, BytecodeRelocation, CallableEffectSummary,
-    CallableRegistryTypeExpression, ContractOperationId, HostEffectExecutorIdentity,
-    HostEffectRegistryEntry, InterfaceInstantiationRef, PackageBuildId, PackageLocalAbiSymbol,
-    PackageRefIr, PackageSchemaTypeId, PackageSymbolRef, ResolvedPackageValueType,
-    ServiceRequirementKey, TypeRefIr, ValueLifecycleFactResolver, ValueLifecyclePolicyBudget,
-    ValueLifecycleResolverError,
+    self, BoundaryDropPlan, BoundaryTransfer, BoundaryValueFact, BoundaryValuePlan,
+    BytecodeIntrinsicRef, BytecodeRelocation, CallableEffectSummary, CallableRegistryTypeExpression,
+    ContractLiteral, ContractOperationId, ContractTypeRef, HostEffectExecutorIdentity,
+    HostEffectRegistryEntry, InterfaceInstantiationRef, LiteralIr, PackageBuildId,
+    PackageLocalAbiSymbol, PackageRefIr, PackageSchemaTypeId, PackageSymbolRef, ParamModeIr,
+    ResolvedPackageValueType, ServiceBoundaryPlan, ServiceCallbackPlan, ServiceRequirementKey,
+    TypeRefIr, ValueLifecycleFactResolver, ValueLifecyclePolicyBudget, ValueLifecycleResolverError,
+    ValueProvenance,
 };
 use skiff_runtime_linked_bytecode::{
     ArtifactFunctionKey, FunctionIndex, LinkedActorCreateTarget, LinkedActorImplementationRef,
-    LinkedActorMethodTarget, LinkedCallableSignature, LinkedFrameLayout,
-    LinkedHostEffectAdapterTarget, LinkedInterfaceTable, LinkedInterfaceTableKind,
-    LinkedNativeCallableSignature, LinkedServiceOperationTarget, LinkedSyntheticCallbackTarget,
-    SpecializationKey,
+    LinkedActorMethodTarget, LinkedCallableSignature, LinkedFrameLayout, LinkedHostEffectAdapterTarget,
+    LinkedInterfaceTable, LinkedInterfaceTableKind, LinkedNativeCallableSignature,
+    LinkedServiceBoundaryErrorPlan, LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue,
+    LinkedServiceCallbackPlan, LinkedServiceOperationTarget, LinkedSyntheticCallbackTarget,
+    ServiceOperationIndex, SpecializationKey,
 };
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
@@ -96,29 +99,239 @@ impl DeploymentLinker<'_> {
     fn link_service_operations(
         &self,
         reachable: &[ReachableRelocation],
-        _type_linker: &mut TypeLinker<'_>,
+        type_linker: &mut TypeLinker<'_>,
     ) -> Result<Vec<LinkedServiceOperationTarget>, BytecodeLinkError> {
-        if let Some((reference, service_call)) = reachable.iter().find_map(|reference| {
+        let mut targets = Vec::new();
+        let mut seen = BTreeSet::new();
+        for reference in reachable {
             let BytecodeRelocation::ServiceOperationRef { service_call } = &reference.relocation
             else {
-                return None;
+                continue;
             };
-            Some((reference, service_call))
-        }) {
-            return Err(BytecodeLinkError::ImplementationUnavailable {
-                obligation: BytecodeLinkObligation::ConcreteTargetTables,
-                location: BytecodeLinkLocation::ServiceDependency {
-                    key: ServiceRequirementKey {
-                        caller_package_build_id: reference
-                            .specialization
-                            .package_build_id()
-                            .clone(),
-                        service_requirement_slot: service_call.service_requirement_slot,
-                    },
-                },
-            });
+            let caller_package_build_id = reference.specialization.package_build_id().clone();
+            let key = ServiceRequirementKey {
+                caller_package_build_id: caller_package_build_id.clone(),
+                service_requirement_slot: service_call.service_requirement_slot,
+            };
+            let location = BytecodeLinkLocation::ServiceDependency {
+                key: key.clone(),
+            };
+            if !seen.insert((
+                key.clone(),
+                service_call.contract_operation_id.clone(),
+            )) {
+                return Err(unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location,
+                    "duplicate service operation relocation".to_string(),
+                ));
+            }
+            let dependency = self
+                .deployment
+                .service_dependencies()
+                .get(&key)
+                .ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        location.clone(),
+                        "compiler-emitted service call has no hydrated dependency slot"
+                            .to_string(),
+                    )
+                })?;
+            if !dependency.used_operations().contains(&service_call.contract_operation_id) {
+                return Err(unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    "compiler-emitted service operation is absent from the dependency slot"
+                        .to_string(),
+                ));
+            }
+            let contract = self
+                .deployment
+                .contract_store()
+                .get(dependency.contract())
+                .ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        location.clone(),
+                        "hydrated dependency contract is absent".to_string(),
+                    )
+                })?;
+            if &service_call.expected_protocol_identity != &contract.service_protocol_identity {
+                return Err(unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    "service call protocol identity drifts from the hydrated contract".to_string(),
+                ));
+            }
+            let operation = contract
+                .operations
+                .get(&service_call.contract_operation_id)
+                .ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        location.clone(),
+                        "service call operation is absent from the hydrated contract".to_string(),
+                    )
+                })?;
+            let plan = service_call.boundary_plan();
+            validate_service_plan_against_contract(plan, &operation.contract, &location)?;
+            let caller_package = self
+                .deployment
+                .packages()
+                .get(&caller_package_build_id)
+                .ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ExactPackageClosure,
+                        location.clone(),
+                        "service call caller package is absent from the closure".to_string(),
+                    )
+                })?;
+            let linked_plan = self.link_service_boundary_plan(
+                plan,
+                caller_package,
+                &reference.specialization,
+                type_linker,
+                location.clone(),
+            )?;
+            let signature = link_service_signature(plan, &linked_plan, type_linker, &location)?;
+            let index = u32::try_from(targets.len()).map_err(|_| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    "service operation table exceeds u32::MAX".to_string(),
+                )
+            })?;
+            targets.push(LinkedServiceOperationTarget::new(
+                ServiceOperationIndex::new(index),
+                key,
+                service_call.contract_operation_id.clone(),
+                service_call.expected_protocol_identity.clone(),
+                signature,
+                linked_plan,
+            ));
         }
-        Ok(Vec::new())
+        Ok(targets)
+    }
+
+    fn link_service_boundary_plan(
+        &self,
+        plan: &ServiceBoundaryPlan,
+        caller: &HydratedBytecodePackage,
+        specialization: &SpecializationKey,
+        type_linker: &mut TypeLinker<'_>,
+        location: BytecodeLinkLocation,
+    ) -> Result<LinkedServiceBoundaryPlan, BytecodeLinkError> {
+        let arguments = plan
+            .arguments
+            .iter()
+            .map(|value| {
+                self.link_service_boundary_value(
+                    value,
+                    caller,
+                    specialization,
+                    type_linker,
+                    location.clone(),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let results = plan
+            .results
+            .iter()
+            .map(|value| {
+                self.link_service_boundary_value(
+                    value,
+                    caller,
+                    specialization,
+                    type_linker,
+                    location.clone(),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let fallback = self.link_service_boundary_value_from_contract_type(
+            &plan.error.fallback_contract_type,
+            &plan.error.fallback,
+            plan.error.transfer,
+            &plan.error.drop,
+            &plan.error.source,
+            caller,
+            specialization,
+            type_linker,
+            location.clone(),
+        )?;
+        let linked_error =
+            LinkedServiceBoundaryErrorPlan::new(plan.error.clone(), fallback);
+        let stream_item = plan
+            .stream_item
+            .as_deref()
+            .map(|value| {
+                self.link_service_boundary_value(
+                    value,
+                    caller,
+                    specialization,
+                    type_linker,
+                    location.clone(),
+                )
+            })
+            .transpose()?;
+        Ok(LinkedServiceBoundaryPlan::new(
+            arguments,
+            results,
+            linked_error,
+            stream_item,
+            LinkedServiceCallbackPlan::None,
+        ))
+    }
+
+    fn link_service_boundary_value(
+        &self,
+        value: &BoundaryValueFact,
+        caller: &HydratedBytecodePackage,
+        specialization: &SpecializationKey,
+        type_linker: &mut TypeLinker<'_>,
+        location: BytecodeLinkLocation,
+    ) -> Result<LinkedServiceBoundaryValue, BytecodeLinkError> {
+        self.link_service_boundary_value_from_contract_type(
+            &value.contract_type,
+            &value.value_plan,
+            value.transfer,
+            &value.drop,
+            &value.source,
+            caller,
+            specialization,
+            type_linker,
+            location,
+        )
+    }
+
+    fn link_service_boundary_value_from_contract_type(
+        &self,
+        contract_type: &ContractTypeRef,
+        value_plan: &BoundaryValuePlan,
+        transfer: BoundaryTransfer,
+        drop: &BoundaryDropPlan,
+        source: &ValueProvenance,
+        caller: &HydratedBytecodePackage,
+        specialization: &SpecializationKey,
+        type_linker: &mut TypeLinker<'_>,
+        location: BytecodeLinkLocation,
+    ) -> Result<LinkedServiceBoundaryValue, BytecodeLinkError> {
+        let type_ref = contract_type_ref_to_ir(contract_type, &location)?;
+        let caller_type = type_linker.intern_concrete_type(
+            caller,
+            specialization,
+            &type_ref,
+            &BTreeMap::new(),
+            location,
+        )?;
+        Ok(LinkedServiceBoundaryValue::new(
+            contract_type.clone(),
+            value_plan.clone(),
+            transfer,
+            drop.clone(),
+            source.clone(),
+            caller_type,
+        ))
     }
 
     fn link_actor_targets(
@@ -235,6 +448,233 @@ pub(in crate::bytecode) enum InterfaceKind {
     Callback,
     Local,
     Remote,
+}
+
+fn validate_service_plan_against_contract(
+    plan: &ServiceBoundaryPlan,
+    contract: &skiff_artifact_model::BoundaryOperationContract,
+    location: &BytecodeLinkLocation,
+) -> Result<(), BytecodeLinkError> {
+    if plan.arguments.len() != contract.parameters.len() {
+        return Err(unsatisfied(
+            BytecodeLinkObligation::ConcreteTargetTables,
+            location.clone(),
+            format!(
+                "service boundary argument count {} differs from contract {}",
+                plan.arguments.len(),
+                contract.parameters.len()
+            ),
+        ));
+    }
+    for (index, (plan_value, parameter)) in plan
+        .arguments
+        .iter()
+        .zip(contract.parameters.iter())
+        .enumerate()
+    {
+        if plan_value.contract_type != parameter.ty
+            || plan_value.value_plan != parameter.value_plan
+        {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                format!("service boundary argument #{index} drifts from the hydrated contract"),
+            ));
+        }
+    }
+    let expected_result_count = if contract.return_value.ty == ContractTypeRef::builtin("void") {
+        0
+    } else {
+        1
+    };
+    if plan.results.len() != expected_result_count {
+        return Err(unsatisfied(
+            BytecodeLinkObligation::ConcreteTargetTables,
+            location.clone(),
+            "service boundary result count drifts from the hydrated contract".to_string(),
+        ));
+    }
+    if let Some(result) = plan.results.first() {
+        if result.contract_type != contract.return_value.ty
+            || result.value_plan != contract.return_value.value_plan
+        {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                "service boundary result drifts from the hydrated contract".to_string(),
+            ));
+        }
+    }
+    if !matches!(
+        contract.stream,
+        skiff_artifact_model::BoundaryStreamContract::Unary
+    ) || plan.stream_item.is_some()
+        || !matches!(plan.callbacks, ServiceCallbackPlan::None)
+        || !matches!(
+            contract.callbacks,
+            skiff_artifact_model::BoundaryCallbackContract::None
+        )
+    {
+        return Err(unsatisfied(
+            BytecodeLinkObligation::ConcreteTargetTables,
+            location.clone(),
+            "unsupported stream or callback service boundary surface".to_string(),
+        ));
+    }
+    if plan.effects.effects_for_boundary().is_err() {
+        return Err(unsatisfied(
+            BytecodeLinkObligation::CallableEffectPlan,
+            location.clone(),
+            "service boundary plan has an unknown effect summary".to_string(),
+        ));
+    }
+    if !matches!(
+        plan.error.policy,
+        skiff_artifact_model::BoundaryErrorPolicy::DynamicPublicSchema {
+            admission: skiff_artifact_model::BoundaryErrorAdmission::PublicNameableSchemaClosed,
+            fallback_identity:
+                skiff_artifact_model::BoundaryErrorFallbackIdentity::StdServiceInternalError,
+        }
+    ) {
+        return Err(unsatisfied(
+            BytecodeLinkObligation::ConcreteTargetTables,
+            location.clone(),
+            "service boundary error policy drifts from the canonical open channel".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn link_service_signature(
+    plan: &ServiceBoundaryPlan,
+    linked_plan: &LinkedServiceBoundaryPlan,
+    type_linker: &mut TypeLinker<'_>,
+    location: &BytecodeLinkLocation,
+) -> Result<LinkedCallableSignature, BytecodeLinkError> {
+    let parameter_types = linked_plan
+        .arguments()
+        .iter()
+        .map(LinkedServiceBoundaryValue::caller_type)
+        .collect::<Vec<_>>();
+    let parameter_modes = vec![ParamModeIr::Value; parameter_types.len()];
+    let parameter_plans = linked_plan
+        .arguments()
+        .iter()
+        .map(|value| {
+            type_linker.linked_type_plan(value.caller_type()).cloned().ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::FrameAndValueTransferPlan,
+                    location.clone(),
+                    format!(
+                        "service boundary caller type {} has no linked transfer plan",
+                        value.caller_type().get()
+                    ),
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let result_types = linked_plan
+        .results()
+        .iter()
+        .map(LinkedServiceBoundaryValue::caller_type)
+        .collect::<Vec<_>>();
+    let result_plans = linked_plan
+        .results()
+        .iter()
+        .map(|value| {
+            type_linker.linked_type_plan(value.caller_type()).cloned().ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::FrameAndValueTransferPlan,
+                    location.clone(),
+                    format!(
+                        "service boundary result type {} has no linked transfer plan",
+                        value.caller_type().get()
+                    ),
+                )
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    LinkedCallableSignature::new(
+        parameter_types.into_boxed_slice(),
+        parameter_modes.into_boxed_slice(),
+        parameter_plans.into_boxed_slice(),
+        result_types.into_boxed_slice(),
+        result_plans.into_boxed_slice(),
+        plan.effects.clone(),
+    )
+    .map_err(|error| {
+        unsatisfied(
+            BytecodeLinkObligation::FrameAndValueTransferPlan,
+            location.clone(),
+            error.to_string(),
+        )
+    })
+}
+
+fn contract_type_ref_to_ir(
+    ty: &ContractTypeRef,
+    location: &BytecodeLinkLocation,
+) -> Result<TypeRefIr, BytecodeLinkError> {
+    let fail = |kind: &str| {
+        unsatisfied(
+            BytecodeLinkObligation::ConcreteTargetTables,
+            location.clone(),
+            format!("service boundary contract type {kind} is unsupported"),
+        )
+    };
+    match ty {
+        ContractTypeRef::Builtin { name, arguments } => {
+            let args = arguments
+                .iter()
+                .map(|argument| contract_type_ref_to_ir(argument, location))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(TypeRefIr::Builtin {
+                name: name.clone(),
+                args,
+            })
+        }
+        ContractTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => Ok(TypeRefIr::PackageSchema {
+            package_id: package_id.clone(),
+            stable_schema_key: stable_schema_key.clone(),
+            package_schema_type_id: package_schema_type_id.clone(),
+        }),
+        ContractTypeRef::Record { fields } => {
+            let fields = fields
+                .iter()
+                .map(|(name, field)| {
+                    Ok((
+                        name.clone(),
+                        contract_type_ref_to_ir(field, location)?,
+                    ))
+                })
+                .collect::<Result<BTreeMap<_, _>, BytecodeLinkError>>()?;
+            Ok(TypeRefIr::Record { fields })
+        }
+        ContractTypeRef::StructuralUnion { variants } => {
+            let items = variants
+                .iter()
+                .map(|variant| contract_type_ref_to_ir(variant, location))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(TypeRefIr::Union { items })
+        }
+        ContractTypeRef::Nullable { inner } => Ok(TypeRefIr::Nullable {
+            inner: Box::new(contract_type_ref_to_ir(inner, location)?),
+        }),
+        ContractTypeRef::Literal { value } => {
+            let ContractLiteral::String { value } = value;
+            Ok(TypeRefIr::Literal {
+                value: LiteralIr::String {
+                    value: value.clone(),
+                },
+            })
+        }
+        ContractTypeRef::TypeParam { .. } => Err(fail("type parameter")),
+        ContractTypeRef::AnyInterface { .. } => Err(fail("any interface")),
+    }
 }
 
 fn frame_signature(

@@ -5,7 +5,7 @@ use skiff_artifact_model::{
 
 use crate::{
     ActorCreateIndex, ActorMethodIndex, FunctionIndex, LinkedCallableSignature,
-    ServiceOperationIndex, SpecializationKey,
+    LinkedServiceBoundaryPlan, ServiceOperationIndex, SpecializationKey,
 };
 
 /// Exact concrete local or package-direct target. The key and function remain
@@ -40,6 +40,7 @@ pub struct LinkedServiceOperationTarget {
     contract_operation_id: ContractOperationId,
     expected_protocol_identity: ServiceProtocolIdentity,
     signature: LinkedCallableSignature,
+    boundary_plan: LinkedServiceBoundaryPlan,
 }
 
 impl LinkedServiceOperationTarget {
@@ -49,6 +50,7 @@ impl LinkedServiceOperationTarget {
         contract_operation_id: ContractOperationId,
         expected_protocol_identity: ServiceProtocolIdentity,
         signature: LinkedCallableSignature,
+        boundary_plan: LinkedServiceBoundaryPlan,
     ) -> Self {
         Self {
             index,
@@ -56,6 +58,7 @@ impl LinkedServiceOperationTarget {
             contract_operation_id,
             expected_protocol_identity,
             signature,
+            boundary_plan,
         }
     }
 
@@ -77,6 +80,10 @@ impl LinkedServiceOperationTarget {
 
     pub const fn signature(&self) -> &LinkedCallableSignature {
         &self.signature
+    }
+
+    pub const fn boundary_plan(&self) -> &LinkedServiceBoundaryPlan {
+        &self.boundary_plan
     }
 }
 

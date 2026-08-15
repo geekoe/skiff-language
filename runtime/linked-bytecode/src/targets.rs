@@ -4,6 +4,7 @@ mod entry;
 mod interface;
 mod intrinsic;
 mod local;
+mod service;
 
 pub use callback::{
     LinkedCallbackCapture, LinkedCallbackCaptureLayout, LinkedCallbackCaptureLayoutError,
@@ -36,4 +37,8 @@ pub use intrinsic::{
 pub use local::{
     LinkedActorCreateTarget, LinkedActorImplementationRef, LinkedActorMethodTarget,
     LinkedExactLocalTarget, LinkedServiceOperationTarget,
+};
+pub use service::{
+    LinkedServiceBoundaryErrorPlan, LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue,
+    LinkedServiceCallbackPlan,
 };

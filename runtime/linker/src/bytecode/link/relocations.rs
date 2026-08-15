@@ -445,7 +445,7 @@ impl<'a, 'deployment, 'limits> RelocationContext<'a, 'deployment, 'limits> {
                         )
                     })
             }
-            BytecodeRelocation::ServiceOperationRef { service_call } => self
+            BytecodeRelocation::ServiceOperationRef { service_call, .. } => self
                 .dispatch_tables
                 .service_operation_index(
                     &self.source.package.reference().package_build_id,

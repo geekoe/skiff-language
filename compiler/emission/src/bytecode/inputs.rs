@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use skiff_artifact_model::{TypeRefIr, ValueTransferPlan};
+use skiff_artifact_model::{ServiceBoundaryPlan, ServiceCallRef, TypeRefIr, ValueTransferPlan};
 use skiff_compiler_lowering::{
     mir::{liveness::compute_liveness, MirConst, MirFunction, MirUnit},
     FrozenConstantBundle,
@@ -22,6 +22,7 @@ pub(crate) struct ValidatedEmissionInputs<'a> {
         &'a BTreeMap<String, DenseParameterMaterializationFact>,
     pub(crate) machine_carriers: &'a PackageMachineCarrierFacts,
     pub(crate) representation_carriers: &'a [RepresentationCarrierFact],
+    pub(crate) service_boundary_plans: &'a BTreeMap<ServiceCallRef, ServiceBoundaryPlan>,
 }
 
 pub(crate) struct ValidatedConstant<'a> {
@@ -40,6 +41,7 @@ impl<'a> ValidatedEmissionInputs<'a> {
         dense_parameter_materializations: &'a BTreeMap<String, DenseParameterMaterializationFact>,
         machine_carriers: &'a PackageMachineCarrierFacts,
         representation_carriers: &'a [RepresentationCarrierFact],
+        service_boundary_plans: &'a BTreeMap<ServiceCallRef, ServiceBoundaryPlan>,
     ) -> Result<Self, BytecodeEmissionError> {
         let mut units_by_module = BTreeMap::new();
         for unit in units {
@@ -199,6 +201,7 @@ impl<'a> ValidatedEmissionInputs<'a> {
             dense_parameter_materializations,
             machine_carriers,
             representation_carriers,
+            service_boundary_plans,
         })
     }
 }

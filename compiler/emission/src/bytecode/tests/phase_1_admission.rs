@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
     CallIr, CallTargetIr, CallableEffectSummary, CallableMayEffects, ExprIr, ExprRefIr, FileIrUnit,
-    InstructionSourceSite, LiteralIr, PackageCallableId, SyntheticInstructionSiteReason, TypeRefIr,
+    ContractOperationId, InstructionSourceSite, LiteralIr, PackageCallableId, ServiceCallRef,
+    ServiceProtocolIdentity, SyntheticInstructionSiteReason, TypeRefIr,
 };
 use skiff_compiler_lowering::mir::{
     MirBlock, MirCallArgument, MirDirectCallFacts, MirExecutableKind, MirExpression, MirFunction,
@@ -25,6 +26,23 @@ fn phase_1_bytecode_admission_rejects_unavailable_source_events_before_token_min
             ref function_key,
             reason: MirSourceEventUnavailableReason::SourceOwnerNotProvided,
         } if module_path == "main" && function_key == "main::run"
+    ));
+}
+
+#[test]
+fn phase_1_bytecode_admission_requires_service_boundary_plans() {
+    let mut mir = unit(vec![function("run", 0)]);
+    mir.external_refs.service_call_refs = vec![ServiceCallRef {
+        service_requirement_slot: 0,
+        contract_operation_id: ContractOperationId::new("operation:echo"),
+        expected_protocol_identity: ServiceProtocolIdentity::new("protocol:echo"),
+    }];
+
+    let error = admit_phase_1_bytecode_mir(&[mir]).unwrap_err();
+
+    assert!(matches!(
+        error,
+        BytecodeEmissionError::MissingServiceBoundaryPlan { .. }
     ));
 }
 

@@ -1,15 +1,18 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
+    BoundaryCallbackContract, BoundaryDropPlan, BoundaryEffectGuarantee, BoundaryErrorAdmission,
+    BoundaryErrorFallbackIdentity, BoundaryErrorPlan, BoundaryErrorPolicy, BoundaryOperationContract,
     BoundaryOperationDescriptor, BoundaryParameter, BoundaryReturn, BoundaryStreamContract,
-    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-    BoundaryValuePlan, ContractDiagnosticText, ContractOperationId, ContractRequirement,
-    ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
-    DeploymentOperationBinding, DeploymentRevision, PackageArtifact, PackageArtifactRef,
-    PackageBinding, PackageCallableId, ServiceCallRef, ServiceContract, ServiceContractRef,
-    ServiceDeployment, ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey,
-    ServiceSelectorBinding, SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    BoundaryTransfer, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
+    BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary, CallableMayEffects,
+    ContractDiagnosticText, ContractOperationId, ContractRequirement, ContractTypeRef,
+    DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentOperationBinding,
+    DeploymentRevision, PackageArtifact, PackageArtifactRef, PackageBinding, PackageCallableId,
+    PendingEffectCategory, ServiceBoundaryPlan, ServiceCallbackPlan, ServiceCallRef, ServiceContract,
+    ServiceContractRef, ServiceDeployment, ServiceProtocolIdentity, ServiceRequirement,
+    ServiceRequirementKey, ServiceSelectorBinding, ValueProvenance, SERVICE_CONTRACT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
 use super::RootProgram;
@@ -161,6 +164,38 @@ pub(super) fn operation_contract(has_parameter: bool) -> BoundaryOperationContra
             no_caller_reachable_mutation: true,
             no_caller_value_escape: true,
             no_same_heap_identity: true,
+        },
+    }
+}
+
+pub(super) fn service_boundary_plan() -> ServiceBoundaryPlan {
+    ServiceBoundaryPlan {
+        arguments: Vec::new(),
+        results: Vec::new(),
+        error: BoundaryErrorPlan {
+            fallback_contract_type: ContractTypeRef::builtin("std.service.InternalError"),
+            fallback: BoundaryValuePlan::Linkable {
+                carrier: BoundaryValueCarrier::DetachedValueGraph,
+                encoding: BoundaryValueEncoding::CanonicalValue,
+                owner: BoundaryValueOwner::Caller,
+                lifetime: BoundaryValueLifetime::Call,
+            },
+            policy: BoundaryErrorPolicy::DynamicPublicSchema {
+                admission: BoundaryErrorAdmission::PublicNameableSchemaClosed,
+                fallback_identity: BoundaryErrorFallbackIdentity::StdServiceInternalError,
+            },
+            transfer: BoundaryTransfer::Move,
+            drop: BoundaryDropPlan::SnapshotRelease,
+            source: ValueProvenance::Fresh,
+        },
+        stream_item: None,
+        callbacks: ServiceCallbackPlan::None,
+        effects: CallableEffectSummary::Analyzed {
+            effects: CallableMayEffects {
+                may_pending: true,
+                pending_effect_categories: vec![PendingEffectCategory::ServiceCall],
+                ..CallableMayEffects::default()
+            },
         },
     }
 }

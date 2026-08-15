@@ -21,16 +21,20 @@ use std::collections::BTreeMap;
 use crate::bytecode::dto::{
     ActiveRegion, ActiveRegionKind, BytecodeArtifact, BytecodeConstantRef, BytecodeFunctionOrigin,
     BytecodeImage, BytecodePoolEntry, BytecodePools, BytecodeRelocation, BytecodeSpecialization,
-    CallLoanBinding, CallLoanLayout, CallbackCaptureDecl, CallbackCaptureLayout, CatchMatcher,
-    DebugBinding, DebugTable, ExceptionRegion, FrameLayout, FrozenBehaviorBinding,
-    FrozenConstantGraph, FrozenConstantNode, HostEffectReference, HostEffectSignature,
-    ParameterSlotDecl, RelocatableBytecodeFunction, ResourceDropPlan, ResumeDescriptor,
-    ResumeErrorMode, ShapeDeclaration, ShapeFieldDeclaration, SourceMapEntry,
+    BoundaryDropPlan, BoundaryErrorAdmission, BoundaryErrorFallbackIdentity, BoundaryErrorPlan,
+    BoundaryErrorPolicy, BoundaryTransfer, CallLoanBinding, CallLoanLayout,
+    CallbackCaptureDecl, CallbackCaptureLayout, CatchMatcher, DebugBinding, DebugTable,
+    ExceptionRegion, FrameLayout, FrozenBehaviorBinding, FrozenConstantGraph, FrozenConstantNode,
+    HostEffectReference, HostEffectSignature, ParameterSlotDecl, RelocatableBytecodeFunction,
+    ResourceDropPlan, ResumeDescriptor, ResumeErrorMode, ServiceBoundaryPlan,
+    ServiceCallbackPlan, ShapeDeclaration, ShapeFieldDeclaration, SourceMapEntry,
     StatementAttributionId, StatementEntry, SwitchCase, SwitchTable, ValueDropPlan,
     ValueTransferPlan, ValueTransferPlanKind, WritablePathDeclaration, WritablePathSegment,
     BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 use crate::bytecode::opcodes::opcode_table_fingerprint;
+use crate::boundary::{BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ValueProvenance};
+use crate::{CallableEffectSummary, CallableMayEffects, ContractTypeRef, PendingEffectCategory};
 use crate::types::TypeRefIr;
 
 pub(crate) fn plan(kind: ValueTransferPlanKind) -> ValueTransferPlan {
@@ -74,6 +78,38 @@ pub(crate) fn type_entry(ty: TypeRefIr) -> BytecodePoolEntry {
         ty,
         representation_carrier: None,
         plan: snapshot_share(),
+    }
+}
+
+pub(crate) fn service_boundary_plan() -> ServiceBoundaryPlan {
+    ServiceBoundaryPlan {
+        arguments: Vec::new(),
+        results: Vec::new(),
+        error: BoundaryErrorPlan {
+            fallback_contract_type: ContractTypeRef::builtin("std.service.InternalError"),
+            fallback: BoundaryValuePlan::Linkable {
+                carrier: BoundaryValueCarrier::DetachedValueGraph,
+                encoding: BoundaryValueEncoding::CanonicalValue,
+                owner: BoundaryValueOwner::Caller,
+                lifetime: BoundaryValueLifetime::Call,
+            },
+            policy: BoundaryErrorPolicy::DynamicPublicSchema {
+                admission: BoundaryErrorAdmission::PublicNameableSchemaClosed,
+                fallback_identity: BoundaryErrorFallbackIdentity::StdServiceInternalError,
+            },
+            transfer: BoundaryTransfer::Move,
+            drop: BoundaryDropPlan::SnapshotRelease,
+            source: ValueProvenance::Fresh,
+        },
+        stream_item: None,
+        callbacks: ServiceCallbackPlan::None,
+        effects: CallableEffectSummary::Analyzed {
+            effects: CallableMayEffects {
+                may_pending: true,
+                pending_effect_categories: vec![PendingEffectCategory::ServiceCall],
+                ..CallableMayEffects::default()
+            },
+        },
     }
 }
 
@@ -200,13 +236,16 @@ pub(crate) fn main_function() -> RelocatableBytecodeFunction {
                 },
             },
             BytecodeRelocation::ServiceOperationRef {
-                service_call: crate::ServiceCallRef {
+                service_call: crate::bytecode::dto::ServiceCallBoundaryFacts::new(
+                    crate::ServiceCallRef {
                     service_requirement_slot: 0,
                     contract_operation_id: crate::ContractOperationId::new("operation:svc:call"),
                     expected_protocol_identity: crate::ServiceProtocolIdentity::new(
                         "protocol:svc:v1",
                     ),
-                },
+                    },
+                    service_boundary_plan(),
+                ),
             },
             BytecodeRelocation::SyntheticCallbackRef {
                 function_key: "module::main$callback0".to_string(),

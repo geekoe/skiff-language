@@ -2,10 +2,14 @@ use std::any::TypeId;
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, ContractOperationId,
-    GatewayAdapterKind, GatewayAdapterPlan, HostEffectExecutorIdentity, InterfaceInstantiationRef,
+    ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, BoundaryDropPlan,
+    BoundaryErrorAdmission, BoundaryErrorFallbackIdentity, BoundaryErrorPlan, BoundaryErrorPolicy,
+    BoundaryTransfer, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
+    BoundaryValueOwner, BoundaryValuePlan, ContractOperationId, GatewayAdapterKind,
+    GatewayAdapterPlan, HostEffectExecutorIdentity, InterfaceInstantiationRef,
     NativeValueAdapterRole, NativeValueLifecycleAdapter, PackageBuildId, PackageCallableId,
     ReceiverCallAbi, ServiceProtocolIdentity, ServiceRequirementKey, ServiceSymbolRef, TypeRefIr,
+    ValueProvenance, ContractTypeRef,
 };
 
 use crate::{
@@ -19,9 +23,11 @@ use crate::{
     LinkedInterfaceRequirementMethod, LinkedInterfaceRequirementTable, LinkedInterfaceTable,
     LinkedInterfaceTableKind, LinkedIntrinsicCanonicalKey, LinkedIntrinsicKind,
     LinkedIntrinsicTarget, LinkedPublicInstanceKey, LinkedRemoteInterfaceMethod,
-    LinkedRemoteInterfaceTable, LinkedResourceDropPlan, LinkedServiceOperationTarget,
-    LinkedStaticIntrinsicTarget, LinkedSyntheticCallbackTarget, LinkedValueTransferPlan,
-    ServiceOperationIndex, SpecializationKey, SyntheticCallbackIndex, TypeIndex,
+    LinkedRemoteInterfaceTable, LinkedResourceDropPlan, LinkedServiceBoundaryErrorPlan,
+    LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue, LinkedServiceCallbackPlan,
+    LinkedServiceOperationTarget, LinkedStaticIntrinsicTarget, LinkedSyntheticCallbackTarget,
+    LinkedValueTransferPlan, ServiceOperationIndex, SpecializationKey, SyntheticCallbackIndex,
+    TypeIndex,
 };
 
 use super::fixtures::{
@@ -141,12 +147,52 @@ fn symbolic_service_target_retains_protocol_without_provider() {
         operation.clone(),
         protocol.clone(),
         signature(),
+        service_boundary_plan(),
     );
 
     assert_eq!(target.service_requirement_key(), &requirement);
     assert_eq!(target.contract_operation_id(), &operation);
     assert_eq!(target.expected_protocol_identity(), &protocol);
     assert_eq!(target.signature().parameter_types(), [TypeIndex::new(0)]);
+    assert_eq!(target.boundary_plan().callbacks(), LinkedServiceCallbackPlan::None);
+    assert!(target.boundary_plan().arguments().is_empty());
+}
+
+fn service_boundary_plan() -> LinkedServiceBoundaryPlan {
+    let value_plan = BoundaryValuePlan::Linkable {
+        carrier: BoundaryValueCarrier::DetachedValueGraph,
+        encoding: BoundaryValueEncoding::CanonicalValue,
+        owner: BoundaryValueOwner::Caller,
+        lifetime: BoundaryValueLifetime::Call,
+    };
+    let fallback = LinkedServiceBoundaryValue::new(
+        ContractTypeRef::builtin("std.service.InternalError"),
+        value_plan.clone(),
+        BoundaryTransfer::Move,
+        BoundaryDropPlan::SnapshotRelease,
+        ValueProvenance::Fresh,
+        TypeIndex::new(0),
+    );
+    LinkedServiceBoundaryPlan::new(
+        Vec::new(),
+        Vec::new(),
+        LinkedServiceBoundaryErrorPlan::new(
+            BoundaryErrorPlan {
+                fallback_contract_type: ContractTypeRef::builtin("std.service.InternalError"),
+                fallback: value_plan,
+                policy: BoundaryErrorPolicy::DynamicPublicSchema {
+                    admission: BoundaryErrorAdmission::PublicNameableSchemaClosed,
+                    fallback_identity: BoundaryErrorFallbackIdentity::StdServiceInternalError,
+                },
+                transfer: BoundaryTransfer::Move,
+                drop: BoundaryDropPlan::SnapshotRelease,
+                source: ValueProvenance::Fresh,
+            },
+            fallback,
+        ),
+        None,
+        LinkedServiceCallbackPlan::None,
+    )
 }
 
 #[test]

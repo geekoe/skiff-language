@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use crate::{
     CandidateLocation, CandidateReferenceKind, CandidateTable, LinkedArtifactPoolOrigin,
     LinkedBytecodeCandidateError, LinkedBytecodeCandidateParts, LinkedInterfaceTable,
-    LinkedInterfaceTableKind, SpecializationKey,
+    LinkedInterfaceTableKind, LinkedServiceBoundaryPlan, SpecializationKey,
 };
 
 mod callbacks;
@@ -223,6 +223,7 @@ fn validate_dispatch_target_references(
             package_ids,
         )?;
         validate_callable_signature(target.signature(), location, parts)?;
+        validate_service_boundary_plan(target.boundary_plan(), location, parts)?;
     }
     for target in &parts.actor_creates {
         let location = CandidateLocation::TableRow {
@@ -298,6 +299,33 @@ fn validate_dispatch_target_references(
         };
         validate_native_signature(target.signature(), location, parts)?;
     }
+    Ok(())
+}
+
+fn validate_service_boundary_plan(
+    plan: &LinkedServiceBoundaryPlan,
+    location: CandidateLocation,
+    parts: &LinkedBytecodeCandidateParts,
+) -> Result<(), LinkedBytecodeCandidateError> {
+    for value in plan
+        .arguments()
+        .iter()
+        .chain(plan.results().iter())
+        .chain(plan.stream_item())
+    {
+        check_index(
+            location,
+            CandidateReferenceKind::Type,
+            value.caller_type().get(),
+            parts.types.len(),
+        )?;
+    }
+    check_index(
+        location,
+        CandidateReferenceKind::Type,
+        plan.error().fallback().caller_type().get(),
+        parts.types.len(),
+    )?;
     Ok(())
 }
 

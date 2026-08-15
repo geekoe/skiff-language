@@ -77,8 +77,9 @@ pub use targets::{
     LinkedIntrinsicTargetError, LinkedLocalInterfaceMethod, LinkedLocalInterfaceTable,
     LinkedOperationEntry, LinkedPublicInstanceKey, LinkedRemoteInterfaceMethod,
     LinkedRemoteInterfaceTable, LinkedRepresentationCarrier, LinkedServiceOperationTarget,
-    LinkedShapeEntry, LinkedShapeError, LinkedShapeField, LinkedStaticIntrinsicTarget,
-    LinkedSyntheticCallbackTarget, LinkedTypeEntry,
+    LinkedServiceBoundaryErrorPlan, LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue,
+    LinkedServiceCallbackPlan, LinkedShapeEntry, LinkedShapeError, LinkedShapeField,
+    LinkedStaticIntrinsicTarget, LinkedSyntheticCallbackTarget, LinkedTypeEntry,
 };
 
 #[cfg(test)]

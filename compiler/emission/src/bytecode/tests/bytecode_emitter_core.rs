@@ -3,7 +3,11 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::bytecode::{
-        emitter::emit_bytecode_artifact_unchecked as emit_bytecode_artifact,
+        emitter::{
+            emit_bytecode_artifact_unchecked as emit_bytecode_artifact,
+            emit_bytecode_artifact_unchecked_with_service_boundary_plans
+                as emit_bytecode_artifact_with_service_boundary_plans,
+        },
         plans::{
             derive_bytecode_value_transfer_plans_unchecked as derive_bytecode_value_transfer_plans,
             derive_test_bytecode_value_transfer_plans,
@@ -17,10 +21,16 @@ mod tests {
         DbOperationIr, DbTargetIr, ExprIr, ExprRefIr, ExternalRefTable, FileIrUnit,
         FunctionTypeParamIr, InstructionSourceSite, InterfaceInstantiationRef,
         InterfaceMethodSlotSignatureIr, LiteralIr, NativeTarget, PackageCallableId, PatternIr,
-        RemoteOperationSlotPlanIr, RemoteOperationTablePlanIr, ResourceDropPlan, ServiceCallRef,
-        ServiceProtocolIdentity, ServiceSymbolRef, SourcePosition, SourceSpanRef,
+        RemoteOperationSlotPlanIr, RemoteOperationTablePlanIr, ResourceDropPlan, ServiceBoundaryPlan,
+        ServiceCallRef, ServiceProtocolIdentity, ServiceSymbolRef, SourcePosition, SourceSpanRef,
         SyntheticInstructionSiteReason, TypeDeclIr, TypeDescriptorIr, TypeRefIr, ValueDropPlan,
         ValueTransferPlan,
+    };
+    use skiff_artifact_model::{
+        BoundaryDropPlan, BoundaryErrorAdmission, BoundaryErrorFallbackIdentity, BoundaryErrorPlan,
+        BoundaryErrorPolicy, BoundaryTransfer, BoundaryValueCarrier, BoundaryValueEncoding,
+        BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, ValueProvenance,
+        ServiceCallbackPlan,
     };
     use skiff_compiler_lowering::{
         mir::{
@@ -135,6 +145,42 @@ mod tests {
             function.liveness = compute_liveness(&function).expect("test liveness computes");
         }
         function
+    }
+
+    fn service_boundary_plan() -> ServiceBoundaryPlan {
+        ServiceBoundaryPlan {
+            arguments: Vec::new(),
+            results: Vec::new(),
+            error: BoundaryErrorPlan {
+                fallback_contract_type: skiff_artifact_model::ContractTypeRef::builtin(
+                    "std.service.InternalError",
+                ),
+                fallback: BoundaryValuePlan::Linkable {
+                    carrier: BoundaryValueCarrier::DetachedValueGraph,
+                    encoding: BoundaryValueEncoding::CanonicalValue,
+                    owner: BoundaryValueOwner::Caller,
+                    lifetime: BoundaryValueLifetime::Call,
+                },
+                policy: BoundaryErrorPolicy::DynamicPublicSchema {
+                    admission: BoundaryErrorAdmission::PublicNameableSchemaClosed,
+                    fallback_identity: BoundaryErrorFallbackIdentity::StdServiceInternalError,
+                },
+                transfer: BoundaryTransfer::Move,
+                drop: BoundaryDropPlan::SnapshotRelease,
+                source: ValueProvenance::Fresh,
+            },
+            stream_item: None,
+            callbacks: ServiceCallbackPlan::None,
+            effects: CallableEffectSummary::Analyzed {
+                effects: skiff_artifact_model::CallableMayEffects {
+                    may_pending: true,
+                    pending_effect_categories: vec![
+                        skiff_artifact_model::PendingEffectCategory::ServiceCall,
+                    ],
+                    ..skiff_artifact_model::CallableMayEffects::default()
+                },
+            },
+        }
     }
 
     fn plans(unit: &MirUnit) -> BytecodeValueTransferPlans {
@@ -792,6 +838,8 @@ mod tests {
             contract_operation_id: ContractOperationId::new("operation:echo"),
             expected_protocol_identity: ServiceProtocolIdentity::new("protocol:echo"),
         };
+        let boundary_plan = service_boundary_plan();
+        let service_plans = BTreeMap::from([(service_ref.clone(), boundary_plan.clone())]);
         let service_call = CallIr {
             target: CallTargetIr::ServiceCall {
                 service_call_ref_index: skiff_artifact_model::ServiceCallRefIndex::new(0),
@@ -935,12 +983,20 @@ mod tests {
         };
         let (unit, bundle) = mir_and_bundle("calls", Vec::new(), external_refs, function);
         let plans = plans(&unit);
-        let artifact = emit_bytecode_artifact(&[unit], &[bundle], &plans)
-            .expect("service/actor/host body emits");
+        let artifact = emit_bytecode_artifact_with_service_boundary_plans(
+            &[unit],
+            &[bundle],
+            &plans,
+            &service_plans,
+        )
+        .expect("service/actor/host body emits");
         let relocations = &artifact.image.functions["calls::run"].relocations;
         assert!(relocations.iter().any(|relocation| matches!(
             relocation,
-            BytecodeRelocation::ServiceOperationRef { .. }
+            BytecodeRelocation::ServiceOperationRef {
+                service_call,
+            } if service_call.service_call() == &service_ref
+                && service_call.boundary_plan() == &boundary_plan
         )));
         assert!(relocations
             .iter()

@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use skiff_artifact_model::{
     AssignTargetIr, BinaryOpIr, CallTargetIr, CallableEffectSummary, ExprIr, ExprRefIr, LiteralIr,
     NamedUnionBranchIr, NativeTarget, StatementAttributionId, TypeDescriptorIr, TypeRefIr,
+    ServiceBoundaryPlan, ServiceCallRef,
 };
 use skiff_compiler_lowering::mir::{
     MirCallArgument, MirEmissionAnchor, MirExecutableKind, MirFunction, MirParamMode, MirSlotKind,
@@ -46,6 +47,7 @@ pub struct AdmittedPhase1BytecodeMir {
     dense_parameter_materializations: BTreeMap<String, DenseParameterMaterializationFact>,
     machine_carriers: PackageMachineCarrierFacts,
     representation_carriers: Vec<RepresentationCarrierFact>,
+    service_boundary_plans: BTreeMap<ServiceCallRef, ServiceBoundaryPlan>,
 }
 
 impl AdmittedPhase1BytecodeMir {
@@ -65,6 +67,10 @@ impl AdmittedPhase1BytecodeMir {
 
     pub(crate) fn representation_carriers(&self) -> &[RepresentationCarrierFact] {
         &self.representation_carriers
+    }
+
+    pub(crate) fn service_boundary_plans(&self) -> &BTreeMap<ServiceCallRef, ServiceBoundaryPlan> {
+        &self.service_boundary_plans
     }
 
     /// Returns the normalized, admitted MIR used to project source-owned
@@ -105,21 +111,38 @@ impl AdmittedPhase1BytecodeMir {
 pub fn admit_phase_1_bytecode_mir(
     units: &[MirUnit],
 ) -> Result<AdmittedPhase1BytecodeMir, BytecodeEmissionError> {
-    admit_phase_1_bytecode_mir_with_server_stream_authorities(units, &[])
+    admit_phase_1_bytecode_mir_with_server_stream_authorities_and_service_boundary_plans(
+        units,
+        &[],
+        &BTreeMap::new(),
+    )
 }
 
 pub fn admit_phase_1_bytecode_mir_with_server_stream_authorities(
     units: &[MirUnit],
     server_stream_authorities: &[ServerStreamGatewayAuthority],
 ) -> Result<AdmittedPhase1BytecodeMir, BytecodeEmissionError> {
+    admit_phase_1_bytecode_mir_with_server_stream_authorities_and_service_boundary_plans(
+        units,
+        server_stream_authorities,
+        &BTreeMap::new(),
+    )
+}
+
+pub fn admit_phase_1_bytecode_mir_with_server_stream_authorities_and_service_boundary_plans(
+    units: &[MirUnit],
+    server_stream_authorities: &[ServerStreamGatewayAuthority],
+    service_boundary_plans: &BTreeMap<ServiceCallRef, ServiceBoundaryPlan>,
+) -> Result<AdmittedPhase1BytecodeMir, BytecodeEmissionError> {
     let gateway_parameter_authorities = server_stream_authorities
         .iter()
         .map(|authority| GatewayParameterAuthority::new(authority.entry().clone()))
         .collect::<Vec<_>>();
-    admit_phase_1_bytecode_mir_with_gateway_authorities(
+    admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_plans(
         units,
         &gateway_parameter_authorities,
         server_stream_authorities,
+        service_boundary_plans,
     )
 }
 
@@ -127,6 +150,20 @@ pub fn admit_phase_1_bytecode_mir_with_gateway_authorities(
     units: &[MirUnit],
     gateway_parameter_authorities: &[GatewayParameterAuthority],
     server_stream_authorities: &[ServerStreamGatewayAuthority],
+) -> Result<AdmittedPhase1BytecodeMir, BytecodeEmissionError> {
+    admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_plans(
+        units,
+        gateway_parameter_authorities,
+        server_stream_authorities,
+        &BTreeMap::new(),
+    )
+}
+
+pub fn admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_plans(
+    units: &[MirUnit],
+    gateway_parameter_authorities: &[GatewayParameterAuthority],
+    server_stream_authorities: &[ServerStreamGatewayAuthority],
+    service_boundary_plans: &BTreeMap<ServiceCallRef, ServiceBoundaryPlan>,
 ) -> Result<AdmittedPhase1BytecodeMir, BytecodeEmissionError> {
     let units =
         package_type_authority::normalize_package_type_authorities(units).map_err(|error| {
@@ -222,6 +259,7 @@ pub fn admit_phase_1_bytecode_mir_with_gateway_authorities(
             )?;
         }
     }
+    validate_service_boundary_plan_coverage(&units, service_boundary_plans)?;
     let machine_carriers = analyze_machine_carriers(&units)?;
     let representation_carriers = representation_carrier::analyze(&units, &machine_carriers)?;
     Ok(AdmittedPhase1BytecodeMir {
@@ -229,7 +267,44 @@ pub fn admit_phase_1_bytecode_mir_with_gateway_authorities(
         dense_parameter_materializations,
         machine_carriers,
         representation_carriers,
+        service_boundary_plans: service_boundary_plans.clone(),
     })
+}
+
+fn validate_service_boundary_plan_coverage(
+    units: &[MirUnit],
+    service_boundary_plans: &BTreeMap<ServiceCallRef, ServiceBoundaryPlan>,
+) -> Result<(), BytecodeEmissionError> {
+    let mut required = BTreeMap::<ServiceCallRef, ()>::new();
+    for unit in units {
+        for service_call in &unit.external_refs.service_call_refs {
+            required.insert(service_call.clone(), ());
+        }
+    }
+    for service_call in required.keys() {
+        let plan = service_boundary_plans.get(service_call).ok_or_else(|| {
+            BytecodeEmissionError::MissingServiceBoundaryPlan {
+                service_call: format!("{service_call:?}"),
+            }
+        })?;
+        if plan.stream_item.is_some()
+            || !matches!(plan.callbacks, skiff_artifact_model::ServiceCallbackPlan::None)
+        {
+            return Err(BytecodeEmissionError::UnsupportedServiceBoundaryPlan {
+                location: format!("service call {service_call:?}"),
+                detail: "stream item and callback surfaces are disabled in the first service lane"
+                    .to_string(),
+            });
+        }
+    }
+    for service_call in service_boundary_plans.keys() {
+        if !required.contains_key(service_call) {
+            return Err(BytecodeEmissionError::UnexpectedServiceBoundaryPlan {
+                service_call: format!("{service_call:?}"),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn admit_function(

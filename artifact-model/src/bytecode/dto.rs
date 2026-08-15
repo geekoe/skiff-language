@@ -5,10 +5,15 @@
 //! `skip_serializing_if = Option::is_none` / `Vec::is_empty`.
 
 use std::collections::BTreeMap;
+use std::ops::{Deref, DerefMut};
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::types::TypeRefIr;
+use crate::{
+    boundary::{BoundaryFeatureUnavailableReason, BoundaryValuePlan, ValueProvenance},
+    types::TypeRefIr,
+    CallableEffectSummary, ContractTypeRef,
+};
 
 pub use crate::statement_attribution::{StatementAttributionId, StatementEntry};
 
@@ -564,6 +569,159 @@ pub struct HostEffectReference {
     pub db_operation: Option<Box<DbOperationReference>>,
 }
 
+/// Compiler-owned transfer mode for one value crossing a service boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BoundaryTransfer {
+    Copy,
+    Move,
+}
+
+/// Compiler-owned release behavior for one value crossing a service boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum BoundaryDropPlan {
+    Trivial,
+    SnapshotRelease,
+    RecursiveShape {
+        shape_ref: u32,
+    },
+    NativeAdapter {
+        adapter: NativeValueAdapterRef,
+    },
+}
+
+/// One exact boundary value fact. The canonical contract type, existing
+/// boundary value plan, transfer/drop behavior and source attribution are all
+/// carried by the compiler; the linker must not infer any of them from shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BoundaryValueFact {
+    pub contract_type: ContractTypeRef,
+    pub value_plan: BoundaryValuePlan,
+    pub transfer: BoundaryTransfer,
+    pub drop: BoundaryDropPlan,
+    pub source: ValueProvenance,
+}
+
+/// Public-schema admission rule for the open service ordinary-error channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BoundaryErrorAdmission {
+    PublicNameableSchemaClosed,
+}
+
+/// Exact fallback identity used when an ordinary provider throw cannot cross
+/// the boundary as its original public schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BoundaryErrorFallbackIdentity {
+    StdServiceInternalError,
+}
+
+/// Exact policy for one service operation's open ordinary-error channel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum BoundaryErrorPolicy {
+    DynamicPublicSchema {
+        admission: BoundaryErrorAdmission,
+        fallback_identity: BoundaryErrorFallbackIdentity,
+    },
+}
+
+/// Compiler-emitted ordinary-error boundary plan. The concrete thrown type is
+/// deliberately dynamic; the fallback value plan and policy are exact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BoundaryErrorPlan {
+    pub fallback_contract_type: ContractTypeRef,
+    pub fallback: BoundaryValuePlan,
+    pub policy: BoundaryErrorPolicy,
+    pub transfer: BoundaryTransfer,
+    pub drop: BoundaryDropPlan,
+    pub source: ValueProvenance,
+}
+
+/// Callback surface accepted by the first service boundary lane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ServiceCallbackPlan {
+    None,
+    Unsupported {
+        reason: BoundaryFeatureUnavailableReason,
+    },
+}
+
+/// Canonical cross-image service boundary plan emitted by the compiler.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServiceBoundaryPlan {
+    pub arguments: Vec<BoundaryValueFact>,
+    pub results: Vec<BoundaryValueFact>,
+    pub error: BoundaryErrorPlan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_item: Option<Box<BoundaryValueFact>>,
+    pub callbacks: ServiceCallbackPlan,
+    pub effects: CallableEffectSummary,
+}
+
+/// Exact compiler-owned service operation relocation payload. The existing
+/// consumer-owned service call facts stay available through `Deref`, while the
+/// boundary plan travels with the relocation as one typed object.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServiceCallBoundaryFacts {
+    #[serde(flatten)]
+    service_call: crate::ServiceCallRef,
+    #[serde(flatten)]
+    boundary_plan: ServiceBoundaryPlan,
+}
+
+impl ServiceCallBoundaryFacts {
+    pub fn new(service_call: crate::ServiceCallRef, boundary_plan: ServiceBoundaryPlan) -> Self {
+        Self {
+            service_call,
+            boundary_plan,
+        }
+    }
+
+    pub const fn service_call(&self) -> &crate::ServiceCallRef {
+        &self.service_call
+    }
+
+    pub const fn boundary_plan(&self) -> &ServiceBoundaryPlan {
+        &self.boundary_plan
+    }
+
+    pub fn boundary_plan_mut(&mut self) -> &mut ServiceBoundaryPlan {
+        &mut self.boundary_plan
+    }
+}
+
+impl Deref for ServiceCallBoundaryFacts {
+    type Target = crate::ServiceCallRef;
+
+    fn deref(&self) -> &Self::Target {
+        &self.service_call
+    }
+}
+
+impl DerefMut for ServiceCallBoundaryFacts {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.service_call
+    }
+}
+
 /// Relocation kinds (§3.4). Payloads carry target identity and
 /// specialization facts; resolution/linking is Phase 3B.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -583,10 +741,11 @@ pub enum BytecodeRelocation {
         package_callable_id: crate::PackageCallableId,
         specialization: BytecodeSpecialization,
     },
-    /// Consumer-owned symbolic service selector. It intentionally carries no
-    /// provider build, deployment or executable identity.
+    /// Consumer-owned symbolic service selector plus the exact
+    /// compiler-emitted boundary plan. It intentionally carries no provider
+    /// build, deployment or executable identity.
     ServiceOperationRef {
-        service_call: crate::ServiceCallRef,
+        service_call: ServiceCallBoundaryFacts,
     },
     ActorMethodRef {
         actor: crate::ServiceSymbolRef,

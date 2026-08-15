@@ -1,9 +1,12 @@
+use std::collections::BTreeMap;
+
 use skiff_artifact_identity::{assign_bytecode_identity, validate_bytecode_identity};
 use skiff_artifact_model::{
     current_platform_error_projection_registry_ref, host_effect_registry_identity,
     intrinsic_registry_identity, native_value_lifecycle_registry_identity,
     opcode_table_fingerprint, value_lifecycle_policy_identity, BytecodeArtifact, BytecodeImage,
-    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    ServiceBoundaryPlan, ServiceCallRef, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
+    BYTECODE_SCHEMA_VERSION,
 };
 use skiff_compiler_lowering::{mir::MirUnit, FrozenConstantBundle};
 
@@ -37,6 +40,7 @@ pub fn emit_bytecode_artifact(
         admitted.dense_parameter_materializations(),
         admitted.machine_carriers(),
         admitted.representation_carriers(),
+        admitted.service_boundary_plans(),
         SourceAttributionMode::AdmittedPhase1,
     )
 }
@@ -50,6 +54,20 @@ pub(super) fn emit_bytecode_artifact_unchecked(
     constants: &[FrozenConstantBundle],
     transfer_plans: &BytecodeValueTransferPlans,
 ) -> Result<BytecodeArtifact, BytecodeEmissionError> {
+    emit_bytecode_artifact_unchecked_with_service_boundary_plans(
+        units,
+        constants,
+        transfer_plans,
+        &BTreeMap::new(),
+    )
+}
+
+pub(super) fn emit_bytecode_artifact_unchecked_with_service_boundary_plans(
+    units: &[MirUnit],
+    constants: &[FrozenConstantBundle],
+    transfer_plans: &BytecodeValueTransferPlans,
+    service_boundary_plans: &BTreeMap<ServiceCallRef, ServiceBoundaryPlan>,
+) -> Result<BytecodeArtifact, BytecodeEmissionError> {
     let machine_carriers = analyze_machine_carriers(units)?;
     emit_bytecode_artifact_with_mode(
         units,
@@ -58,6 +76,7 @@ pub(super) fn emit_bytecode_artifact_unchecked(
         &Default::default(),
         &machine_carriers,
         &[],
+        service_boundary_plans,
         SourceAttributionMode::PrivateBackend,
     )
 }
@@ -72,6 +91,7 @@ fn emit_bytecode_artifact_with_mode(
     >,
     machine_carriers: &PackageMachineCarrierFacts,
     representation_carriers: &[super::admission::RepresentationCarrierFact],
+    service_boundary_plans: &BTreeMap<ServiceCallRef, ServiceBoundaryPlan>,
     source_attribution: SourceAttributionMode,
 ) -> Result<BytecodeArtifact, BytecodeEmissionError> {
     let inputs = ValidatedEmissionInputs::validate(
@@ -81,6 +101,7 @@ fn emit_bytecode_artifact_with_mode(
         dense_parameter_materializations,
         machine_carriers,
         representation_carriers,
+        service_boundary_plans,
     )?;
 
     let mut constants = build_constant_image(&inputs)?;

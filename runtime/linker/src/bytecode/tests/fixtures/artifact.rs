@@ -4,13 +4,16 @@ use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
     bytecode::opcodes::opcode_table_fingerprint, BytecodeArtifact, BytecodeFunctionOrigin,
     BytecodeImage, BytecodeIntrinsicRef, BytecodePoolEntry, BytecodePools, BytecodeRelocation,
-    BytecodeSpecialization, CallbackCaptureLayout, FrameLayout, FrozenConstantGraph,
-    HostEffectReference, HostEffectSignature, InstructionSourceSite, IntrinsicReference,
-    NativeTarget, PackageCallableId, PackageExecutableCoordinate, ParameterSlotDecl,
-    RelocatableBytecodeFunction, ResourceDropPlan, ResumeDescriptor, ResumeErrorMode,
-    SourceMapEntry, SourcePosition, SourceSpanRef, StatementAttributionId, StatementEntry,
-    SyntheticInstructionSiteReason, TypeRefIr, ValueDropPlan, ValueTransferPlan,
-    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    BoundaryDropPlan, BoundaryTransfer, BoundaryValueCarrier, BoundaryValueEncoding,
+    BoundaryValueFact, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+    BytecodeSpecialization, CallbackCaptureLayout, ContractTypeRef, FrameLayout,
+    FrozenConstantGraph, HostEffectReference, HostEffectSignature, InstructionSourceSite,
+    IntrinsicReference, NativeTarget, PackageCallableId, PackageExecutableCoordinate,
+    ParameterSlotDecl, RelocatableBytecodeFunction, ResourceDropPlan, ResumeDescriptor,
+    ResumeErrorMode, ServiceCallBoundaryFacts, ServiceCallRef, SourceMapEntry, SourcePosition,
+    SourceSpanRef, StatementAttributionId, StatementEntry, SyntheticInstructionSiteReason,
+    TypeRefIr, ValueDropPlan, ValueProvenance, ValueTransferPlan, BYTECODE_ISA_VERSION,
+    BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 
 use super::{
@@ -22,6 +25,37 @@ const MODULE: &str = "fixture";
 
 pub(super) fn admitted_bytecode(program: RootProgram) -> Arc<ValidatedBytecodeArtifact> {
     let mut artifact = bytecode_artifact(program);
+    skiff_artifact_identity::assign_bytecode_identity(&mut artifact).unwrap();
+    Arc::new(ValidatedBytecodeArtifact::admit(artifact).unwrap())
+}
+
+pub(super) fn service_operation_artifact(drifted: bool) -> Arc<ValidatedBytecodeArtifact> {
+    let mut artifact = bytecode_artifact(RootProgram::ServiceOperation);
+    if drifted {
+        let relocation = artifact
+            .image
+            .functions
+            .get_mut(ROOT_FUNCTION)
+            .unwrap()
+            .relocations
+            .first_mut()
+            .unwrap();
+        let BytecodeRelocation::ServiceOperationRef { service_call } = relocation else {
+            panic!("service operation fixture has a service relocation")
+        };
+        service_call.boundary_plan_mut().arguments.push(BoundaryValueFact {
+            contract_type: ContractTypeRef::builtin("string"),
+            value_plan: BoundaryValuePlan::Linkable {
+                carrier: BoundaryValueCarrier::DetachedValueGraph,
+                encoding: BoundaryValueEncoding::CanonicalValue,
+                owner: BoundaryValueOwner::Caller,
+                lifetime: BoundaryValueLifetime::Call,
+            },
+            transfer: BoundaryTransfer::Copy,
+            drop: BoundaryDropPlan::SnapshotRelease,
+            source: ValueProvenance::CallerParameter { index: 0 },
+        });
+    }
     skiff_artifact_identity::assign_bytecode_identity(&mut artifact).unwrap();
     Arc::new(ValidatedBytecodeArtifact::admit(artifact).unwrap())
 }
@@ -372,7 +406,10 @@ fn root_statement_entries(program: RootProgram) -> Vec<StatementEntry> {
     }
     if !matches!(
         program,
-        RootProgram::LocalCall | RootProgram::SyntheticTarget | RootProgram::ServiceDependency
+        RootProgram::LocalCall
+            | RootProgram::SyntheticTarget
+            | RootProgram::ServiceDependency
+            | RootProgram::ServiceOperation
     ) {
         return Vec::new();
     }
@@ -520,6 +557,29 @@ fn root_body(
             None,
             vec![source_map(2, 4), source_map(6, 8)],
         ),
+        RootProgram::ServiceOperation => {
+            let (provider_contract, _, provider_operation) = super::records::contract(
+                "example.bytecode-link-provider",
+                "call",
+                false,
+            );
+            let service_call = ServiceCallRef {
+                service_requirement_slot: 7,
+                contract_operation_id: provider_operation,
+                expected_protocol_identity: provider_contract.service_protocol_identity.clone(),
+            };
+            (
+                vec![0x22, 0, 0, 0, 0, 0x25],
+                vec![BytecodeRelocation::ServiceOperationRef {
+                    service_call: ServiceCallBoundaryFacts::new(
+                        service_call,
+                        super::records::service_boundary_plan(),
+                    ),
+                }],
+                Some(service_resume_descriptor()),
+                vec![source_map(0, 5)],
+            )
+        }
         RootProgram::Constant(_) => (vec![0x00, 0, 0x08, 0x25], Vec::new(), None, Vec::new()),
     }
 }
@@ -606,6 +666,10 @@ fn pools(program: RootProgram) -> BytecodePools {
                 type_entry(number_stream_type(), stream_plan()),
                 type_entry(TypeRefIr::builtin("number"), snapshot_plan()),
             ],
+            RootProgram::ServiceOperation => vec![type_entry(
+                TypeRefIr::builtin("std.service.InternalError"),
+                snapshot_plan(),
+            )],
             _ => Vec::new(),
         },
         shapes: match program {
@@ -752,6 +816,21 @@ fn reordered_stream_next_resume_descriptors() -> Vec<BytecodePoolEntry> {
 
 fn host_resume_descriptor() -> ResumeDescriptor {
     host_resume_descriptor_at(0, 5)
+}
+
+fn service_resume_descriptor() -> ResumeDescriptor {
+    ResumeDescriptor {
+        function_key: ROOT_FUNCTION.to_string(),
+        site_pc: 0,
+        resume_pc: 5,
+        end_resume_pc: None,
+        expected_stack_height_before_result: 0,
+        result_type_refs: Vec::new(),
+        result_plans: Vec::new(),
+        result_materializations: Vec::new(),
+        emit_stream_item_shape_ref: None,
+        error_mode: ResumeErrorMode::RaiseAtSite,
+    }
 }
 
 fn host_resume_descriptor_at(site_pc: u32, resume_pc: u32) -> ResumeDescriptor {

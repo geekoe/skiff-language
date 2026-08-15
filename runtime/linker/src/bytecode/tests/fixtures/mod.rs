@@ -70,6 +70,7 @@ pub(super) enum RootProgram {
     SyntheticTarget,
     UnreachableCallback,
     ServiceDependency,
+    ServiceOperation,
     Interface,
     UnreachableInterface,
     Host,
@@ -175,6 +176,21 @@ impl Fixture {
 
     pub(super) fn service_dependency() -> Self {
         Self::new(RootProgram::ServiceDependency, false)
+    }
+
+    pub(super) fn service_operation() -> Self {
+        Self::new(RootProgram::ServiceOperation, false)
+    }
+
+    pub(super) fn service_operation_drifted() -> Self {
+        Self::new_with_options(
+            RootProgram::ServiceOperation,
+            false,
+            false,
+            None,
+            false,
+            Some(artifact::service_operation_artifact(true)),
+        )
     }
 
     pub(super) fn gateway_server_stream() -> Self {
@@ -373,7 +389,7 @@ impl Fixture {
     }
 
     fn new(program: RootProgram, entry_alias: bool) -> Self {
-        Self::new_with_options(program, entry_alias, false, None, false)
+        Self::new_with_options(program, entry_alias, false, None, false, None)
     }
 
     fn new_gateway(dispatch_mode: GatewayDispatchMode, guard: bool, pre: bool) -> Self {
@@ -444,6 +460,7 @@ impl Fixture {
                 constant: None,
             }),
             conflicting_type_surfaces,
+            None,
         )
     }
 
@@ -453,12 +470,15 @@ impl Fixture {
         include_normalization_surface: bool,
         normalization_dependency: Option<NormalizationDependency>,
         conflicting_type_surfaces: bool,
+        bytecode_override: Option<Arc<ValidatedBytecodeArtifact>>,
     ) -> Self {
-        let bytecode = if include_normalization_surface {
-            normalization_bytecode(program)
-        } else {
-            artifact::admitted_bytecode(program)
-        };
+        let bytecode = bytecode_override.unwrap_or_else(|| {
+            if include_normalization_surface {
+                normalization_bytecode(program)
+            } else {
+                artifact::admitted_bytecode(program)
+            }
+        });
         let alias = entry_alias.then(|| PackageCallableId::new(ENTRY_ALIAS));
         let mut package = package::package(
             &bytecode,
@@ -501,7 +521,10 @@ impl Fixture {
         );
         contracts.insert(own_contract_reference.clone(), own_contract);
 
-        let service_selector = if program == RootProgram::ServiceDependency {
+        let service_selector = if matches!(
+            program,
+            RootProgram::ServiceDependency | RootProgram::ServiceOperation
+        ) {
             let (provider, provider_reference, provider_operation) =
                 records::contract("example.bytecode-link-provider", "call", false);
             records::add_service_requirement(
