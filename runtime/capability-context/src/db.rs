@@ -11,6 +11,7 @@ use skiff_runtime_model::{
     runtime_value::RuntimeValue,
     service_error::{CatchIdentity, PlatformBuiltinErrorIdentity},
 };
+use tokio::sync::Mutex;
 
 mod prepared_runtime;
 
@@ -1046,6 +1047,14 @@ pub trait DbCapabilityStoreApi: Send + Sync {
 #[derive(Clone)]
 pub struct DbCapabilityStore {
     inner: Arc<dyn DbCapabilityStoreApi>,
+    // One request-scoped capability store owns at most one active DB
+    // transaction token; the provider still owns its physical session.
+    transaction: Arc<DbTransactionGuard>,
+}
+
+#[derive(Default)]
+struct DbTransactionGuard {
+    active: Mutex<bool>,
 }
 
 impl DbCapabilityStore {
@@ -1055,11 +1064,15 @@ impl DbCapabilityStore {
     {
         Self {
             inner: Arc::new(inner),
+            transaction: Arc::new(DbTransactionGuard::default()),
         }
     }
 
     pub fn from_arc(inner: Arc<dyn DbCapabilityStoreApi>) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            transaction: Arc::new(DbTransactionGuard::default()),
+        }
     }
 
     pub fn as_api(&self) -> &dyn DbCapabilityStoreApi {
@@ -1067,15 +1080,42 @@ impl DbCapabilityStore {
     }
 
     pub async fn begin_transaction(&self) -> DbCapabilityResult<()> {
-        self.inner.begin_transaction().await
+        let mut active = self.transaction.active.lock().await;
+        if *active {
+            return Err(DbCapabilityError::decode(
+                "nested or reentrant db transaction is not supported",
+            ));
+        }
+        *active = true;
+        drop(active);
+        if let Err(error) = self.inner.begin_transaction().await {
+            *self.transaction.active.lock().await = false;
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub async fn commit_transaction(&self) -> DbCapabilityResult<()> {
-        self.inner.commit_transaction().await
+        let active = self.transaction.active.lock().await;
+        if !*active {
+            return Err(DbCapabilityError::decode(
+                "db transaction commit without active transaction",
+            ));
+        }
+        drop(active);
+        let result = self.inner.commit_transaction().await;
+        *self.transaction.active.lock().await = false;
+        result
     }
 
     pub async fn abort_transaction(&self) {
+        let active = self.transaction.active.lock().await;
+        if !*active {
+            return;
+        }
+        drop(active);
         self.inner.abort_transaction().await;
+        *self.transaction.active.lock().await = false;
     }
 
     pub async fn find_one_by_key(

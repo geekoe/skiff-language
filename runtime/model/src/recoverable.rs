@@ -229,6 +229,95 @@ pub struct LocalConcreteRestoreKey {
     pub concrete_type_identity: String,
 }
 
+impl LocalConcreteRestoreKey {
+    pub fn new(owner: LocalConcreteOwner, concrete_type_identity: impl Into<String>) -> Self {
+        Self {
+            owner,
+            concrete_type_identity: concrete_type_identity.into(),
+        }
+    }
+
+    pub fn validate(&self, path: &str) -> RecoverableValidationResult {
+        self.owner.validate(path)?;
+        if self.concrete_type_identity.trim().is_empty() {
+            return Err(RecoverableStateInvalid::new(
+                path,
+                "LocalConcrete restore key must include a non-empty concrete type identity",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl LocalConcreteOwner {
+    pub fn validate(&self, path: &str) -> RecoverableValidationResult {
+        match self {
+            Self::Service => Ok(()),
+            Self::Package { package_id } if !package_id.trim().is_empty() => Ok(()),
+            Self::Package { .. } => Err(RecoverableStateInvalid::new(
+                path,
+                "LocalConcrete package owner must include a non-empty package id",
+            )),
+        }
+    }
+}
+
+impl RecoverableCodeIdentity {
+    pub fn local_concrete_restore_key(&self) -> Option<LocalConcreteRestoreKey> {
+        match self {
+            Self::LocalConcrete {
+                owner,
+                concrete_type_identity,
+            } => Some(LocalConcreteRestoreKey::new(
+                owner.clone(),
+                concrete_type_identity.clone(),
+            )),
+            Self::None | Self::NativeAdapter { .. } => None,
+        }
+    }
+
+    pub fn validate(&self, path: &str) -> RecoverableValidationResult {
+        match self {
+            Self::None => Ok(()),
+            Self::LocalConcrete {
+                owner,
+                concrete_type_identity,
+            } => LocalConcreteRestoreKey::new(owner.clone(), concrete_type_identity.clone())
+                .validate(path),
+            Self::NativeAdapter {
+                adapter_identity,
+                adapter_schema_version,
+                native_type_identity,
+                owner,
+            } => {
+                if adapter_identity.trim().is_empty()
+                    || adapter_schema_version.trim().is_empty()
+                    || native_type_identity.trim().is_empty()
+                {
+                    return Err(RecoverableStateInvalid::new(
+                        path,
+                        "NativeAdapter code identity must not contain empty identity fields",
+                    ));
+                }
+                if let NativeAdapterOwner::Artifact {
+                    artifact_identity,
+                    build_id,
+                    ..
+                } = owner
+                {
+                    if artifact_identity.trim().is_empty() || build_id.trim().is_empty() {
+                        return Err(RecoverableStateInvalid::new(
+                            path,
+                            "NativeAdapter artifact owner must include exact artifact and build identities",
+                        ));
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum RecoverableCodeIdentity {
@@ -556,6 +645,7 @@ impl RecoverableValidator<'_> {
                 ),
             ));
         }
+        node.code_identity.validate(path)?;
         if matches!(node.state, RecoverableState::InterfaceValue(_))
             && !matches!(node.code_identity, RecoverableCodeIdentity::None)
         {

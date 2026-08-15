@@ -462,3 +462,88 @@ fn invalid_schema_and_limits_fail_closed() {
         .message()
         .contains("node count exceeds"));
 }
+
+#[test]
+fn local_concrete_restore_key_rejects_empty_stable_identity() {
+    let empty_concrete = RecoverableNode::plain(
+        RecoverableValueKind::NominalObject,
+        RecoverableState::NominalObject(NominalObjectState::DefaultFields { fields: Vec::new() }),
+    );
+    let mut empty_concrete = empty_concrete;
+    empty_concrete.code_identity = RecoverableCodeIdentity::LocalConcrete {
+        owner: LocalConcreteOwner::Service,
+        concrete_type_identity: String::new(),
+    };
+
+    let error = RecoverableEnvelope::new(empty_concrete)
+        .validate(&RecoverableValidationLimits::default())
+        .expect_err("empty LocalConcrete type identity must fail closed");
+    assert_eq!(error.path(), "$");
+    assert!(error.message().contains("non-empty concrete type identity"));
+
+    let empty_package = RecoverableNode::plain(
+        RecoverableValueKind::NominalObject,
+        RecoverableState::NominalObject(NominalObjectState::DefaultFields { fields: Vec::new() }),
+    );
+    let mut empty_package = empty_package;
+    empty_package.code_identity = RecoverableCodeIdentity::LocalConcrete {
+        owner: LocalConcreteOwner::Package {
+            package_id: " ".to_string(),
+        },
+        concrete_type_identity: "pkg.User".to_string(),
+    };
+
+    let error = RecoverableEnvelope::new(empty_package)
+        .validate(&RecoverableValidationLimits::default())
+        .expect_err("empty LocalConcrete package owner must fail closed");
+    assert!(error.message().contains("non-empty package id"));
+}
+
+#[test]
+fn native_adapter_artifact_owner_requires_exact_build_identity() {
+    for (artifact_identity, build_id) in [("", "build-1"), ("svc/files", ""), ("", "")] {
+        let node = RecoverableNode {
+            value_kind: RecoverableValueKind::String,
+            variant_identity: RecoverableVariantIdentity::None,
+            code_identity: RecoverableCodeIdentity::NativeAdapter {
+                adapter_identity: "adapter".to_string(),
+                adapter_schema_version: "1".to_string(),
+                owner: NativeAdapterOwner::Artifact {
+                    artifact_identity: artifact_identity.to_string(),
+                    build_id: build_id.to_string(),
+                    package: None,
+                },
+                native_type_identity: "std.FileHandle".to_string(),
+            },
+            state: RecoverableState::String("state".to_string()),
+        };
+
+        let error = RecoverableEnvelope::new(node)
+            .validate(&RecoverableValidationLimits::default())
+            .expect_err("empty artifact/build identity must fail closed");
+        assert!(
+            error
+                .message()
+                .contains("exact artifact and build identities"),
+            "{artifact_identity:?}/{build_id:?}: {error}"
+        );
+    }
+}
+
+#[test]
+fn artifact_collector_keeps_distinct_builds_under_the_same_node_path() {
+    let mut collector = RecoverableArtifactCollector::default();
+    collector.insert_ref("svc/files", "build-a", &None, "$.root");
+    collector.insert_ref("svc/files", "build-b", &None, "$.root");
+    collector.insert_ref("svc/files", "build-b", &None, "$.root");
+
+    let refs = collector.into_refs();
+
+    assert_eq!(refs.len(), 2, "same path must not merge across builds");
+    let build_ids = refs
+        .iter()
+        .map(|reference| reference.build_id.as_str())
+        .collect::<Vec<_>>();
+    assert!(build_ids.contains(&"build-a"));
+    assert!(build_ids.contains(&"build-b"));
+}

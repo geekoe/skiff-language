@@ -229,6 +229,147 @@ async fn prepared_db_addition_preserves_raw_transaction_and_lease_forwarding() {
         .await
         .expect("commit transaction");
     store.abort_transaction().await;
-    assert_eq!(state.raw_calls(), 7);
+    assert_eq!(state.raw_calls(), 6);
     assert_eq!(state.legacy_runtime_calls(), 0);
+}
+
+#[tokio::test]
+async fn db_capability_rejects_nested_or_reentrant_transaction_begin() {
+    let (store, state) = default_prepared_store();
+    store.begin_transaction().await.expect("begin transaction");
+    let cloned = store.clone();
+
+    let error = cloned
+        .begin_transaction()
+        .await
+        .expect_err("nested/reentrant begin must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("nested or reentrant db transaction"),
+        "{error}"
+    );
+    assert_eq!(
+        state.raw_calls(),
+        1,
+        "guard must reject before provider begin"
+    );
+
+    store
+        .commit_transaction()
+        .await
+        .expect("outer transaction should still commit");
+    assert_eq!(state.raw_calls(), 2);
+}
+
+#[tokio::test]
+async fn db_capability_rejects_commit_without_active_transaction() {
+    let (store, state) = default_prepared_store();
+
+    let error = store
+        .commit_transaction()
+        .await
+        .expect_err("commit without begin must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("commit without active transaction"),
+        "{error}"
+    );
+    assert_eq!(
+        state.raw_calls(),
+        0,
+        "guard must reject before provider commit"
+    );
+}
+
+#[tokio::test]
+async fn db_capability_abort_cleans_up_and_allows_a_fresh_transaction() {
+    let (store, state) = default_prepared_store();
+    store.begin_transaction().await.expect("begin transaction");
+    store.abort_transaction().await;
+    store
+        .begin_transaction()
+        .await
+        .expect("rebegin after abort");
+    store
+        .commit_transaction()
+        .await
+        .expect("fresh transaction should commit");
+
+    assert_eq!(state.raw_calls(), 4);
+    store.abort_transaction().await;
+    assert_eq!(
+        state.raw_calls(),
+        4,
+        "abort without active must be idempotent"
+    );
+}
+
+#[tokio::test]
+async fn db_capability_transaction_guard_preserves_prepared_read_write_lane() {
+    let (store, state) = prepared_store(None);
+    store.begin_transaction().await.expect("begin transaction");
+    let mut heap = RequestHeap::default();
+
+    let created = store
+        .prepare_create_runtime("Item", &RuntimeValue::Null, &mut heap, runtime_context())
+        .expect("prepare create inside transaction")
+        .into_wait()
+        .await
+        .expect("create wait inside transaction")
+        .finalize(&mut heap)
+        .expect("create finalize inside transaction");
+    assert!(matches!(created, RuntimeValue::Heap(_)));
+
+    let found = store
+        .prepare_find_one_by_key_runtime(
+            "Item",
+            DbKey::new(json!("one")),
+            None,
+            &mut heap,
+            runtime_context(),
+        )
+        .expect("prepare find inside transaction")
+        .into_wait()
+        .await
+        .expect("find wait inside transaction")
+        .finalize(&mut heap)
+        .expect("find finalize inside transaction");
+    assert_eq!(found, Some(RuntimeValue::String("key".to_string())));
+
+    store
+        .commit_transaction()
+        .await
+        .expect("commit prepared DB lane");
+    assert_eq!(state.raw_calls(), 2);
+    assert_eq!(state.wait_starts(), 2);
+    assert_eq!(state.finalize_calls(), 2);
+}
+
+#[tokio::test]
+async fn db_capability_commit_failure_still_releases_the_transaction_token() {
+    let (store, state) = default_prepared_store();
+    state.set_commit_fails(true);
+    store.begin_transaction().await.expect("begin transaction");
+
+    let error = store
+        .commit_transaction()
+        .await
+        .expect_err("provider commit failure must propagate");
+    assert!(
+        error.to_string().contains("prepared DB commit failure"),
+        "{error}"
+    );
+
+    state.set_commit_fails(false);
+    store
+        .begin_transaction()
+        .await
+        .expect("rebegin after failed commit");
+    store
+        .commit_transaction()
+        .await
+        .expect("clean commit after failure cleanup");
+    assert_eq!(state.raw_calls(), 4);
 }

@@ -26,6 +26,7 @@ pub(crate) struct TestStoreState {
     finalize_calls: AtomicUsize,
     create_finalize_fails: AtomicBool,
     replace_wait_fails: AtomicBool,
+    commit_fails: AtomicBool,
     create_gate: Mutex<Option<oneshot::Receiver<()>>>,
 }
 
@@ -83,6 +84,14 @@ impl TestStoreState {
 
     pub(crate) fn replace_wait_fails(&self) -> bool {
         self.replace_wait_fails.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn set_commit_fails(&self, fails: bool) {
+        self.commit_fails.store(fails, Ordering::SeqCst);
+    }
+
+    pub(crate) fn commit_fails(&self) -> bool {
+        self.commit_fails.load(Ordering::SeqCst)
     }
 
     pub(crate) fn take_create_gate(&self) -> Option<oneshot::Receiver<()>> {

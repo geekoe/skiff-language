@@ -7,7 +7,15 @@ macro_rules! impl_raw_read_api {
 
         fn commit_transaction(&self) -> DbCapabilityFuture<'_, ()> {
             self.state.record_raw_call();
-            Box::pin(async { Ok(()) })
+            let state = Arc::clone(&self.state);
+            Box::pin(async move {
+                if state.commit_fails() {
+                    return Err(DbCapabilityError::decode(
+                        "prepared DB commit failure",
+                    ));
+                }
+                Ok(())
+            })
         }
 
         fn abort_transaction(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
