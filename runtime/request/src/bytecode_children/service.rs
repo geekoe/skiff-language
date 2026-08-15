@@ -20,7 +20,7 @@ use skiff_runtime_vm::{
 
 use super::{
     service_operation_by_index, BytecodeChildHeapFactory, BytecodeRequestChildComposition,
-    BytecodeServiceChildError,
+    BytecodeServiceChildError, ServiceChildThrowMaterializer,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -208,7 +208,10 @@ pub(crate) fn execute_service_child(
             ));
         }
     };
-    let finish = ServiceChildFinish { boundary_plan };
+    let finish = ServiceChildFinish {
+        boundary_plan,
+        throw_materializer: Arc::clone(&composition.throw_materializer),
+    };
     Ok(BytecodeChildHandoff::Ready(BytecodeChildStart {
         unit: fiber,
         resume,
@@ -265,6 +268,7 @@ fn service_error(error: BytecodeServiceChildError) -> BytecodeSchedulerError {
 
 struct ServiceChildFinish {
     boundary_plan: skiff_runtime_linked_bytecode::LinkedServiceBoundaryPlan,
+    throw_materializer: Arc<dyn ServiceChildThrowMaterializer>,
 }
 
 impl ChildFinish<VmFiber, VmResumeToken> for ServiceChildFinish {
@@ -277,15 +281,13 @@ impl ChildFinish<VmFiber, VmResumeToken> for ServiceChildFinish {
         _budget: &mut dyn VmBudget,
     ) -> Result<ResumeOutcome, ChildFinishError<VmFiber>> {
         if child_result.thrown_diagnostic().is_some() {
-            let (mut cause, mut escrow) = child_result.into_terminal();
-            if let Some(cause) = cause.as_mut() {
-                let _ = cause.release_all(child_heap.heap_mut());
-            }
-            let _ = escrow.release_all(child_heap.heap_mut());
-            return Err(ChildFinishError::Failure(BytecodeSchedulerError::Port(
-                "service child ordinary throw requires K6 cross-image VmOwnedException API"
-                    .to_string(),
-            )));
+            return self.throw_materializer.materialize_throw(
+                child_result,
+                child_heap,
+                parent_heap,
+                resume.image(),
+                &self.boundary_plan,
+            );
         }
         let (outcome, mut residual) = match child_result.into_resume() {
             Ok(parts) => parts,

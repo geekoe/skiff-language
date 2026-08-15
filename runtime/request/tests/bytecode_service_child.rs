@@ -6,7 +6,10 @@ mod tests {
         PackageBuildId, ServiceContractRef, ServiceProtocolIdentity, ServiceRequirementKey,
     };
     use skiff_runtime_deployment_image::ServiceDependencySlot;
-    use skiff_runtime_request::{BytecodeRequestChildComposition, BytecodeServiceChildError};
+    use skiff_runtime_request::{
+        BytecodeRequestChildComposition, BytecodeServiceChildError, BytecodeServiceResolver,
+        FailClosedServiceChildThrowMaterializer, ServiceChildThrowMaterializer,
+    };
 
     #[test]
     fn default_service_resolver_fails_closed_for_missing_provider() {
@@ -43,5 +46,65 @@ mod tests {
             } if service_id == "example.com/provider" && contract_version == "1.0.0"
         ));
         let _ = Arc::new(composition);
+    }
+
+    #[test]
+    fn protocol_mismatch_resolver_failure_is_typed() {
+        struct ProtocolMismatchResolver;
+
+        impl BytecodeServiceResolver for ProtocolMismatchResolver {
+            fn resolve_service(
+                &self,
+                _slot: &ServiceDependencySlot,
+                _operation: &skiff_artifact_model::ContractOperationId,
+                _expected_protocol: &ServiceProtocolIdentity,
+            ) -> Result<
+                std::sync::Arc<skiff_runtime_linker::DeploymentExecutionImage>,
+                BytecodeServiceChildError,
+            > {
+                Err(BytecodeServiceChildError::ProtocolMismatch {
+                    expected: ServiceProtocolIdentity::new("expected-protocol"),
+                    actual: ServiceProtocolIdentity::new("actual-protocol"),
+                })
+            }
+        }
+
+        let mut composition = BytecodeRequestChildComposition::default();
+        composition.service_resolver = Arc::new(ProtocolMismatchResolver);
+        let slot = ServiceDependencySlot::try_new(
+            ServiceRequirementKey {
+                caller_package_build_id: PackageBuildId::new("build:caller"),
+                service_requirement_slot: 0,
+            },
+            ServiceContractRef {
+                service_id: "example.com/provider".to_string(),
+                contract_version: "1.0.0".to_string(),
+                service_protocol_identity: ServiceProtocolIdentity::new("expected-protocol"),
+            },
+            Vec::<skiff_artifact_model::ContractOperationId>::new(),
+        )
+        .expect("dependency slot accepts an empty operation set");
+        let operation =
+            skiff_artifact_identity::contract_operation_id("example.com/provider", "1.0.0", "run")
+                .unwrap();
+        let error = composition
+            .service_resolver
+            .resolve_service(
+                &slot,
+                &operation,
+                &ServiceProtocolIdentity::new("expected-protocol"),
+            )
+            .expect_err("protocol mismatch resolver must fail closed");
+        assert!(matches!(
+            error,
+            BytecodeServiceChildError::ProtocolMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn fail_closed_throw_materializer_is_injectable_into_composition() {
+        let mut composition = BytecodeRequestChildComposition::default();
+        composition.throw_materializer = Arc::new(FailClosedServiceChildThrowMaterializer);
+        let _: Arc<dyn ServiceChildThrowMaterializer> = Arc::clone(&composition.throw_materializer);
     }
 }

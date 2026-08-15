@@ -18,7 +18,8 @@ pub mod vm_heap;
 
 pub use bytecode_children::{
     BytecodeChildError, BytecodeChildHeapFactory, BytecodeRequestChildComposition,
-    BytecodeServiceChildError, BytecodeServiceResolver, RequestChildHeapFactory,
+    BytecodeServiceChildError, BytecodeServiceResolver, FailClosedServiceChildThrowMaterializer,
+    RequestChildHeapFactory, ServiceChildThrowMaterializer,
 };
 pub use bytecode_host_effects::{
     BytecodeHttpClientPort, BytecodeHttpFailure, BytecodeHttpFuture, BytecodeHttpRequest,

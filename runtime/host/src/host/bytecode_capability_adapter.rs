@@ -10,7 +10,8 @@ use skiff_runtime_request::{
     BytecodeHttpClientPort, BytecodeHttpFailure, BytecodeHttpFuture, BytecodeHttpRequest,
     BytecodeHttpResponse, BytecodeHttpStreamRegistrar, BytecodeHttpStreamResponse,
     BytecodeRequestChildComposition, BytecodeServiceChildError, BytecodeServiceResolver,
-    HttpNameValue, OwnedExecutionControl, RequestMemoryLedger,
+    FailClosedServiceChildThrowMaterializer, HttpNameValue, OwnedExecutionControl,
+    RequestMemoryLedger,
 };
 
 use crate::{
@@ -360,6 +361,7 @@ pub(crate) fn bytecode_request_child_composition(
         service_resolver: Arc::new(ProductionBytecodeServiceResolver::new(host.clone())),
         child_heap_factory: None,
         heap_limits: limits,
+        throw_materializer: Arc::new(FailClosedServiceChildThrowMaterializer),
     }
 }
 

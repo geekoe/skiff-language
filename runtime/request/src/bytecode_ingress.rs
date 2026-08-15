@@ -1219,6 +1219,19 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
         }
     }
 
+    fn park_child(
+        &self,
+        request: BytecodeParkRequest<VmFiber>,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> Result<(), BytecodeParkFailure<VmFiber>> {
+        // Service children publish actual-Pending operations through the same
+        // request pending registry as host adapters. The async provider-load
+        // extension can return a Pending child handoff here without changing
+        // the scheduler's request authority.
+        self.park_adapter(request, heap, budget)
+    }
+
     fn park_adapter(
         &self,
         request: BytecodeParkRequest<VmFiber>,

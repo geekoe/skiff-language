@@ -11,10 +11,12 @@ use skiff_artifact_model::{ContractOperationId, ServiceProtocolIdentity};
 use skiff_runtime_deployment_image::{DeploymentOwnerIdentity, ServiceDependencySlot};
 use skiff_runtime_linked_bytecode::ServiceOperationIndex;
 use skiff_runtime_linker::DeploymentExecutionImage;
-use skiff_runtime_model::request_heap::RequestHeapLimits;
+use skiff_runtime_model::{request_heap::RequestHeapLimits, vm_heap::VmHeap};
 use skiff_runtime_scheduler::{
-    ChildHeapCarrier, ChildHeapOwnerRegistration, OwnerCreationError, RequestResourceTable,
+    BytecodeSchedulerError, ChildFinishError, ChildHeapCarrier, ChildHeapOwnerRegistration,
+    OwnerCreationError, RequestResourceTable,
 };
+use skiff_runtime_vm::{ResumeOutcome, VmCompletion, VmFiber};
 
 use crate::{memory_ledger::MemoryLedgerError, vm_heap::RequestVmHeap, RequestMemoryLedger};
 
@@ -50,6 +52,48 @@ pub enum BytecodeChildError {
     DomainOverflow,
     #[error("child heap construction failed: {message}")]
     Construction { message: String },
+}
+
+/// Cross-image service-throw materialization authority.
+///
+/// K6's cross-image `VmOwnedException` mint is not available to X6 yet.
+/// The production composition therefore keeps a fail-closed default that
+/// preserves the child completion and lets the scheduler retain the exact
+/// exception owner. A later K6-backed implementation can replace this trait
+/// without changing the request authority path.
+pub trait ServiceChildThrowMaterializer: Send + Sync + 'static {
+    fn materialize_throw(
+        &self,
+        child_result: VmCompletion,
+        child_heap: &mut ChildHeapCarrier,
+        parent_heap: &mut dyn VmHeap,
+        parent_image: &DeploymentExecutionImage,
+        boundary_plan: &skiff_runtime_linked_bytecode::LinkedServiceBoundaryPlan,
+    ) -> Result<ResumeOutcome, ChildFinishError<VmFiber>>;
+}
+
+/// Fail-closed service throw materializer used until K6 provides the
+/// cross-image exception mint.
+#[derive(Default)]
+pub struct FailClosedServiceChildThrowMaterializer;
+
+impl ServiceChildThrowMaterializer for FailClosedServiceChildThrowMaterializer {
+    fn materialize_throw(
+        &self,
+        child_result: VmCompletion,
+        _child_heap: &mut ChildHeapCarrier,
+        _parent_heap: &mut dyn VmHeap,
+        _parent_image: &DeploymentExecutionImage,
+        _boundary_plan: &skiff_runtime_linked_bytecode::LinkedServiceBoundaryPlan,
+    ) -> Result<ResumeOutcome, ChildFinishError<VmFiber>> {
+        Err(ChildFinishError::result_retained(
+            BytecodeSchedulerError::Port(
+                "service child ordinary throw requires K6 cross-image VmOwnedException API"
+                    .to_string(),
+            ),
+            child_result,
+        ))
+    }
 }
 
 /// Host/provider-owned service child resolver.
@@ -97,6 +141,9 @@ pub struct BytecodeRequestChildComposition {
     pub service_resolver: Arc<dyn BytecodeServiceResolver>,
     pub child_heap_factory: Option<Arc<dyn BytecodeChildHeapFactory>>,
     pub heap_limits: RequestHeapLimits,
+    /// Cross-image throw materialization seam. The default is fail-closed and
+    /// preserves the child completion until K6 supplies a real mint.
+    pub throw_materializer: Arc<dyn ServiceChildThrowMaterializer>,
 }
 
 impl Default for BytecodeRequestChildComposition {
@@ -106,6 +153,7 @@ impl Default for BytecodeRequestChildComposition {
             service_resolver: Arc::new(FailClosedServiceResolver),
             child_heap_factory: None,
             heap_limits: RequestHeapLimits::default(),
+            throw_materializer: Arc::new(FailClosedServiceChildThrowMaterializer),
         }
     }
 }
