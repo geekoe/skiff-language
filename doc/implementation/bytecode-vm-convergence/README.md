@@ -1,6 +1,6 @@
 # Bytecode VM 架构收敛重构总计划
 
-> Status: project plan; Phase 0/1/2/3/4 accepted; Phase 5 active in recovery epoch r1
+> Status: project plan; Phase 0/1/2/3/4/5 accepted
 >
 > Created: 2026-08-12
 >
@@ -338,13 +338,12 @@ Phase plan 只冻结角色分离、write set 和验收约束；实际 Agent、wo
 | Phase 2 | accepted; [`results/phase-2.md`](./results/phase-2.md) |
 | Phase 3 | accepted; [`results/phase-3.md`](./results/phase-3.md) |
 | Phase 4 | accepted; [`results/phase-4.md`](./results/phase-4.md) |
-| Phase 5 | active; Contract Amendment r2 + [`tasks/phase-5-execution-map.md`](./tasks/phase-5-execution-map.md) |
+| Phase 5 | accepted; [`results/phase-5.md`](./results/phase-5.md) |
 | Phase 6–7 | outline only; not implementation-ready |
 
-Phase 0/1/2/3/4 均已由独立 Acceptance Agent 在 exact detached candidate 上通过 canonical Gate，且各 result
+Phase 0/1/2/3/4/5 均已由独立 Acceptance Agent 在 exact detached candidate 上通过 canonical Gate，且各 result
 commit 已合入 `main`（`results/phase-*.md` 记录 accepted candidate、merge commit/tree 与独立 Acceptance
-receipt）。Phase 5 从 exact Phase 4 main baseline 进入 recovery epoch r1；旧中断 lanes 全部只是 audit/salvage
-source，不构成已完成成果。Phase 5 的 architecture/decision 文档不设独立 review/PASS 开码门禁；最终只对 frozen
+receipt）。Phase 5 的 architecture/decision 文档不设独立 review/PASS 开码门禁；最终已对 frozen
 implementation candidate 做 semantic review 与 Acceptance。Phase 6–7 仍未授权 production implementation。
 
 **稳定 dev env 运营注意**：本机常驻 dev 进程（router/runtime/各 client）仍在运行旧二进制，`main` 上

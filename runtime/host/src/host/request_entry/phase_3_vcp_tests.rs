@@ -36,16 +36,8 @@ const PHASE3_PENDING_THROW_PACKAGE_ID: &str = "test.skiff/bytecode-vm-phase-3-pe
 /// unwind cleanup-owner release sequence and the external terminal exactly
 /// once.
 ///
-/// Current real red on the merged tree (recorded, not faked): K3's kernel and
-/// C3's emission are joined, and each remaining scenario fails inside the
-/// compiler chain, not in this harness. The union-leaf VCP fixture stops in
-/// typed File IR lowering ("missing constructor validation fact ... constructing
-/// `LeafB`"), the mismatch negative in MIR slot typing ("slot 2 (`attempt`) has
-/// no static type"), and the uncaught negative in C3's emission ("throw at pc
-/// 17 requires exactly one source/synthetic site (found 0)"). The harness
-/// fails on the production authoring seam with the full deterministic
-/// rejection chain; each scenario stays red until its exact producer gap
-/// closes.
+/// Phase 3 is accepted; this harness passes through the production authoring
+/// seam and remains a permanent regression for union-leaf catch/rethrow.
 #[tokio::test(flavor = "current_thread")]
 async fn phase_3_vcp_production_composition() {
     let fixture = publish_or_panic(
