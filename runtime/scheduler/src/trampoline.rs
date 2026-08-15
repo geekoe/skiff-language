@@ -285,7 +285,7 @@ impl<U, R> FlatTrampoline<U, R> {
     /// The existing [`Self::new`] path remains available for single-heap
     /// callers that drive a request-owned heap outside the trampoline. Carrier
     /// callers use this constructor and never hand the parent heap to a child.
-    pub fn with_child_heap(
+    pub(crate) fn with_child_heap(
         root: U,
         active_heap: ChildHeapCarrier,
         child_owners: ChildOwnerRegistration,
@@ -581,7 +581,13 @@ mod tests {
 
         heap.publish_staging_root(ValueSlot::integer(7)).unwrap();
         assert_eq!(heap.state(), super::ChildHeapState::Staging);
-        assert_eq!(heap.staging_roots(), &[ValueSlot::integer(7)]);
+        assert_eq!(
+            heap.staging_roots()
+                .iter()
+                .map(ValueSlot::as_integer)
+                .collect::<Vec<_>>(),
+            vec![Some(7)]
+        );
 
         struct CollectRoots(Vec<ValueSlot>);
 
@@ -594,7 +600,10 @@ mod tests {
 
         let mut roots = CollectRoots(Vec::new());
         heap.visit_roots(&mut roots).unwrap();
-        assert_eq!(roots.0, [ValueSlot::integer(7)]);
+        assert_eq!(
+            roots.0.iter().map(ValueSlot::as_integer).collect::<Vec<_>>(),
+            vec![Some(7)]
+        );
 
         heap.mark_terminal();
         assert_eq!(heap.state(), super::ChildHeapState::Terminal);
