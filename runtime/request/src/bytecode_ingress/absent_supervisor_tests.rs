@@ -465,7 +465,7 @@ fn phase_5_absent_stream_supervisor_release_failure_reaches_terminal_retry_escro
     retention
         .visit_roots(&mut retained_roots)
         .expect("request retention exposes the exact terminal root");
-    assert_eq!(retained_roots.0.as_slice(), roots.0.as_slice());
+    assert!(retained_roots.0.as_slice() == roots.0.as_slice());
     assert_eq!(
         retention
             .heap

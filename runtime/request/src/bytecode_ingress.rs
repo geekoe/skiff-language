@@ -672,10 +672,6 @@ impl BeginPendingFailure {
         Self { reason, resume }
     }
 
-    pub(super) const fn reason(&self) -> &BytecodeSchedulerError {
-        &self.reason
-    }
-
     pub(super) fn into_parts(self) -> (BytecodeSchedulerError, VmResumeToken) {
         (self.reason, self.resume)
     }
