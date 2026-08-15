@@ -820,7 +820,9 @@ impl VmFiber {
         pending: &PendingResume,
         exception: VmOwnedException,
     ) -> Result<(), (VmError, VmOwnedException)> {
-        if !Arc::ptr_eq(exception.origin_image(), pending.binding.image()) {
+        if !Arc::ptr_eq(exception.origin_image(), pending.binding.image())
+            || !exception.is_bound_to(&pending.binding)
+        {
             self.state = VmFiberState::Terminal;
             return Err((VmError::ResumeTokenMismatch, exception));
         }
@@ -5542,7 +5544,7 @@ fn store_slot_string_constant_authorized(
 /// deliberately not the throw instruction's static operand type: two values
 /// flowing through the same union-typed site carry different tags and yield
 /// different identities.
-fn runtime_leaf_catch_identity(
+pub(crate) fn runtime_leaf_catch_identity(
     image: &DeploymentExecutionImage,
     value: &ValueSlot,
 ) -> Option<CatchIdentity> {
