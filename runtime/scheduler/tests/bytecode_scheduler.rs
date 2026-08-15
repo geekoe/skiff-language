@@ -219,6 +219,61 @@ mod tests {
         assert!(snapshot.child.ever_created);
     }
 
+    #[test]
+    fn phase_6_sync_child_completes_without_pending_owner() {
+        let resumes = Arc::new(AtomicUsize::new(0));
+        let executor = Arc::new(ChainExecutor::new(Arc::clone(&resumes)));
+        let ports = BytecodeSchedulerPorts {
+            child_executor: Some(Arc::clone(&executor) as Arc<dyn BytecodeChildExecutor<ChainUnit>>),
+            stream_supervisor: None,
+        };
+        let mut context = RequestExecutionContext::create(ports);
+        context.install_root(ChainUnit::new(0, 1, Arc::clone(&resumes)));
+        let (outcome, snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
+
+        assert!(matches!(outcome, Ok(BytecodeSchedulerOutcome::Complete(0))));
+        assert_eq!(snapshot.pending.current, 0);
+        assert!(!snapshot.pending.ever_created);
+        assert_eq!(snapshot.child.current, 0);
+        assert!(snapshot.child.ever_created);
+    }
+
+    #[test]
+    fn phase_6_child_heap_pending_cleanup_runs_with_the_owner_bundle() {
+        let cleanups = Arc::new(AtomicUsize::new(0));
+        let mut carrier = test_child_heap();
+        carrier
+            .attach_pending_cleanup(Box::new({
+                let cleanups = Arc::clone(&cleanups);
+                move || {
+                    cleanups.fetch_add(1, Ordering::SeqCst);
+                }
+            }))
+            .expect("first pending cleanup attaches");
+        assert!(carrier.attach_pending_cleanup(Box::new(|| {})).is_err());
+        assert_eq!(cleanups.load(Ordering::SeqCst), 0);
+
+        drop(carrier);
+        assert_eq!(cleanups.load(Ordering::SeqCst), 1);
+
+        let mut detached = test_child_heap();
+        detached
+            .attach_pending_cleanup(Box::new({
+                let cleanups = Arc::clone(&cleanups);
+                move || {
+                    cleanups.fetch_add(1, Ordering::SeqCst);
+                }
+            }))
+            .expect("detached cleanup attaches");
+        let cleanup = detached
+            .take_pending_cleanup()
+            .expect("exact cleanup can be detached before terminal");
+        drop(detached);
+        assert_eq!(cleanups.load(Ordering::SeqCst), 1);
+        cleanup();
+        assert_eq!(cleanups.load(Ordering::SeqCst), 2);
+    }
+
     type StreamResult = Result<usize, &'static str>;
     type StreamControl = BytecodeControl<StreamResult, usize, usize, usize, usize>;
 

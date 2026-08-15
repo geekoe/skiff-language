@@ -15,6 +15,18 @@ use crate::owner_inventory::{
     ChildHeapOwnerLease, ChildOwnerLease, ChildOwnerRegistration, OwnerCreationError,
 };
 
+/// Rejection from attaching a second pending cleanup to one owner bundle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChildHeapCleanupError;
+
+impl fmt::Display for ChildHeapCleanupError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("child heap carrier already owns a pending cleanup")
+    }
+}
+
+impl std::error::Error for ChildHeapCleanupError {}
+
 /// Failure to install another actual blocked-child owner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnterChildError {
@@ -212,6 +224,7 @@ pub struct ChildHeapCarrier {
     memory_lease: MemoryLease,
     heap_owner_lease: ChildHeapOwnerLease,
     staging: BoundaryStaging,
+    pending_cleanup: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl ChildHeapCarrier {
@@ -229,6 +242,7 @@ impl ChildHeapCarrier {
             memory_lease,
             heap_owner_lease,
             staging: BoundaryStaging::new(),
+            pending_cleanup: None,
         }
     }
 
@@ -273,6 +287,27 @@ impl ChildHeapCarrier {
     pub fn release_published_roots(&mut self) -> Result<(), VmHeapError> {
         self.staging.release_all(self.heap.as_mut())
     }
+
+    /// Attaches the single pending cleanup authority for this owner bundle.
+    ///
+    /// D6R moves its transaction token cleanup here so a suspended/pending
+    /// child keeps the cleanup with the same owner graph as its heap, memory
+    /// lease and child owner lease. A second attachment fails closed.
+    pub fn attach_pending_cleanup(
+        &mut self,
+        cleanup: Box<dyn FnOnce() + Send>,
+    ) -> Result<(), ChildHeapCleanupError> {
+        if self.pending_cleanup.is_some() {
+            return Err(ChildHeapCleanupError);
+        }
+        self.pending_cleanup = Some(cleanup);
+        Ok(())
+    }
+
+    /// Removes the pending cleanup for an exact successful commit/abort path.
+    pub fn take_pending_cleanup(&mut self) -> Option<Box<dyn FnOnce() + Send>> {
+        self.pending_cleanup.take()
+    }
 }
 
 impl Drop for ChildHeapCarrier {
@@ -282,6 +317,9 @@ impl Drop for ChildHeapCarrier {
         // lease releases its committed amount, then the child heap owner lease
         // releases its inventory count.
         let _ = self.release_published_roots();
+        if let Some(cleanup) = self.pending_cleanup.take() {
+            cleanup();
+        }
     }
 }
 
@@ -302,6 +340,7 @@ impl fmt::Debug for ChildHeapCarrier {
             .field("epoch", &self.epoch)
             .field("memory_lease", &self.memory_lease)
             .field("staging", &self.staging)
+            .field("pending_cleanup", &self.pending_cleanup.is_some())
             .finish_non_exhaustive()
     }
 }

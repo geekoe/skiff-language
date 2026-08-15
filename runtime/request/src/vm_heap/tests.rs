@@ -1,12 +1,16 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    any::Any,
+    sync::{Arc, Mutex},
+};
 
+use skiff_runtime_linked_bytecode::{LinkedLocalInterfaceTable, TypeIndex};
 use skiff_runtime_model::{
     addr::{FileAddr, TypeAddr, UnitAddr},
     request_heap::RequestHeapLimits,
     service_error::{CatchIdentity, LocalExecutionTypeIdentity, NominalTypeIdentity},
     vm_heap::{
         VmHandleInvalidReason, VmHeap, VmHeapError, VmHeapOperation, VmHeapPathSegment,
-        VmRecordField,
+        VmLocalInterfaceTable, VmRecordField,
     },
     vm_root::{VmRootSource, VmRootVisitor},
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot},
@@ -41,6 +45,69 @@ fn resource_ref(handle: u64) -> ValueSlot {
         RESOURCE_TAG,
         RESOURCE_FLAGS,
     )
+}
+
+#[test]
+fn phase_6_local_interface_carrier_allocates_reads_and_releases_exact_payload() {
+    let mut heap = heap();
+    let live_before = heap.live_value_count();
+    let payload = heap
+        .alloc_typed_string("interface-payload".to_string(), tag(5), FLAGS)
+        .expect("payload string");
+    let local =
+        LinkedLocalInterfaceTable::new(TypeIndex::new(5), Box::new([])).expect("empty local table");
+    let exact_arc = Arc::new(local.clone());
+    let exact_any: Arc<dyn Any + Send + Sync> =
+        Arc::clone(&exact_arc) as Arc<dyn Any + Send + Sync>;
+    let table = VmLocalInterfaceTable::new(3, 5, 0, exact_any);
+
+    let heap_obj: &mut dyn VmHeap = &mut heap;
+    let carrier = heap_obj
+        .allocate_local_interface(&payload, table, tag(6), FLAGS)
+        .expect("local interface carrier allocation");
+
+    assert!(heap.local_interface_payload(&carrier) == Ok(payload));
+    let carrier_table = heap
+        .local_interface_table(&carrier)
+        .expect("carrier table read");
+    assert_eq!(carrier_table.table_index(), 3);
+    assert_eq!(carrier_table.concrete_type(), 5);
+    assert_eq!(carrier_table.method_count(), 0);
+    let linked = heap
+        .local_interface_linked_table(&carrier)
+        .expect("exact linked table read");
+    assert!(Arc::ptr_eq(&linked, &exact_arc));
+    assert_eq!(&*linked, &local);
+
+    assert!(matches!(
+        heap.representation_payload(&carrier),
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::RepresentationPayload,
+            ..
+        })
+    ));
+    assert!(matches!(
+        heap.local_interface_payload(&payload),
+        Err(VmHeapError::HeapOperationFailed {
+            operation: VmHeapOperation::LocalInterfacePayload,
+            ..
+        })
+    ));
+
+    let foreign = RequestVmHeap::with_domain(8, 0, RequestHeapLimits::default());
+    assert!(matches!(
+        foreign.local_interface_payload(&carrier),
+        Err(VmHeapError::InvalidHandle {
+            reason: VmHandleInvalidReason::WrongDomain,
+            ..
+        })
+    ));
+
+    heap.release_snapshot(&carrier)
+        .expect("carrier release releases its exact payload");
+    assert_eq!(heap.live_value_count(), live_before);
+    assert!(heap.validate_live(&carrier).is_err());
+    assert!(heap.validate_live(&payload).is_err());
 }
 
 struct RecordingByteStreamSource(Arc<Mutex<Vec<RequestResourceTermination>>>);

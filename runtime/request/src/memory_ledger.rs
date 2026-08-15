@@ -126,6 +126,7 @@ fn lock_unpoisoned<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 #[derive(Clone)]
 pub struct RequestMemoryLedger {
     inner: Arc<LedgerInner>,
+    transaction: RequestTransactionLedger,
 }
 
 impl RequestMemoryLedger {
@@ -134,7 +135,21 @@ impl RequestMemoryLedger {
             inner: Arc::new(LedgerInner {
                 state: Mutex::new(LedgerState::new(hard_cap)),
             }),
+            transaction: RequestTransactionLedger::new(),
         }
+    }
+
+    /// Returns the request-scoped transaction ledger shared by all clones.
+    pub fn transaction_ledger(&self) -> RequestTransactionLedger {
+        self.transaction.clone()
+    }
+
+    /// Begins the sole request transaction token through the shared ledger.
+    pub fn begin_transaction(
+        &self,
+        cleanup: impl FnOnce() + Send + 'static,
+    ) -> Result<RequestTransactionToken, TransactionLedgerError> {
+        self.transaction.begin(cleanup)
     }
 
     /// Reserves capacity for one future commit.
@@ -278,6 +293,7 @@ impl std::fmt::Debug for RequestMemoryLedger {
         formatter
             .debug_struct("RequestMemoryLedger")
             .field("snapshot", &self.snapshot())
+            .field("transaction_active", &self.transaction.has_active())
             .finish()
     }
 }
@@ -354,9 +370,195 @@ impl Drop for MemoryReservation {
     }
 }
 
+/// Failure from the request transaction ledger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum TransactionLedgerError {
+    #[error("request transaction ledger already has an active transaction")]
+    AlreadyActive,
+}
+
+struct TransactionLedgerInner {
+    state: Mutex<TransactionLedgerState>,
+}
+
+#[derive(Default)]
+struct TransactionLedgerState {
+    active: bool,
+}
+
+/// Request-scoped authority for one DB transaction token.
+///
+/// This is deliberately a ledger, not an owner registry. It enforces the
+/// checked one-active-transaction rule while the affine token is held by the
+/// current owner bundle (for example a [`ChildHeapCarrier`] during a pending
+/// child). Actual DB commit/abort is wired by the D6R leaf; K6 owns the token
+/// lifecycle and pending cleanup seam.
+///
+/// [`ChildHeapCarrier`]: skiff_runtime_scheduler::ChildHeapCarrier
+#[derive(Clone)]
+pub struct RequestTransactionLedger {
+    inner: Arc<TransactionLedgerInner>,
+}
+
+impl Default for RequestTransactionLedger {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RequestTransactionLedger {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(TransactionLedgerInner {
+                state: Mutex::new(TransactionLedgerState::default()),
+            }),
+        }
+    }
+
+    /// Begins the sole active transaction token.
+    ///
+    /// `cleanup` runs exactly once when the token is finished or dropped.
+    /// D6R uses this hook for bounded adapter cleanup after commit/abort or
+    /// after a request terminal wins over a pending DB operation.
+    pub fn begin(
+        &self,
+        cleanup: impl FnOnce() + Send + 'static,
+    ) -> Result<RequestTransactionToken, TransactionLedgerError> {
+        let mut state = lock_unpoisoned(&self.inner.state);
+        if state.active {
+            return Err(TransactionLedgerError::AlreadyActive);
+        }
+        state.active = true;
+        Ok(RequestTransactionToken {
+            ledger: Arc::clone(&self.inner),
+            cleanup: Some(Box::new(cleanup)),
+            finished: false,
+        })
+    }
+
+    pub fn has_active(&self) -> bool {
+        lock_unpoisoned(&self.inner.state).active
+    }
+}
+
+impl fmt::Debug for RequestTransactionLedger {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RequestTransactionLedger")
+            .field("active", &self.has_active())
+            .finish()
+    }
+}
+
+/// One affine DB transaction token minted by [`RequestTransactionLedger`].
+///
+/// The token is not `Clone`. It may be moved into the current execution
+/// owner's pending graph; dropping it without an explicit finish still runs
+/// the bounded cleanup hook exactly once and makes the ledger available for a
+/// fresh transaction.
+#[must_use = "a request transaction token must finish or drop exactly once"]
+pub struct RequestTransactionToken {
+    ledger: Arc<TransactionLedgerInner>,
+    cleanup: Option<Box<dyn FnOnce() + Send>>,
+    finished: bool,
+}
+
+impl RequestTransactionToken {
+    /// Consumes the token after commit/abort cleanup has completed.
+    pub fn finish(mut self) {
+        self.finish_inner();
+    }
+
+    fn finish_inner(&mut self) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        lock_unpoisoned(&self.ledger.state).active = false;
+        if let Some(cleanup) = self.cleanup.take() {
+            cleanup();
+        }
+    }
+}
+
+impl Drop for RequestTransactionToken {
+    fn drop(&mut self) {
+        self.finish_inner();
+    }
+}
+
+impl fmt::Debug for RequestTransactionToken {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RequestTransactionToken")
+            .field("finished", &self.finished)
+            .finish_non_exhaustive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{MemoryLedgerError, RequestMemoryLedger};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+
+    use super::{
+        MemoryLedgerError, RequestMemoryLedger, RequestTransactionLedger, TransactionLedgerError,
+    };
+
+    #[test]
+    fn phase_6_transaction_token_runs_cleanup_exactly_once_and_rejects_second_active() {
+        let ledger = RequestTransactionLedger::new();
+        let cleanups = Arc::new(AtomicUsize::new(0));
+        let first_cleanup = {
+            let cleanups = Arc::clone(&cleanups);
+            move || {
+                cleanups.fetch_add(1, Ordering::SeqCst);
+            }
+        };
+        let token = ledger
+            .begin(first_cleanup)
+            .expect("first transaction begins");
+        assert!(ledger.has_active());
+        assert!(matches!(
+            ledger.begin(|| {}),
+            Err(TransactionLedgerError::AlreadyActive)
+        ));
+
+        token.finish();
+        assert!(!ledger.has_active());
+        assert_eq!(cleanups.load(Ordering::SeqCst), 1);
+
+        let dropped = ledger
+            .begin({
+                let cleanups = Arc::clone(&cleanups);
+                move || {
+                    cleanups.fetch_add(1, Ordering::SeqCst);
+                }
+            })
+            .expect("second transaction begins");
+        drop(dropped);
+        assert!(!ledger.has_active());
+        assert_eq!(cleanups.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn phase_6_memory_ledger_shares_one_request_transaction_token() {
+        let ledger = RequestMemoryLedger::new(100);
+        let shared = ledger.clone();
+        let token = ledger.begin_transaction(|| {}).expect("first transaction");
+        assert!(matches!(
+            shared.begin_transaction(|| {}),
+            Err(TransactionLedgerError::AlreadyActive)
+        ));
+
+        token.finish();
+        let second = shared
+            .begin_transaction(|| {})
+            .expect("shared ledger allows a fresh transaction after finish");
+        drop(second);
+    }
 
     #[test]
     fn reserve_commit_release_tracks_exact_counts_and_peak() {

@@ -6,9 +6,13 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
 };
 
+use skiff_runtime_linked_bytecode::LinkedLocalInterfaceTable;
 use skiff_runtime_model::{
     error::RuntimeModelError as RuntimeError,
     request_heap::{RequestHeap, RequestHeapLimits},
@@ -16,8 +20,8 @@ use skiff_runtime_model::{
     service_error::CatchIdentity,
     vm_heap::{
         PinnedWritablePathSegment, VmContainerElement, VmContainerElements, VmContainerShape,
-        VmHandleInvalidReason, VmHeap, VmHeapError, VmHeapOperation, VmHeapPathSegment, VmMapEntry,
-        VmRecordField, WritablePathPreparation,
+        VmHandleInvalidReason, VmHeap, VmHeapError, VmHeapOperation, VmHeapPathSegment,
+        VmLocalInterfaceTable, VmMapEntry, VmRecordField, WritablePathPreparation,
     },
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot, VmHandle},
 };
@@ -54,6 +58,11 @@ struct PreparedOwnerConsume {
     resource_releases: Vec<RequestResourceHandle>,
 }
 
+struct RequestLocalInterfaceCarrier {
+    table: VmLocalInterfaceTable,
+    payload: ValueSlot,
+}
+
 #[derive(Clone, Copy)]
 struct ExcludedOwnerField<'a> {
     root: HeapHandle,
@@ -75,6 +84,7 @@ pub struct RequestVmHeap {
         BTreeMap<skiff_runtime_model::runtime_value::RuntimeValueKey, (ValueSlot, ValueSlot)>,
     >,
     representation_slots: HashMap<HeapHandle, ValueSlot>,
+    local_interface_slots: HashMap<HeapHandle, RequestLocalInterfaceCarrier>,
 }
 
 impl RequestVmHeap {
@@ -117,6 +127,7 @@ impl RequestVmHeap {
             object_slots: HashMap::new(),
             map_slots: HashMap::new(),
             representation_slots: HashMap::new(),
+            local_interface_slots: HashMap::new(),
         }
     }
 
@@ -170,6 +181,26 @@ impl RequestVmHeap {
 
     pub fn request_heap_mut(&mut self) -> &mut RequestHeap {
         &mut self.heap
+    }
+
+    /// Recovers the exact linked local interface table stored in a carrier.
+    ///
+    /// This is the checked seam for the local-interface child leaf: the
+    /// carrier itself, not the caller image, is the authority for the exact
+    /// method table and concrete payload. Foreign or non-carrier slots fail
+    /// closed before this method can expose artifact-local data.
+    pub fn local_interface_linked_table(
+        &self,
+        carrier: &ValueSlot,
+    ) -> Result<Arc<LinkedLocalInterfaceTable>, VmHeapError> {
+        let table = self.local_interface_table(carrier)?;
+        Arc::clone(table.exact())
+            .downcast::<LinkedLocalInterfaceTable>()
+            .map_err(|_| VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::LocalInterfaceTable,
+                message: "local interface carrier does not hold the expected linked table"
+                    .to_string(),
+            })
     }
 
     pub fn epoch(&self) -> u32 {
@@ -378,7 +409,14 @@ impl RequestVmHeap {
         if kind != ValueKind::RequestHeapRef {
             return Err(VmHeapError::OperationKindMismatch { operation, kind });
         }
-        Ok(self.live_entry(value)?.heap_handle)
+        let entry = self.live_entry(value)?;
+        if self.local_interface_slots.contains_key(&entry.heap_handle) {
+            return Err(VmHeapError::OperationKindMismatch {
+                operation,
+                kind: ValueKind::RequestHeapRef,
+            });
+        }
+        Ok(entry.heap_handle)
     }
 
     fn map_error(&self, error: RuntimeError, operation: VmHeapOperation) -> VmHeapError {
@@ -604,6 +642,9 @@ impl RequestVmHeap {
         if let Some(payload) = self.representation_slots.remove(&heap_handle) {
             children.push(payload);
         }
+        if let Some(carrier) = self.local_interface_slots.remove(&heap_handle) {
+            children.push(carrier.payload);
+        }
         children
     }
 
@@ -632,6 +673,9 @@ impl RequestVmHeap {
         }
         if let Some(payload) = self.representation_slots.get(&heap_handle) {
             children.push(*payload);
+        }
+        if let Some(carrier) = self.local_interface_slots.get(&heap_handle) {
+            children.push(carrier.payload);
         }
         children
     }
@@ -1663,6 +1707,68 @@ impl VmHeap for RequestVmHeap {
             .ok_or_else(|| VmHeapError::HeapOperationFailed {
                 operation,
                 message: "value is not a representation carrier cell".to_string(),
+            })
+    }
+
+    fn allocate_local_interface(
+        &mut self,
+        payload: &ValueSlot,
+        table: VmLocalInterfaceTable,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        let operation = VmHeapOperation::AllocateLocalInterface;
+        self.validate_live(payload)?;
+        let carrier = RuntimeValueCarrier::unidentified(
+            self.runtime_carrier_for_slot(payload, operation)?
+                .into_value(),
+        );
+        self.ensure_serial_available(operation)?;
+        let heap_handle = self
+            .heap
+            .alloc_local_carrier_cell(carrier)
+            .map_err(|error| self.map_error(error, operation))?;
+        let slot = self.register_handle(heap_handle, compact_type_tag, flags)?;
+        self.local_interface_slots.insert(
+            heap_handle,
+            RequestLocalInterfaceCarrier {
+                table,
+                payload: *payload,
+            },
+        );
+        Ok(slot)
+    }
+
+    fn local_interface_payload(&self, carrier: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        let operation = VmHeapOperation::LocalInterfacePayload;
+        let handle = carrier
+            .as_request_heap_ref()
+            .ok_or(VmHeapError::InvalidValueMetadata)?;
+        let heap_handle = self.live_entry(carrier)?.heap_handle;
+        self.local_interface_slots
+            .get(&heap_handle)
+            .map(|entry| entry.payload)
+            .ok_or_else(|| VmHeapError::HeapOperationFailed {
+                operation,
+                message: format!("{handle:?} is not a local interface carrier cell"),
+            })
+    }
+
+    fn local_interface_table(
+        &self,
+        carrier: &ValueSlot,
+    ) -> Result<VmLocalInterfaceTable, VmHeapError> {
+        let operation = VmHeapOperation::LocalInterfaceTable;
+        let handle = carrier
+            .as_request_heap_ref()
+            .ok_or(VmHeapError::InvalidValueMetadata)?;
+        let heap_handle = self.live_entry(carrier)?.heap_handle;
+        self.local_interface_slots
+            .get(&heap_handle)
+            .map(|entry| entry.table.clone())
+            .ok_or_else(|| VmHeapError::HeapOperationFailed {
+                operation,
+                message: format!("{handle:?} is not a local interface carrier cell"),
             })
     }
 

@@ -65,6 +65,7 @@ pub use stream::{
     StreamSupervisor, WakeSignal, STREAM_BUFFER_CAPACITY,
 };
 pub use trampoline::{
-    BlockedUnit, ChildHeapCarrier, ChildHeapState, EnterChildError, EnterChildWithFinishError,
-    FlatTrampoline, ParentResume, SuspendedTrampoline, TrampolineCompletion,
+    BlockedUnit, ChildHeapCarrier, ChildHeapCleanupError, ChildHeapState, EnterChildError,
+    EnterChildWithFinishError, FlatTrampoline, ParentResume, SuspendedTrampoline,
+    TrampolineCompletion,
 };

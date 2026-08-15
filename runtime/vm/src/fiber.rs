@@ -6,6 +6,7 @@ mod projection_tests;
 mod tests;
 
 use std::{
+    any::Any,
     collections::{BTreeMap, HashMap},
     sync::Arc,
 };
@@ -21,9 +22,9 @@ use skiff_runtime_linked_bytecode::{
     ActiveRegionIndex, CandidateTable, FrameSlotIndex, FrozenConstantNodeIndex, FunctionIndex,
     InstructionIndex, LinkedCallableSignature, LinkedCatchMatcher, LinkedExceptionRegion,
     LinkedFrozenConstantValue, LinkedFunction, LinkedInstruction, LinkedInstructionTarget,
-    LinkedInterfaceTableKind, LinkedIntrinsicKind, LinkedNativeCallableSignature,
-    LinkedResourceDropPlan, LinkedValueDropPlan, LinkedValueTransferPlan,
-    LinkedWritablePathSegment, ResumeSiteIndex, TypeIndex,
+    LinkedInterfaceTable, LinkedInterfaceTableKind, LinkedIntrinsicKind,
+    LinkedNativeCallableSignature, LinkedResourceDropPlan, LinkedValueDropPlan,
+    LinkedValueTransferPlan, LinkedWritablePathSegment, ResumeSiteIndex, TypeIndex,
 };
 use skiff_runtime_linker::ExecutionResumeSite;
 use skiff_runtime_linker::{DeploymentExecutionEntry, DeploymentExecutionImage};
@@ -36,7 +37,7 @@ use skiff_runtime_model::{
         CatchIdentity, ErrorCorrelation, ExceptionStackFrame, FileAddr, LocalExecutionTypeIdentity,
         NominalTypeIdentity, PackageSchemaTypeIdentity, RequestException, TypeAddr, UnitAddr,
     },
-    vm_heap::{VmHeap, VmHeapError, VmHeapPathSegment, VmRecordField},
+    vm_heap::{VmHeap, VmHeapError, VmHeapPathSegment, VmLocalInterfaceTable, VmRecordField},
     vm_root::{VmRootSource, VmRootVisitor},
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot},
 };
@@ -1070,9 +1071,12 @@ impl VmFiber {
             Opcode::CallActor => {
                 self.execute_call_actor(function_index, instruction_index, &instruction)
             }
-            Opcode::CallInterface => {
-                self.execute_call_interface(function_index, instruction_index, &instruction)
-            }
+            Opcode::CallInterface => self.execute_call_interface(
+                lifecycle.heap(),
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
             Opcode::InvokeHost => {
                 self.execute_invoke_host(function_index, instruction_index, &instruction)
             }
@@ -1085,9 +1089,12 @@ impl VmFiber {
             Opcode::MakeCallback => {
                 self.execute_make_callback(function_index, instruction_index, &instruction)
             }
-            Opcode::InvokeCallback => {
-                self.execute_invoke_callback(function_index, instruction_index, &instruction)
-            }
+            Opcode::InvokeCallback => self.execute_invoke_callback(
+                lifecycle.heap(),
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
             Opcode::Throw => self.execute_throw(
                 &mut lifecycle,
                 function_index,
@@ -1187,9 +1194,12 @@ impl VmFiber {
             Opcode::MapEntryAt => {
                 self.execute_map_entry_at(lifecycle.heap(), function_index, instruction_index)
             }
-            Opcode::InterfaceBoxLocal => {
-                self.execute_interface_box_local(function_index, instruction_index, &instruction)
-            }
+            Opcode::InterfaceBoxLocal => self.execute_interface_box_local(
+                lifecycle.heap(),
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
             Opcode::InterfaceBoxRemote => {
                 self.execute_interface_box_remote(function_index, instruction_index, &instruction)
             }
@@ -3696,6 +3706,7 @@ impl VmFiber {
 
     fn execute_interface_box_local(
         &mut self,
+        heap: &mut dyn VmHeap,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -3713,12 +3724,57 @@ impl VmFiber {
                 table: CandidateTable::InterfaceTables,
                 row: table_index.get(),
             })?;
-        let _ = self.pop_operands(1, false)?;
-        Err(VmError::FullValueLifecyclePlanUnavailable {
-            function,
-            instruction,
-            opcode: Opcode::InterfaceBoxLocal,
-        })
+        let row = self
+            .execution_image()
+            .interface_tables()
+            .get(table_index.get() as usize)
+            .filter(|row| row.index() == table_index)
+            .expect("interface table row was just checked");
+        let LinkedInterfaceTableKind::Local(local) = row.kind() else {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::InterfaceBoxLocal,
+            });
+        };
+        let local = local.clone();
+        let carrier_type =
+            interface_carrier_type(self.execution_image(), row).ok_or_else(|| {
+                VmError::FullValueLifecyclePlanUnavailable {
+                    function,
+                    instruction,
+                    opcode: Opcode::InterfaceBoxLocal,
+                }
+            })?;
+        let exact: Arc<dyn Any + Send + Sync> = Arc::new(local.clone());
+        let table = VmLocalInterfaceTable::new(
+            table_index.get(),
+            local.concrete_type().get(),
+            local.methods().len(),
+            exact,
+        );
+        let payload = self.pop_operands(1, false)?.remove(0);
+        if payload
+            .compact_type_tag()
+            .is_some_and(|tag| tag.type_index() != local.concrete_type().get())
+        {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::InterfaceBoxLocal,
+            });
+        }
+        let carrier = heap
+            .allocate_local_interface(
+                &payload,
+                table,
+                compact_type_tag(function, instruction, carrier_type)?,
+                ValueFlags::new(0),
+            )
+            .map_err(VmError::Heap)?;
+        self.push_operand(carrier)?;
+        self.advance_current_instruction()?;
+        Ok(DispatchOutcome::Continue)
     }
 
     fn execute_interface_box_remote(
@@ -3917,24 +3973,33 @@ impl VmFiber {
 
     fn execute_call_interface(
         &mut self,
+        heap: &mut dyn VmHeap,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
     ) -> Result<DispatchOutcome, VmError> {
-        self.execute_interface_boundary(function, instruction, decoded, Opcode::CallInterface)
+        self.execute_interface_boundary(heap, function, instruction, decoded, Opcode::CallInterface)
     }
 
     fn execute_invoke_callback(
         &mut self,
+        heap: &mut dyn VmHeap,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
     ) -> Result<DispatchOutcome, VmError> {
-        self.execute_interface_boundary(function, instruction, decoded, Opcode::InvokeCallback)
+        self.execute_interface_boundary(
+            heap,
+            function,
+            instruction,
+            decoded,
+            Opcode::InvokeCallback,
+        )
     }
 
     fn execute_interface_boundary(
         &mut self,
+        heap: &mut dyn VmHeap,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -4006,6 +4071,28 @@ impl VmFiber {
                 capacity: self.current_frame()?.operand_capacity(),
             })?;
         let argument_plans = signature.parameter_plans().to_vec();
+        if let LinkedInterfaceTableKind::Local(local) = table.kind() {
+            let (_, _, operands) = self.borrow_operands(input_count)?;
+            let carrier = operands
+                .first()
+                .ok_or_else(|| VmError::OperandStackUnderflow {
+                    function,
+                    needed: 1,
+                    available: 0,
+                })?;
+            let carrier_table = heap.local_interface_table(carrier).map_err(VmError::Heap)?;
+            if carrier_table.table_index() != table_index.get()
+                || carrier_table.concrete_type() != local.concrete_type().get()
+                || carrier_table.method_count() != local.methods().len()
+                || method_ordinal >= local.methods().len()
+            {
+                return Err(VmError::FullValueLifecyclePlanUnavailable {
+                    function,
+                    instruction,
+                    opcode,
+                });
+            }
+        }
         let arguments = self.pop_operands(input_count, false)?;
         let expected_stack_height =
             self.current_frame()?
@@ -5442,6 +5529,18 @@ fn nominal_type_index(value: &ValueSlot) -> Option<TypeIndex> {
             .map(TypeIndex::new),
         _ => None,
     }
+}
+
+fn interface_carrier_type(
+    image: &DeploymentExecutionImage,
+    table: &LinkedInterfaceTable,
+) -> Option<TypeIndex> {
+    image.types().iter().find_map(|row| {
+        let TypeRefIr::AnyInterface { interface } = row.type_ref() else {
+            return None;
+        };
+        (interface == table.interface().artifact()).then_some(row.index())
+    })
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -11,7 +11,7 @@ use crate::{
     service_error::CatchIdentity,
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot, VmHandle},
 };
-use std::{fmt, num::NonZeroU64};
+use std::{any::Any, fmt, num::NonZeroU64, sync::Arc};
 
 /// Debug projection for [`ValueSlot`], which intentionally has no `Debug`
 /// impl of its own. Exposing only kind and handle keeps the projection free of
@@ -222,6 +222,7 @@ pub enum VmHeapOperation {
     AllocateMap,
     AllocateRecord,
     AllocateRepresentation,
+    AllocateLocalInterface,
     ArrayGet,
     ArrayLen,
     MapGet,
@@ -230,6 +231,8 @@ pub enum VmHeapOperation {
     RecordField,
     TakeDenseField,
     RepresentationPayload,
+    LocalInterfacePayload,
+    LocalInterfaceTable,
     ContainerElements,
     ArrayPushOwned,
     MapPutOwned,
@@ -239,6 +242,64 @@ pub enum VmHeapOperation {
     TransferOwner,
     ReleaseSnapshot,
     ReleaseResource,
+}
+
+/// Exact opaque local-interface table facts carried by one heap carrier.
+///
+/// The concrete linked table lives behind `exact` so heap-neutral model code
+/// can check the same indexed identity the VM sees while the request heap can
+/// still recover the exact linked table for a local child dispatch. The exact
+/// value is deliberately opaque to this module: no artifact-specific type is
+/// allowed to cross the heap port.
+#[derive(Clone)]
+pub struct VmLocalInterfaceTable {
+    table_index: u32,
+    concrete_type: u32,
+    method_count: usize,
+    exact: Arc<dyn Any + Send + Sync>,
+}
+
+impl VmLocalInterfaceTable {
+    pub const fn new(
+        table_index: u32,
+        concrete_type: u32,
+        method_count: usize,
+        exact: Arc<dyn Any + Send + Sync>,
+    ) -> Self {
+        Self {
+            table_index,
+            concrete_type,
+            method_count,
+            exact,
+        }
+    }
+
+    pub const fn table_index(&self) -> u32 {
+        self.table_index
+    }
+
+    pub const fn concrete_type(&self) -> u32 {
+        self.concrete_type
+    }
+
+    pub const fn method_count(&self) -> usize {
+        self.method_count
+    }
+
+    pub const fn exact(&self) -> &Arc<dyn Any + Send + Sync> {
+        &self.exact
+    }
+}
+
+impl fmt::Debug for VmLocalInterfaceTable {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VmLocalInterfaceTable")
+            .field("table_index", &self.table_index)
+            .field("concrete_type", &self.concrete_type)
+            .field("method_count", &self.method_count)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Request-scoped identity of one owner-local VM heap.
@@ -540,6 +601,44 @@ pub trait VmHeap {
     ) -> Result<ValueSlot, VmHeapError> {
         Err(VmHeapError::OperationKindMismatch {
             operation: VmHeapOperation::RepresentationPayload,
+            kind: ValueKind::RequestHeapRef,
+        })
+    }
+
+    /// Allocates one local-interface carrier over the concrete payload slot.
+    ///
+    /// The carrier stores the exact opaque linked table plus one live payload
+    /// owner. Allocation validates payload liveness and stores the table
+    /// identity so later child dispatch cannot confuse carriers from another
+    /// table, concrete type, or method surface.
+    fn allocate_local_interface(
+        &mut self,
+        _payload: &ValueSlot,
+        _table: VmLocalInterfaceTable,
+        _compact_type_tag: CompactTypeTag,
+        _flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::AllocateLocalInterface,
+            kind: ValueKind::RequestHeapRef,
+        })
+    }
+
+    /// Reads the payload owner of one local-interface carrier.
+    fn local_interface_payload(&self, _carrier: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::LocalInterfacePayload,
+            kind: ValueKind::RequestHeapRef,
+        })
+    }
+
+    /// Reads the checked identity of one local-interface carrier.
+    fn local_interface_table(
+        &self,
+        _carrier: &ValueSlot,
+    ) -> Result<VmLocalInterfaceTable, VmHeapError> {
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::LocalInterfaceTable,
             kind: ValueKind::RequestHeapRef,
         })
     }
