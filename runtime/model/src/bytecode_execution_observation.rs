@@ -359,6 +359,10 @@ pub struct FrozenOwnerDomain {
 }
 
 /// The actual pending/resource/child owner inventory frozen for one request.
+///
+/// `child` remains the stable public owner count and now aggregates blocked
+/// child execution units with child heap owner leases from the same request
+/// inventory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RequestExecutionOwnerInventorySnapshot {

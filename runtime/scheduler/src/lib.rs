@@ -37,8 +37,8 @@ pub use bytecode::{
     BytecodeUnitControl,
 };
 pub use owner_inventory::{
-    OwnerCreationError, OwnerCreationErrorKind, OwnerDomain, PendingOwnerRegistration,
-    PendingRegistrationTakeError, RequestExecutionContext,
+    ChildHeapOwnerLease, ChildHeapOwnerRegistration, OwnerCreationError, OwnerCreationErrorKind,
+    OwnerDomain, PendingOwnerRegistration, PendingRegistrationTakeError, RequestExecutionContext,
 };
 pub use pending::{
     BeginPendingError, ClaimedPendingWakeGuard, CompletionHandle, PendingCellState, PendingOwner,
@@ -65,6 +65,6 @@ pub use stream::{
     StreamSupervisor, WakeSignal, STREAM_BUFFER_CAPACITY,
 };
 pub use trampoline::{
-    BlockedUnit, EnterChildError, FlatTrampoline, ParentResume, SuspendedTrampoline,
-    TrampolineCompletion,
+    BlockedUnit, ChildHeapCarrier, ChildHeapState, EnterChildError, FlatTrampoline, ParentResume,
+    SuspendedTrampoline, TrampolineCompletion,
 };
