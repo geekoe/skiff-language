@@ -172,11 +172,14 @@ mod tests {
             callbacks: ServiceCallbackPlan::None,
             effects: CallableEffectSummary::Analyzed {
                 effects: skiff_artifact_model::CallableMayEffects {
+                    escapes_caller_value: false,
+                    requires_same_heap_identity: false,
+                    invokes_unknown_target: false,
                     may_pending: true,
                     pending_effect_categories: vec![
                         skiff_artifact_model::PendingEffectCategory::ServiceCall,
                     ],
-                    ..skiff_artifact_model::CallableMayEffects::default()
+                    inout_path_effects: Vec::new(),
                 },
             },
         }
@@ -977,7 +980,7 @@ mod tests {
             Vec::new(),
         );
         let external_refs = ExternalRefTable {
-            service_call_refs: vec![service_ref],
+            service_call_refs: vec![service_ref.clone()],
             ..ExternalRefTable::default()
         };
         let (unit, bundle) = mir_and_bundle("calls", Vec::new(), external_refs, function);

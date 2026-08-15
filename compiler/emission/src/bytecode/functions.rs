@@ -5220,6 +5220,7 @@ mod tests {
         let dense_parameter_materializations = BTreeMap::new();
         let machine_carriers = super::super::carriers::analyze_machine_carriers(&units)
             .expect("test machine carriers analyze");
+        let service_boundary_plans = BTreeMap::new();
         let inputs = ValidatedEmissionInputs::validate(
             &units,
             &bundles,
@@ -5227,6 +5228,7 @@ mod tests {
             &dense_parameter_materializations,
             &machine_carriers,
             &[],
+            &service_boundary_plans,
         )
         .expect("test inputs validate");
         let mut image = build_constant_image(&inputs).expect("test image builds");
@@ -5247,6 +5249,7 @@ mod tests {
             function_plans,
             &mut image,
             &inputs,
+            &service_boundary_plans,
             SourceAttributionMode::AdmittedPhase1,
         )
         .expect("test emitter constructs");
