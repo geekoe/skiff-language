@@ -11,12 +11,12 @@ use skiff_router::actor::{
 use skiff_runtime_transport::actor_method::{
     ActorDeclarationOwnerFrameHeader, ActorOwnerFileFrameHeader, ActorOwnerUnitFrameHeader,
 };
-use skiff_task_control::MemoryTaskStore;
 use skiff_task_control::model::{
     DetachedCallTarget, DurableUtcTimestamp, RecoverablePayload, ServiceOwner,
     TaskExecutionImageRef, TaskId, TaskRecord, TaskState, TaskTraceContext,
 };
 use skiff_task_control::store::{ClaimInput, DueScanInput, TaskStore};
+use skiff_task_control::MemoryTaskStore;
 
 const PHASE6_IMAGE_PREFIX: &str = "skiff-deployment-artifact-v6:";
 
@@ -54,7 +54,9 @@ mod tests {
             .await
             .expect("claim");
         match claimed {
-            skiff_task_control::store::ClaimOutcome::Claimed(record) => assert_phase6_image(&record),
+            skiff_task_control::store::ClaimOutcome::Claimed(record) => {
+                assert_phase6_image(&record)
+            }
             other => panic!("TaskStore rejected exact Phase 6 claim: {other:?}"),
         }
     }
@@ -82,7 +84,12 @@ mod tests {
             skiff_task_control::store::ClaimOutcome::Claimed(record) => record,
             other => panic!("TaskStore rejected claim: {other:?}"),
         };
-        let lease_id = record.active_lease.as_ref().expect("lease").lease_id.clone();
+        let lease_id = record
+            .active_lease
+            .as_ref()
+            .expect("lease")
+            .lease_id
+            .clone();
         let renewed = store
             .renew(skiff_task_control::store::RenewInput {
                 task_id: record.task_id.clone(),
@@ -180,9 +187,7 @@ mod tests {
         let fence = registry
             .commit(&token, &fence_facts(), 0, 30_000)
             .expect("commit");
-        let current = registry
-            .current_owner(&key)
-            .expect("current owner");
+        let current = registry.current_owner(&key).expect("current owner");
         assert_eq!(current, fence);
         assert_phase6_owner(&current);
     }

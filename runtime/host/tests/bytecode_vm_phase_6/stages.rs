@@ -21,7 +21,10 @@ pub fn admitted_artifact(capability: Capability, prefix: &str) -> Arc<ValidatedB
     fixture.bytecode()
 }
 
-pub fn linked_image(capability: Capability, prefix: &str) -> std::sync::Arc<skiff_runtime_linker::DeploymentExecutionImage> {
+pub fn linked_image(
+    capability: Capability,
+    prefix: &str,
+) -> std::sync::Arc<skiff_runtime_linker::DeploymentExecutionImage> {
     let fixture = published_positive(capability, prefix);
     fixture.link()
 }

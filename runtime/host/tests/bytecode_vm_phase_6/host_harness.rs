@@ -13,12 +13,11 @@ use skiff_runtime_capability_context::{
 use skiff_runtime_host::{RuntimeConfig, RuntimeHost};
 use skiff_runtime_transport::protocol::{
     decode_response_chunk_frame, decode_response_end_frame, decode_response_start_frame,
-    decode_runtime_capabilities_frame, decode_typed_binary_frame,
-    encode_binary_frame, encode_router_bootstrap_frame, encode_runtime_registered_frame,
-    BytecodeHttpRequestFrameHeader, BytecodeRequestCallerFrameHeader,
-    BytecodeRequestIngressFrameHeader, BytecodeRequestIngressProtocol,
-    BytecodeRequestRoutingFrameHeader, BytecodeRequestStartFrameHeader,
-    BytecodeRequestTraceFrameHeader, ResponseEndFrameMetadata,
+    decode_runtime_capabilities_frame, decode_typed_binary_frame, encode_binary_frame,
+    encode_router_bootstrap_frame, encode_runtime_registered_frame, BytecodeHttpRequestFrameHeader,
+    BytecodeRequestCallerFrameHeader, BytecodeRequestIngressFrameHeader,
+    BytecodeRequestIngressProtocol, BytecodeRequestRoutingFrameHeader,
+    BytecodeRequestStartFrameHeader, BytecodeRequestTraceFrameHeader, ResponseEndFrameMetadata,
     RouterBootstrapActivationFrameHeader, RouterBootstrapFrameHeader,
     RouterBootstrapHttpFrameHeader, RouterBootstrapServiceDbFrameHeader,
     RuntimeDispatchModeCapability, RuntimeRegisteredFrameHeader, TypedEnvelope,
@@ -81,12 +80,7 @@ impl RuntimeHostHarness {
         }
     }
 
-    pub async fn send_http_request(
-        &mut self,
-        request_id: &str,
-        ingress_path: &str,
-        body: &[u8],
-    ) {
+    pub async fn send_http_request(&mut self, request_id: &str, ingress_path: &str, body: &[u8]) {
         let gateway = self.fixture.gateway(ingress_path);
         let header = BytecodeRequestStartFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
@@ -143,7 +137,8 @@ impl RuntimeHostHarness {
 
     pub async fn response(&mut self, request_id: &str) -> HostResponse {
         let deadline = Instant::now() + IO_TIMEOUT;
-        let start_bytes = next_binary_of_type(&mut self.websocket, "response.start", deadline).await;
+        let start_bytes =
+            next_binary_of_type(&mut self.websocket, "response.start", deadline).await;
         let start = decode_response_start_frame(&start_bytes)
             .expect("RuntimeHost emitted canonical response.start");
         assert_eq!(start.request_id, request_id);
