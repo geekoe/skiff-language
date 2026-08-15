@@ -804,7 +804,10 @@ fn actor_receiver_call_uses_actor_method_target_and_exact_local_effects() {
     )
     .analyze();
 
-    assert_eq!(effects(&model, "wrapper"), no_effects());
+    assert_eq!(
+        effects(&model, "wrapper"),
+        pending_only_effects(vec![PendingEffectCategory::ActorCall])
+    );
     assert!(model.resolved_call_targets().iter().any(|(_, target)| {
         matches!(
             target,

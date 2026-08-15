@@ -225,6 +225,15 @@ fn collect_exact_type_plans(
                     )?;
                 }
                 if let ExprIr::Call { call } = &expression.expression {
+                    if call.metadata.contains_key("dispatchSubmit") {
+                        register(
+                            &TypeRefIr::builtin("TaskRef"),
+                            &format!(
+                                "function `{function_key}` expression {} task submit result",
+                                expression.index
+                            ),
+                        )?;
+                    }
                     if let Some(ty) = &call.concrete_receiver {
                         register(
                             ty,

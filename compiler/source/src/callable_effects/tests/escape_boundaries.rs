@@ -215,6 +215,29 @@ fn stream_for_in_consumers_record_stream_pending_effects() {
 }
 
 #[test]
+fn scalar_function_dispatch_uses_native_pending_without_caller_escape() {
+    let model = AnalysisFixture::new(
+        r#"
+            function work(value: number) -> void {
+              return
+            }
+
+            function run(seed: number) -> number {
+              dispatch work(seed)
+              return seed
+            }
+        "#,
+    )
+    .analyze();
+
+    assert_eq!(
+        effects(&model, "run"),
+        pending_only_effects(vec![PendingEffectCategory::NativeCall])
+    );
+    assert!(!effects(&model, "run").escapes_caller_value);
+}
+
+#[test]
 fn database_queries_and_detached_writes_do_not_escape_caller_values() {
     let model = AnalysisFixture::new(
         r#"

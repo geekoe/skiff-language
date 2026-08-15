@@ -14,7 +14,9 @@ use crate::{
 };
 
 use super::{
-    super::provenance::{AbstractValue, CallableState, EscapeLane, Origin},
+    super::provenance::{
+        record_pending_category, AbstractValue, CallableState, EscapeLane, Origin,
+    },
     Environment, Evaluator,
 };
 
@@ -76,7 +78,14 @@ impl Evaluator<'_, '_> {
                     }
                     CallableState::fail_closed(CallableProvenanceUnknownReason::UnknownCallTarget)
                 });
-                self.apply_callee(&callee, &actuals, return_reference, None)
+                let result = self.apply_callee(&callee, &actuals, return_reference, None);
+                if matches!(target, ResolvedCallTarget::ActorMethod { .. }) {
+                    record_pending_category(
+                        &mut self.state.effects,
+                        PendingEffectCategory::ActorCall,
+                    );
+                }
+                result
             }
             Some(ResolvedCallTarget::NativeFunction { binding_key }) => self
                 .apply_exact_native_call(&binding_key, &callee_value, &actuals, return_reference),
@@ -277,6 +286,15 @@ impl Evaluator<'_, '_> {
             );
         };
         project_exact_executor_category(&mut callee.effects, binding_key);
+        if binding_key == "std.actor.get" {
+            callee.effects.pending_effect_categories.retain(|category| {
+                !matches!(
+                    category,
+                    PendingEffectCategory::NativeCall | PendingEffectCategory::HostEffect
+                )
+            });
+            record_pending_category(&mut callee.effects, PendingEffectCategory::ActorCall);
+        }
         self.apply_callee(&callee, actuals, return_reference, None)
     }
 

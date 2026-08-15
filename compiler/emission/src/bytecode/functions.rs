@@ -2372,13 +2372,27 @@ impl<'a> FunctionEmitter<'a> {
         for argument in &call.args {
             self.emit_expression(*argument)?;
         }
+        let mut task_expression = expression.clone();
+        task_expression.ty = TypeRefIr::builtin("TaskRef");
+        self.image.intern_type(
+            self.unit.module_path.as_str(),
+            &task_expression.ty,
+            &format!("task submit result type in `{}`", self.key),
+        )?;
         self.emit_pending_call(
-            expression,
+            &task_expression,
             Opcode::InvokeIntrinsic,
             BytecodeRelocation::TaskSubmitRef { task },
             None,
             false,
-        )
+        )?;
+        if !matches!(
+            &expression.ty,
+            TypeRefIr::Builtin { name, args } if name == "TaskRef" && args.is_empty()
+        ) {
+            self.emit_op(Opcode::Pop, Vec::new())?;
+        }
+        Ok(())
     }
 
     fn task_submit_reference(

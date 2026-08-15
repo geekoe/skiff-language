@@ -13,6 +13,8 @@ use super::{
     join_environments, Environment, Evaluator,
 };
 
+use crate::ResolvedCallTarget;
+
 impl Evaluator<'_, '_> {
     pub(super) fn eval_expr(&mut self, expr: &Expr, env: &mut Environment) -> AbstractValue {
         let key = self.current_key();
@@ -101,13 +103,27 @@ impl Evaluator<'_, '_> {
             Expr::Call { callee, args } => self.eval_call(&key, callee, args, env),
             Expr::Dispatch { call, timing } => {
                 let start = self.next_index;
+                let call_key = self.current_key();
                 self.eval_expr(call, env);
                 if let Some(DispatchTiming::After(expr) | DispatchTiming::At(expr)) = timing {
                     self.eval_expr(expr, env);
                 }
                 let captured = self.values_in_range(start, self.next_index);
-                self.state.record_escape(&captured, EscapeLane::Dispatch);
-                record_pending_category(&mut self.state.effects, PendingEffectCategory::Unknown);
+                self.state
+                    .record_detached_escape(&captured, EscapeLane::Dispatch);
+                let category = match self.resolved_call_targets.target(&call_key) {
+                    Some(ResolvedCallTarget::ActorMethod { .. }) => {
+                        PendingEffectCategory::ActorCall
+                    }
+                    Some(
+                        ResolvedCallTarget::LocalFunction { .. }
+                        | ResolvedCallTarget::LocalImplMethod { .. }
+                        | ResolvedCallTarget::DependencyPackageFunction { .. }
+                        | ResolvedCallTarget::NativeFunction { .. },
+                    ) => PendingEffectCategory::NativeCall,
+                    _ => PendingEffectCategory::Unknown,
+                };
+                record_pending_category(&mut self.state.effects, category);
                 AbstractValue::unknown(true)
             }
             Expr::Generic { callee, .. } => self.eval_expr(callee, env),

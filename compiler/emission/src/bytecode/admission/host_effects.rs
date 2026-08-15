@@ -135,6 +135,8 @@ pub(super) struct HostEffectAdmissions {
     db_body_expressions: BTreeSet<u32>,
     service_calls: BTreeSet<u32>,
     interface_calls: BTreeSet<u32>,
+    actor_calls: BTreeSet<u32>,
+    task_categories: BTreeMap<u32, PendingEffectCategory>,
     expressions: BTreeMap<u32, Vec<RegistryValueAuthority>>,
     slots: BTreeMap<u32, Vec<RegistryValueAuthority>>,
     stream_for_in_statements: BTreeSet<u32>,
@@ -185,6 +187,33 @@ impl HostEffectAdmissions {
                     if target.binding_key.as_deref() == Some("std.db.operation")
             ) {
                 admissions.db_calls.insert(expression.index);
+                continue;
+            }
+            if call.metadata.contains_key("dispatchSubmit") {
+                let category = match call.target {
+                    skiff_artifact_model::CallTargetIr::ActorMethod { .. } => {
+                        PendingEffectCategory::ActorCall
+                    }
+                    _ => PendingEffectCategory::NativeCall,
+                };
+                admissions
+                    .task_categories
+                    .insert(expression.index, category);
+                continue;
+            }
+            if matches!(
+                call.target,
+                skiff_artifact_model::CallTargetIr::ActorMethod { .. }
+            ) {
+                admissions.actor_calls.insert(expression.index);
+                continue;
+            }
+            if matches!(
+                call.target,
+                skiff_artifact_model::CallTargetIr::Native { ref target }
+                    if target.binding_key.as_deref() == Some("std.actor.get")
+            ) {
+                admissions.actor_calls.insert(expression.index);
                 continue;
             }
             if matches!(
@@ -707,6 +736,10 @@ impl HostEffectAdmissions {
         if !self.interface_calls.is_empty() {
             expected.insert(PendingEffectCategory::Unknown);
         }
+        if !self.actor_calls.is_empty() {
+            expected.insert(PendingEffectCategory::ActorCall);
+        }
+        expected.extend(self.task_categories.values().copied());
         if !self.db_calls.is_empty() {
             expected.insert(PendingEffectCategory::HostEffect);
         }

@@ -393,7 +393,7 @@ pub(super) fn is_caller_parameter_provenance(origin: &ValueProvenance) -> bool {
 pub(super) fn assert_detached_contract_summary(model: &PackageSourceModel, symbol: &str) {
     assert_eq!(
         effects(model, symbol),
-        pending_only_effects(vec![PendingEffectCategory::Unknown]),
+        pending_only_effects(vec![PendingEffectCategory::ServiceCall]),
         "{symbol}"
     );
     let CallableProvenanceSummary::Analyzed {

@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
+    ActorAbiIdentity, ActorDeclarationIr, ActorImplementationIdentity, ActorMethodIdentity,
     AssignTargetIr, BinaryOpIr, BoxSourceIr, CallIr, CallTargetIr, CallableEffectSummary, DbBodyIr,
     DbOpKindIr, DbTargetIr, ExprIr, ExprRefIr, FunctionTypeParamIr, InterfaceInstantiationRef,
     InterfaceMethodSlotSignatureIr, LiteralIr, MetadataValue, NamedUnionBranchIr, NativeTarget,
-    ReceiverCallAbi, ServiceBoundaryPlan, ServiceCallRef, StatementAttributionId, TypeDescriptorIr,
-    TypeRefIr,
+    ReceiverCallAbi, ServiceBoundaryPlan, ServiceCallRef, ServiceSymbolRef, StatementAttributionId,
+    TypeDescriptorIr, TypeRefIr,
 };
 use skiff_compiler_lowering::mir::{
     MirCallArgument, MirEmissionAnchor, MirExecutableKind, MirFunction, MirParamMode, MirSlotKind,
@@ -261,6 +262,297 @@ impl LocalInterfaceFacts {
             .filter(move |table| &table.interface == interface)
             .collect()
     }
+}
+
+/// One exact actor declaration row retained by Phase 1 admission.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ActorDeclarationFact {
+    pub(crate) actor: ServiceSymbolRef,
+    pub(crate) actor_abi_identity: ActorAbiIdentity,
+    pub(crate) actor_implementation_identity: ActorImplementationIdentity,
+    pub(crate) fields: BTreeMap<String, TypeRefIr>,
+    pub(crate) key_field: String,
+    pub(crate) id_type: TypeRefIr,
+    pub(crate) method_implementations: BTreeMap<ActorMethodIdentity, u32>,
+    pub(crate) create_identity: Option<ActorMethodIdentity>,
+}
+
+impl ActorDeclarationFact {
+    pub(crate) fn actor_id_type(&self) -> TypeRefIr {
+        self.id_type.clone()
+    }
+}
+
+/// One exact actor method executable row joined from the declaration table.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ActorMethodFact {
+    pub(crate) actor: ServiceSymbolRef,
+    pub(crate) actor_abi_identity: ActorAbiIdentity,
+    pub(crate) actor_implementation_identity: ActorImplementationIdentity,
+    pub(crate) method_identity: ActorMethodIdentity,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ActorFacts {
+    declarations: BTreeMap<(String, String), ActorDeclarationFact>,
+    methods: BTreeMap<u32, ActorMethodFact>,
+}
+
+impl ActorFacts {
+    pub(crate) fn actor(&self, actor: &ServiceSymbolRef) -> Option<&ActorDeclarationFact> {
+        self.declarations
+            .get(&(actor.module_path.clone(), actor.symbol.clone()))
+    }
+
+    pub(crate) fn actor_for_method(&self, executable_index: u32) -> Option<&ActorMethodFact> {
+        self.methods.get(&executable_index)
+    }
+
+    pub(crate) fn exact_actor_method(
+        &self,
+        actor: &ServiceSymbolRef,
+        abi: &ActorAbiIdentity,
+        implementation: &ActorImplementationIdentity,
+        method: &ActorMethodIdentity,
+    ) -> bool {
+        self.actor(actor).is_some_and(|declaration| {
+            declaration.actor_abi_identity == *abi
+                && declaration.actor_implementation_identity == *implementation
+                && declaration.method_implementations.contains_key(method)
+        })
+    }
+
+    pub(crate) fn is_actor_handle(&self, ty: &TypeRefIr) -> bool {
+        matches!(
+            ty,
+            TypeRefIr::ServiceSymbol { symbol }
+                if self.actor(symbol).is_some()
+        )
+    }
+}
+
+pub(crate) fn collect_actor_facts(units: &[MirUnit]) -> Result<ActorFacts, BytecodeEmissionError> {
+    let mut facts = ActorFacts::default();
+    for unit in units {
+        for declaration in &unit.actor_declarations {
+            collect_actor_declaration(unit, declaration, &mut facts)?;
+        }
+    }
+    Ok(facts)
+}
+
+fn collect_actor_declaration(
+    unit: &MirUnit,
+    declaration: &ActorDeclarationIr,
+    facts: &mut ActorFacts,
+) -> Result<(), BytecodeEmissionError> {
+    let actor_name = declaration.abi.actor_name.as_str();
+    if actor_name.is_empty()
+        || declaration.actor_abi_identity.as_str().is_empty()
+        || declaration
+            .actor_implementation_identity
+            .as_str()
+            .is_empty()
+        || declaration.abi.actor_runtime_abi_version.is_empty()
+    {
+        return Err(rejected(
+            unit,
+            None,
+            Phase1UnsupportedCapability::Actor,
+            "actor declaration table has an empty exact identity field",
+        ));
+    }
+    let attached_type = unit
+        .type_table
+        .iter()
+        .find(|declaration| declaration.name == actor_name)
+        .ok_or_else(|| {
+            rejected(
+                unit,
+                None,
+                Phase1UnsupportedCapability::Actor,
+                &format!(
+                    "actor declaration table actor `{actor_name}` has no attached record type"
+                ),
+            )
+        })?;
+    let TypeDescriptorIr::Record {
+        fields: attached_fields,
+    } = &attached_type.descriptor
+    else {
+        return Err(rejected(
+            unit,
+            None,
+            Phase1UnsupportedCapability::Actor,
+            &format!("actor declaration table actor `{actor_name}` does not attach to a record"),
+        ));
+    };
+    let declared_fields = declaration
+        .abi
+        .fields
+        .iter()
+        .map(|field| (field.name.clone(), field.ty.clone()))
+        .collect::<BTreeMap<_, _>>();
+    if declared_fields != *attached_fields {
+        return Err(rejected(
+            unit,
+            None,
+            Phase1UnsupportedCapability::Actor,
+            &format!("actor declaration table actor `{actor_name}` field facts drift from its attached record"),
+        ));
+    }
+    let public_methods = declaration
+        .abi
+        .public_methods
+        .iter()
+        .map(|method| method.method_identity.clone())
+        .collect::<BTreeSet<_>>();
+    let implementation_methods = declaration
+        .method_implementations
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if public_methods != implementation_methods {
+        return Err(rejected(
+            unit,
+            None,
+            Phase1UnsupportedCapability::Actor,
+            &format!("actor declaration table actor `{actor_name}` method rows are not exact"),
+        ));
+    }
+    if declaration.abi.create.is_some() != declaration.create_implementation.is_some() {
+        return Err(rejected(
+            unit,
+            None,
+            Phase1UnsupportedCapability::Actor,
+            &format!("actor declaration table actor `{actor_name}` create rows are not exact"),
+        ));
+    }
+    let create_identity = declaration
+        .create_implementation
+        .as_ref()
+        .map(|create| create.identity.clone());
+    if create_identity
+        .as_ref()
+        .is_some_and(|identity| public_methods.contains(identity))
+    {
+        return Err(rejected(
+            unit,
+            None,
+            Phase1UnsupportedCapability::Actor,
+            &format!("actor declaration table actor `{actor_name}` create aliases a public method"),
+        ));
+    }
+    let actor = ServiceSymbolRef {
+        module_path: unit.module_path.clone(),
+        symbol: actor_name.to_string(),
+    };
+    for (method_identity, executable_index) in declaration.method_implementations.iter() {
+        let executable = unit
+            .functions
+            .iter()
+            .find(|function| function.executable_index == *executable_index)
+            .ok_or_else(|| {
+                rejected(
+                    unit,
+                    None,
+                    Phase1UnsupportedCapability::Actor,
+                    &format!("actor declaration table actor `{actor_name}` method {method_identity:?} has an absent executable"),
+                )
+            })?;
+        if executable.kind != MirExecutableKind::ImplMethod {
+            return Err(rejected(
+                unit,
+                None,
+                Phase1UnsupportedCapability::Actor,
+                &format!("actor declaration table actor `{actor_name}` method {method_identity:?} target is not an impl method"),
+            ));
+        }
+        let method_fact = ActorMethodFact {
+            actor: actor.clone(),
+            actor_abi_identity: declaration.actor_abi_identity.clone(),
+            actor_implementation_identity: declaration.actor_implementation_identity.clone(),
+            method_identity: method_identity.clone(),
+        };
+        if facts
+            .methods
+            .insert(*executable_index, method_fact)
+            .is_some()
+        {
+            return Err(rejected(
+                unit,
+                None,
+                Phase1UnsupportedCapability::Actor,
+                &format!("actor declaration table executable {executable_index} has more than one exact actor row"),
+            ));
+        }
+    }
+    if let Some(create) = declaration.create_implementation.as_ref() {
+        let executable = unit
+            .functions
+            .iter()
+            .find(|function| function.executable_index == create.executable_index)
+            .ok_or_else(|| {
+                rejected(
+                    unit,
+                    None,
+                    Phase1UnsupportedCapability::Actor,
+                    &format!("actor declaration table actor `{actor_name}` create {:?} has an absent executable", create.identity),
+                )
+            })?;
+        if executable.kind != MirExecutableKind::ImplMethod {
+            return Err(rejected(
+                unit,
+                None,
+                Phase1UnsupportedCapability::Actor,
+                &format!("actor declaration table actor `{actor_name}` create {:?} target is not an impl method", create.identity),
+            ));
+        }
+        let method_fact = ActorMethodFact {
+            actor: actor.clone(),
+            actor_abi_identity: declaration.actor_abi_identity.clone(),
+            actor_implementation_identity: declaration.actor_implementation_identity.clone(),
+            method_identity: create.identity.clone(),
+        };
+        if facts
+            .methods
+            .insert(create.executable_index, method_fact)
+            .is_some()
+        {
+            return Err(rejected(
+                unit,
+                None,
+                Phase1UnsupportedCapability::Actor,
+                &format!(
+                    "actor declaration table executable {} has more than one exact actor row",
+                    create.executable_index
+                ),
+            ));
+        }
+    }
+    let declaration_fact = ActorDeclarationFact {
+        actor: actor.clone(),
+        actor_abi_identity: declaration.actor_abi_identity.clone(),
+        actor_implementation_identity: declaration.actor_implementation_identity.clone(),
+        fields: declared_fields,
+        key_field: declaration.abi.key_field.clone(),
+        id_type: declaration.abi.actor_id_type.clone(),
+        method_implementations: declaration.method_implementations.clone(),
+        create_identity,
+    };
+    let key = (actor.module_path.clone(), actor.symbol.clone());
+    if facts.declarations.insert(key, declaration_fact).is_some() {
+        return Err(rejected(
+            unit,
+            None,
+            Phase1UnsupportedCapability::Actor,
+            &format!(
+                "actor declaration table repeats actor `{}`",
+                actor.symbol_path()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn collect_local_interface_tables(
@@ -652,16 +944,9 @@ pub fn admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_
         .flat_map(|table| table.methods.iter())
         .map(|method| method.executable_index)
         .collect::<BTreeSet<_>>();
+    let actor_facts = collect_actor_facts(&units)?;
     for unit in &units {
         unit.validate_executable_indices()?;
-        if !unit.actor_declarations.is_empty() {
-            return Err(rejected(
-                unit,
-                None,
-                Phase1UnsupportedCapability::Actor,
-                "actor declaration table",
-            ));
-        }
         if !unit.constants.is_empty() {
             return Err(rejected(
                 unit,
@@ -728,6 +1013,7 @@ pub fn admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_
                 server_stream_authorities,
                 &local_interface_tables,
                 &local_interface_method_functions,
+                &actor_facts,
             )?;
         }
     }
@@ -791,13 +1077,25 @@ fn admit_function(
     server_stream_authorities: &[ServerStreamGatewayAuthority],
     local_interface_tables: &LocalInterfaceFacts,
     local_interface_method_functions: &BTreeSet<u32>,
+    actor_facts: &ActorFacts,
 ) -> Result<(), BytecodeEmissionError> {
     function.validate_expression_indices()?;
     function.validate_slot_types()?;
     let interface_impl = local_interface_method_functions.contains(&function.executable_index);
+    let actor_method = actor_facts.actor_for_method(function.executable_index);
+    let actor_impl = actor_method.is_some();
+    let exact_actor_face = interface_impl || actor_impl;
+    if interface_impl && actor_impl {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::Actor,
+            "actor method is also a local interface implementation",
+        ));
+    }
     match function.kind {
         MirExecutableKind::Function => {}
-        MirExecutableKind::ImplMethod if interface_impl => {}
+        MirExecutableKind::ImplMethod if interface_impl || actor_impl => {}
         MirExecutableKind::ImplMethod => {
             return Err(rejected_function(
                 unit,
@@ -807,13 +1105,13 @@ fn admit_function(
             ));
         }
     }
-    if interface_impl {
+    if interface_impl || actor_impl {
         let Some(receiver) = function.receiver.as_ref() else {
             return Err(rejected_function(
                 unit,
                 function_key,
                 Phase1UnsupportedCapability::Receiver,
-                "local interface implementation has no receiver facts",
+                "implementation has no receiver facts",
             ));
         };
         let Some(self_type) = function.self_type.as_ref() else {
@@ -821,7 +1119,7 @@ fn admit_function(
                 unit,
                 function_key,
                 Phase1UnsupportedCapability::Receiver,
-                "local interface implementation has no self type",
+                "implementation has no self type",
             ));
         };
         if receiver.ty != *self_type
@@ -833,7 +1131,7 @@ fn admit_function(
                 unit,
                 function_key,
                 Phase1UnsupportedCapability::Receiver,
-                "local interface implementation receiver facts are not exact",
+                "implementation receiver facts are not exact",
             ));
         }
         let slot_zero = function.slots.first().ok_or_else(|| {
@@ -841,7 +1139,7 @@ fn admit_function(
                 unit,
                 function_key,
                 Phase1UnsupportedCapability::Receiver,
-                "local interface implementation has no receiver slot zero",
+                "implementation has no receiver slot zero",
             )
         })?;
         if slot_zero.slot != 0 || slot_zero.ty.as_ref() != Some(self_type) {
@@ -849,7 +1147,7 @@ fn admit_function(
                 unit,
                 function_key,
                 Phase1UnsupportedCapability::Receiver,
-                "local interface implementation receiver slot disagrees with self type",
+                "implementation receiver slot disagrees with self type",
             ));
         }
     } else if function.self_type.is_some() || function.receiver.is_some() {
@@ -925,7 +1223,7 @@ fn admit_function(
             ));
         }
     } else if !server_stream.admits_closure_carrier(&function.return_type) {
-        if interface_impl {
+        if exact_actor_face {
             admit_type_with_exact_local_interface_face(
                 units,
                 unit,
@@ -978,6 +1276,7 @@ fn admit_function(
             && !server_stream.admits_slot(parameter.slot, &parameter.ty)
             && !server_stream.admits_scalar_carrier(&parameter.ty)
             && !server_stream.admits_closure_carrier(&parameter.ty)
+            && !actor_facts.is_actor_handle(&parameter.ty)
         {
             admit_type_with_registry_authority(
                 units,
@@ -988,7 +1287,7 @@ fn admit_function(
                 &format!("parameter {parameter_index} type"),
                 host_effects.slot_authorities(parameter.slot),
                 local_interface_tables,
-                interface_impl,
+                exact_actor_face,
             )?;
         }
         if usize::try_from(parameter.slot).ok() != Some(parameter_index + parameter_ordinal_offset)
@@ -1043,6 +1342,7 @@ fn admit_function(
             && !server_stream.admits_slot(slot.slot, ty)
             && !server_stream.admits_scalar_carrier(ty)
             && !server_stream.admits_closure_carrier(ty)
+            && !actor_facts.is_actor_handle(ty)
         {
             admit_type_with_registry_authority(
                 units,
@@ -1053,7 +1353,7 @@ fn admit_function(
                 &format!("slot {} type", slot.slot),
                 host_effects.slot_authorities(slot.slot),
                 local_interface_tables,
-                interface_impl,
+                exact_actor_face,
             )?;
         }
     }
@@ -1085,6 +1385,7 @@ fn admit_function(
             &host_effects,
             &server_stream,
             local_interface_tables,
+            actor_facts,
         )?;
     }
     for block in &function.blocks {
@@ -1097,6 +1398,7 @@ fn admit_function(
                 statement,
                 &host_effects,
                 &server_stream,
+                actor_facts,
             )?;
         }
     }
@@ -1352,6 +1654,7 @@ fn admit_statement(
         statement,
         &host_effects,
         &ServerStreamAdmissions::default(),
+        &ActorFacts::default(),
     )
 }
 
@@ -1363,7 +1666,9 @@ fn admit_statement_with_authority(
     statement: &skiff_compiler_lowering::mir::MirStmt,
     host_effects: &HostEffectAdmissions,
     server_stream: &ServerStreamAdmissions,
+    actor_facts: &ActorFacts,
 ) -> Result<(), BytecodeEmissionError> {
+    let actor_method = actor_facts.actor_for_method(function.executable_index);
     let capability = match &statement.kind {
         MirStmtKind::InitSlot { slot, value } => {
             admit_slot_value_type(
@@ -1416,10 +1721,41 @@ fn admit_statement_with_authority(
         }
         MirStmtKind::Assign { target, place, .. } => match target {
             AssignTargetIr::Slot { .. } => None,
-            AssignTargetIr::ActorSelfField { .. } => Some(Phase1UnsupportedCapability::Actor),
+            AssignTargetIr::ActorSelfField { field, field_type } => {
+                let Some(actor_method) = actor_method else {
+                    return Err(rejected_function(
+                        unit,
+                        function_key,
+                        Phase1UnsupportedCapability::Actor,
+                        &format!(
+                            "statement {} actor self field outside an exact actor method",
+                            statement.statement_index
+                        ),
+                    ));
+                };
+                let declaration = actor_facts
+                    .actor(&actor_method.actor)
+                    .expect("actor method fact joins its declaration");
+                if declaration.fields.get(field) == Some(field_type) {
+                    None
+                } else {
+                    Some(Phase1UnsupportedCapability::Actor)
+                }
+            }
             AssignTargetIr::Field { .. } | AssignTargetIr::Index { .. } => {
                 if matches!(place.root, MirWritableRoot::ActorSelfField { .. }) {
-                    Some(Phase1UnsupportedCapability::Actor)
+                    if actor_method.is_none() {
+                        return Err(rejected_function(
+                            unit,
+                            function_key,
+                            Phase1UnsupportedCapability::Actor,
+                            &format!(
+                                "statement {} actor self write outside an exact actor method",
+                                statement.statement_index
+                            ),
+                        ));
+                    }
+                    None
                 } else {
                     None
                 }
@@ -1484,14 +1820,42 @@ fn admit_statement_with_authority(
         {
             None
         }
+        MirStmtKind::Dispatch { call } => {
+            let expression = function.expression(*call).map_err(|error| {
+                rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::ControlFlow,
+                    &format!(
+                        "statement {} dispatch call is absent: {error}",
+                        statement.statement_index
+                    ),
+                )
+            })?;
+            let ExprIr::Call { call } = &expression.expression else {
+                return Err(rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::ControlFlow,
+                    &format!(
+                        "statement {} dispatch statement does not carry an exact task call",
+                        statement.statement_index
+                    ),
+                ));
+            };
+            if call.metadata.contains_key(TASK_SUBMIT_METADATA_KEY) {
+                None
+            } else {
+                Some(Phase1UnsupportedCapability::ControlFlow)
+            }
+        }
         MirStmtKind::Break
             if server_stream.has_exact_authority()
                 && host_effects.admits_stream_break(statement.statement_index) =>
         {
             None
         }
-        MirStmtKind::Dispatch { .. }
-        | MirStmtKind::ForIn { .. }
+        MirStmtKind::ForIn { .. }
         | MirStmtKind::While { .. }
         | MirStmtKind::Match { .. }
         | MirStmtKind::Break
@@ -1695,6 +2059,7 @@ fn admit_expression(
         &host_effects,
         &ServerStreamAdmissions::default(),
         &LocalInterfaceFacts::empty(),
+        &ActorFacts::default(),
     )
 }
 
@@ -1708,11 +2073,15 @@ fn admit_expression_with_host_effects(
     host_effects: &HostEffectAdmissions,
     server_stream: &ServerStreamAdmissions,
     local_interface_tables: &LocalInterfaceFacts,
+    actor_facts: &ActorFacts,
 ) -> Result<(), BytecodeEmissionError> {
     let registry_authorities = host_effects.expression_authorities(expression.index);
     let local_interface_exact_face = local_interface_tables
         .method_for_executable(function.executable_index)
         .is_some()
+        || actor_facts
+            .actor_for_method(function.executable_index)
+            .is_some()
         || local_interface_tables.exact_call_result(
             unit,
             function,
@@ -1739,6 +2108,7 @@ fn admit_expression_with_host_effects(
             host_effects,
             server_stream,
             local_interface_tables,
+            actor_facts,
         )?;
     }
     if let ExprIr::Construct { type_ref, .. } = &expression.expression {
@@ -1773,6 +2143,7 @@ fn admit_expression_with_host_effects(
             .any(|authority| authority.admits(&expression.ty))
         && !host_effects.is_db_expression(expression.index)
         && !host_effects.is_db_body_expression(expression.index)
+        && !actor_facts.is_actor_handle(&expression.ty)
     {
         admit_type_with_discriminator_flag(
             units,
@@ -1866,7 +2237,27 @@ fn admit_expression_with_host_effects(
         ExprIr::LoadConst { .. } | ExprIr::LoadPackageConst { .. } => {
             Some(Phase1UnsupportedCapability::Constant)
         }
-        ExprIr::ActorSelfField { .. } => Some(Phase1UnsupportedCapability::Actor),
+        ExprIr::ActorSelfField { field, field_type } => {
+            let Some(actor_method) = actor_facts.actor_for_method(function.executable_index) else {
+                return Err(rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::Actor,
+                    &format!(
+                        "expression {} actor self field outside an exact actor method",
+                        expression.index
+                    ),
+                ));
+            };
+            let declaration = actor_facts
+                .actor(&actor_method.actor)
+                .expect("actor method fact joins its declaration");
+            if declaration.fields.get(field) == Some(field_type) {
+                None
+            } else {
+                Some(Phase1UnsupportedCapability::Actor)
+            }
+        }
         ExprIr::InterfaceBox {
             interface,
             source:
@@ -2124,7 +2515,21 @@ fn admit_call(
     host_effects: &HostEffectAdmissions,
     server_stream: &ServerStreamAdmissions,
     local_interface_tables: &LocalInterfaceFacts,
+    actor_facts: &ActorFacts,
 ) -> Result<(), BytecodeEmissionError> {
+    if let CallTargetIr::Native { target } = &call.target {
+        if target.binding_key.as_deref() == Some("std.actor.get") {
+            return admit_actor_registry_get(
+                unit,
+                function_key,
+                function,
+                expression,
+                call,
+                target,
+                actor_facts,
+            );
+        }
+    }
     if !call.type_args.is_empty() {
         return Err(rejected_function(
             unit,
@@ -2189,13 +2594,29 @@ fn admit_call(
                 &format!("expression {} call target", expression.index),
             ));
         }
-        CallTargetIr::ActorMethod { .. } => {
-            return Err(rejected_function(
-                unit,
-                function_key,
-                Phase1UnsupportedCapability::Actor,
-                &format!("expression {} call target", expression.index),
-            ));
+        CallTargetIr::ActorMethod {
+            actor,
+            actor_abi_identity,
+            actor_implementation_identity,
+            method_identity,
+        } => {
+            if !actor_facts.exact_actor_method(
+                actor,
+                actor_abi_identity,
+                actor_implementation_identity,
+                method_identity,
+            ) {
+                return Err(rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::Actor,
+                    &format!(
+                        "expression {} actor method target is absent from the exact declaration table",
+                        expression.index
+                    ),
+                ));
+            }
+            return Ok(());
         }
         CallTargetIr::Native { target } => {
             if target.binding_key.as_deref() == Some("std.db.operation") {
@@ -2462,6 +2883,114 @@ fn admit_duration_milliseconds_constructor(
     Ok(())
 }
 
+fn admit_actor_registry_get(
+    unit: &MirUnit,
+    function_key: &str,
+    function: &MirFunction,
+    expression: &skiff_compiler_lowering::mir::MirExpression,
+    call: &CallIr,
+    target: &NativeTarget,
+    actor_facts: &ActorFacts,
+) -> Result<(), BytecodeEmissionError> {
+    if target.namespace != "std"
+        || target.symbol != "actor.get"
+        || target.binding_key.as_deref() != Some("std.actor.get")
+        || !target.metadata.is_empty()
+        || !call.inout_args.is_empty()
+        || !call.metadata.is_empty()
+        || call.concrete_receiver.is_some()
+    {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::Actor,
+            &format!(
+                "expression {} std.actor.get target facts are not exact",
+                expression.index
+            ),
+        ));
+    }
+    let actor = match call.type_args.get("T0") {
+        Some(TypeRefIr::ServiceSymbol { symbol }) => symbol,
+        _ => {
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::Actor,
+                &format!(
+                    "expression {} std.actor.get lacks an exact actor type argument",
+                    expression.index
+                ),
+            ));
+        }
+    };
+    let declaration = actor_facts.actor(actor).ok_or_else(|| {
+        rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::Actor,
+            &format!(
+                "expression {} std.actor.get actor `{}` is absent from the exact declaration table",
+                expression.index,
+                actor.symbol_path()
+            ),
+        )
+    })?;
+    if call.type_args.len() != 2
+        || call.type_args.get("T1") != Some(&declaration.actor_id_type())
+        || call.type_args.contains_key("T2")
+    {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::Actor,
+            &format!(
+                "expression {} std.actor.get type arguments drift from the exact actor declaration",
+                expression.index
+            ),
+        ));
+    }
+    if call.args.len() != 1 {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::Actor,
+            &format!(
+                "expression {} std.actor.get arity is not exactly one",
+                expression.index
+            ),
+        ));
+    }
+    let argument_type = &function.expression(call.args[0])?.ty;
+    if argument_type != &declaration.actor_id_type() {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::Actor,
+            &format!(
+                "expression {} std.actor.get argument type drifts from the exact actor key type",
+                expression.index
+            ),
+        ));
+    }
+    if expression.ty
+        != (TypeRefIr::ServiceSymbol {
+            symbol: actor.clone(),
+        })
+    {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::Actor,
+            &format!(
+                "expression {} std.actor.get result drifts from the exact actor handle",
+                expression.index
+            ),
+        ));
+    }
+    Ok(())
+}
+
 fn admit_task_submit_call(
     unit: &MirUnit,
     function_key: &str,
@@ -2469,17 +2998,22 @@ fn admit_task_submit_call(
     expression: &skiff_compiler_lowering::mir::MirExpression,
     call: &skiff_artifact_model::CallIr,
 ) -> Result<(), BytecodeEmissionError> {
-    if !matches!(
+    let is_task_ref = matches!(
+        &expression.ty,
+        TypeRefIr::Builtin { name, args } if name == "TaskRef" && args.is_empty()
+    );
+    let is_discarded_statement = matches!(
         &expression.ty,
         TypeRefIr::Builtin { name, args }
-            if name == "TaskRef" && args.is_empty()
-    ) {
+            if args.is_empty() && matches!(name.as_str(), "void" | "null")
+    );
+    if !is_task_ref && !is_discarded_statement {
         return Err(rejected_function(
             unit,
             function_key,
             Phase1UnsupportedCapability::HostTarget,
             &format!(
-                "expression {} task submit must produce std.task.TaskRef",
+                "expression {} task submit must produce std.task.TaskRef or be a discarded void dispatch",
                 expression.index
             ),
         ));
@@ -3136,6 +3670,12 @@ fn admit_type_nested(
             Ok(())
         }
         TypeRefIr::AnyInterface { interface } => {
+            if !nested
+                && interface.canonical_type_args.is_empty()
+                && !interface.interface_abi_id.trim().is_empty()
+            {
+                return Ok(());
+            }
             if context
                 .local_interface_tables
                 .tables_for_interface(interface)

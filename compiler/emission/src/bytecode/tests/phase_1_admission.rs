@@ -1,9 +1,12 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    CallIr, CallTargetIr, CallableEffectSummary, CallableMayEffects, ContractOperationId, ExprIr,
-    ExprRefIr, FileIrUnit, InstructionSourceSite, LiteralIr, PackageCallableId, ServiceCallRef,
-    ServiceProtocolIdentity, SyntheticInstructionSiteReason, TypeRefIr,
+    ActorAbiInput, ActorDeclarationIr, ActorFieldEncodingIr, ActorFieldIr,
+    ActorImplementationIdentity, ActorMethodIdentity, ActorPublicMethodIr, CallIr, CallTargetIr,
+    CallableEffectSummary, CallableMayEffects, ContractOperationId, ExprIr, ExprRefIr, FileIrUnit,
+    InstructionSourceSite, LiteralIr, PackageCallableId, ServiceCallRef, ServiceProtocolIdentity,
+    SyntheticInstructionSiteReason, TypeDeclIr, TypeDescriptorIr, TypeRefIr,
+    ACTOR_RUNTIME_ABI_VERSION_V1,
 };
 use skiff_compiler_lowering::mir::{
     MirBlock, MirCallArgument, MirDirectCallFacts, MirExecutableKind, MirExpression, MirFunction,
@@ -11,7 +14,12 @@ use skiff_compiler_lowering::mir::{
     MirSourceEventUnavailableReason, MirStatementEntry, MirStmt, MirStmtKind, MirUnit,
 };
 
-use crate::{admit_phase_1_bytecode_mir, BytecodeEmissionError, Phase1MirFactMismatch};
+use crate::{
+    admit_phase_1_bytecode_mir, BytecodeEmissionError, Phase1MirFactMismatch,
+    Phase1UnsupportedCapability,
+};
+
+use super::admission::collect_actor_facts;
 
 #[test]
 fn phase_1_bytecode_admission_rejects_unavailable_source_events_before_token_mint() {
@@ -216,6 +224,145 @@ fn phase_1_bytecode_admission_exact_joins_local_callee_argument_types() {
             ..
         }
     ));
+}
+
+#[test]
+fn f6_callback_carrier_parameter_admits_exact_any_interface_and_rejects_nested_shape() {
+    let callback = function("invoke", 0);
+    let callback = callback_parameter_function(callback, callback_any_interface());
+    let error = admit_phase_1_bytecode_mir(&[unit(vec![callback])]).unwrap_err();
+    assert!(
+        matches!(
+            error,
+            BytecodeEmissionError::Phase1SourceEventsUnavailable { .. }
+        ),
+        "exact top-level any-I callback parameter must pass admission and reach source-event planning"
+    );
+
+    let nested_ty = TypeRefIr::Builtin {
+        name: "Array".to_string(),
+        args: vec![callback_any_interface()],
+    };
+    let nested = function("invoke", 0);
+    let nested = callback_parameter_function(nested, nested_ty);
+    let error = admit_phase_1_bytecode_mir(&[unit(vec![nested])]).unwrap_err();
+    assert!(matches!(
+        error,
+        BytecodeEmissionError::UnsupportedConstruct { .. }
+    ));
+}
+
+#[test]
+fn f6_actor_declaration_table_admits_exact_rows_and_rejects_drift() {
+    let mut method = function("Counter.increment", 0);
+    method.kind = MirExecutableKind::ImplMethod;
+    let mut mir = unit(vec![method]);
+    mir.type_table = vec![counter_type_declaration()];
+    mir.actor_declarations = vec![counter_actor_declaration()];
+
+    let facts = collect_actor_facts(&[mir.clone()]).expect("exact actor rows are admitted");
+    let method_fact = facts
+        .actor_for_method(0)
+        .expect("actor method executable is joined to its declaration");
+    assert_eq!(method_fact.actor.symbol, "Counter");
+
+    let mut drifted = mir;
+    let declaration = drifted
+        .actor_declarations
+        .first_mut()
+        .expect("fixture actor row exists");
+    declaration
+        .method_implementations
+        .insert(ActorMethodIdentity::new("method:drifted"), 0);
+    let error = collect_actor_facts(&[drifted]).unwrap_err();
+    assert!(matches!(
+        error,
+        BytecodeEmissionError::UnsupportedPhase1Capability {
+            capability: Phase1UnsupportedCapability::Actor,
+            ..
+        }
+    ));
+}
+
+fn callback_any_interface() -> TypeRefIr {
+    TypeRefIr::AnyInterface {
+        interface: skiff_artifact_model::InterfaceInstantiationRef {
+            interface_abi_id: "callback:handler".to_string(),
+            canonical_type_args: Vec::new(),
+        },
+    }
+}
+
+fn callback_parameter_function(mut function: MirFunction, ty: TypeRefIr) -> MirFunction {
+    function.params.push(MirParam {
+        name: "handler".to_string(),
+        slot: 0,
+        ty: ty.clone(),
+        mode: MirParamMode::Value,
+    });
+    function.slots.push(MirSlot {
+        slot: 0,
+        name: "handler".to_string(),
+        kind: MirSlotKind::Param,
+        writable_local: false,
+        ty: Some(ty),
+    });
+    function
+}
+
+fn counter_type_declaration() -> TypeDeclIr {
+    TypeDeclIr {
+        name: "Counter".to_string(),
+        descriptor: TypeDescriptorIr::Record {
+            fields: BTreeMap::from([
+                ("id".to_string(), TypeRefIr::builtin("string")),
+                ("count".to_string(), TypeRefIr::builtin("number")),
+            ]),
+        },
+        type_params: Vec::new(),
+        implements: Vec::new(),
+        source_span: None,
+    }
+}
+
+fn counter_actor_declaration() -> ActorDeclarationIr {
+    let method_identity = ActorMethodIdentity::new("skiff-actor-method-v1:fixture:increment");
+    ActorDeclarationIr {
+        actor_abi_identity: skiff_artifact_model::ActorAbiIdentity::new(
+            "skiff-actor-abi-v1:fixture:counter",
+        ),
+        actor_implementation_identity: ActorImplementationIdentity::new(
+            "skiff-actor-impl-v1:fixture:counter",
+        ),
+        abi: ActorAbiInput {
+            actor_name: "Counter".to_string(),
+            actor_id_type: TypeRefIr::builtin("string"),
+            key_field: "id".to_string(),
+            fields: vec![
+                ActorFieldIr {
+                    name: "id".to_string(),
+                    ty: TypeRefIr::builtin("string"),
+                    encoding: ActorFieldEncodingIr::CanonicalValueV1,
+                },
+                ActorFieldIr {
+                    name: "count".to_string(),
+                    ty: TypeRefIr::builtin("number"),
+                    encoding: ActorFieldEncodingIr::CanonicalValueV1,
+                },
+            ],
+            create: None,
+            public_methods: vec![ActorPublicMethodIr {
+                method_identity: method_identity.clone(),
+                name: "increment".to_string(),
+                parameters: Vec::new(),
+                return_type: TypeRefIr::builtin("number"),
+                may_suspend: false,
+            }],
+            actor_runtime_abi_version: ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
+        },
+        method_implementations: BTreeMap::from([(method_identity, 0)]),
+        create_implementation: None,
+    }
 }
 
 fn unit(functions: Vec<MirFunction>) -> MirUnit {

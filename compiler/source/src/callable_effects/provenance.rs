@@ -494,6 +494,22 @@ impl CallableState {
         }
     }
 
+    /// Detached boundaries materialize scalar caller values as new snapshots.
+    /// Only actual caller-owned reference graphs retain an identity escape.
+    pub fn record_detached_escape(&mut self, value: &AbstractValue, lane: EscapeLane) {
+        if value.contains_caller_reference() || value.unknown {
+            self.effects.escapes_caller_value = true;
+            self.escape_lanes.insert(lane);
+            self.escape_parameters
+                .entry(lane)
+                .or_default()
+                .extend(value.formal_parameters());
+        }
+        if value.unknown {
+            self.mark_unknown_value_if_unowned();
+        }
+    }
+
     pub fn record_persistent_escape(&mut self, value: &AbstractValue) {
         // Database writes materialize values. Scalar caller inputs and fresh
         // containers assembled from them are detached at this boundary; an
