@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
+use skiff_runtime_loader::HydratedDeploymentBytecode;
 
 use super::{
     fixture::{build_capability, BuildOutcome, Capability, PublishedFixture},
@@ -27,6 +28,11 @@ pub(super) fn linked_image(
 ) -> std::sync::Arc<skiff_runtime_linker::DeploymentExecutionImage> {
     let fixture = published_positive(capability, prefix);
     fixture.link()
+}
+
+pub(super) fn link_input(capability: Capability, prefix: &str) -> HydratedDeploymentBytecode {
+    let fixture = published_positive(capability, prefix);
+    fixture.link_input()
 }
 
 pub async fn scheduler_to_request(capability: Capability, prefix: &str) {

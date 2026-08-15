@@ -16,7 +16,7 @@ use skiff_compiler::{
 };
 use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_runtime_linker::{link_deployment_execution_image, DeploymentExecutionImage, LinkLimits};
-use skiff_runtime_loader::load_deployment_bytecode_from_store;
+use skiff_runtime_loader::{load_deployment_bytecode_from_store, HydratedDeploymentBytecode};
 
 const PROFILE: &str = "skiff-test";
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
@@ -274,13 +274,17 @@ impl PublishedFixture {
     }
 
     pub(super) fn link(&self) -> Arc<DeploymentExecutionImage> {
-        let store = self.store();
-        let hydrated = load_deployment_bytecode_from_store(&store, &self.deployment)
-            .expect("hydrate admitted carrier through production loader");
+        let hydrated = self.link_input();
         Arc::new(
             link_deployment_execution_image(hydrated, &production_link_limits())
                 .expect("construct admitted carrier through the production atomic linker"),
         )
+    }
+
+    pub(super) fn link_input(&self) -> HydratedDeploymentBytecode {
+        let store = self.store();
+        load_deployment_bytecode_from_store(&store, &self.deployment)
+            .expect("hydrate admitted carrier through production loader")
     }
 }
 

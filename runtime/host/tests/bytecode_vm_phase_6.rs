@@ -13,7 +13,7 @@ use fixture::Capability;
 mod tests {
     use super::*;
     use stages::{
-        admitted_artifact, linked_image, published_positive, request_to_terminal,
+        admitted_artifact, link_input, linked_image, published_positive, request_to_terminal,
         scheduler_to_request,
     };
 
@@ -28,8 +28,14 @@ mod tests {
     }
 
     fn assert_stage_three(capability: Capability, prefix: &str) {
-        let image = linked_image(capability, prefix);
-        assert!(!image.functions().is_empty());
+        let hydrated = link_input(capability, prefix);
+        assert!(
+            hydrated
+                .packages()
+                .values()
+                .any(|package| package.has_bytecode()),
+            "production loader did not expose bytecode-bearing packages at atomic-link input"
+        );
     }
 
     fn assert_stage_four(capability: Capability, prefix: &str) {

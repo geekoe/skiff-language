@@ -73,7 +73,7 @@ export function phase6ScenarioSpecs(root) {
       '--test',
       '--test-reporter=tap',
       'scripts/tests/bytecode-vm-phase-6-gate-*.test.mjs',
-    ], 'node-tap', ['G6'], 22),
+    ], 'node-tap', ['G6'], 26),
     hostSuite(root, 'p6-service-matrix', 'service_', HOST_MATRIX_TESTS,
       ['S6', 'F6', 'K6', 'X6']),
     hostSuite(root, 'p6-interface-local-matrix', 'interface_local_', HOST_MATRIX_TESTS,
@@ -273,17 +273,13 @@ export function assertPhase6BoundedWorkCoverage(specs, ledger) {
   }
 }
 
-export async function assertPhase6NoVerifierStructural(root) {
+export async function assertPhase6NoVerifierStructural(root, options = {}) {
   const { execFile } = await import('node:child_process');
   const { promisify } = await import('node:util');
+  const { access } = await import('node:fs/promises');
+  const { join } = await import('node:path');
   const run = promisify(execFile);
-  const patterns = [
-    '(^|/)(bytecode[_-]?vm[_-]?verifier|verified[_-]?bytecode|bytecode[_-]?verifier)(/|\\.)',
-    'Verified(Bytecode|Artifact|Fact|Image|Execution)',
-    'link[_-]>[_-]verify|link[_-]to[_-]verify',
-    'test[_-]only[_-]verifier|test[_-]only[_-]legacy[_-]path',
-  ];
-  const roots = [
+  const roots = options.roots ?? [
     'artifact-model/src',
     'artifact-identity/src',
     'compiler',
@@ -292,15 +288,38 @@ export async function assertPhase6NoVerifierStructural(root) {
     'scripts/lib',
     'scripts/tests',
   ];
-  for (const pattern of patterns) {
+  const patterns = [
+    ['retired verifier crate or path', '(^|/)(bytecode[_-]?vm[_-]?verifier|verified[_-]?bytecode|bytecode[_-]?verifier)(/|\\.)'],
+    ['retired verifier API or fact type', '\\b(?:ExecutableFacts|verify_executable_facts|VerifiedBytecode|VerifiedArtifact|VerifiedFact|VerifiedImage|VerifiedExecution)\\b'],
+    ['retired verifier import or selector', '(?:use|import).{0,80}bytecode[_-]?vm[_-]?verifier|bytecode-vm-(?:phase-)?(?:6-)?verifier'],
+    ['link/verify dual path or compatibility shim', 'link[_-]>[_-]verify|link[_-]to[_-]verify|test[_-]only[_-]verifier|test[_-]only[_-]legacy[_-]path|test[_-]only[_-]bytecode[_-]path|compat[_-]?shim|alias[_-]?selector'],
+    ['linker fact reconstruction from shape/type', '(?:rebuild|reconstruct|infer)[_-](?:facts|plans|materialization|effect|carrier|recoverability|placement)|TypeRef\\s*==\\s*Shape|lookup\\s+TypeRef\\s+by\\s+Shape'],
+  ];
+  for (const [label, pattern] of patterns) {
     const { stdout } = await run('rg', [
-      '--no-heading', '--glob', '*.rs', '--glob', '*.mjs', '-l', pattern, ...roots,
+      '--no-heading', '--glob', '*.rs', '--glob', '*.mjs', '--glob', 'Cargo.toml',
+      '--glob', '!scripts/lib/bytecode-vm-phase-6-contract.mjs',
+      '--glob', '!scripts/tests/bytecode-vm-phase-6-gate-contract.test.mjs',
+      '-l', pattern, ...roots,
     ], { cwd: root }).catch((error) => {
       if (error?.code === 1) return { stdout: '' };
       throw error;
     });
     if (stdout.trim().length > 0) {
-      throw new Error(`Phase 6 verifier/dual-path structural check matched: ${stdout.trim()}`);
+      throw new Error(`${label} matched retired verifier/dual-path surface: ${stdout.trim()}`);
+    }
+  }
+  for (const path of [
+    'artifact-model/src/bytecode_verifier',
+    'runtime/bytecode-verifier',
+    'runtime/bytecode_vm_verifier',
+    'runtime/bytecode_verifier',
+  ]) {
+    try {
+      await access(join(root, path));
+      throw new Error(`retired verifier path remains at ${path}`);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
     }
   }
 }

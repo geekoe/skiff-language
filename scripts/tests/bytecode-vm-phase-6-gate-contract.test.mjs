@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
-import { resolve, dirname } from 'node:path';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { resolve, dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
   assertPhase6BoundedWorkCoverage,
   assertPhase6LaneCoverage,
+  assertPhase6NoVerifierStructural,
   assertPhase6ProvenanceCoverage,
   PHASE6_COMMAND_SCHEMA,
   PHASE6_MANIFEST_SCHEMA,
@@ -71,6 +74,38 @@ test('r1 matrix names every capability and keeps expectedTests nonzero', () => {
   }
 });
 
+test('r1 matrix commands pin exact expected-red counts for every new prefix', () => {
+  const scenarios = phase6ScenarioSpecs(ROOT);
+  const byId = new Map(scenarios.map((entry) => [entry.id, entry]));
+  const expectedTests = {
+    'p6-service-matrix': 6,
+    'p6-interface-local-matrix': 6,
+    'p6-interface-remote-matrix': 6,
+    'p6-callback-matrix': 6,
+    'p6-recoverable-matrix': 6,
+    'p6-db-matrix': 6,
+    'p6-task-host-matrix': 6,
+    'p6-task-router-matrix': 6,
+    'p6-actor-host-matrix': 6,
+    'p6-actor-router-matrix': 6,
+    'p6-containment-matrix': 2,
+    'p6-kernel-focused': 6,
+  };
+  for (const [id, expected] of Object.entries(expectedTests)) {
+    const spec = byId.get(id);
+    assert.equal(spec.expectedTests, expected, `${id} expectedTests`);
+    assert.equal(spec.testFormat, 'rust-suite');
+    assert.equal(spec.args.includes('--no-fail-fast'), true, `${id} no-fail-fast`);
+  }
+  for (const id of ['p6-task-router-matrix', 'p6-actor-router-matrix']) {
+    assert.equal(
+      byId.get(id).args.join(' ').includes('router/Cargo.toml'),
+      true,
+      `${id} must run the router binary`,
+    );
+  }
+});
+
 test('inherited specs preserve Phase 5 and normalize only cargo test args', () => {
   const inherited = phase6WorkloadSpecs(ROOT)
     .filter(({ id }) => id.startsWith('phase-5-regression-'));
@@ -117,4 +152,34 @@ test('public verify selector reaches the exclusive Phase 6 r1 Gate runner', asyn
     exclusive: true,
   }]);
   assert.equal(phase6CandidateSpecs(ROOT).length + phase6WorkloadSpecs(ROOT).length, 123);
+});
+
+test('no-verifier structural checker accepts clean candidate and rejects retired seams', async () => {
+  await assertPhase6NoVerifierStructural(REPOSITORY);
+  const created = await mkdtemp(join(tmpdir(), 'skiff-phase6-no-verifier-'));
+  try {
+    await mkdir(join(created, 'src'));
+    await writeFile(
+      join(created, 'src', 'bytecode_verifier.rs'),
+      'pub fn verify_executable_facts() {}\n',
+    );
+    await assert.rejects(
+      assertPhase6NoVerifierStructural(created, { roots: ['src'] }),
+      /retired verifier/,
+    );
+    await rm(join(created, 'src', 'bytecode_verifier.rs'));
+    await writeFile(join(created, 'src', 'linker.rs'), 'pub fn rebuild_facts() {}\n');
+    await assert.rejects(
+      assertPhase6NoVerifierStructural(created, { roots: ['src'] }),
+      /linker fact reconstruction/,
+    );
+    await rm(join(created, 'src', 'linker.rs'));
+    await writeFile(join(created, 'src', 'selector.mjs'), 'export const alias-selector = true;\n');
+    await assert.rejects(
+      assertPhase6NoVerifierStructural(created, { roots: ['src'] }),
+      /dual path/,
+    );
+  } finally {
+    await rm(created, { recursive: true, force: true });
+  }
 });

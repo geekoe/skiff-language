@@ -167,6 +167,23 @@ test('runner records every later receipt after one expected-red workload', async
       'PASS',
       'the Router matrix must still execute after an earlier host red',
     );
+    for (const filter of [
+      'interface_local_',
+      'interface_remote_',
+      'callback_',
+      'recoverable_',
+      'db_',
+      'task_',
+      'actor_',
+      'containment_',
+      'phase_6_',
+    ]) {
+      assert.equal(
+        observed.some((line) => line.includes(filter)),
+        true,
+        `${filter} matrix must be emitted after an earlier red`,
+      );
+    }
     assert.equal(
       result.manifest.commands.find(({ id }) => id === 'fresh-status')?.status,
       'PASS',
