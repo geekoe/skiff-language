@@ -4,6 +4,8 @@ mod fixture;
 mod host_chain;
 #[path = "bytecode_vm_phase_6/host_harness.rs"]
 mod host_harness;
+#[path = "bytecode_vm_phase_6/recoverable_codec.rs"]
+mod recoverable_codec;
 #[path = "bytecode_vm_phase_6/stages.rs"]
 mod stages;
 
@@ -97,6 +99,93 @@ mod tests {
         interface_local_s5,
         interface_local_s6
     );
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn interface_local_unary_table_success() {
+        let image = linked_image(
+            Capability::InterfaceLocal,
+            "interface-local-unary-table-success",
+        );
+        let table = image
+            .interface_tables()
+            .iter()
+            .find_map(|table| match table.kind() {
+                skiff_runtime_linked_bytecode::LinkedInterfaceTableKind::Local(local) => {
+                    Some(local)
+                }
+                _ => None,
+            })
+            .expect("local interface fixture must produce a local method table");
+        assert_eq!(table.methods().len(), 2);
+        assert_eq!(table.methods()[0].method_slot(), 0);
+        assert_eq!(table.methods()[1].method_slot(), 1);
+
+        let response = host_chain::interface_local_named_to_terminal(
+            "interface-local-success",
+            "test.skiff/bytecode-vm-phase-6-interface-local",
+            "interface-local-unary-table-success-request",
+        )
+        .await;
+        assert_eq!(response.status, 200);
+        assert!(!response.chunks.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn interface_local_unary_table_throw() {
+        let error = host_chain::interface_local_named_throw_terminal(
+            "interface-local-throw",
+            "test.skiff/bytecode-vm-phase-6-interface-local-throw",
+            "interface-local-unary-table-throw",
+        )
+        .await;
+        assert!(!error.code.is_empty());
+        assert!(!error.message.is_empty());
+        assert!(
+            error
+                .status
+                .map_or(true, |status| (400..=599).contains(&status)),
+            "ordinary interface-local throw must map to an HTTP error terminal"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn interface_local_unary_table_pending() {
+        let response = host_chain::interface_local_named_to_terminal(
+            "interface-local-pending",
+            "test.skiff/bytecode-vm-phase-6-interface-local-pending",
+            "interface-local-unary-table-pending",
+        )
+        .await;
+        assert_eq!(response.status, 200);
+        assert!(!response.chunks.is_empty());
+    }
+
+    #[test]
+    fn interface_local_bad_slot_rejected() {
+        stages::assert_interface_local_named_rejected(
+            "interface-local-bad-slot",
+            "test.skiff/bytecode-vm-phase-6-interface-local-bad-slot",
+            "interface-local-bad-slot",
+        );
+    }
+
+    #[test]
+    fn interface_local_bad_carrier_rejected() {
+        stages::assert_interface_local_named_rejected(
+            "interface-local-bad-carrier",
+            "test.skiff/bytecode-vm-phase-6-interface-local-bad-carrier",
+            "interface-local-bad-carrier",
+        );
+    }
+
+    #[test]
+    fn interface_local_bad_signature_rejected() {
+        stages::assert_interface_local_named_rejected(
+            "interface-local-bad-signature",
+            "test.skiff/bytecode-vm-phase-6-interface-local-bad-signature",
+            "interface-local-bad-signature",
+        );
+    }
     capability_matrix!(
         Capability::InterfaceRemote,
         "interface-remote-s1",

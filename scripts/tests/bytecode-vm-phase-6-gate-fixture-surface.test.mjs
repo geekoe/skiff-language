@@ -22,6 +22,10 @@ const hostRustSource = fileURLToPath(new URL(
   '../../runtime/host/tests/bytecode_vm_phase_6.rs',
   import.meta.url,
 ));
+const recoverableCodecSource = fileURLToPath(new URL(
+  '../../runtime/host/tests/bytecode_vm_phase_6/recoverable_codec.rs',
+  import.meta.url,
+));
 const routerRustSource = fileURLToPath(new URL(
   '../../router/tests/bytecode_vm_phase_6.rs',
   import.meta.url,
@@ -57,7 +61,7 @@ test('positive fixtures drive real Phase 6 source semantics, not test seams', as
   assert.match(service, /payments\/echo\(/);
   assert.match(interfaceFixture, / as [A-Za-z0-9_./]+/);
   assert.match(callback, /fn\(/);
-  assert.match(recoverable, /dispatch |std\.task\./);
+  assert.match(recoverable, /db transaction|db object/);
   assert.match(db, /db transaction/);
   assert.match(task, /dispatch /);
   assert.match(actor, /std\.actor\.get</);
@@ -66,30 +70,72 @@ test('positive fixtures drive real Phase 6 source semantics, not test seams', as
   }
 });
 
+test('J2 focused fixtures use unary owner-internal production paths', async () => {
+  const recoverable = await readFile(fixture('recoverable-positive'), 'utf8');
+  const db = await readFile(fixture('db-positive'), 'utf8');
+  const localHttp = await readFile(
+    fixture('interface-local-success', 'http.yml'),
+    'utf8',
+  );
+  assert.match(recoverable, /db object/);
+  assert.doesNotMatch(recoverable, /dispatch |rawHttp/);
+  assert.match(db, /db object/);
+  assert.doesNotMatch(db, /rawHttp/);
+  assert.match(localHttp, /typedJson/);
+  assert.doesNotMatch(localHttp, /rawHttp/);
+});
+
+test('every interface-local focused fixture has canonical authoring files', async () => {
+  for (const directory of [
+    'interface-local-success',
+    'interface-local-throw',
+    'interface-local-pending',
+    'interface-local-bad-slot',
+    'interface-local-bad-carrier',
+    'interface-local-bad-signature',
+  ]) {
+    for (const file of ['main.skiff', 'http.yml', 'api.yml', 'service.yml', 'package.yml']) {
+      const source = await readFile(fixture(directory, file), 'utf8');
+      assert.equal(source.length > 0, true, `${directory}/${file} must not be empty`);
+    }
+  }
+});
+
 test('Rust matrices expose every registered prefix with the exact expected red count', async () => {
   const host = await readFile(hostRustSource, 'utf8');
+  const recoverableCodec = await readFile(recoverableCodecSource, 'utf8');
   const router = await readFile(routerRustSource, 'utf8');
   const expectedStageTests = new Map([
     ['service_', 6],
-    ['interface_local_', 6],
+    ['interface_local_', 12],
     ['interface_remote_', 6],
     ['callback_', 6],
-    ['recoverable_', 6],
+    ['recoverable_', 8],
     ['db_', 6],
     ['task_', 6],
     ['actor_', 6],
   ]);
   for (const [prefix, count] of expectedStageTests) {
-    const pattern = new RegExp(`\\b${escapeRegExp(prefix)}s[1-6]\\b`, 'g');
-    const actual = [...host.matchAll(pattern)].length;
+    const stagePattern = new RegExp(`\\b${escapeRegExp(prefix)}s[1-6]\\b`, 'g');
+    const focusedPattern = new RegExp(
+      `\\bfn\\s+${escapeRegExp(prefix)}(?!s[1-6]\\b)[a-z0-9_]+\\s*\\(`,
+      'g',
+    );
+    let actual = [...host.matchAll(stagePattern)].length
+      + [...host.matchAll(focusedPattern)].length;
+    if (prefix === 'recoverable_') {
+      actual += [...recoverableCodec.matchAll(
+        /\bfn\s+recoverable_[a-z0-9_]+\s*\(/g,
+      )].length;
+    }
     assert.equal(actual, count, `host prefix ${prefix} test count`);
   }
   for (const [prefix, count] of [
     ['task_', 6],
     ['actor_', 6],
   ]) {
-    const pattern = new RegExp(`\\b${escapeRegExp(prefix)}s[1-6]\\b`, 'g');
-    const actual = [...router.matchAll(pattern)].length;
+    const stagePattern = new RegExp(`\\b${escapeRegExp(prefix)}s[1-6]\\b`, 'g');
+    const actual = [...router.matchAll(stagePattern)].length;
     assert.equal(actual, count, `router prefix ${prefix} test count`);
   }
   assert.equal([...host.matchAll(/\bcontainment_[a-z0-9_]+\b/g)].length, 2,

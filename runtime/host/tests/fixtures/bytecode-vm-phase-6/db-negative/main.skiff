@@ -1,6 +1,10 @@
+type Doc {
+  id: string,
+  value: string,
+}
+
 db object Doc {
   primary key(id)
-  value: string,
 }
 
 function run(seed: number) -> number {

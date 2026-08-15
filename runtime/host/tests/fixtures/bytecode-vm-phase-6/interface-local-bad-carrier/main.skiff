@@ -1,0 +1,18 @@
+interface Reader {
+  function label(self: Self) -> string
+}
+
+type Other {
+  value: string,
+}
+
+impl Other {
+  function label() -> string {
+    return self.value
+  }
+}
+
+function run(seed: number) -> number {
+  final other = Other { value: "bad-carrier" } as Reader
+  return other.label().length()
+}

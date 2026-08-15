@@ -1,13 +1,18 @@
-type Box {
-  value: number,
+type RecoverableDoc {
+  id: string,
+  value: string,
 }
 
-function durable(input: Box) -> Box {
-  return input
+db object RecoverableDoc {
+  primary key(id)
 }
 
 function run(seed: number) -> number {
-  var box = Box { value: seed }
-  dispatch durable(inout box)
-  return box.value
+  db transaction {
+    db insert RecoverableDoc { id = "nested" value = "bad" }
+    db transaction {
+      db delete RecoverableDoc("nested")
+    }
+  }
+  return seed
 }

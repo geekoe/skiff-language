@@ -1,6 +1,6 @@
 run:
   method: POST
-  path: /phase-6/db
+  path: /phase-6/interface-local-bad-carrier
   kind: typedJson
   handler: main.run
   adapterArgs:

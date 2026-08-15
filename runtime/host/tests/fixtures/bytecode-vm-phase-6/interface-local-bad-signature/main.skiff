@@ -1,0 +1,18 @@
+interface Reader {
+  function label(self: Self) -> string
+}
+
+type Impl implements Reader {
+  value: string,
+}
+
+impl Impl {
+  function label() -> number {
+    return 1
+  }
+}
+
+function run(seed: number) -> number {
+  final reader = Impl { value: "bad-signature" } as Reader
+  return reader.label().length()
+}

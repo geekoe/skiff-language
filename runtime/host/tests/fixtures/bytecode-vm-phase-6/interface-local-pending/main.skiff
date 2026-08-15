@@ -1,0 +1,21 @@
+import std
+
+interface Pinger {
+  function ping(self: Self) -> number
+}
+
+type Impl implements Pinger {
+  value: number,
+}
+
+impl Impl {
+  function ping() -> number {
+    std.time.sleep(Duration.milliseconds(0))
+    return self.value
+  }
+}
+
+function run(seed: number) -> number {
+  final pinger = Impl { value: seed } as Pinger
+  return pinger.ping()
+}

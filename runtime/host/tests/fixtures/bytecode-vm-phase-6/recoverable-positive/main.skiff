@@ -1,13 +1,15 @@
-import std
-
-function durable(value: string) -> void {
-  return
+type RecoverableDoc {
+  id: string,
+  value: string,
 }
 
-function run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
-  final task = dispatch durable("recoverable")
-  emit({ tag: "start", status: 200, headers: [] })
-  emit({ tag: "chunk", value: bytes.fromUtf8("dispatched") })
-  emit({ tag: "end" })
-  return null
+db object RecoverableDoc {
+  primary key(id)
+}
+
+function run(seed: number) -> number {
+  db transaction {
+    db insert RecoverableDoc { id = "recoverable-codec" value = "ok" }
+  }
+  return seed
 }

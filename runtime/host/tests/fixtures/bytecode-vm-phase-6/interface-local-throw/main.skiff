@@ -1,0 +1,23 @@
+type Failure {
+  message: string,
+}
+
+interface Reader {
+  function label(self: Self) -> string
+}
+
+type Impl implements Reader {
+  value: string,
+}
+
+impl Impl {
+  function label() -> string {
+    return throw Failure { message: "boom" }
+  }
+}
+
+function run(seed: number) -> number {
+  final reader = Impl { value: "throw" } as Reader
+  reader.label()
+  return seed
+}

@@ -1,6 +1,6 @@
 run:
   method: POST
-  path: /phase-6/db
+  path: /phase-6/interface-local-throw
   kind: typedJson
   handler: main.run
   adapterArgs:

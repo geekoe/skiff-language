@@ -1,7 +1,7 @@
 use super::{
     fixture::Capability,
-    host_harness::{HostResponse, RuntimeHostHarness},
-    stages::published_positive,
+    host_harness::{HostError, HostResponse, RuntimeHostHarness},
+    stages::{published_interface_local_named, published_positive},
 };
 
 pub async fn scheduler_to_request(capability: Capability, prefix: &str) {
@@ -25,21 +25,62 @@ pub async fn request_to_terminal(capability: Capability, prefix: &str) {
     );
 }
 
+pub async fn interface_local_named_to_terminal(
+    directory: &str,
+    package_id: &str,
+    prefix: &str,
+) -> HostResponse {
+    let fixture = published_interface_local_named(directory, package_id, prefix);
+    drive_fixture(
+        fixture,
+        named_interface_path(directory),
+        "unary",
+        b"7",
+        prefix,
+    )
+    .await
+}
+
+pub async fn interface_local_named_throw_terminal(
+    directory: &str,
+    package_id: &str,
+    prefix: &str,
+) -> HostError {
+    let fixture = published_interface_local_named(directory, package_id, prefix);
+    let mut host = RuntimeHostHarness::start(prefix, fixture).await;
+    let request_id = format!("phase-6-{prefix}");
+    host.send_http_request(&request_id, named_interface_path(directory), "unary", b"7")
+        .await;
+    let error = host.error(&request_id).await;
+    host.close().await;
+    error
+}
+
 async fn drive(capability: Capability, prefix: &str) -> HostResponse {
     let fixture = published_positive(capability, prefix);
     let path = capability_path(capability);
-    let mut host = RuntimeHostHarness::start(prefix, fixture).await;
-    let request_id = format!("phase-6-{prefix}-{capability:?}");
-    let mode = if capability == Capability::Service {
+    let mode = if matches!(capability, Capability::Service | Capability::InterfaceLocal) {
         "unary"
     } else {
         "serverStream"
     };
-    let body = if capability == Capability::Service {
+    let body = if matches!(capability, Capability::Service | Capability::InterfaceLocal) {
         b"7".as_slice()
     } else {
         b"phase6".as_slice()
     };
+    drive_fixture(fixture, path, mode, body, prefix).await
+}
+
+async fn drive_fixture(
+    fixture: super::fixture::PublishedFixture,
+    path: &str,
+    mode: &str,
+    body: &[u8],
+    prefix: &str,
+) -> HostResponse {
+    let mut host = RuntimeHostHarness::start(prefix, fixture).await;
+    let request_id = format!("phase-6-{prefix}");
     host.send_http_request(&request_id, path, mode, body).await;
     let response = host.response(&request_id).await;
     host.close().await;
@@ -56,5 +97,17 @@ fn capability_path(capability: Capability) -> &'static str {
         Capability::Task => "/phase-6/task",
         Capability::Actor => "/phase-6/actor",
         Capability::Containment => "/phase-6/containment",
+    }
+}
+
+fn named_interface_path(directory: &str) -> &'static str {
+    match directory {
+        "interface-local-success" => "/phase-6/interface-local",
+        "interface-local-throw" => "/phase-6/interface-local-throw",
+        "interface-local-pending" => "/phase-6/interface-local-pending",
+        "interface-local-bad-slot" => "/phase-6/interface-local-bad-slot",
+        "interface-local-bad-carrier" => "/phase-6/interface-local-bad-carrier",
+        "interface-local-bad-signature" => "/phase-6/interface-local-bad-signature",
+        other => panic!("unknown Phase 6 interface-local fixture directory {other}"),
     }
 }

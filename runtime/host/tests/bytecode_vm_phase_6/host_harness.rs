@@ -22,7 +22,7 @@ use skiff_runtime_transport::protocol::{
     RouterBootstrapActivationFrameHeader, RouterBootstrapFrameHeader,
     RouterBootstrapHttpFrameHeader, RouterBootstrapServiceDbFrameHeader,
     RuntimeDispatchModeCapability, RuntimeRegisteredFrameHeader, TypedEnvelope,
-    RUNTIME_FRAME_SCHEMA_VERSION,
+    ValidatedResponseErrorFrame, RUNTIME_FRAME_SCHEMA_VERSION,
 };
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -46,6 +46,12 @@ pub(super) struct RuntimeHostHarness {
 pub(super) struct HostResponse {
     pub status: u16,
     pub chunks: Vec<Vec<u8>>,
+}
+
+pub(super) struct HostError {
+    pub code: String,
+    pub message: String,
+    pub status: Option<u16>,
 }
 
 impl RuntimeHostHarness {
@@ -180,6 +186,26 @@ impl RuntimeHostHarness {
         HostResponse {
             status: start.http_response.status,
             chunks,
+        }
+    }
+
+    pub async fn error(&mut self, request_id: &str) -> HostError {
+        let deadline = Instant::now() + IO_TIMEOUT;
+        let bytes = next_binary_of_type(&mut self.websocket, "response.error", deadline).await;
+        let (header, error) = decode_response_error_frame(&bytes)
+            .expect("RuntimeHost emitted canonical response.error");
+        assert_eq!(header.request_id(), request_id);
+        match error {
+            ValidatedResponseErrorFrame::Control(error) => HostError {
+                code: error.code,
+                message: error.message,
+                status: error.status,
+            },
+            ValidatedResponseErrorFrame::FixedService(error) => HostError {
+                code: "fixedService".to_string(),
+                message: format!("{error:?}"),
+                status: None,
+            },
         }
     }
 

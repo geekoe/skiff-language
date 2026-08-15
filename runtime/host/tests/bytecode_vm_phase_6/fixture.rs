@@ -39,8 +39,10 @@ impl Capability {
         match (self, negative) {
             (Self::Service, false) => "test.skiff/bytecode-vm-phase-6-service",
             (Self::Service, true) => "test.skiff/bytecode-vm-phase-6-service-negative",
-            (Self::InterfaceLocal, false) => "test.skiff/bytecode-vm-phase-6-interface",
-            (Self::InterfaceLocal, true) => "test.skiff/bytecode-vm-phase-6-interface-negative",
+            (Self::InterfaceLocal, false) => "test.skiff/bytecode-vm-phase-6-interface-local",
+            (Self::InterfaceLocal, true) => {
+                "test.skiff/bytecode-vm-phase-6-interface-local-bad-signature"
+            }
             (Self::InterfaceRemote, false) => "test.skiff/bytecode-vm-phase-6-interface",
             (Self::InterfaceRemote, true) => "test.skiff/bytecode-vm-phase-6-interface-negative",
             (Self::Callback, false) => "test.skiff/bytecode-vm-phase-6-callback",
@@ -62,8 +64,8 @@ impl Capability {
         let directory = match self {
             Self::Service if negative => "service-negative",
             Self::Service => "service-positive",
-            Self::InterfaceLocal if negative => "interface-negative",
-            Self::InterfaceLocal => "interface-positive",
+            Self::InterfaceLocal if negative => "interface-local-bad-signature",
+            Self::InterfaceLocal => "interface-local-success",
             Self::InterfaceRemote if negative => "interface-negative",
             Self::InterfaceRemote => "interface-positive",
             Self::Callback if negative => "callback-negative",
@@ -118,6 +120,20 @@ pub fn build_capability(capability: Capability, negative: bool, prefix: &str) ->
         &root_path,
         root,
     )
+}
+
+pub fn build_interface_local_named(
+    directory: &str,
+    package_id: &str,
+    prefix: &str,
+) -> BuildOutcome {
+    let repository = repository_root();
+    let fixture = repository
+        .join("runtime/host/tests/fixtures/bytecode-vm-phase-6")
+        .join(directory);
+    let root = TempRoot::new(prefix);
+    let root_path = root.path().to_path_buf();
+    build_single(&fixture, package_id, "1.0.0", &root_path, root)
 }
 
 fn build_service_positive(repository: &Path, prefix: &str) -> BuildOutcome {

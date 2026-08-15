@@ -1,16 +1,15 @@
-import std
-
-db object Doc {
-  primary key(id)
+type Doc {
+  id: string,
   value: string,
 }
 
-function run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+db object Doc {
+  primary key(id)
+}
+
+function run(seed: number) -> number {
   db transaction {
     db insert Doc { id = "phase6-db" value = "ok" }
   }
-  emit({ tag: "start", status: 200, headers: [] })
-  emit({ tag: "chunk", value: bytes.fromUtf8("db-ok") })
-  emit({ tag: "end" })
-  return null
+  return seed
 }

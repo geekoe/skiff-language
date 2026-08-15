@@ -4,7 +4,9 @@ use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 
 use super::{
-    fixture::{build_capability, BuildOutcome, Capability, PublishedFixture},
+    fixture::{
+        build_capability, build_interface_local_named, BuildOutcome, Capability, PublishedFixture,
+    },
     host_chain,
 };
 
@@ -14,6 +16,41 @@ pub fn published_positive(capability: Capability, prefix: &str) -> PublishedFixt
         BuildOutcome::Rejected { error_chain, .. } => panic!(
             "production Phase 6 {capability:?} source did not reach the executable carrier: {error_chain}"
         ),
+    }
+}
+
+pub fn published_interface_local_named(
+    directory: &str,
+    package_id: &str,
+    prefix: &str,
+) -> PublishedFixture {
+    match build_interface_local_named(directory, package_id, prefix) {
+        BuildOutcome::Published(fixture) => fixture,
+        BuildOutcome::Rejected { error_chain, .. } => panic!(
+            "production Phase 6 interface-local {directory} source did not reach the executable carrier: {error_chain}"
+        ),
+    }
+}
+
+pub fn assert_interface_local_named_rejected(directory: &str, package_id: &str, prefix: &str) {
+    match build_interface_local_named(directory, package_id, prefix) {
+        BuildOutcome::Rejected {
+            package_pointer_absent,
+            release_pointer_absent,
+            ..
+        } => {
+            assert!(
+                package_pointer_absent,
+                "{directory} wrote a package pointer"
+            );
+            assert!(
+                release_pointer_absent,
+                "{directory} wrote a release pointer"
+            );
+        }
+        BuildOutcome::Published(_) => {
+            panic!("disabled interface-local {directory} source published an executable image")
+        }
     }
 }
 

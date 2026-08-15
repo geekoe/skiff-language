@@ -79,10 +79,10 @@ test('r1 matrix commands pin exact expected-red counts for every new prefix', ()
   const byId = new Map(scenarios.map((entry) => [entry.id, entry]));
   const expectedTests = {
     'p6-service-matrix': 6,
-    'p6-interface-local-matrix': 6,
+    'p6-interface-local-matrix': 12,
     'p6-interface-remote-matrix': 6,
     'p6-callback-matrix': 6,
-    'p6-recoverable-matrix': 6,
+    'p6-recoverable-matrix': 8,
     'p6-db-matrix': 6,
     'p6-task-host-matrix': 6,
     'p6-task-router-matrix': 6,
