@@ -5,9 +5,7 @@ use std::sync::{
 
 use std::{future::Future, pin::Pin};
 
-use skiff_artifact_model::{
-    ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity,
-};
+use skiff_artifact_model::{ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity};
 use skiff_runtime_transport::{
     actor_method::{
         encode_actor_method_frame, ActorDeclarationOwnerFrameHeader, ActorLogicalRefFrameHeader,

@@ -25,8 +25,8 @@ use skiff_runtime_scheduler::{
     ChildFinish, ChildFinishError, RequestResourceTable,
 };
 use skiff_runtime_vm::{
-    ChildInvocation, ChildTarget, ResumeOutcome, Vm, VmBudget, VmCompletion, VmFiber, VmLimits,
-    VmLifecycleSite, VmOwnedException, VmOwnedValues, VmResumeToken,
+    ChildInvocation, ChildTarget, ResumeOutcome, Vm, VmBudget, VmCompletion, VmFiber,
+    VmLifecycleSite, VmLimits, VmOwnedException, VmOwnedValues, VmResumeToken,
 };
 use tokio::sync::Mutex;
 
@@ -242,16 +242,17 @@ pub(crate) fn execute_callback_child(
     let argument_values = invocation.arguments().values().to_vec();
     if argument_values.is_empty() {
         return Err(BytecodePortFailure::input(
-            BytecodeSchedulerError::Port(
-                "callback invocation has no carrier argument".to_string(),
-            ),
+            BytecodeSchedulerError::Port("callback invocation has no carrier argument".to_string()),
             invocation,
         ));
     }
     let carrier = match callback_carrier_from_vm(heap, &argument_values[0]) {
         Ok(carrier) => carrier,
         Err(error) => {
-            return Err(BytecodePortFailure::input(callback_error(error), invocation));
+            return Err(BytecodePortFailure::input(
+                callback_error(error),
+                invocation,
+            ));
         }
     };
     let execution = match resolve_callback_invocation(
@@ -263,13 +264,19 @@ pub(crate) fn execute_callback_child(
     ) {
         Ok(execution) => execution,
         Err(error) => {
-            return Err(BytecodePortFailure::input(callback_error(error), invocation));
+            return Err(BytecodePortFailure::input(
+                callback_error(error),
+                invocation,
+            ));
         }
     };
     let provider_entry = match execution.provider_entry() {
         Ok(entry) => entry,
         Err(error) => {
-            return Err(BytecodePortFailure::input(callback_error(error), invocation));
+            return Err(BytecodePortFailure::input(
+                callback_error(error),
+                invocation,
+            ));
         }
     };
     let provider_signature = provider_entry.signature().clone();
@@ -324,14 +331,15 @@ pub(crate) fn execute_callback_child(
     ) {
         Ok(slot) => slot,
         Err(error) => {
-            return Err(BytecodePortFailure::input(callback_error(error), invocation));
+            return Err(BytecodePortFailure::input(
+                callback_error(error),
+                invocation,
+            ));
         }
     };
     if let Err(error) = child_heap.publish_staging_root(receiver_slot) {
         return Err(BytecodePortFailure::input(
-            BytecodeSchedulerError::Port(format!(
-                "callback receiver staging failed: {error}"
-            )),
+            BytecodeSchedulerError::Port(format!("callback receiver staging failed: {error}")),
             invocation,
         ));
     }
@@ -444,8 +452,7 @@ impl ChildFinish<VmFiber, VmResumeToken> for CallbackChildFinish {
             Ok(parts) => parts,
             Err(_) => {
                 return Err(ChildFinishError::failure(BytecodeSchedulerError::Port(
-                    "callback child terminal failure cannot materialize to the caller"
-                        .to_string(),
+                    "callback child terminal failure cannot materialize to the caller".to_string(),
                 )));
             }
         };
@@ -492,9 +499,7 @@ impl ChildFinish<VmFiber, VmResumeToken> for CallbackChildFinish {
                                 let _ = parent_heap.release_snapshot(root);
                             }
                             return Err(ChildFinishError::failure(BytecodeSchedulerError::Port(
-                                format!(
-                                    "callback result {index} materialization failed: {error}"
-                                ),
+                                format!("callback result {index} materialization failed: {error}"),
                             )));
                         }
                     }
@@ -718,17 +723,17 @@ fn runtime_value_to_slot(
                 .map_err(|error| BytecodeCallbackChildError::Materialization {
                     message: error.to_string(),
                 })?;
-            destination
-                .heap_ref(handle, tag, flags)
-                .map_err(|error| BytecodeCallbackChildError::Materialization {
+            destination.heap_ref(handle, tag, flags).map_err(|error| {
+                BytecodeCallbackChildError::Materialization {
                     message: error.to_string(),
-                })
+                }
+            })
         }
-        RuntimeValue::Heap(handle) => destination
-            .heap_ref(*handle, tag, flags)
-            .map_err(|error| BytecodeCallbackChildError::Materialization {
+        RuntimeValue::Heap(handle) => destination.heap_ref(*handle, tag, flags).map_err(|error| {
+            BytecodeCallbackChildError::Materialization {
                 message: error.to_string(),
-            }),
+            }
+        }),
         RuntimeValue::ActorRef(_) => Err(BytecodeCallbackChildError::Materialization {
             message: "callback owner receiver cannot be an ActorRef".to_string(),
         }),

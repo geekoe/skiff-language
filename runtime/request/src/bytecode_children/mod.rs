@@ -73,9 +73,9 @@ impl BytecodeChildLane {
             ChildTarget::Interface { .. } => Self::Interface,
             ChildTarget::Db(_) => Self::Db,
             ChildTarget::Actor(_) => Self::Actor,
-            ChildTarget::Callback(_)
-            | ChildTarget::Task(_)
-            | ChildTarget::StreamNext => Self::Disabled,
+            ChildTarget::Callback(_) | ChildTarget::Task(_) | ChildTarget::StreamNext => {
+                Self::Disabled
+            }
         }
     }
 }
