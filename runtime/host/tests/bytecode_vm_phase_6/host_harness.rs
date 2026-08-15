@@ -6,11 +6,9 @@ use std::{
 };
 
 use futures_util::{SinkExt, StreamExt};
-use skiff_runtime_capability_context::{
-    DbCapabilityContext, DbCapabilityFactory, DbCapabilityResult, DbCapabilitySource,
-    DbProviderBuildInput, DbProviderFactory, DbProviderSource,
-};
+use skiff_runtime_capability_context::DbProviderSource;
 use skiff_runtime_host::{RuntimeConfig, RuntimeHost};
+use skiff_runtime_service_db::InMemoryDbProviderFactory;
 use skiff_runtime_transport::protocol::{
     decode_response_chunk_frame, decode_response_end_frame, decode_response_error_frame,
     decode_response_start_frame, decode_runtime_capabilities_frame, decode_typed_binary_frame,
@@ -62,7 +60,7 @@ impl RuntimeHostHarness {
         let router_address = listener.local_addr().expect("RuntimeHost peer address");
         let runtime_home = RuntimeHome::new(prefix);
         let host = RuntimeHost::new(RuntimeConfig {
-            db_provider: DbProviderSource::new(TestDbProviderFactory),
+            db_provider: DbProviderSource::new(InMemoryDbProviderFactory::new()),
             router_url: format!("ws://{router_address}"),
             base_runtime_id: format!("runtime-phase-6-{prefix}"),
             runtime_home: runtime_home.path().to_path_buf(),
@@ -150,8 +148,38 @@ impl RuntimeHostHarness {
 
     pub async fn response(&mut self, request_id: &str) -> HostResponse {
         let deadline = Instant::now() + IO_TIMEOUT;
-        let start_bytes =
-            next_binary_of_type(&mut self.websocket, "response.start", deadline).await;
+        let start_bytes = loop {
+            let bytes = next_binary(&mut self.websocket, deadline, request_id).await;
+            let (typed, _) = decode_typed_binary_frame::<TypedEnvelope>(&bytes)
+                .expect("decode RuntimeHost response envelope");
+            match typed.envelope_type.as_str() {
+                "response.start" => break bytes,
+                "response.end" => {
+                    let (header, payload) = decode_response_end_frame(&bytes)
+                        .expect("RuntimeHost emitted canonical response.end");
+                    assert_eq!(header.request_id, request_id);
+                    let status = match header.metadata {
+                        ResponseEndFrameMetadata::None => 200,
+                        ResponseEndFrameMetadata::Http(metadata) => metadata.status,
+                    };
+                    let chunks = if payload.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![payload]
+                    };
+                    return HostResponse { status, chunks };
+                }
+                "response.error" => {
+                    let (header, payload) = decode_response_error_frame(&bytes)
+                        .expect("decode RuntimeHost response.error");
+                    panic!(
+                        "unexpected RuntimeHost response.error before response.start: header={header:?} payload={payload:?}"
+                    );
+                }
+                "runtime.capabilities" | "runtime.health" => {}
+                other => panic!("unexpected RuntimeHost response frame {other}"),
+            }
+        };
         let start = decode_response_start_frame(&start_bytes)
             .expect("RuntimeHost emitted canonical response.start");
         assert_eq!(start.request_id, request_id);
@@ -381,23 +409,5 @@ impl RuntimeHome {
 impl Drop for RuntimeHome {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-#[derive(Clone, Default)]
-struct TestDbCapabilityFactory;
-
-impl DbCapabilityFactory for TestDbCapabilityFactory {
-    fn context_for_request(&self, _owner: String, _request_id: String) -> DbCapabilityContext {
-        DbCapabilityContext::unavailable()
-    }
-}
-
-#[derive(Clone, Default)]
-struct TestDbProviderFactory;
-
-impl DbProviderFactory for TestDbProviderFactory {
-    fn build(&self, _input: DbProviderBuildInput) -> DbCapabilityResult<DbCapabilitySource> {
-        Ok(DbCapabilitySource::new(Some(TestDbCapabilityFactory)))
     }
 }

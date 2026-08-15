@@ -33,6 +33,7 @@ mod capability;
 mod cascade;
 mod encryption;
 mod error;
+mod in_memory;
 mod index;
 
 /// Canonical managed index name shared with host admission contract coverage.
@@ -62,6 +63,7 @@ pub use encryption::{
 pub use error::{
     DbConstraintKind, DbConstraintTarget, DbConstraintViolation, Result, ServiceDbError,
 };
+pub use in_memory::{InMemoryDbCapabilityFactory, InMemoryDbProviderFactory, InMemoryDbStore};
 pub use provider::MongoServiceDbProviderFactory;
 pub use storage_identity::service_storage_collection_name;
 use storage_identity::{service_storage_database_name, validate_service_database_name};
