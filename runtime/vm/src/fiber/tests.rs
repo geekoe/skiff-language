@@ -1,3 +1,4 @@
+mod cross_image_throw;
 mod intrinsic_dispatch;
 mod ownership_transactions;
 

@@ -15,7 +15,10 @@ use skiff_runtime_model::{
 
 use crate::{
     admission::is_discardable_root,
-    control::{visit_values, visit_vm_error, ResumeOutcome, VmResumeBinding, VmResumeToken},
+    control::{
+        visit_values, visit_vm_error, ResumeOutcome, VmResumeBinding, VmResumeKind, VmResumeToken,
+    },
+    fiber::runtime_leaf_catch_identity,
     lifecycle::LifecycleExecutor,
     VmError,
 };
@@ -342,11 +345,11 @@ pub(crate) enum VmTerminalReleaseAuthority {
     DamagedRetained,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) struct VmLifecycleSite {
-    pub(crate) function: FunctionIndex,
-    pub(crate) instruction: InstructionIndex,
-    pub(crate) opcode: Opcode,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VmLifecycleSite {
+    pub function: FunctionIndex,
+    pub instruction: InstructionIndex,
+    pub opcode: Opcode,
 }
 
 /// An opaque exception envelope bound to the execution image that produced
@@ -360,6 +363,7 @@ pub struct VmOwnedException {
     exception: Arc<RequestException>,
     diagnostic: VmThrownDiagnostic,
     owner: Option<VmTerminalOwner>,
+    resume_binding: Option<Arc<VmResumeBinding>>,
 }
 
 /// Rootless metadata for one VM-local exception.
@@ -424,7 +428,163 @@ impl VmOwnedException {
             exception,
             diagnostic,
             owner,
+            resume_binding: None,
         }
+    }
+
+    /// Mints a caller-owned exception from a provider `VmOwnedException`
+    /// diagnostic and a payload already materialized into the caller heap.
+    ///
+    /// The caller image and resume token must agree, the payload must be a
+    /// live caller-heap reference whose caller-image leaf identity matches the
+    /// diagnostic, and the linked caller plan must be exactly the image plan
+    /// for that payload type. The returned envelope is bound to this exact
+    /// resume token; an origin-owned envelope has no token binding and remains
+    /// accepted for the same-image throw seam.
+    pub fn try_from_caller_resume(
+        caller_image: Arc<DeploymentExecutionImage>,
+        resume: &VmResumeToken,
+        caller_heap: &dyn VmHeap,
+        payload: Option<ValueSlot>,
+        diagnostic: &VmThrownDiagnostic,
+        plan: LinkedValueTransferPlan,
+        site: VmLifecycleSite,
+    ) -> Result<Self, VmOwnedExceptionRejected> {
+        if !Arc::ptr_eq(&caller_image, resume.image()) {
+            return Err(VmOwnedExceptionRejected::new(
+                Arc::clone(resume.image()),
+                VmError::ResumeTokenMismatch,
+                payload,
+            ));
+        }
+        if !matches!(resume.kind(), VmResumeKind::Child)
+            || site.function != resume.function()
+            || site.instruction != resume.instruction()
+        {
+            return Err(VmOwnedExceptionRejected::new(
+                caller_image,
+                VmError::ResumeTokenMismatch,
+                payload,
+            ));
+        }
+        let Some(value) = payload else {
+            return Err(VmOwnedExceptionRejected::new(
+                caller_image,
+                VmError::ResumeThrowEnvelopeUnavailable {
+                    function: site.function,
+                    instruction: site.instruction,
+                },
+                None,
+            ));
+        };
+        if !matches!(value.kind(), Some(ValueKind::RequestHeapRef)) {
+            return Err(VmOwnedExceptionRejected::new(
+                caller_image,
+                VmError::ResumeThrowEnvelopeUnavailable {
+                    function: site.function,
+                    instruction: site.instruction,
+                },
+                Some(value),
+            ));
+        }
+        if let Err(error) = caller_heap.validate_live(&value) {
+            return Err(VmOwnedExceptionRejected::new(
+                caller_image,
+                VmError::Heap(error),
+                Some(value),
+            ));
+        }
+        let Some(leaf) = value
+            .compact_type_tag()
+            .map(|tag| TypeIndex::new(tag.type_index()))
+        else {
+            return Err(VmOwnedExceptionRejected::new(
+                caller_image,
+                VmError::ResumeThrowEnvelopeUnavailable {
+                    function: site.function,
+                    instruction: site.instruction,
+                },
+                Some(value),
+            ));
+        };
+        let Some(actual_identity) = runtime_leaf_catch_identity(&caller_image, &value) else {
+            return Err(VmOwnedExceptionRejected::new(
+                caller_image,
+                VmError::ResumeThrowEnvelopeUnavailable {
+                    function: site.function,
+                    instruction: site.instruction,
+                },
+                Some(value),
+            ));
+        };
+        let Some(caller_identity) = diagnostic.identity() else {
+            return Err(VmOwnedExceptionRejected::new(
+                caller_image,
+                VmError::ResumeThrowEnvelopeUnavailable {
+                    function: site.function,
+                    instruction: site.instruction,
+                },
+                Some(value),
+            ));
+        };
+        if caller_identity != &actual_identity {
+            return Err(VmOwnedExceptionRejected::new(
+                caller_image,
+                VmError::ResumeThrowEnvelopeUnavailable {
+                    function: site.function,
+                    instruction: site.instruction,
+                },
+                Some(value),
+            ));
+        }
+        let Some(image_plan) = caller_image.type_plan(leaf) else {
+            return Err(VmOwnedExceptionRejected::new(
+                caller_image,
+                VmError::FullValueLifecyclePlanUnavailable {
+                    function: site.function,
+                    instruction: site.instruction,
+                    opcode: site.opcode,
+                },
+                Some(value),
+            ));
+        };
+        if image_plan != &plan || !LifecycleExecutor::supports_release(&plan) {
+            return Err(VmOwnedExceptionRejected::new(
+                caller_image,
+                VmError::FullValueLifecyclePlanUnavailable {
+                    function: site.function,
+                    instruction: site.instruction,
+                    opcode: site.opcode,
+                },
+                Some(value),
+            ));
+        }
+        let exception = match RequestException::local_vm(
+            value,
+            actual_identity.clone(),
+            diagnostic.source().clone(),
+            diagnostic.stack().to_vec(),
+            diagnostic.correlation().clone(),
+        ) {
+            Ok(exception) => exception,
+            Err(_) => {
+                return Err(VmOwnedExceptionRejected::new(
+                    caller_image,
+                    VmError::ResumeThrowEnvelopeUnavailable {
+                        function: site.function,
+                        instruction: site.instruction,
+                    },
+                    Some(value),
+                ));
+            }
+        };
+        Ok(Self {
+            image: caller_image,
+            exception: Arc::new(exception),
+            diagnostic: diagnostic.clone(),
+            owner: Some(VmTerminalOwner::exact(value, plan, site, 0)),
+            resume_binding: Some(Arc::clone(resume.binding())),
+        })
     }
 
     pub fn origin_owner(&self) -> &DeploymentOwnerIdentity {
@@ -433,6 +593,12 @@ impl VmOwnedException {
 
     pub const fn origin_image(&self) -> &Arc<DeploymentExecutionImage> {
         &self.image
+    }
+
+    pub(crate) fn is_bound_to(&self, binding: &Arc<VmResumeBinding>) -> bool {
+        self.resume_binding
+            .as_ref()
+            .map_or(true, |owned| Arc::ptr_eq(owned, binding))
     }
 
     pub const fn diagnostic(&self) -> &VmThrownDiagnostic {
@@ -489,6 +655,7 @@ impl VmOwnedException {
             exception: _,
             diagnostic: _,
             owner,
+            resume_binding: _,
         } = self;
         VmTerminalEscrow::new(image, owner.into_iter().collect())
     }
@@ -519,6 +686,64 @@ impl VmRootSource for VmOwnedException {
     fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
         if let Some(owner) = &self.owner {
             visitor.visit_root(&owner.value)?;
+        }
+        Ok(())
+    }
+}
+
+/// Owner-returning rejection from
+/// [`VmOwnedException::try_from_caller_resume`].
+#[must_use = "a rejected cross-image throw payload still owns its caller-heap root"]
+pub struct VmOwnedExceptionRejected {
+    image: Arc<DeploymentExecutionImage>,
+    error: VmError,
+    payload: Option<ValueSlot>,
+}
+
+impl VmOwnedExceptionRejected {
+    fn new(
+        image: Arc<DeploymentExecutionImage>,
+        error: VmError,
+        payload: Option<ValueSlot>,
+    ) -> Self {
+        Self {
+            image,
+            error,
+            payload,
+        }
+    }
+
+    pub const fn error(&self) -> &VmError {
+        &self.error
+    }
+
+    pub const fn image(&self) -> &Arc<DeploymentExecutionImage> {
+        &self.image
+    }
+
+    pub const fn payload(&self) -> Option<ValueSlot> {
+        self.payload
+    }
+
+    pub fn into_parts(self) -> (VmError, Option<ValueSlot>) {
+        (self.error, self.payload)
+    }
+}
+
+impl fmt::Debug for VmOwnedExceptionRejected {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VmOwnedExceptionRejected")
+            .field("error", &self.error)
+            .field("payload_kind", &self.payload.and_then(|value| value.kind()))
+            .finish()
+    }
+}
+
+impl VmRootSource for VmOwnedExceptionRejected {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        if let Some(value) = self.payload {
+            visitor.visit_root(&value)?;
         }
         Ok(())
     }
