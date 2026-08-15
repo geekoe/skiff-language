@@ -447,173 +447,178 @@ fn load_scenarios() -> Vec<ScenarioFile> {
         .collect()
 }
 
-#[test]
-fn frame_catalog_is_byte_exact_and_complete() {
-    let catalog = load_catalog();
-    assert_eq!(catalog.schema_version, 1);
-    assert_eq!(catalog.corpus, "registration-handshake-v1");
-    for required in REQUIRED_FRAMES {
-        assert!(
-            catalog.frames.contains_key(required),
-            "required frame {required} missing from catalog"
-        );
-    }
-    for (name, entry) in &catalog.frames {
-        let semantic = decode_catalog_frame(entry);
-        let expected_frame_type = match entry.decode_as.as_str() {
-            "RouterBootstrap" => "router.bootstrap",
-            "Capabilities" => "runtime.capabilities",
-            "Registered" => "runtime.registered",
-            "Health" => "runtime.health",
-            other => panic!("unknown decodeAs {other}"),
-        };
-        assert_eq!(
-            entry.frame_type, expected_frame_type,
-            "{name}: frameType must match decodeAs"
-        );
-        match &semantic {
-            SemanticFrame::Bootstrap | SemanticFrame::Registered { .. } => {
-                assert_eq!(entry.direction, "RouterToRuntime")
-            }
-            _ => assert_eq!(entry.direction, "RuntimeToRouter"),
-        }
-        assert!(
-            !entry.frame_hex.is_empty() && entry.frame_hex.len() % 2 == 0,
-            "{name}: frameHex must be even-length hex"
-        );
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[test]
-fn handshake_sequences_match_frozen_semantics() {
-    let catalog = load_catalog();
-    let frames = catalog
-        .frames
-        .iter()
-        .map(|(name, entry)| (name.clone(), decode_catalog_frame(entry)))
-        .collect::<HashMap<_, _>>();
-    let scenarios = load_scenarios();
-    let scenario_names = scenarios
-        .iter()
-        .map(|scenario| scenario.scenario.as_str())
-        .collect::<HashSet<_>>();
-    for required in REQUIRED_SCENARIOS {
-        assert!(
-            scenario_names.contains(required),
-            "required scenario {required} missing"
-        );
+    #[test]
+    fn frame_catalog_is_byte_exact_and_complete() {
+        let catalog = load_catalog();
+        assert_eq!(catalog.schema_version, 1);
+        assert_eq!(catalog.corpus, "registration-handshake-v1");
+        for required in REQUIRED_FRAMES {
+            assert!(
+                catalog.frames.contains_key(required),
+                "required frame {required} missing from catalog"
+            );
+        }
+        for (name, entry) in &catalog.frames {
+            let semantic = decode_catalog_frame(entry);
+            let expected_frame_type = match entry.decode_as.as_str() {
+                "RouterBootstrap" => "router.bootstrap",
+                "Capabilities" => "runtime.capabilities",
+                "Registered" => "runtime.registered",
+                "Health" => "runtime.health",
+                other => panic!("unknown decodeAs {other}"),
+            };
+            assert_eq!(
+                entry.frame_type, expected_frame_type,
+                "{name}: frameType must match decodeAs"
+            );
+            match &semantic {
+                SemanticFrame::Bootstrap | SemanticFrame::Registered { .. } => {
+                    assert_eq!(entry.direction, "RouterToRuntime")
+                }
+                _ => assert_eq!(entry.direction, "RuntimeToRouter"),
+            }
+            assert!(
+                !entry.frame_hex.is_empty() && entry.frame_hex.len() % 2 == 0,
+                "{name}: frameHex must be even-length hex"
+            );
+        }
     }
 
-    for scenario in &scenarios {
-        assert_eq!(scenario.schema_version, 1);
-        let mut machine = Machine::new(scenario.pre_auth_limit);
-        for event in &scenario.events {
-            match event {
-                EventValue::Accept {
-                    connection,
-                    connection_generation,
-                } => machine.accept(connection, *connection_generation),
-                EventValue::Write { connection, frame } => {
-                    let semantic = frames
-                        .get(frame)
-                        .unwrap_or_else(|| panic!("unknown frame {frame}"));
-                    machine.write(connection, semantic);
-                }
-                EventValue::WriteFail { connection, frame } => {
-                    let semantic = frames
-                        .get(frame)
-                        .unwrap_or_else(|| panic!("unknown frame {frame}"));
-                    machine.write_fail(connection, semantic);
-                }
-                EventValue::Read { connection, frame } => {
-                    let semantic = frames
-                        .get(frame)
-                        .unwrap_or_else(|| panic!("unknown frame {frame}"));
-                    machine.read(connection, semantic);
-                }
-                EventValue::Timeout {
-                    connection,
-                    timeout_kind,
-                } => machine.timeout(connection, timeout_kind),
-                EventValue::Disconnect { connection } => machine.disconnect(connection),
-            }
-        }
-
-        let expect = &scenario.expect;
-        let mut actual_outcomes = machine
-            .conns
-            .keys()
-            .map(|id| (id.clone(), machine.outcome(id)))
-            .collect::<BTreeMap<_, _>>();
-        for id in machine.refused.keys() {
-            if !machine.conns.contains_key(id) {
-                actual_outcomes.insert(id.clone(), machine.refused_outcome(id));
-            }
-        }
-        let expected_outcomes = expect
-            .outcomes
+    #[test]
+    fn handshake_sequences_match_frozen_semantics() {
+        let catalog = load_catalog();
+        let frames = catalog
+            .frames
             .iter()
-            .map(|(id, outcome)| (id.clone(), outcome.clone()))
-            .collect::<BTreeMap<_, _>>();
-        assert_eq!(
-            actual_outcomes, expected_outcomes,
-            "scenario {}: outcomes mismatch",
-            scenario.scenario
-        );
+            .map(|(name, entry)| (name.clone(), decode_catalog_frame(entry)))
+            .collect::<HashMap<_, _>>();
+        let scenarios = load_scenarios();
+        let scenario_names = scenarios
+            .iter()
+            .map(|scenario| scenario.scenario.as_str())
+            .collect::<HashSet<_>>();
+        for required in REQUIRED_SCENARIOS {
+            assert!(
+                scenario_names.contains(required),
+                "required scenario {required} missing"
+            );
+        }
 
-        let refused_total = machine.refused.values().sum::<u64>();
-        assert_eq!(
-            refused_total, expect.refused_count,
-            "scenario {}: refusedCount",
-            scenario.scenario
-        );
-        assert_eq!(
-            machine.pre_auth.len(),
-            expect.pre_auth_count,
-            "scenario {}: preAuthCount",
-            scenario.scenario
-        );
-        assert_eq!(
-            machine.registered_replicas, expect.registered_sessions,
-            "scenario {}: registeredSessions",
-            scenario.scenario
-        );
-        assert_eq!(
-            machine.observed_health, expect.observed_health,
-            "scenario {}: observedHealth",
-            scenario.scenario
-        );
+        for scenario in &scenarios {
+            assert_eq!(scenario.schema_version, 1);
+            let mut machine = Machine::new(scenario.pre_auth_limit);
+            for event in &scenario.events {
+                match event {
+                    EventValue::Accept {
+                        connection,
+                        connection_generation,
+                    } => machine.accept(connection, *connection_generation),
+                    EventValue::Write { connection, frame } => {
+                        let semantic = frames
+                            .get(frame)
+                            .unwrap_or_else(|| panic!("unknown frame {frame}"));
+                        machine.write(connection, semantic);
+                    }
+                    EventValue::WriteFail { connection, frame } => {
+                        let semantic = frames
+                            .get(frame)
+                            .unwrap_or_else(|| panic!("unknown frame {frame}"));
+                        machine.write_fail(connection, semantic);
+                    }
+                    EventValue::Read { connection, frame } => {
+                        let semantic = frames
+                            .get(frame)
+                            .unwrap_or_else(|| panic!("unknown frame {frame}"));
+                        machine.read(connection, semantic);
+                    }
+                    EventValue::Timeout {
+                        connection,
+                        timeout_kind,
+                    } => machine.timeout(connection, timeout_kind),
+                    EventValue::Disconnect { connection } => machine.disconnect(connection),
+                }
+            }
 
-        let main = machine
-            .conns
-            .get(&scenario.main_connection)
-            .expect("main connection exists");
-        assert_eq!(
-            main.phase == Phase::Registered,
-            expect.routable_registered,
-            "scenario {}: routableRegistered",
-            scenario.scenario
-        );
+            let expect = &scenario.expect;
+            let mut actual_outcomes = machine
+                .conns
+                .keys()
+                .map(|id| (id.clone(), machine.outcome(id)))
+                .collect::<BTreeMap<_, _>>();
+            for id in machine.refused.keys() {
+                if !machine.conns.contains_key(id) {
+                    actual_outcomes.insert(id.clone(), machine.refused_outcome(id));
+                }
+            }
+            let expected_outcomes = expect
+                .outcomes
+                .iter()
+                .map(|(id, outcome)| (id.clone(), outcome.clone()))
+                .collect::<BTreeMap<_, _>>();
+            assert_eq!(
+                actual_outcomes, expected_outcomes,
+                "scenario {}: outcomes mismatch",
+                scenario.scenario
+            );
+
+            let refused_total = machine.refused.values().sum::<u64>();
+            assert_eq!(
+                refused_total, expect.refused_count,
+                "scenario {}: refusedCount",
+                scenario.scenario
+            );
+            assert_eq!(
+                machine.pre_auth.len(),
+                expect.pre_auth_count,
+                "scenario {}: preAuthCount",
+                scenario.scenario
+            );
+            assert_eq!(
+                machine.registered_replicas, expect.registered_sessions,
+                "scenario {}: registeredSessions",
+                scenario.scenario
+            );
+            assert_eq!(
+                machine.observed_health, expect.observed_health,
+                "scenario {}: observedHealth",
+                scenario.scenario
+            );
+
+            let main = machine
+                .conns
+                .get(&scenario.main_connection)
+                .expect("main connection exists");
+            assert_eq!(
+                main.phase == Phase::Registered,
+                expect.routable_registered,
+                "scenario {}: routableRegistered",
+                scenario.scenario
+            );
+            assert!(
+                !expect.fail_stop,
+                "scenario {}: failStop must be false for handshake corpus",
+                scenario.scenario
+            );
+        }
+    }
+
+    #[test]
+    fn mutated_frame_is_rejected_by_codec() {
+        let catalog = load_catalog();
+        let bootstrap = catalog
+            .frames
+            .get("bootstrap.prod.42")
+            .expect("bootstrap frame");
+        let mut bytes = hex_decode(&bootstrap.frame_hex);
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0x01;
         assert!(
-            !expect.fail_stop,
-            "scenario {}: failStop must be false for handshake corpus",
-            scenario.scenario
+            decode_binary_frame(&bytes).is_err(),
+            "mutated frame bytes must not decode; byte-exactness is a hard contract"
         );
     }
-}
-
-#[test]
-fn mutated_frame_is_rejected_by_codec() {
-    let catalog = load_catalog();
-    let bootstrap = catalog
-        .frames
-        .get("bootstrap.prod.42")
-        .expect("bootstrap frame");
-    let mut bytes = hex_decode(&bootstrap.frame_hex);
-    let last = bytes.len() - 1;
-    bytes[last] ^= 0x01;
-    assert!(
-        decode_binary_frame(&bytes).is_err(),
-        "mutated frame bytes must not decode; byte-exactness is a hard contract"
-    );
 }

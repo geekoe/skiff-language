@@ -300,310 +300,315 @@ impl PreAuthPool {
     }
 }
 
-#[test]
-fn replacement_cancels_old_then_installs_new_and_old_barrier_never_touches_new() {
-    let mut directory = Directory::new(FULL_CONSUMER_SET);
-    let tuple = RegisteredTuple::new(42, "assembly-a");
-    let old = SessionEpoch {
-        replica_id: "runtime-a".to_string(),
-        connection_generation: 1,
-    };
-    let new = SessionEpoch {
-        replica_id: "runtime-a".to_string(),
-        connection_generation: 2,
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    directory.publish_registered("runtime-a", 1, tuple.clone(), &FULL_CONSUMER_SET);
-    directory.publish_registered("runtime-a", 2, tuple.clone(), &FULL_CONSUMER_SET);
+    #[test]
+    fn replacement_cancels_old_then_installs_new_and_old_barrier_never_touches_new() {
+        let mut directory = Directory::new(FULL_CONSUMER_SET);
+        let tuple = RegisteredTuple::new(42, "assembly-a");
+        let old = SessionEpoch {
+            replica_id: "runtime-a".to_string(),
+            connection_generation: 1,
+        };
+        let new = SessionEpoch {
+            replica_id: "runtime-a".to_string(),
+            connection_generation: 2,
+        };
 
-    assert_eq!(directory.current_by_replica.get("runtime-a"), Some(&new));
-    let old_record = directory
-        .sessions_by_epoch
-        .get(&old)
-        .expect("old retained until barrier");
-    assert!(
-        old_record.cancelled,
-        "old epoch must be cancelled before new install"
-    );
-    let new_record = directory
-        .sessions_by_epoch
-        .get(&new)
-        .expect("new session installed");
-    assert!(!new_record.cancelled);
+        directory.publish_registered("runtime-a", 1, tuple.clone(), &FULL_CONSUMER_SET);
+        directory.publish_registered("runtime-a", 2, tuple.clone(), &FULL_CONSUMER_SET);
 
-    // Old disconnect: barrier completes after all consumer ACKs.
-    assert_eq!(
-        directory.close(&old, &FULL_CONSUMER_SET, false),
-        CloseResult::Complete
-    );
-    assert!(!directory.sessions_by_epoch.contains_key(&old));
-    assert_eq!(
-        directory.current_by_replica.get("runtime-a"),
-        Some(&new),
-        "old close barrier must never delete current_by_replica[new]"
-    );
-    assert_eq!(directory.candidates(&tuple), vec![new.clone()]);
-}
-
-#[test]
-fn transition_publishes_new_revision_same_session_duplicate_idempotent_stale_closes() {
-    let mut directory = Directory::new(FULL_CONSUMER_SET);
-    let tuple_42 = RegisteredTuple::new(42, "assembly-a");
-    let tuple_43 = RegisteredTuple::new(43, "assembly-a");
-    let session = SessionEpoch {
-        replica_id: "runtime-a".to_string(),
-        connection_generation: 1,
-    };
-
-    let revision_42 = directory
-        .publish_registered("runtime-a", 1, tuple_42.clone(), &FULL_CONSUMER_SET)
-        .expect("initial registration publishes");
-
-    // Commit swaps epoch to 43; same physical session re-registers exact 43.
-    assert_eq!(
-        directory.transition(&session, tuple_43.clone(), &tuple_43, None),
-        TransitionOutcome::Published(revision_42 + 1)
-    );
-    assert_eq!(
-        directory.current_by_replica.get("runtime-a"),
-        Some(&session)
-    );
-    assert_eq!(
-        directory
+        assert_eq!(directory.current_by_replica.get("runtime-a"), Some(&new));
+        let old_record = directory
             .sessions_by_epoch
-            .get(&session)
-            .map(|record| record.revision),
-        Some(revision_42 + 1)
-    );
-
-    // Exact duplicate is idempotent: no revision bump, same current.
-    assert_eq!(
-        directory.transition(&session, tuple_43.clone(), &tuple_43, None),
-        TransitionOutcome::Idempotent
-    );
-    assert_eq!(
-        directory
+            .get(&old)
+            .expect("old retained until barrier");
+        assert!(
+            old_record.cancelled,
+            "old epoch must be cancelled before new install"
+        );
+        let new_record = directory
             .sessions_by_epoch
-            .get(&session)
-            .map(|record| record.revision),
-        Some(revision_42 + 1)
-    );
+            .get(&new)
+            .expect("new session installed");
+        assert!(!new_record.cancelled);
 
-    // Stale tuple closes the exact session.
-    assert_eq!(
-        directory.transition(&session, tuple_42, &tuple_43, None),
-        TransitionOutcome::StaleClosed
-    );
-    assert!(
-        directory
-            .sessions_by_epoch
-            .get(&session)
-            .is_some_and(|record| record.cancelled),
-        "stale register must close the exact session"
-    );
-}
-
-#[test]
-fn new_generation_before_epoch_swap_is_rejected_without_mutation() {
-    let mut directory = Directory::new(FULL_CONSUMER_SET);
-    let tuple_42 = RegisteredTuple::new(42, "assembly-a");
-    let tuple_43 = RegisteredTuple::new(43, "assembly-a");
-    let session = SessionEpoch {
-        replica_id: "runtime-a".to_string(),
-        connection_generation: 1,
-    };
-    directory.publish_registered("runtime-a", 1, tuple_42.clone(), &FULL_CONSUMER_SET);
-
-    // Pending epoch 43 exists but current is still 42.
-    assert_eq!(
-        directory.transition(&session, tuple_43.clone(), &tuple_42, Some(&tuple_43)),
-        TransitionOutcome::NewGenerationRejected
-    );
-    let record = directory
-        .sessions_by_epoch
-        .get(&session)
-        .expect("no mutation");
-    assert_eq!(record.tuple.as_ref(), Some(&tuple_42));
-    assert!(!record.cancelled);
-    assert_eq!(
-        directory.current_by_replica.get("runtime-a"),
-        Some(&session)
-    );
-}
-
-#[test]
-fn missing_consumer_manifest_permit_refuses_registration() {
-    let mut directory = Directory::new([
-        PermitKind::Admission,
-        PermitKind::Health,
-        PermitKind::Dispatcher,
-    ]);
-    let tuple = RegisteredTuple::new(42, "assembly-a");
-    let refused = directory.publish_registered(
-        "runtime-a",
-        1,
-        tuple.clone(),
-        &[
-            PermitKind::Admission,
-            PermitKind::Health,
-            PermitKind::Dispatcher,
-            PermitKind::Broker, // installed consumer missing its manifest permit
-        ],
-    );
-    assert!(refused.is_none(), "registration must be refused");
-    assert!(directory.sessions_by_epoch.is_empty());
-    assert!(directory.current_by_replica.is_empty());
-    assert_eq!(directory.candidates(&tuple), vec![]);
-}
-
-#[test]
-fn barrier_missing_ack_or_timeout_is_fail_stop() {
-    let mut directory = Directory::new(FULL_CONSUMER_SET);
-    let tuple = RegisteredTuple::new(42, "assembly-a");
-    directory.publish_registered("runtime-a", 1, tuple, &FULL_CONSUMER_SET);
-    let session = directory
-        .current_by_replica
-        .get("runtime-a")
-        .cloned()
-        .expect("session installed");
-
-    // Only one consumer ACKs; delivery of the rest times out.
-    assert_eq!(
-        directory.close(&session, &[PermitKind::Admission], true),
-        CloseResult::FailStop
-    );
-    assert!(
-        directory.fail_stop,
-        "barrier ACK timeout must fail-stop the process"
-    );
-    assert!(
-        directory.sessions_by_epoch.contains_key(&session),
-        "fail-stop must not pretend the session was deleted"
-    );
-}
-
-#[test]
-fn barrier_without_timeout_stays_pending_until_all_acks() {
-    let mut directory = Directory::new(FULL_CONSUMER_SET);
-    let tuple = RegisteredTuple::new(42, "assembly-a");
-    directory.publish_registered("runtime-a", 1, tuple, &FULL_CONSUMER_SET);
-    let session = directory
-        .current_by_replica
-        .get("runtime-a")
-        .cloned()
-        .unwrap();
-
-    assert_eq!(
-        directory.close(
-            &session,
-            &[PermitKind::Admission, PermitKind::Health],
-            false
-        ),
-        CloseResult::Pending
-    );
-    assert!(directory.sessions_by_epoch.contains_key(&session));
-    assert_eq!(
-        directory.close(&session, &FULL_CONSUMER_SET[2..], false),
-        CloseResult::Complete
-    );
-    assert!(!directory.sessions_by_epoch.contains_key(&session));
-    assert!(!directory.fail_stop);
-}
-
-#[test]
-fn max_concurrent_sessions_close_barrier_leaves_zero_residue() {
-    let mut directory = Directory::new(FULL_CONSUMER_SET);
-    let tuple = RegisteredTuple::new(42, "assembly-a");
-    let replicas = ["runtime-a", "runtime-b", "runtime-c", "runtime-d"];
-    for (index, replica) in replicas.iter().enumerate() {
-        directory.publish_registered(replica, 1, tuple.clone(), &FULL_CONSUMER_SET);
-        let _ = index;
-    }
-    assert_eq!(directory.sessions_by_epoch.len(), replicas.len());
-    let sessions = directory
-        .sessions_by_epoch
-        .keys()
-        .cloned()
-        .collect::<Vec<_>>();
-    for session in &sessions {
+        // Old disconnect: barrier completes after all consumer ACKs.
         assert_eq!(
-            directory.close(session, &FULL_CONSUMER_SET, false),
+            directory.close(&old, &FULL_CONSUMER_SET, false),
             CloseResult::Complete
         );
+        assert!(!directory.sessions_by_epoch.contains_key(&old));
+        assert_eq!(
+            directory.current_by_replica.get("runtime-a"),
+            Some(&new),
+            "old close barrier must never delete current_by_replica[new]"
+        );
+        assert_eq!(directory.candidates(&tuple), vec![new.clone()]);
     }
-    assert!(directory.sessions_by_epoch.is_empty());
-    assert!(directory.candidates(&tuple).is_empty());
-    assert!(!directory.fail_stop);
-}
 
-#[test]
-fn pre_auth_cap_rejects_overflow_and_releases_permit_on_ack() {
-    let mut pool = PreAuthPool::new(2);
-    assert!(pool.accept("c1"));
-    assert!(pool.accept("c2"));
-    assert!(!pool.accept("c3"), "third pre-auth must be refused");
-    assert_eq!(pool.refused, 1);
-
-    pool.advance(
-        "c1",
-        HandshakePhase::RegisterValidated,
-        HandshakePhase::Registered,
-    );
-    assert!(pool.accept("c3"), "ACK releases the pre-auth permit");
-}
-
-#[test]
-fn handshake_timeout_releases_pre_auth_without_directory_residue() {
-    for (timeout, phase_at_timeout) in [
-        (TimeoutKind::Bootstrap, HandshakePhase::Accepted),
-        (TimeoutKind::Capabilities, HandshakePhase::BootstrapSent),
-        (TimeoutKind::Register, HandshakePhase::CapabilitiesBound),
-    ] {
-        let mut pool = PreAuthPool::new(4);
-        let directory = Directory::new(FULL_CONSUMER_SET);
-        let tuple = RegisteredTuple::new(42, "assembly-a");
+    #[test]
+    fn transition_publishes_new_revision_same_session_duplicate_idempotent_stale_closes() {
+        let mut directory = Directory::new(FULL_CONSUMER_SET);
+        let tuple_42 = RegisteredTuple::new(42, "assembly-a");
+        let tuple_43 = RegisteredTuple::new(43, "assembly-a");
         let session = SessionEpoch {
             replica_id: "runtime-a".to_string(),
             connection_generation: 1,
         };
 
-        assert!(pool.accept("c1"));
-        let _ = phase_at_timeout;
-        let _ = timeout;
-        pool.release("c1");
-        assert_eq!(pool.occupied.len(), 0);
+        let revision_42 = directory
+            .publish_registered("runtime-a", 1, tuple_42.clone(), &FULL_CONSUMER_SET)
+            .expect("initial registration publishes");
+
+        // Commit swaps epoch to 43; same physical session re-registers exact 43.
+        assert_eq!(
+            directory.transition(&session, tuple_43.clone(), &tuple_43, None),
+            TransitionOutcome::Published(revision_42 + 1)
+        );
+        assert_eq!(
+            directory.current_by_replica.get("runtime-a"),
+            Some(&session)
+        );
+        assert_eq!(
+            directory
+                .sessions_by_epoch
+                .get(&session)
+                .map(|record| record.revision),
+            Some(revision_42 + 1)
+        );
+
+        // Exact duplicate is idempotent: no revision bump, same current.
+        assert_eq!(
+            directory.transition(&session, tuple_43.clone(), &tuple_43, None),
+            TransitionOutcome::Idempotent
+        );
+        assert_eq!(
+            directory
+                .sessions_by_epoch
+                .get(&session)
+                .map(|record| record.revision),
+            Some(revision_42 + 1)
+        );
+
+        // Stale tuple closes the exact session.
+        assert_eq!(
+            directory.transition(&session, tuple_42, &tuple_43, None),
+            TransitionOutcome::StaleClosed
+        );
+        assert!(
+            directory
+                .sessions_by_epoch
+                .get(&session)
+                .is_some_and(|record| record.cancelled),
+            "stale register must close the exact session"
+        );
+    }
+
+    #[test]
+    fn new_generation_before_epoch_swap_is_rejected_without_mutation() {
+        let mut directory = Directory::new(FULL_CONSUMER_SET);
+        let tuple_42 = RegisteredTuple::new(42, "assembly-a");
+        let tuple_43 = RegisteredTuple::new(43, "assembly-a");
+        let session = SessionEpoch {
+            replica_id: "runtime-a".to_string(),
+            connection_generation: 1,
+        };
+        directory.publish_registered("runtime-a", 1, tuple_42.clone(), &FULL_CONSUMER_SET);
+
+        // Pending epoch 43 exists but current is still 42.
+        assert_eq!(
+            directory.transition(&session, tuple_43.clone(), &tuple_42, Some(&tuple_43)),
+            TransitionOutcome::NewGenerationRejected
+        );
+        let record = directory
+            .sessions_by_epoch
+            .get(&session)
+            .expect("no mutation");
+        assert_eq!(record.tuple.as_ref(), Some(&tuple_42));
+        assert!(!record.cancelled);
+        assert_eq!(
+            directory.current_by_replica.get("runtime-a"),
+            Some(&session)
+        );
+    }
+
+    #[test]
+    fn missing_consumer_manifest_permit_refuses_registration() {
+        let mut directory = Directory::new([
+            PermitKind::Admission,
+            PermitKind::Health,
+            PermitKind::Dispatcher,
+        ]);
+        let tuple = RegisteredTuple::new(42, "assembly-a");
+        let refused = directory.publish_registered(
+            "runtime-a",
+            1,
+            tuple.clone(),
+            &[
+                PermitKind::Admission,
+                PermitKind::Health,
+                PermitKind::Dispatcher,
+                PermitKind::Broker, // installed consumer missing its manifest permit
+            ],
+        );
+        assert!(refused.is_none(), "registration must be refused");
         assert!(directory.sessions_by_epoch.is_empty());
-        assert!(!directory.candidates(&tuple).contains(&session));
+        assert!(directory.current_by_replica.is_empty());
+        assert_eq!(directory.candidates(&tuple), vec![]);
+    }
+
+    #[test]
+    fn barrier_missing_ack_or_timeout_is_fail_stop() {
+        let mut directory = Directory::new(FULL_CONSUMER_SET);
+        let tuple = RegisteredTuple::new(42, "assembly-a");
+        directory.publish_registered("runtime-a", 1, tuple, &FULL_CONSUMER_SET);
+        let session = directory
+            .current_by_replica
+            .get("runtime-a")
+            .cloned()
+            .expect("session installed");
+
+        // Only one consumer ACKs; delivery of the rest times out.
+        assert_eq!(
+            directory.close(&session, &[PermitKind::Admission], true),
+            CloseResult::FailStop
+        );
+        assert!(
+            directory.fail_stop,
+            "barrier ACK timeout must fail-stop the process"
+        );
+        assert!(
+            directory.sessions_by_epoch.contains_key(&session),
+            "fail-stop must not pretend the session was deleted"
+        );
+    }
+
+    #[test]
+    fn barrier_without_timeout_stays_pending_until_all_acks() {
+        let mut directory = Directory::new(FULL_CONSUMER_SET);
+        let tuple = RegisteredTuple::new(42, "assembly-a");
+        directory.publish_registered("runtime-a", 1, tuple, &FULL_CONSUMER_SET);
+        let session = directory
+            .current_by_replica
+            .get("runtime-a")
+            .cloned()
+            .unwrap();
+
+        assert_eq!(
+            directory.close(
+                &session,
+                &[PermitKind::Admission, PermitKind::Health],
+                false
+            ),
+            CloseResult::Pending
+        );
+        assert!(directory.sessions_by_epoch.contains_key(&session));
+        assert_eq!(
+            directory.close(&session, &FULL_CONSUMER_SET[2..], false),
+            CloseResult::Complete
+        );
+        assert!(!directory.sessions_by_epoch.contains_key(&session));
         assert!(!directory.fail_stop);
     }
-}
 
-#[test]
-fn writer_queue_full_uses_abort_handle_not_queue_accept() {
-    // Frozen rule: writer queue full must close the socket via the independent
-    // abort handle instead of waiting for a close frame to be accepted.
-    #[derive(Clone, Copy)]
-    struct BoundedQueue {
-        capacity: usize,
-        len: usize,
+    #[test]
+    fn max_concurrent_sessions_close_barrier_leaves_zero_residue() {
+        let mut directory = Directory::new(FULL_CONSUMER_SET);
+        let tuple = RegisteredTuple::new(42, "assembly-a");
+        let replicas = ["runtime-a", "runtime-b", "runtime-c", "runtime-d"];
+        for (index, replica) in replicas.iter().enumerate() {
+            directory.publish_registered(replica, 1, tuple.clone(), &FULL_CONSUMER_SET);
+            let _ = index;
+        }
+        assert_eq!(directory.sessions_by_epoch.len(), replicas.len());
+        let sessions = directory
+            .sessions_by_epoch
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        for session in &sessions {
+            assert_eq!(
+                directory.close(session, &FULL_CONSUMER_SET, false),
+                CloseResult::Complete
+            );
+        }
+        assert!(directory.sessions_by_epoch.is_empty());
+        assert!(directory.candidates(&tuple).is_empty());
+        assert!(!directory.fail_stop);
     }
 
-    impl BoundedQueue {
-        fn try_push(&mut self) -> bool {
-            if self.len >= self.capacity {
-                return false;
-            }
-            self.len += 1;
-            true
+    #[test]
+    fn pre_auth_cap_rejects_overflow_and_releases_permit_on_ack() {
+        let mut pool = PreAuthPool::new(2);
+        assert!(pool.accept("c1"));
+        assert!(pool.accept("c2"));
+        assert!(!pool.accept("c3"), "third pre-auth must be refused");
+        assert_eq!(pool.refused, 1);
+
+        pool.advance(
+            "c1",
+            HandshakePhase::RegisterValidated,
+            HandshakePhase::Registered,
+        );
+        assert!(pool.accept("c3"), "ACK releases the pre-auth permit");
+    }
+
+    #[test]
+    fn handshake_timeout_releases_pre_auth_without_directory_residue() {
+        for (timeout, phase_at_timeout) in [
+            (TimeoutKind::Bootstrap, HandshakePhase::Accepted),
+            (TimeoutKind::Capabilities, HandshakePhase::BootstrapSent),
+            (TimeoutKind::Register, HandshakePhase::CapabilitiesBound),
+        ] {
+            let mut pool = PreAuthPool::new(4);
+            let directory = Directory::new(FULL_CONSUMER_SET);
+            let tuple = RegisteredTuple::new(42, "assembly-a");
+            let session = SessionEpoch {
+                replica_id: "runtime-a".to_string(),
+                connection_generation: 1,
+            };
+
+            assert!(pool.accept("c1"));
+            let _ = phase_at_timeout;
+            let _ = timeout;
+            pool.release("c1");
+            assert_eq!(pool.occupied.len(), 0);
+            assert!(directory.sessions_by_epoch.is_empty());
+            assert!(!directory.candidates(&tuple).contains(&session));
+            assert!(!directory.fail_stop);
         }
     }
 
-    let mut queue = BoundedQueue {
-        capacity: 2,
-        len: 2,
-    };
-    assert!(!queue.try_push(), "queue full");
-    // The contract outcome is an abort of the exact session, never blocking
-    // here; the abort handle path is asserted by the handshake ack-loss
-    // corpus scenario (writer queue full -> AckLoss strict terminal).
+    #[test]
+    fn writer_queue_full_uses_abort_handle_not_queue_accept() {
+        // Frozen rule: writer queue full must close the socket via the independent
+        // abort handle instead of waiting for a close frame to be accepted.
+        #[derive(Clone, Copy)]
+        struct BoundedQueue {
+            capacity: usize,
+            len: usize,
+        }
+
+        impl BoundedQueue {
+            fn try_push(&mut self) -> bool {
+                if self.len >= self.capacity {
+                    return false;
+                }
+                self.len += 1;
+                true
+            }
+        }
+
+        let mut queue = BoundedQueue {
+            capacity: 2,
+            len: 2,
+        };
+        assert!(!queue.try_push(), "queue full");
+        // The contract outcome is an abort of the exact session, never blocking
+        // here; the abort handle path is asserted by the handshake ack-loss
+        // corpus scenario (writer queue full -> AckLoss strict terminal).
+    }
 }

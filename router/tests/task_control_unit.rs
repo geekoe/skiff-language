@@ -783,42 +783,6 @@ async fn claim_ready(store: &dyn TaskStore, task_id: &str) -> TaskRecord {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Submit handler
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn submit_success_creates_record_and_returns_task_ref() {
-    let (store, _scheduler, sink, writer, counters) = sink_rig();
-    let header = submit_header(Some(TASK_ID), TaskTargetKind::Function, None);
-    let bytes = encode_task_submit_request_frame(&header, &[1, 2, 3]).expect("encode");
-    sink.handle(
-        &RuntimeSessionEpoch {
-            replica_id: "runtime-a".to_string(),
-            connection_generation: 1,
-        },
-        &bytes,
-    )
-    .expect("handle");
-
-    let response = poll_writer(&writer, 1).await;
-    let decoded = decode_task_submit_response_frame(&response).expect("response");
-    assert_eq!(decoded.task_id, TASK_ID);
-    assert_eq!(decoded.task_ref.task_id(), TASK_ID);
-    assert_eq!(decoded.task_ref.owner(), SERVICE_ID);
-    assert_eq!(decoded.request_id, TASK_ID);
-
-    let records = store.records().await;
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].task_id.as_str(), TASK_ID);
-    assert_eq!(records[0].state, TaskState::Scheduled);
-    assert_eq!(
-        records[0].test_case, None,
-        "ordinary production submissions must not carry test-case authority"
-    );
-    assert_eq!(counters.submissions_accepted.load(Ordering::Relaxed), 1);
-}
-
 /// Scripted parent resolver: returns a configured capability only for one
 /// exact caller request id on one exact session.
 #[derive(Debug)]
@@ -841,286 +805,6 @@ impl TaskSubmitParentResolver for ScriptedTaskSubmitParentResolver {
             None
         }
     }
-}
-
-#[tokio::test]
-async fn submit_from_test_request_parent_captures_test_case_authority() {
-    let store = Arc::new(MemoryTaskStore::new());
-    let store_dyn = Arc::clone(&store) as Arc<dyn TaskStore>;
-    let scheduler = Arc::new(Scheduler::new(
-        Arc::clone(&store_dyn),
-        Arc::new(NoopAdmission),
-        Arc::new(skiff_task_control::SystemClock),
-        SchedulerConfig::default(),
-        RetryBackoffPolicy::default(),
-    ));
-    let writer = Arc::new(FakeWriter::default());
-    let counters = Arc::new(TaskControlCounters::default());
-    let session = RuntimeSessionEpoch {
-        replica_id: "runtime-a".to_string(),
-        connection_generation: 1,
-    };
-    let sink = Arc::new(DurableTaskFrameSink::new(
-        store_dyn,
-        Arc::clone(&scheduler),
-        Arc::new(FakeImageSource::new(corpus_image())),
-        Arc::new(ScriptedTaskSubmitParentResolver {
-            capability: Some("test-case:cap-1".to_string()),
-            caller_request_id: "parent-request".to_string(),
-            session: session.clone(),
-        }) as Arc<dyn TaskSubmitParentResolver>,
-        None,
-        Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
-        Arc::clone(&counters),
-        noop_telemetry(),
-        4096,
-    ));
-    let header = submit_header(Some(TASK_ID), TaskTargetKind::Function, None);
-    let bytes = encode_task_submit_request_frame(&header, &[1, 2, 3]).expect("encode");
-    sink.handle(&session, &bytes).expect("handle");
-    let _ = poll_writer(&writer, 1).await;
-
-    let records = store.records().await;
-    assert_eq!(records.len(), 1);
-    let authority = records[0]
-        .test_case
-        .as_ref()
-        .expect("test parent task must persist its test-case authority");
-    assert_eq!(authority.test_case_capability, "test-case:cap-1");
-    assert_eq!(authority.parent_request_id, "parent-request");
-    assert_eq!(authority.origin_runtime_id, "runtime-a");
-    assert_eq!(authority.origin_connection_generation, 1);
-}
-
-#[tokio::test]
-async fn submit_actor_method_target_creates_durable_actor_record() {
-    let (_store, _scheduler, sink, writer, counters) = sink_rig();
-    let header = actor_method_submit_header(Some(TASK_ID));
-    sink.handle_submit(
-        RuntimeSessionEpoch {
-            replica_id: "runtime-a".to_string(),
-            connection_generation: 1,
-        },
-        header,
-        vec![1, 2, 3],
-    )
-    .await
-    .expect("handler");
-    let response = poll_writer(&writer, 1).await;
-    let decoded = decode_task_submit_response_frame(&response).expect("response");
-    assert_eq!(decoded.task_id, TASK_ID);
-    assert_eq!(counters.submissions_accepted.load(Ordering::Relaxed), 1);
-    let records = _store.records().await;
-    assert_eq!(records.len(), 1);
-    match &records[0].target {
-        DetachedCallTarget::ActorMethod {
-            activation,
-            implementation,
-            method,
-            declaration_owner,
-            ..
-        } => {
-            assert_eq!(
-                implementation.as_str(),
-                "skiff-actor-implementation-v1:sha256:aaa"
-            );
-            assert_eq!(method.as_str(), "skiff-actor-method-v1:sha256:aaa");
-            assert_eq!(declaration_owner.actor_symbol, "Actor");
-            assert!(!activation.key.as_bytes().is_empty());
-            assert_eq!(activation.create_input.as_bytes(), b"[]");
-            assert!(activation.expected_type_plan_runtime.is_some());
-            assert!(matches!(
-                activation.expected_type_plan.root,
-                skiff_artifact_model::RecoverableExpectedTypeRoot::TypeRef { .. }
-            ));
-        }
-        other => panic!("expected actor-method target, got {other:?}"),
-    }
-}
-
-#[tokio::test]
-async fn submit_invalid_timing_and_quota_are_definite_rejections() {
-    let (_store, _scheduler, sink, writer, _counters) = sink_rig();
-    let header = submit_header(
-        Some(TASK_ID),
-        TaskTargetKind::Function,
-        Some(TaskSubmitTiming::At { utc_millis: -1 }),
-    );
-    let bytes = encode_task_submit_request_frame(&header, &[]).expect("encode");
-    sink.handle(
-        &RuntimeSessionEpoch {
-            replica_id: "runtime-a".to_string(),
-            connection_generation: 1,
-        },
-        &bytes,
-    )
-    .expect("handle");
-    let error = poll_writer(&writer, 1).await;
-    let decoded = decode_task_submit_error_frame(&error).expect("error");
-    assert_eq!(decoded.error.code, "invalidTiming");
-
-    let oversized = sink_rig();
-    let writer = oversized.3;
-    let header = submit_header(Some("task-big"), TaskTargetKind::Function, None);
-    let bytes = encode_task_submit_request_frame(&header, &vec![7; 8192]).expect("encode");
-    oversized
-        .2
-        .handle(
-            &RuntimeSessionEpoch {
-                replica_id: "runtime-a".to_string(),
-                connection_generation: 1,
-            },
-            &bytes,
-        )
-        .expect("handle");
-    let error = poll_writer(&writer, 1).await;
-    let decoded = decode_task_submit_error_frame(&error).expect("error");
-    assert_eq!(decoded.error.code, "quotaExceeded");
-}
-
-#[tokio::test]
-async fn submit_same_task_id_is_idempotent() {
-    // Fixed clock: `created_at`/`due_at` derive from `store.now()`, so two
-    // submits must land on the exact same timestamp to produce an identical
-    // canonical record (the store's idempotent-create path).
-    let (store, _scheduler, sink, writer, _counters) =
-        sink_rig_with_clock(Arc::new(FixedTaskClock(1_700_000_000_000)));
-    let header = submit_header(Some(TASK_ID), TaskTargetKind::Function, None);
-    let bytes = encode_task_submit_request_frame(&header, &[1, 2, 3]).expect("encode");
-    let session = RuntimeSessionEpoch {
-        replica_id: "runtime-a".to_string(),
-        connection_generation: 1,
-    };
-    sink.handle(&session, &bytes).expect("first handle");
-    sink.handle(&session, &bytes).expect("second handle");
-    let first = poll_writer(&writer, 1).await;
-    let second = poll_writer(&writer, 2).await;
-    assert_eq!(
-        decode_task_submit_response_frame(&first)
-            .expect("response")
-            .task_id,
-        TASK_ID
-    );
-    assert_eq!(
-        decode_task_submit_response_frame(&second)
-            .expect("response")
-            .task_id,
-        TASK_ID
-    );
-    assert_eq!(store.records().await.len(), 1, "no second task");
-}
-
-#[tokio::test]
-async fn submit_transient_create_queries_same_task_id() {
-    // Pure transient: no record visible -> storeUnavailable.
-    let (store, _scheduler, sink, writer, counters) = sink_rig();
-    store.fail_next_transient(1).await;
-    let header = submit_header(Some(TASK_ID), TaskTargetKind::Function, None);
-    let bytes = encode_task_submit_request_frame(&header, &[1, 2, 3]).expect("encode");
-    sink.handle(
-        &RuntimeSessionEpoch {
-            replica_id: "runtime-a".to_string(),
-            connection_generation: 1,
-        },
-        &bytes,
-    )
-    .expect("handle");
-    let error = poll_writer(&writer, 1).await;
-    let decoded = decode_task_submit_error_frame(&error).expect("error");
-    assert_eq!(decoded.error.code, "storeUnavailable");
-    assert_eq!(counters.submissions_transient.load(Ordering::Relaxed), 1);
-
-    // Ambiguous acceptance: create lost its response after commit; the same
-    // TaskId status query sees the durable record and returns success.
-    let ambiguous = Arc::new(AmbiguousCreateStore::new());
-    let ambiguous_dyn = Arc::clone(&ambiguous) as Arc<dyn TaskStore>;
-    let ambiguous_writer = Arc::new(FakeWriter::default());
-    let ambiguous_sink = Arc::new(DurableTaskFrameSink::new(
-        ambiguous_dyn.clone(),
-        Arc::new(Scheduler::new(
-            ambiguous_dyn.clone(),
-            Arc::new(NoopAdmission),
-            Arc::new(skiff_task_control::SystemClock),
-            SchedulerConfig::default(),
-            RetryBackoffPolicy::default(),
-        )),
-        Arc::new(FakeImageSource::new(corpus_image())),
-        Arc::new(NoopTaskSubmitParentResolver)
-            as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
-        None,
-        Arc::clone(&ambiguous_writer) as Arc<dyn WsSessionWriter>,
-        Arc::new(TaskControlCounters::default()),
-        noop_telemetry(),
-        4096,
-    ));
-    ambiguous.fail_next_create();
-    let bytes = encode_task_submit_request_frame(&header, &[1, 2, 3]).expect("encode");
-    ambiguous_sink
-        .handle(
-            &RuntimeSessionEpoch {
-                replica_id: "runtime-a".to_string(),
-                connection_generation: 1,
-            },
-            &bytes,
-        )
-        .expect("handle");
-    let response = poll_writer(&ambiguous_writer, 1).await;
-    let decoded = decode_task_submit_response_frame(&response).expect("response");
-    assert_eq!(decoded.task_id, TASK_ID);
-}
-
-// ---------------------------------------------------------------------------
-// Immediate wake fast path
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn immediate_submit_wakes_scheduler_without_waiting_for_scan() {
-    let store = Arc::new(MemoryTaskStore::new()) as Arc<dyn TaskStore>;
-    let admission = Arc::new(ScriptedAdmission::new());
-    let notifier = admission.install_notifier();
-    let scheduler = Arc::new(Scheduler::new(
-        Arc::clone(&store),
-        admission.clone(),
-        Arc::new(skiff_task_control::SystemClock),
-        SchedulerConfig {
-            scan_interval: Duration::from_secs(3600),
-            lease_duration: DurableDuration::from_millis(7_201_000),
-            ..SchedulerConfig::default()
-        },
-        RetryBackoffPolicy::default(),
-    ));
-    let run = tokio::spawn({
-        let scheduler = Arc::clone(&scheduler);
-        async move {
-            scheduler.run().await;
-        }
-    });
-    let writer = Arc::new(FakeWriter::default());
-    let sink = Arc::new(DurableTaskFrameSink::new(
-        Arc::clone(&store),
-        Arc::clone(&scheduler),
-        Arc::new(FakeImageSource::new(corpus_image())),
-        Arc::new(NoopTaskSubmitParentResolver)
-            as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
-        None,
-        Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
-        Arc::new(TaskControlCounters::default()),
-        noop_telemetry(),
-        4096,
-    ));
-    let header = submit_header(Some(TASK_ID), TaskTargetKind::Function, None);
-    let bytes = encode_task_submit_request_frame(&header, &[1, 2, 3]).expect("encode");
-    sink.handle(
-        &RuntimeSessionEpoch {
-            replica_id: "runtime-a".to_string(),
-            connection_generation: 1,
-        },
-        &bytes,
-    )
-    .expect("handle");
-    admission.wait_for_calls(1, notifier).await;
-    assert_eq!(admission.calls.load(Ordering::SeqCst), 1);
-    run.abort();
 }
 
 // ---------------------------------------------------------------------------
@@ -1220,451 +904,6 @@ fn control_rig_with_sessions(sessions: Vec<dispatch_harness::SessionState>) -> C
     }
 }
 
-#[tokio::test]
-async fn admission_accepted_writes_task_attempt_request() {
-    let rig = control_rig();
-    let now = rig.store.now().await.expect("now");
-    rig.store
-        .create(record(TASK_ID, corpus_image(), now, TaskState::Scheduled))
-        .await
-        .expect("create");
-    let claimed = claim_ready(rig.store.as_ref(), TASK_ID).await;
-    let decision = rig.admission.admit(&claimed).await;
-    assert_eq!(decision, AdmissionDecision::Accepted);
-    assert_eq!(rig.peer.record.lock().unwrap().attempts.len(), 1);
-    assert_eq!(rig.control.pending_attempt_count(), 1);
-    let request_id = &rig.peer.record.lock().unwrap().attempts[0];
-    assert!(rig.dispatcher.is_task_attempt(request_id));
-    assert_eq!(rig.dispatcher.pending_count(), 1);
-}
-
-#[tokio::test]
-async fn test_case_function_attempt_carries_capability_and_prefers_origin_session() {
-    let rig = control_rig_with_sessions(vec![
-        dispatch_harness::session_state("s1", "runtime-a", 1),
-        dispatch_harness::session_state("s2", "runtime-b", 2),
-    ]);
-    let now = rig.store.now().await.expect("now");
-    rig.store
-        .create(record(TASK_ID, corpus_image(), now, TaskState::Scheduled))
-        .await
-        .expect("create");
-    let mut claimed = claim_ready(rig.store.as_ref(), TASK_ID).await;
-    claimed.test_case = Some(TaskTestCaseAuthority {
-        test_case_capability: "test-case:cap-1".to_string(),
-        parent_request_id: "parent-request".to_string(),
-        origin_runtime_id: "runtime-b".to_string(),
-        origin_connection_generation: 2,
-    });
-    let decision = rig.admission.admit(&claimed).await;
-    assert_eq!(decision, AdmissionDecision::Accepted);
-    let peer = rig.peer.record.lock().unwrap();
-    assert_eq!(peer.attempts.len(), 1);
-    let header = &peer.attempt_headers[0];
-    assert!(header.test_effects_enabled);
-    assert_eq!(
-        header.test_case_capability.as_deref(),
-        Some("test-case:cap-1")
-    );
-    let request_id = &peer.attempts[0];
-    let lease = rig
-        .dispatcher
-        .pending_lease(request_id)
-        .expect("test task attempt must be pending");
-    assert_eq!(lease.session_epoch.replica_id, "runtime-b");
-    assert_eq!(lease.session_epoch.connection_generation, 2);
-}
-
-#[tokio::test]
-async fn test_case_function_attempt_without_origin_candidate_is_permanent_failure() {
-    let rig = control_rig();
-    let now = rig.store.now().await.expect("now");
-    rig.store
-        .create(record(TASK_ID, corpus_image(), now, TaskState::Scheduled))
-        .await
-        .expect("create");
-    let mut claimed = claim_ready(rig.store.as_ref(), TASK_ID).await;
-    claimed.test_case = Some(TaskTestCaseAuthority {
-        test_case_capability: "test-case:cap-1".to_string(),
-        parent_request_id: "parent-request".to_string(),
-        origin_runtime_id: "runtime-missing".to_string(),
-        origin_connection_generation: 9,
-    });
-    let decision = rig.admission.admit(&claimed).await;
-    assert!(
-        matches!(decision, AdmissionDecision::PermanentFailure { .. }),
-        "a test-case task with no origin connection must fail closed permanently: {decision:?}"
-    );
-    assert_eq!(rig.peer.record.lock().unwrap().attempts.len(), 0);
-}
-
-#[tokio::test]
-async fn test_case_submission_gate_observes_first_admission_outcome() {
-    let rig = control_rig();
-    let now = rig.store.now().await.expect("now");
-    rig.store
-        .create(record(TASK_ID, corpus_image(), now, TaskState::Scheduled))
-        .await
-        .expect("create");
-    let mut claimed = claim_ready(rig.store.as_ref(), TASK_ID).await;
-    claimed.test_case = Some(TaskTestCaseAuthority {
-        test_case_capability: "test-case:cap-1".to_string(),
-        parent_request_id: "parent-request".to_string(),
-        origin_runtime_id: "runtime-a".to_string(),
-        origin_connection_generation: 1,
-    });
-    let task_id = claimed.task_id.clone();
-    let admit = tokio::spawn({
-        let admission = Arc::clone(&rig.admission);
-        let record = claimed.clone();
-        async move { admission.admit(&record).await }
-    });
-    let outcome = rig
-        .control
-        .wait_for_first_admission(&task_id, Duration::from_secs(2))
-        .await;
-    let decision = admit.await.expect("admission task");
-    assert_eq!(decision, AdmissionDecision::Accepted);
-    assert_eq!(
-        outcome,
-        Some(FirstAdmissionOutcome::Accepted),
-        "the test-case submission gate must observe the first admitted attempt"
-    );
-}
-
-#[tokio::test]
-async fn admission_rejected_provable_when_image_not_admitted() {
-    let rig = control_rig();
-    let now = rig.store.now().await.expect("now");
-    let mut image = corpus_image();
-    // M4: the membership gate is release-pointer resolvability (build id),
-    // not the assembly identity. A frozen image whose deployment is not
-    // contained in the image source is provably unadmitted.
-    let mut deployment = image.deployment.clone();
-    deployment.deployment_artifact_identity = DeploymentArtifactIdentity::new(format!(
-        "skiff-deployment-artifact-v4:sha256:{}",
-        "f".repeat(64)
-    ));
-    image.deployment = deployment;
-    rig.store
-        .create(record(TASK_ID, image, now, TaskState::Scheduled))
-        .await
-        .expect("create");
-    let claimed = claim_ready(rig.store.as_ref(), TASK_ID).await;
-    let decision = rig.admission.admit(&claimed).await;
-    assert!(matches!(
-        decision,
-        AdmissionDecision::RejectedProvable { .. }
-    ));
-    assert_eq!(rig.peer.record.lock().unwrap().attempts.len(), 0);
-}
-
-#[tokio::test]
-async fn admission_settles_platform_failed_when_stale_image_exceeds_attempt_ceiling() {
-    let rig = control_rig();
-    let now = rig.store.now().await.expect("now");
-    let mut image = corpus_image();
-    // A deployment that stays unpublished across the whole backoff horizon is
-    // effectively dead: past the attempt-generation ceiling the admission
-    // seam must settle platform-failed instead of releasing for another
-    // backoff cycle (the router used to retry forever at the 30s cap).
-    let mut deployment = image.deployment.clone();
-    deployment.deployment_artifact_identity = DeploymentArtifactIdentity::new(format!(
-        "skiff-deployment-artifact-v4:sha256:{}",
-        "f".repeat(64)
-    ));
-    image.deployment = deployment;
-    rig.store
-        .create(record(TASK_ID, image, now, TaskState::Scheduled))
-        .await
-        .expect("create");
-    let mut claimed = claim_ready(rig.store.as_ref(), TASK_ID).await;
-    // Must stay above the admission seam's stale-image ceiling
-    // (STALE_IMAGE_TERMINATE_ATTEMPT_GENERATION in task/admission.rs).
-    claimed.attempt_generation = 600;
-    let decision = rig.admission.admit(&claimed).await;
-    assert!(matches!(
-        decision,
-        AdmissionDecision::PermanentFailure { .. }
-    ));
-    assert_eq!(rig.peer.record.lock().unwrap().attempts.len(), 0);
-}
-
-#[tokio::test]
-async fn admission_rejected_provable_when_no_runtime_candidate() {
-    let rig = control_rig();
-    let now = rig.store.now().await.expect("now");
-    rig.store
-        .create(record(TASK_ID, corpus_image(), now, TaskState::Scheduled))
-        .await
-        .expect("create");
-    let claimed = claim_ready(rig.store.as_ref(), TASK_ID).await;
-    // Remove the candidate session by closing it through the dispatcher
-    // observation so selection has nobody to admit.
-    rig.dispatcher.on_session_closed(&rig.session);
-    let decision = rig.admission.admit(&claimed).await;
-    assert!(matches!(
-        decision,
-        AdmissionDecision::RejectedProvable { .. }
-    ));
-}
-
-#[tokio::test]
-async fn admission_uncertain_when_control_plane_not_assembled() {
-    // A fresh control plane whose deferred dispatcher is not yet installed.
-    let store = Arc::new(MemoryTaskStore::new()) as Arc<dyn TaskStore>;
-    let clock = Arc::new(TestClock::default());
-    let counters = Arc::new(TaskControlCounters::default());
-    let deferred_scheduler: Arc<Mutex<Option<Arc<Scheduler>>>> = Arc::new(Mutex::new(None));
-    let deferred_dispatcher: Arc<Mutex<Option<Arc<RequestDispatcher>>>> =
-        Arc::new(Mutex::new(None));
-    let control = Arc::new(DurableTaskControl::new(
-        Arc::clone(&store),
-        deferred_scheduler,
-        Arc::clone(&deferred_dispatcher),
-        Arc::clone(&clock) as Arc<dyn Clock>,
-        Arc::clone(&counters),
-        noop_telemetry(),
-        Duration::from_millis(20),
-    ));
-    let (actor, actor_port, deferred_actor_sink) = actor_lane_stub();
-    let admission = RouterTaskAttemptAdmission::new(
-        Arc::new(FakeImageSource::new(corpus_image())),
-        Arc::clone(&deferred_dispatcher),
-        Arc::clone(&control),
-        Arc::clone(&clock) as Arc<dyn Clock>,
-        5_000,
-        Arc::clone(&counters),
-        noop_telemetry(),
-        actor,
-        actor_port as Arc<dyn TaskActorOwnerPort>,
-        30_000,
-        deferred_actor_sink,
-    );
-    let now = store.now().await.expect("now");
-    store
-        .create(record(TASK_ID, corpus_image(), now, TaskState::Scheduled))
-        .await
-        .expect("create");
-    let claimed = claim_ready(store.as_ref(), TASK_ID).await;
-    let decision = admission.admit(&claimed).await;
-    assert!(matches!(decision, AdmissionDecision::Uncertain { .. }));
-}
-
-#[tokio::test]
-async fn admission_permanent_failure_when_claim_has_no_lease() {
-    let rig = control_rig();
-    let now = rig.store.now().await.expect("now");
-    let mut not_claimed = record(TASK_ID, corpus_image(), now, TaskState::Ready);
-    not_claimed.state = TaskState::Leased;
-    let decision = rig.admission.admit(&not_claimed).await;
-    assert!(matches!(
-        decision,
-        AdmissionDecision::PermanentFailure { .. }
-    ));
-}
-
-// ---------------------------------------------------------------------------
-// Settlement mapping
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn settlement_maps_response_end_error_timeout_and_disconnect() {
-    let rig = control_rig();
-    // 1) response.end -> succeeded
-    rig.store
-        .create(record(
-            "task-end",
-            corpus_image(),
-            rig.store.now().await.expect("now"),
-            TaskState::Scheduled,
-        ))
-        .await
-        .expect("create");
-    rig.scheduler.scan_once().await;
-    assert_eq!(
-        status_kind(rig.store.as_ref(), "task-end").await,
-        TaskStatusKind::Running,
-        "scheduler claim + admission must lease the task"
-    );
-    let end_request = rig.peer.record.lock().unwrap().attempts.pop().unwrap();
-    let _ = rig.dispatcher.on_frame(
-        &rig.session,
-        skiff_router::dispatch::RuntimeResponseFrame::End {
-            request_id: end_request,
-            payload_present: false,
-            payload: Vec::new(),
-        },
-    );
-    wait_for_status(rig.store.as_ref(), "task-end", TaskStatusKind::Succeeded).await;
-    rig.scheduler.renew_active_leases().await;
-
-    // 2) response.error -> failed
-    rig.store
-        .create(record(
-            "task-error",
-            corpus_image(),
-            rig.store.now().await.expect("now"),
-            TaskState::Scheduled,
-        ))
-        .await
-        .expect("create");
-    rig.scheduler.scan_once().await;
-    let error_request = rig.peer.record.lock().unwrap().attempts.pop().unwrap();
-    let _ = rig.dispatcher.on_frame(
-        &rig.session,
-        skiff_router::dispatch::RuntimeResponseFrame::Error {
-            request_id: error_request,
-            error: skiff_runtime_transport::protocol::ValidatedResponseErrorFrame::Control(
-                skiff_runtime_transport::protocol::RuntimeErrorFramePayload {
-                    code: "targetFailed".to_string(),
-                    message: "boom".to_string(),
-                    status: None,
-                    details: None,
-                },
-            ),
-        },
-    );
-    wait_for_status(rig.store.as_ref(), "task-error", TaskStatusKind::Failed).await;
-    rig.scheduler.renew_active_leases().await;
-
-    // 3) ordinary request timeout -> failed (no rerun)
-    rig.store
-        .create(record(
-            "task-timeout",
-            corpus_image(),
-            rig.store.now().await.expect("now"),
-            TaskState::Scheduled,
-        ))
-        .await
-        .expect("create");
-    rig.scheduler.scan_once().await;
-    let timeout_request = rig.peer.record.lock().unwrap().attempts.pop().unwrap();
-    let _ = rig.dispatcher.timeout(&timeout_request);
-    wait_for_status(rig.store.as_ref(), "task-timeout", TaskStatusKind::Failed).await;
-    rig.scheduler.renew_active_leases().await;
-
-    // 4) disconnect -> no settlement; lease bookkeeping forgotten so store
-    //    lease expiry drives recovery.
-    rig.store
-        .create(record(
-            "task-disconnect",
-            corpus_image(),
-            rig.store.now().await.expect("now"),
-            TaskState::Scheduled,
-        ))
-        .await
-        .expect("create");
-    rig.scheduler.scan_once().await;
-    assert_eq!(rig.scheduler.active_lease_count(), 1);
-    let _ = rig.dispatcher.on_session_closed(&rig.session);
-    assert_eq!(
-        rig.scheduler.active_lease_count(),
-        0,
-        "disconnect must stop renewing so lease expiry recovers"
-    );
-    assert_eq!(
-        status_kind(rig.store.as_ref(), "task-disconnect").await,
-        TaskStatusKind::Running,
-        "uncertain terminal must not settle"
-    );
-    rig.worker.abort();
-}
-
-#[tokio::test]
-async fn scheduler_handles_all_four_admission_decisions_via_store() {
-    // Scheduler-level mapping of the seam decisions (RejectedProvable /
-    // Uncertain / PermanentFailure / Accepted) is exercised through the real
-    // scheduler + memory store with a scripted seam.
-    let store = Arc::new(MemoryTaskStore::new());
-    let store_dyn = Arc::clone(&store) as Arc<dyn TaskStore>;
-    let seam = Arc::new(ScriptedSeam::new());
-    let scheduler = Arc::new(Scheduler::new(
-        Arc::clone(&store_dyn),
-        Arc::clone(&seam) as Arc<dyn AttemptAdmission>,
-        Arc::new(skiff_task_control::SystemClock),
-        SchedulerConfig::default(),
-        RetryBackoffPolicy {
-            // Long backoff keeps the released task out of the next scans so
-            // each scan consumes exactly one scripted decision.
-            base: DurableDuration::from_millis(60_000),
-            max: DurableDuration::from_millis(60_000),
-            jitter_span: DurableDuration::from_millis(0),
-            jitter: Box::new(skiff_task_control::scheduler::FixedJitter(0)),
-        },
-    ));
-    let now = store.now().await.expect("now");
-
-    // Accepted -> active lease tracked.
-    store
-        .create(record(
-            "task-accepted",
-            corpus_image(),
-            now,
-            TaskState::Scheduled,
-        ))
-        .await
-        .expect("create");
-    seam.push(AdmissionDecision::Accepted);
-    scheduler.scan_once().await;
-    assert_eq!(scheduler.active_lease_count(), 1);
-
-    // RejectedProvable -> released back to ready with retry not-before.
-    store
-        .create(record(
-            "task-rejected",
-            corpus_image(),
-            now,
-            TaskState::Scheduled,
-        ))
-        .await
-        .expect("create");
-    seam.push(AdmissionDecision::RejectedProvable {
-        reason: "no runtime".to_string(),
-    });
-    scheduler.scan_once().await;
-    let rejected = find_record(&store, "task-rejected").await;
-    assert_eq!(rejected.state, TaskState::Ready);
-    assert!(rejected.retry_not_before.is_some());
-
-    // Uncertain -> no settle, no release; lease stays until expiry.
-    store
-        .create(record(
-            "task-uncertain",
-            corpus_image(),
-            now,
-            TaskState::Scheduled,
-        ))
-        .await
-        .expect("create");
-    seam.push(AdmissionDecision::Uncertain {
-        reason: "unknown".to_string(),
-    });
-    scheduler.scan_once().await;
-    let uncertain = find_record(&store, "task-uncertain").await;
-    assert_eq!(uncertain.state, TaskState::Leased);
-    assert_eq!(scheduler.active_lease_count(), 1);
-
-    // PermanentFailure -> settled platform-failed.
-    store
-        .create(record(
-            "task-permanent",
-            corpus_image(),
-            now,
-            TaskState::Scheduled,
-        ))
-        .await
-        .expect("create");
-    seam.push(AdmissionDecision::PermanentFailure {
-        reason: "bad record".to_string(),
-    });
-    scheduler.scan_once().await;
-    assert_eq!(
-        status_kind(store_dyn.as_ref(), "task-permanent").await,
-        TaskStatusKind::PlatformFailed
-    );
-}
-
 #[derive(Debug)]
 struct ScriptedSeam {
     decisions: Mutex<Vec<AdmissionDecision>>,
@@ -1694,304 +933,1072 @@ impl AttemptAdmission for ScriptedSeam {
 }
 
 // ---------------------------------------------------------------------------
-// Status / cancel projection
+// Submit handler
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn status_and_cancel_project_reference_kinds() {
-    let (store, _scheduler, sink, writer, _counters) = sink_rig();
-    let session = RuntimeSessionEpoch {
-        replica_id: "runtime-a".to_string(),
-        connection_generation: 1,
-    };
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    // scheduled -> running after claim -> succeeded after settle.
-    let now = store.now().await.expect("now");
-    store
-        .create(record(TASK_ID, corpus_image(), now, TaskState::Scheduled))
-        .await
-        .expect("create");
-    let request = status_request(&task_ref(TASK_ID));
-    let bytes = encode_task_status_request_frame(&request).expect("encode");
-    sink.handle(&session, &bytes).expect("status");
-    let response = poll_writer(&writer, 1).await;
-    let decoded = decode_task_status_response_frame(&response).expect("decode");
-    assert_eq!(decoded.status.kind, TaskStatusKindWire::Scheduled);
-
-    let claimed = claim_ready(store.as_ref(), TASK_ID).await;
-    let request = status_request(&task_ref(TASK_ID));
-    let bytes = encode_task_status_request_frame(&request).expect("encode");
-    sink.handle(&session, &bytes).expect("status");
-    let response = poll_writer(&writer, 2).await;
-    let decoded = decode_task_status_response_frame(&response).expect("decode");
-    assert_eq!(decoded.status.kind, TaskStatusKindWire::Running);
-
-    let now = store.now().await.expect("now");
-    store
-        .settle(SettleInput {
-            task_id: claimed.task_id.clone(),
-            lease_id: claimed
-                .active_lease
-                .as_ref()
-                .expect("lease")
-                .lease_id
-                .clone(),
-            terminal: TaskTerminal {
-                settled_at: now,
-                outcome: TaskOutcome::Succeeded,
+    #[tokio::test]
+    async fn submit_success_creates_record_and_returns_task_ref() {
+        let (store, _scheduler, sink, writer, counters) = sink_rig();
+        let header = submit_header(Some(TASK_ID), TaskTargetKind::Function, None);
+        let bytes = encode_task_submit_request_frame(&header, &[1, 2, 3]).expect("encode");
+        sink.handle(
+            &RuntimeSessionEpoch {
+                replica_id: "runtime-a".to_string(),
+                connection_generation: 1,
             },
-        })
+            &bytes,
+        )
+        .expect("handle");
+
+        let response = poll_writer(&writer, 1).await;
+        let decoded = decode_task_submit_response_frame(&response).expect("response");
+        assert_eq!(decoded.task_id, TASK_ID);
+        assert_eq!(decoded.task_ref.task_id(), TASK_ID);
+        assert_eq!(decoded.task_ref.owner(), SERVICE_ID);
+        assert_eq!(decoded.request_id, TASK_ID);
+
+        let records = store.records().await;
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].task_id.as_str(), TASK_ID);
+        assert_eq!(records[0].state, TaskState::Scheduled);
+        assert_eq!(
+            records[0].test_case, None,
+            "ordinary production submissions must not carry test-case authority"
+        );
+        assert_eq!(counters.submissions_accepted.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn submit_from_test_request_parent_captures_test_case_authority() {
+        let store = Arc::new(MemoryTaskStore::new());
+        let store_dyn = Arc::clone(&store) as Arc<dyn TaskStore>;
+        let scheduler = Arc::new(Scheduler::new(
+            Arc::clone(&store_dyn),
+            Arc::new(NoopAdmission),
+            Arc::new(skiff_task_control::SystemClock),
+            SchedulerConfig::default(),
+            RetryBackoffPolicy::default(),
+        ));
+        let writer = Arc::new(FakeWriter::default());
+        let counters = Arc::new(TaskControlCounters::default());
+        let session = RuntimeSessionEpoch {
+            replica_id: "runtime-a".to_string(),
+            connection_generation: 1,
+        };
+        let sink = Arc::new(DurableTaskFrameSink::new(
+            store_dyn,
+            Arc::clone(&scheduler),
+            Arc::new(FakeImageSource::new(corpus_image())),
+            Arc::new(ScriptedTaskSubmitParentResolver {
+                capability: Some("test-case:cap-1".to_string()),
+                caller_request_id: "parent-request".to_string(),
+                session: session.clone(),
+            }) as Arc<dyn TaskSubmitParentResolver>,
+            None,
+            Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
+            Arc::clone(&counters),
+            noop_telemetry(),
+            4096,
+        ));
+        let header = submit_header(Some(TASK_ID), TaskTargetKind::Function, None);
+        let bytes = encode_task_submit_request_frame(&header, &[1, 2, 3]).expect("encode");
+        sink.handle(&session, &bytes).expect("handle");
+        let _ = poll_writer(&writer, 1).await;
+
+        let records = store.records().await;
+        assert_eq!(records.len(), 1);
+        let authority = records[0]
+            .test_case
+            .as_ref()
+            .expect("test parent task must persist its test-case authority");
+        assert_eq!(authority.test_case_capability, "test-case:cap-1");
+        assert_eq!(authority.parent_request_id, "parent-request");
+        assert_eq!(authority.origin_runtime_id, "runtime-a");
+        assert_eq!(authority.origin_connection_generation, 1);
+    }
+
+    #[tokio::test]
+    async fn submit_actor_method_target_creates_durable_actor_record() {
+        let (_store, _scheduler, sink, writer, counters) = sink_rig();
+        let header = actor_method_submit_header(Some(TASK_ID));
+        sink.handle_submit(
+            RuntimeSessionEpoch {
+                replica_id: "runtime-a".to_string(),
+                connection_generation: 1,
+            },
+            header,
+            vec![1, 2, 3],
+        )
         .await
-        .expect("settle");
-    let request = status_request(&task_ref(TASK_ID));
-    let bytes = encode_task_status_request_frame(&request).expect("encode");
-    sink.handle(&session, &bytes).expect("status");
-    let response = poll_writer(&writer, 3).await;
-    let decoded = decode_task_status_response_frame(&response).expect("decode");
-    assert_eq!(decoded.status.kind, TaskStatusKindWire::Succeeded);
+        .expect("handler");
+        let response = poll_writer(&writer, 1).await;
+        let decoded = decode_task_submit_response_frame(&response).expect("response");
+        assert_eq!(decoded.task_id, TASK_ID);
+        assert_eq!(counters.submissions_accepted.load(Ordering::Relaxed), 1);
+        let records = _store.records().await;
+        assert_eq!(records.len(), 1);
+        match &records[0].target {
+            DetachedCallTarget::ActorMethod {
+                activation,
+                implementation,
+                method,
+                declaration_owner,
+                ..
+            } => {
+                assert_eq!(
+                    implementation.as_str(),
+                    "skiff-actor-implementation-v1:sha256:aaa"
+                );
+                assert_eq!(method.as_str(), "skiff-actor-method-v1:sha256:aaa");
+                assert_eq!(declaration_owner.actor_symbol, "Actor");
+                assert!(!activation.key.as_bytes().is_empty());
+                assert_eq!(activation.create_input.as_bytes(), b"[]");
+                assert!(activation.expected_type_plan_runtime.is_some());
+                assert!(matches!(
+                    activation.expected_type_plan.root,
+                    skiff_artifact_model::RecoverableExpectedTypeRoot::TypeRef { .. }
+                ));
+            }
+            other => panic!("expected actor-method target, got {other:?}"),
+        }
+    }
 
-    // Unknown task -> expired.
-    let request = status_request(&task_ref("missing-task"));
-    let bytes = encode_task_status_request_frame(&request).expect("encode");
-    sink.handle(&session, &bytes).expect("status");
-    let response = poll_writer(&writer, 4).await;
-    let decoded = decode_task_status_response_frame(&response).expect("decode");
-    assert_eq!(decoded.status.kind, TaskStatusKindWire::Expired);
+    #[tokio::test]
+    async fn submit_invalid_timing_and_quota_are_definite_rejections() {
+        let (_store, _scheduler, sink, writer, _counters) = sink_rig();
+        let header = submit_header(
+            Some(TASK_ID),
+            TaskTargetKind::Function,
+            Some(TaskSubmitTiming::At { utc_millis: -1 }),
+        );
+        let bytes = encode_task_submit_request_frame(&header, &[]).expect("encode");
+        sink.handle(
+            &RuntimeSessionEpoch {
+                replica_id: "runtime-a".to_string(),
+                connection_generation: 1,
+            },
+            &bytes,
+        )
+        .expect("handle");
+        let error = poll_writer(&writer, 1).await;
+        let decoded = decode_task_submit_error_frame(&error).expect("error");
+        assert_eq!(decoded.error.code, "invalidTiming");
 
-    // Cancel: ready -> canceled; leased -> alreadyStarted; terminal ->
-    // alreadyTerminal; missing -> expired.
-    let task_id = "task-cancel";
-    store
-        .create(record(task_id, corpus_image(), now, TaskState::Scheduled))
-        .await
-        .expect("create");
-    let _ = store
-        .scan_due(DueScanInput { limit: 100 })
-        .await
-        .expect("scan");
-    let request = cancel_request(&task_ref(task_id));
-    let bytes = encode_task_cancel_request_frame(&request).expect("encode");
-    sink.handle(&session, &bytes).expect("cancel");
-    let response = poll_writer(&writer, 5).await;
-    let decoded = decode_task_cancel_response_frame(&response).expect("decode");
-    assert_eq!(decoded.result.kind, TaskCancelResultKindWire::Canceled);
+        let oversized = sink_rig();
+        let writer = oversized.3;
+        let header = submit_header(Some("task-big"), TaskTargetKind::Function, None);
+        let bytes = encode_task_submit_request_frame(&header, &vec![7; 8192]).expect("encode");
+        oversized
+            .2
+            .handle(
+                &RuntimeSessionEpoch {
+                    replica_id: "runtime-a".to_string(),
+                    connection_generation: 1,
+                },
+                &bytes,
+            )
+            .expect("handle");
+        let error = poll_writer(&writer, 1).await;
+        let decoded = decode_task_submit_error_frame(&error).expect("error");
+        assert_eq!(decoded.error.code, "quotaExceeded");
+    }
 
-    let leased_task = "task-cancel-leased";
-    store
-        .create(record(
-            leased_task,
-            corpus_image(),
-            now,
-            TaskState::Scheduled,
-        ))
-        .await
-        .expect("create");
-    let _ = claim_ready(store.as_ref(), leased_task).await;
-    let request = cancel_request(&task_ref(leased_task));
-    let bytes = encode_task_cancel_request_frame(&request).expect("encode");
-    sink.handle(&session, &bytes).expect("cancel");
-    let response = poll_writer(&writer, 6).await;
-    let decoded = decode_task_cancel_response_frame(&response).expect("decode");
-    assert_eq!(
-        decoded.result.kind,
-        TaskCancelResultKindWire::AlreadyStarted
-    );
+    #[tokio::test]
+    async fn submit_same_task_id_is_idempotent() {
+        // Fixed clock: `created_at`/`due_at` derive from `store.now()`, so two
+        // submits must land on the exact same timestamp to produce an identical
+        // canonical record (the store's idempotent-create path).
+        let (store, _scheduler, sink, writer, _counters) =
+            sink_rig_with_clock(Arc::new(FixedTaskClock(1_700_000_000_000)));
+        let header = submit_header(Some(TASK_ID), TaskTargetKind::Function, None);
+        let bytes = encode_task_submit_request_frame(&header, &[1, 2, 3]).expect("encode");
+        let session = RuntimeSessionEpoch {
+            replica_id: "runtime-a".to_string(),
+            connection_generation: 1,
+        };
+        sink.handle(&session, &bytes).expect("first handle");
+        sink.handle(&session, &bytes).expect("second handle");
+        let first = poll_writer(&writer, 1).await;
+        let second = poll_writer(&writer, 2).await;
+        assert_eq!(
+            decode_task_submit_response_frame(&first)
+                .expect("response")
+                .task_id,
+            TASK_ID
+        );
+        assert_eq!(
+            decode_task_submit_response_frame(&second)
+                .expect("response")
+                .task_id,
+            TASK_ID
+        );
+        assert_eq!(store.records().await.len(), 1, "no second task");
+    }
 
-    let request = cancel_request(&task_ref(task_id));
-    let bytes = encode_task_cancel_request_frame(&request).expect("encode");
-    sink.handle(&session, &bytes).expect("cancel");
-    let response = poll_writer(&writer, 7).await;
-    let decoded = decode_task_cancel_response_frame(&response).expect("decode");
-    assert_eq!(
-        decoded.result.kind,
-        TaskCancelResultKindWire::AlreadyTerminal
-    );
+    #[tokio::test]
+    async fn submit_transient_create_queries_same_task_id() {
+        // Pure transient: no record visible -> storeUnavailable.
+        let (store, _scheduler, sink, writer, counters) = sink_rig();
+        store.fail_next_transient(1).await;
+        let header = submit_header(Some(TASK_ID), TaskTargetKind::Function, None);
+        let bytes = encode_task_submit_request_frame(&header, &[1, 2, 3]).expect("encode");
+        sink.handle(
+            &RuntimeSessionEpoch {
+                replica_id: "runtime-a".to_string(),
+                connection_generation: 1,
+            },
+            &bytes,
+        )
+        .expect("handle");
+        let error = poll_writer(&writer, 1).await;
+        let decoded = decode_task_submit_error_frame(&error).expect("error");
+        assert_eq!(decoded.error.code, "storeUnavailable");
+        assert_eq!(counters.submissions_transient.load(Ordering::Relaxed), 1);
 
-    let request = cancel_request(&task_ref("missing-cancel"));
-    let bytes = encode_task_cancel_request_frame(&request).expect("encode");
-    sink.handle(&session, &bytes).expect("cancel");
-    let response = poll_writer(&writer, 8).await;
-    let decoded = decode_task_cancel_response_frame(&response).expect("decode");
-    assert_eq!(decoded.result.kind, TaskCancelResultKindWire::Expired);
-}
+        // Ambiguous acceptance: create lost its response after commit; the same
+        // TaskId status query sees the durable record and returns success.
+        let ambiguous = Arc::new(AmbiguousCreateStore::new());
+        let ambiguous_dyn = Arc::clone(&ambiguous) as Arc<dyn TaskStore>;
+        let ambiguous_writer = Arc::new(FakeWriter::default());
+        let ambiguous_sink = Arc::new(DurableTaskFrameSink::new(
+            ambiguous_dyn.clone(),
+            Arc::new(Scheduler::new(
+                ambiguous_dyn.clone(),
+                Arc::new(NoopAdmission),
+                Arc::new(skiff_task_control::SystemClock),
+                SchedulerConfig::default(),
+                RetryBackoffPolicy::default(),
+            )),
+            Arc::new(FakeImageSource::new(corpus_image())),
+            Arc::new(NoopTaskSubmitParentResolver)
+                as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
+            None,
+            Arc::clone(&ambiguous_writer) as Arc<dyn WsSessionWriter>,
+            Arc::new(TaskControlCounters::default()),
+            noop_telemetry(),
+            4096,
+        ));
+        ambiguous.fail_next_create();
+        let bytes = encode_task_submit_request_frame(&header, &[1, 2, 3]).expect("encode");
+        ambiguous_sink
+            .handle(
+                &RuntimeSessionEpoch {
+                    replica_id: "runtime-a".to_string(),
+                    connection_generation: 1,
+                },
+                &bytes,
+            )
+            .expect("handle");
+        let response = poll_writer(&ambiguous_writer, 1).await;
+        let decoded = decode_task_submit_response_frame(&response).expect("response");
+        assert_eq!(decoded.task_id, TASK_ID);
+    }
 
-#[tokio::test]
-async fn status_and_cancel_transient_store_failure_is_store_unavailable_error() {
-    let store = Arc::new(ScriptedControlStore::new());
-    let store_dyn = Arc::clone(&store) as Arc<dyn TaskStore>;
-    let (scheduler, sink, writer, counters) = scripted_control_rig(store_dyn, Arc::clone(&store));
-    let session = RuntimeSessionEpoch {
-        replica_id: "runtime-a".to_string(),
-        connection_generation: 1,
-    };
+    // ---------------------------------------------------------------------------
+    // Immediate wake fast path
+    // ---------------------------------------------------------------------------
 
-    store.script_status(ControlQueryOutcome::Transient);
-    let bytes =
-        encode_task_status_request_frame(&status_request(&task_ref(TASK_ID))).expect("encode");
-    sink.handle(&session, &bytes).expect("status");
-    let error = poll_writer(&writer, 1).await;
-    let decoded = decode_task_status_error_frame(&error).expect("status error");
-    assert_eq!(
-        decoded.error.code,
-        TaskControlRejectionCode::StoreUnavailable.as_str()
-    );
-    assert_eq!(
-        counters.status_unavailable.load(Ordering::Relaxed),
-        1,
-        "transient status failure must increment statusUnavailable"
-    );
-    assert_eq!(counters.status_not_found.load(Ordering::Relaxed), 0);
+    #[tokio::test]
+    async fn immediate_submit_wakes_scheduler_without_waiting_for_scan() {
+        let store = Arc::new(MemoryTaskStore::new()) as Arc<dyn TaskStore>;
+        let admission = Arc::new(ScriptedAdmission::new());
+        let notifier = admission.install_notifier();
+        let scheduler = Arc::new(Scheduler::new(
+            Arc::clone(&store),
+            admission.clone(),
+            Arc::new(skiff_task_control::SystemClock),
+            SchedulerConfig {
+                scan_interval: Duration::from_secs(3600),
+                lease_duration: DurableDuration::from_millis(7_201_000),
+                ..SchedulerConfig::default()
+            },
+            RetryBackoffPolicy::default(),
+        ));
+        let run = tokio::spawn({
+            let scheduler = Arc::clone(&scheduler);
+            async move {
+                scheduler.run().await;
+            }
+        });
+        let writer = Arc::new(FakeWriter::default());
+        let sink = Arc::new(DurableTaskFrameSink::new(
+            Arc::clone(&store),
+            Arc::clone(&scheduler),
+            Arc::new(FakeImageSource::new(corpus_image())),
+            Arc::new(NoopTaskSubmitParentResolver)
+                as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
+            None,
+            Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
+            Arc::new(TaskControlCounters::default()),
+            noop_telemetry(),
+            4096,
+        ));
+        let header = submit_header(Some(TASK_ID), TaskTargetKind::Function, None);
+        let bytes = encode_task_submit_request_frame(&header, &[1, 2, 3]).expect("encode");
+        sink.handle(
+            &RuntimeSessionEpoch {
+                replica_id: "runtime-a".to_string(),
+                connection_generation: 1,
+            },
+            &bytes,
+        )
+        .expect("handle");
+        admission.wait_for_calls(1, notifier).await;
+        assert_eq!(admission.calls.load(Ordering::SeqCst), 1);
+        run.abort();
+    }
 
-    store.script_cancel(ControlQueryOutcome::Transient);
-    let bytes =
-        encode_task_cancel_request_frame(&cancel_request(&task_ref(TASK_ID))).expect("encode");
-    sink.handle(&session, &bytes).expect("cancel");
-    let error = poll_writer(&writer, 2).await;
-    let decoded = decode_task_cancel_error_frame(&error).expect("cancel error");
-    assert_eq!(
-        decoded.error.code,
-        TaskControlRejectionCode::StoreUnavailable.as_str()
-    );
-    assert_eq!(
-        counters.cancel_unavailable.load(Ordering::Relaxed),
-        1,
-        "transient cancel failure must increment cancelUnavailable"
-    );
-    assert_eq!(counters.cancel_not_found.load(Ordering::Relaxed), 0);
-    drop(scheduler);
-}
+    #[tokio::test]
+    async fn admission_accepted_writes_task_attempt_request() {
+        let rig = control_rig();
+        let now = rig.store.now().await.expect("now");
+        rig.store
+            .create(record(TASK_ID, corpus_image(), now, TaskState::Scheduled))
+            .await
+            .expect("create");
+        let claimed = claim_ready(rig.store.as_ref(), TASK_ID).await;
+        let decision = rig.admission.admit(&claimed).await;
+        assert_eq!(decision, AdmissionDecision::Accepted);
+        assert_eq!(rig.peer.record.lock().unwrap().attempts.len(), 1);
+        assert_eq!(rig.control.pending_attempt_count(), 1);
+        let request_id = &rig.peer.record.lock().unwrap().attempts[0];
+        assert!(rig.dispatcher.is_task_attempt(request_id));
+        assert_eq!(rig.dispatcher.pending_count(), 1);
+    }
 
-#[tokio::test]
-async fn status_and_cancel_store_not_found_is_not_found_error() {
-    let store = Arc::new(ScriptedControlStore::new());
-    let store_dyn = Arc::clone(&store) as Arc<dyn TaskStore>;
-    let (scheduler, sink, writer, counters) = scripted_control_rig(store_dyn, Arc::clone(&store));
-    let session = RuntimeSessionEpoch {
-        replica_id: "runtime-a".to_string(),
-        connection_generation: 1,
-    };
+    #[tokio::test]
+    async fn test_case_function_attempt_carries_capability_and_prefers_origin_session() {
+        let rig = control_rig_with_sessions(vec![
+            dispatch_harness::session_state("s1", "runtime-a", 1),
+            dispatch_harness::session_state("s2", "runtime-b", 2),
+        ]);
+        let now = rig.store.now().await.expect("now");
+        rig.store
+            .create(record(TASK_ID, corpus_image(), now, TaskState::Scheduled))
+            .await
+            .expect("create");
+        let mut claimed = claim_ready(rig.store.as_ref(), TASK_ID).await;
+        claimed.test_case = Some(TaskTestCaseAuthority {
+            test_case_capability: "test-case:cap-1".to_string(),
+            parent_request_id: "parent-request".to_string(),
+            origin_runtime_id: "runtime-b".to_string(),
+            origin_connection_generation: 2,
+        });
+        let decision = rig.admission.admit(&claimed).await;
+        assert_eq!(decision, AdmissionDecision::Accepted);
+        let peer = rig.peer.record.lock().unwrap();
+        assert_eq!(peer.attempts.len(), 1);
+        let header = &peer.attempt_headers[0];
+        assert!(header.test_effects_enabled);
+        assert_eq!(
+            header.test_case_capability.as_deref(),
+            Some("test-case:cap-1")
+        );
+        let request_id = &peer.attempts[0];
+        let lease = rig
+            .dispatcher
+            .pending_lease(request_id)
+            .expect("test task attempt must be pending");
+        assert_eq!(lease.session_epoch.replica_id, "runtime-b");
+        assert_eq!(lease.session_epoch.connection_generation, 2);
+    }
 
-    store.script_status(ControlQueryOutcome::NotFound);
-    let bytes =
-        encode_task_status_request_frame(&status_request(&task_ref(TASK_ID))).expect("encode");
-    sink.handle(&session, &bytes).expect("status");
-    let error = poll_writer(&writer, 1).await;
-    let decoded = decode_task_status_error_frame(&error).expect("status error");
-    assert_eq!(
-        decoded.error.code,
-        TaskControlRejectionCode::NotFound.as_str()
-    );
-    assert_eq!(counters.status_not_found.load(Ordering::Relaxed), 1);
-    assert_eq!(counters.status_unavailable.load(Ordering::Relaxed), 0);
+    #[tokio::test]
+    async fn test_case_function_attempt_without_origin_candidate_is_permanent_failure() {
+        let rig = control_rig();
+        let now = rig.store.now().await.expect("now");
+        rig.store
+            .create(record(TASK_ID, corpus_image(), now, TaskState::Scheduled))
+            .await
+            .expect("create");
+        let mut claimed = claim_ready(rig.store.as_ref(), TASK_ID).await;
+        claimed.test_case = Some(TaskTestCaseAuthority {
+            test_case_capability: "test-case:cap-1".to_string(),
+            parent_request_id: "parent-request".to_string(),
+            origin_runtime_id: "runtime-missing".to_string(),
+            origin_connection_generation: 9,
+        });
+        let decision = rig.admission.admit(&claimed).await;
+        assert!(
+            matches!(decision, AdmissionDecision::PermanentFailure { .. }),
+            "a test-case task with no origin connection must fail closed permanently: {decision:?}"
+        );
+        assert_eq!(rig.peer.record.lock().unwrap().attempts.len(), 0);
+    }
 
-    store.script_cancel(ControlQueryOutcome::NotFound);
-    let bytes =
-        encode_task_cancel_request_frame(&cancel_request(&task_ref(TASK_ID))).expect("encode");
-    sink.handle(&session, &bytes).expect("cancel");
-    let error = poll_writer(&writer, 2).await;
-    let decoded = decode_task_cancel_error_frame(&error).expect("cancel error");
-    assert_eq!(
-        decoded.error.code,
-        TaskControlRejectionCode::NotFound.as_str()
-    );
-    assert_eq!(counters.cancel_not_found.load(Ordering::Relaxed), 1);
-    assert_eq!(counters.cancel_unavailable.load(Ordering::Relaxed), 0);
-    drop(scheduler);
-}
+    #[tokio::test]
+    async fn test_case_submission_gate_observes_first_admission_outcome() {
+        let rig = control_rig();
+        let now = rig.store.now().await.expect("now");
+        rig.store
+            .create(record(TASK_ID, corpus_image(), now, TaskState::Scheduled))
+            .await
+            .expect("create");
+        let mut claimed = claim_ready(rig.store.as_ref(), TASK_ID).await;
+        claimed.test_case = Some(TaskTestCaseAuthority {
+            test_case_capability: "test-case:cap-1".to_string(),
+            parent_request_id: "parent-request".to_string(),
+            origin_runtime_id: "runtime-a".to_string(),
+            origin_connection_generation: 1,
+        });
+        let task_id = claimed.task_id.clone();
+        let admit = tokio::spawn({
+            let admission = Arc::clone(&rig.admission);
+            let record = claimed.clone();
+            async move { admission.admit(&record).await }
+        });
+        let outcome = rig
+            .control
+            .wait_for_first_admission(&task_id, Duration::from_secs(2))
+            .await;
+        let decision = admit.await.expect("admission task");
+        assert_eq!(decision, AdmissionDecision::Accepted);
+        assert_eq!(
+            outcome,
+            Some(FirstAdmissionOutcome::Accepted),
+            "the test-case submission gate must observe the first admitted attempt"
+        );
+    }
 
-#[tokio::test]
-async fn status_and_cancel_unknown_owner_is_not_found_error() {
-    let store = Arc::new(MemoryTaskStore::new());
-    let store_dyn = Arc::clone(&store) as Arc<dyn TaskStore>;
-    let scheduler = Arc::new(Scheduler::new(
-        store_dyn,
-        Arc::new(NoopAdmission),
-        Arc::new(skiff_task_control::SystemClock),
-        SchedulerConfig::default(),
-        RetryBackoffPolicy::default(),
-    ));
-    let writer = Arc::new(FakeWriter::default());
-    let counters = Arc::new(TaskControlCounters::default());
-    let sink = Arc::new(DurableTaskFrameSink::new(
-        Arc::clone(&store) as Arc<dyn TaskStore>,
-        Arc::clone(&scheduler),
-        Arc::new(FakeImageSource {
-            image: corpus_image(),
-            services: Vec::new(),
-        }),
-        Arc::new(NoopTaskSubmitParentResolver)
-            as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
-        None,
-        Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
-        Arc::clone(&counters),
-        noop_telemetry(),
-        4096,
-    ));
-    let session = RuntimeSessionEpoch {
-        replica_id: "runtime-a".to_string(),
-        connection_generation: 1,
-    };
+    #[tokio::test]
+    async fn admission_rejected_provable_when_image_not_admitted() {
+        let rig = control_rig();
+        let now = rig.store.now().await.expect("now");
+        let mut image = corpus_image();
+        // M4: the membership gate is release-pointer resolvability (build id),
+        // not the assembly identity. A frozen image whose deployment is not
+        // contained in the image source is provably unadmitted.
+        let mut deployment = image.deployment.clone();
+        deployment.deployment_artifact_identity = DeploymentArtifactIdentity::new(format!(
+            "skiff-deployment-artifact-v4:sha256:{}",
+            "f".repeat(64)
+        ));
+        image.deployment = deployment;
+        rig.store
+            .create(record(TASK_ID, image, now, TaskState::Scheduled))
+            .await
+            .expect("create");
+        let claimed = claim_ready(rig.store.as_ref(), TASK_ID).await;
+        let decision = rig.admission.admit(&claimed).await;
+        assert!(matches!(
+            decision,
+            AdmissionDecision::RejectedProvable { .. }
+        ));
+        assert_eq!(rig.peer.record.lock().unwrap().attempts.len(), 0);
+    }
 
-    // The taskRef owner is not in the image source's known services.
-    let bytes =
-        encode_task_status_request_frame(&status_request(&task_ref(TASK_ID))).expect("encode");
-    sink.handle(&session, &bytes).expect("status");
-    let error = poll_writer(&writer, 1).await;
-    let decoded = decode_task_status_error_frame(&error).expect("status error");
-    assert_eq!(
-        decoded.error.code,
-        TaskControlRejectionCode::NotFound.as_str()
-    );
-    assert_eq!(counters.status_not_found.load(Ordering::Relaxed), 1);
-    assert_eq!(counters.status_expired.load(Ordering::Relaxed), 0);
+    #[tokio::test]
+    async fn admission_settles_platform_failed_when_stale_image_exceeds_attempt_ceiling() {
+        let rig = control_rig();
+        let now = rig.store.now().await.expect("now");
+        let mut image = corpus_image();
+        // A deployment that stays unpublished across the whole backoff horizon is
+        // effectively dead: past the attempt-generation ceiling the admission
+        // seam must settle platform-failed instead of releasing for another
+        // backoff cycle (the router used to retry forever at the 30s cap).
+        let mut deployment = image.deployment.clone();
+        deployment.deployment_artifact_identity = DeploymentArtifactIdentity::new(format!(
+            "skiff-deployment-artifact-v4:sha256:{}",
+            "f".repeat(64)
+        ));
+        image.deployment = deployment;
+        rig.store
+            .create(record(TASK_ID, image, now, TaskState::Scheduled))
+            .await
+            .expect("create");
+        let mut claimed = claim_ready(rig.store.as_ref(), TASK_ID).await;
+        // Must stay above the admission seam's stale-image ceiling
+        // (STALE_IMAGE_TERMINATE_ATTEMPT_GENERATION in task/admission.rs).
+        claimed.attempt_generation = 600;
+        let decision = rig.admission.admit(&claimed).await;
+        assert!(matches!(
+            decision,
+            AdmissionDecision::PermanentFailure { .. }
+        ));
+        assert_eq!(rig.peer.record.lock().unwrap().attempts.len(), 0);
+    }
 
-    let bytes =
-        encode_task_cancel_request_frame(&cancel_request(&task_ref(TASK_ID))).expect("encode");
-    sink.handle(&session, &bytes).expect("cancel");
-    let error = poll_writer(&writer, 2).await;
-    let decoded = decode_task_cancel_error_frame(&error).expect("cancel error");
-    assert_eq!(
-        decoded.error.code,
-        TaskControlRejectionCode::NotFound.as_str()
-    );
-    assert_eq!(counters.cancel_not_found.load(Ordering::Relaxed), 1);
-    assert_eq!(counters.cancel_expired.load(Ordering::Relaxed), 0);
-    drop(scheduler);
-}
+    #[tokio::test]
+    async fn admission_rejected_provable_when_no_runtime_candidate() {
+        let rig = control_rig();
+        let now = rig.store.now().await.expect("now");
+        rig.store
+            .create(record(TASK_ID, corpus_image(), now, TaskState::Scheduled))
+            .await
+            .expect("create");
+        let claimed = claim_ready(rig.store.as_ref(), TASK_ID).await;
+        // Remove the candidate session by closing it through the dispatcher
+        // observation so selection has nobody to admit.
+        rig.dispatcher.on_session_closed(&rig.session);
+        let decision = rig.admission.admit(&claimed).await;
+        assert!(matches!(
+            decision,
+            AdmissionDecision::RejectedProvable { .. }
+        ));
+    }
 
-#[tokio::test]
-async fn status_retention_expired_stays_stable_expired_response() {
-    let (store, _scheduler, sink, writer, counters) = sink_rig();
-    let session = RuntimeSessionEpoch {
-        replica_id: "runtime-a".to_string(),
-        connection_generation: 1,
-    };
-    let now = store.now().await.expect("now");
-    let retention_ms = 30 * 24 * 60 * 60 * 1000i64;
-    let past = DurableUtcTimestamp::from_millis((now.millis() - retention_ms - 1).max(0));
-    store
-        .create(record(
-            "task-expired",
-            corpus_image(),
-            past,
-            TaskState::Scheduled,
-        ))
-        .await
-        .expect("create");
+    #[tokio::test]
+    async fn admission_uncertain_when_control_plane_not_assembled() {
+        // A fresh control plane whose deferred dispatcher is not yet installed.
+        let store = Arc::new(MemoryTaskStore::new()) as Arc<dyn TaskStore>;
+        let clock = Arc::new(TestClock::default());
+        let counters = Arc::new(TaskControlCounters::default());
+        let deferred_scheduler: Arc<Mutex<Option<Arc<Scheduler>>>> = Arc::new(Mutex::new(None));
+        let deferred_dispatcher: Arc<Mutex<Option<Arc<RequestDispatcher>>>> =
+            Arc::new(Mutex::new(None));
+        let control = Arc::new(DurableTaskControl::new(
+            Arc::clone(&store),
+            deferred_scheduler,
+            Arc::clone(&deferred_dispatcher),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+            Arc::clone(&counters),
+            noop_telemetry(),
+            Duration::from_millis(20),
+        ));
+        let (actor, actor_port, deferred_actor_sink) = actor_lane_stub();
+        let admission = RouterTaskAttemptAdmission::new(
+            Arc::new(FakeImageSource::new(corpus_image())),
+            Arc::clone(&deferred_dispatcher),
+            Arc::clone(&control),
+            Arc::clone(&clock) as Arc<dyn Clock>,
+            5_000,
+            Arc::clone(&counters),
+            noop_telemetry(),
+            actor,
+            actor_port as Arc<dyn TaskActorOwnerPort>,
+            30_000,
+            deferred_actor_sink,
+        );
+        let now = store.now().await.expect("now");
+        store
+            .create(record(TASK_ID, corpus_image(), now, TaskState::Scheduled))
+            .await
+            .expect("create");
+        let claimed = claim_ready(store.as_ref(), TASK_ID).await;
+        let decision = admission.admit(&claimed).await;
+        assert!(matches!(decision, AdmissionDecision::Uncertain { .. }));
+    }
 
-    let bytes = encode_task_status_request_frame(&status_request(&task_ref("task-expired")))
-        .expect("encode");
-    sink.handle(&session, &bytes).expect("status");
-    let response = poll_writer(&writer, 1).await;
-    let decoded = decode_task_status_response_frame(&response).expect("status response");
-    assert_eq!(
-        decoded.status.kind,
-        TaskStatusKindWire::Expired,
-        "retention expiry must stay a stable expired response"
-    );
-    assert_eq!(counters.status_expired.load(Ordering::Relaxed), 1);
-    assert_eq!(counters.status_not_found.load(Ordering::Relaxed), 0);
-    assert_eq!(counters.status_unavailable.load(Ordering::Relaxed), 0);
+    #[tokio::test]
+    async fn admission_permanent_failure_when_claim_has_no_lease() {
+        let rig = control_rig();
+        let now = rig.store.now().await.expect("now");
+        let mut not_claimed = record(TASK_ID, corpus_image(), now, TaskState::Ready);
+        not_claimed.state = TaskState::Leased;
+        let decision = rig.admission.admit(&not_claimed).await;
+        assert!(matches!(
+            decision,
+            AdmissionDecision::PermanentFailure { .. }
+        ));
+    }
+
+    // ---------------------------------------------------------------------------
+    // Settlement mapping
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn settlement_maps_response_end_error_timeout_and_disconnect() {
+        let rig = control_rig();
+        // 1) response.end -> succeeded
+        rig.store
+            .create(record(
+                "task-end",
+                corpus_image(),
+                rig.store.now().await.expect("now"),
+                TaskState::Scheduled,
+            ))
+            .await
+            .expect("create");
+        rig.scheduler.scan_once().await;
+        assert_eq!(
+            status_kind(rig.store.as_ref(), "task-end").await,
+            TaskStatusKind::Running,
+            "scheduler claim + admission must lease the task"
+        );
+        let end_request = rig.peer.record.lock().unwrap().attempts.pop().unwrap();
+        let _ = rig.dispatcher.on_frame(
+            &rig.session,
+            skiff_router::dispatch::RuntimeResponseFrame::End {
+                request_id: end_request,
+                payload_present: false,
+                payload: Vec::new(),
+            },
+        );
+        wait_for_status(rig.store.as_ref(), "task-end", TaskStatusKind::Succeeded).await;
+        rig.scheduler.renew_active_leases().await;
+
+        // 2) response.error -> failed
+        rig.store
+            .create(record(
+                "task-error",
+                corpus_image(),
+                rig.store.now().await.expect("now"),
+                TaskState::Scheduled,
+            ))
+            .await
+            .expect("create");
+        rig.scheduler.scan_once().await;
+        let error_request = rig.peer.record.lock().unwrap().attempts.pop().unwrap();
+        let _ = rig.dispatcher.on_frame(
+            &rig.session,
+            skiff_router::dispatch::RuntimeResponseFrame::Error {
+                request_id: error_request,
+                error: skiff_runtime_transport::protocol::ValidatedResponseErrorFrame::Control(
+                    skiff_runtime_transport::protocol::RuntimeErrorFramePayload {
+                        code: "targetFailed".to_string(),
+                        message: "boom".to_string(),
+                        status: None,
+                        details: None,
+                    },
+                ),
+            },
+        );
+        wait_for_status(rig.store.as_ref(), "task-error", TaskStatusKind::Failed).await;
+        rig.scheduler.renew_active_leases().await;
+
+        // 3) ordinary request timeout -> failed (no rerun)
+        rig.store
+            .create(record(
+                "task-timeout",
+                corpus_image(),
+                rig.store.now().await.expect("now"),
+                TaskState::Scheduled,
+            ))
+            .await
+            .expect("create");
+        rig.scheduler.scan_once().await;
+        let timeout_request = rig.peer.record.lock().unwrap().attempts.pop().unwrap();
+        let _ = rig.dispatcher.timeout(&timeout_request);
+        wait_for_status(rig.store.as_ref(), "task-timeout", TaskStatusKind::Failed).await;
+        rig.scheduler.renew_active_leases().await;
+
+        // 4) disconnect -> no settlement; lease bookkeeping forgotten so store
+        //    lease expiry drives recovery.
+        rig.store
+            .create(record(
+                "task-disconnect",
+                corpus_image(),
+                rig.store.now().await.expect("now"),
+                TaskState::Scheduled,
+            ))
+            .await
+            .expect("create");
+        rig.scheduler.scan_once().await;
+        assert_eq!(rig.scheduler.active_lease_count(), 1);
+        let _ = rig.dispatcher.on_session_closed(&rig.session);
+        assert_eq!(
+            rig.scheduler.active_lease_count(),
+            0,
+            "disconnect must stop renewing so lease expiry recovers"
+        );
+        assert_eq!(
+            status_kind(rig.store.as_ref(), "task-disconnect").await,
+            TaskStatusKind::Running,
+            "uncertain terminal must not settle"
+        );
+        rig.worker.abort();
+    }
+
+    #[tokio::test]
+    async fn scheduler_handles_all_four_admission_decisions_via_store() {
+        // Scheduler-level mapping of the seam decisions (RejectedProvable /
+        // Uncertain / PermanentFailure / Accepted) is exercised through the real
+        // scheduler + memory store with a scripted seam.
+        let store = Arc::new(MemoryTaskStore::new());
+        let store_dyn = Arc::clone(&store) as Arc<dyn TaskStore>;
+        let seam = Arc::new(ScriptedSeam::new());
+        let scheduler = Arc::new(Scheduler::new(
+            Arc::clone(&store_dyn),
+            Arc::clone(&seam) as Arc<dyn AttemptAdmission>,
+            Arc::new(skiff_task_control::SystemClock),
+            SchedulerConfig::default(),
+            RetryBackoffPolicy {
+                // Long backoff keeps the released task out of the next scans so
+                // each scan consumes exactly one scripted decision.
+                base: DurableDuration::from_millis(60_000),
+                max: DurableDuration::from_millis(60_000),
+                jitter_span: DurableDuration::from_millis(0),
+                jitter: Box::new(skiff_task_control::scheduler::FixedJitter(0)),
+            },
+        ));
+        let now = store.now().await.expect("now");
+
+        // Accepted -> active lease tracked.
+        store
+            .create(record(
+                "task-accepted",
+                corpus_image(),
+                now,
+                TaskState::Scheduled,
+            ))
+            .await
+            .expect("create");
+        seam.push(AdmissionDecision::Accepted);
+        scheduler.scan_once().await;
+        assert_eq!(scheduler.active_lease_count(), 1);
+
+        // RejectedProvable -> released back to ready with retry not-before.
+        store
+            .create(record(
+                "task-rejected",
+                corpus_image(),
+                now,
+                TaskState::Scheduled,
+            ))
+            .await
+            .expect("create");
+        seam.push(AdmissionDecision::RejectedProvable {
+            reason: "no runtime".to_string(),
+        });
+        scheduler.scan_once().await;
+        let rejected = find_record(&store, "task-rejected").await;
+        assert_eq!(rejected.state, TaskState::Ready);
+        assert!(rejected.retry_not_before.is_some());
+
+        // Uncertain -> no settle, no release; lease stays until expiry.
+        store
+            .create(record(
+                "task-uncertain",
+                corpus_image(),
+                now,
+                TaskState::Scheduled,
+            ))
+            .await
+            .expect("create");
+        seam.push(AdmissionDecision::Uncertain {
+            reason: "unknown".to_string(),
+        });
+        scheduler.scan_once().await;
+        let uncertain = find_record(&store, "task-uncertain").await;
+        assert_eq!(uncertain.state, TaskState::Leased);
+        assert_eq!(scheduler.active_lease_count(), 1);
+
+        // PermanentFailure -> settled platform-failed.
+        store
+            .create(record(
+                "task-permanent",
+                corpus_image(),
+                now,
+                TaskState::Scheduled,
+            ))
+            .await
+            .expect("create");
+        seam.push(AdmissionDecision::PermanentFailure {
+            reason: "bad record".to_string(),
+        });
+        scheduler.scan_once().await;
+        assert_eq!(
+            status_kind(store_dyn.as_ref(), "task-permanent").await,
+            TaskStatusKind::PlatformFailed
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Status / cancel projection
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn status_and_cancel_project_reference_kinds() {
+        let (store, _scheduler, sink, writer, _counters) = sink_rig();
+        let session = RuntimeSessionEpoch {
+            replica_id: "runtime-a".to_string(),
+            connection_generation: 1,
+        };
+
+        // scheduled -> running after claim -> succeeded after settle.
+        let now = store.now().await.expect("now");
+        store
+            .create(record(TASK_ID, corpus_image(), now, TaskState::Scheduled))
+            .await
+            .expect("create");
+        let request = status_request(&task_ref(TASK_ID));
+        let bytes = encode_task_status_request_frame(&request).expect("encode");
+        sink.handle(&session, &bytes).expect("status");
+        let response = poll_writer(&writer, 1).await;
+        let decoded = decode_task_status_response_frame(&response).expect("decode");
+        assert_eq!(decoded.status.kind, TaskStatusKindWire::Scheduled);
+
+        let claimed = claim_ready(store.as_ref(), TASK_ID).await;
+        let request = status_request(&task_ref(TASK_ID));
+        let bytes = encode_task_status_request_frame(&request).expect("encode");
+        sink.handle(&session, &bytes).expect("status");
+        let response = poll_writer(&writer, 2).await;
+        let decoded = decode_task_status_response_frame(&response).expect("decode");
+        assert_eq!(decoded.status.kind, TaskStatusKindWire::Running);
+
+        let now = store.now().await.expect("now");
+        store
+            .settle(SettleInput {
+                task_id: claimed.task_id.clone(),
+                lease_id: claimed
+                    .active_lease
+                    .as_ref()
+                    .expect("lease")
+                    .lease_id
+                    .clone(),
+                terminal: TaskTerminal {
+                    settled_at: now,
+                    outcome: TaskOutcome::Succeeded,
+                },
+            })
+            .await
+            .expect("settle");
+        let request = status_request(&task_ref(TASK_ID));
+        let bytes = encode_task_status_request_frame(&request).expect("encode");
+        sink.handle(&session, &bytes).expect("status");
+        let response = poll_writer(&writer, 3).await;
+        let decoded = decode_task_status_response_frame(&response).expect("decode");
+        assert_eq!(decoded.status.kind, TaskStatusKindWire::Succeeded);
+
+        // Unknown task -> expired.
+        let request = status_request(&task_ref("missing-task"));
+        let bytes = encode_task_status_request_frame(&request).expect("encode");
+        sink.handle(&session, &bytes).expect("status");
+        let response = poll_writer(&writer, 4).await;
+        let decoded = decode_task_status_response_frame(&response).expect("decode");
+        assert_eq!(decoded.status.kind, TaskStatusKindWire::Expired);
+
+        // Cancel: ready -> canceled; leased -> alreadyStarted; terminal ->
+        // alreadyTerminal; missing -> expired.
+        let task_id = "task-cancel";
+        store
+            .create(record(task_id, corpus_image(), now, TaskState::Scheduled))
+            .await
+            .expect("create");
+        let _ = store
+            .scan_due(DueScanInput { limit: 100 })
+            .await
+            .expect("scan");
+        let request = cancel_request(&task_ref(task_id));
+        let bytes = encode_task_cancel_request_frame(&request).expect("encode");
+        sink.handle(&session, &bytes).expect("cancel");
+        let response = poll_writer(&writer, 5).await;
+        let decoded = decode_task_cancel_response_frame(&response).expect("decode");
+        assert_eq!(decoded.result.kind, TaskCancelResultKindWire::Canceled);
+
+        let leased_task = "task-cancel-leased";
+        store
+            .create(record(
+                leased_task,
+                corpus_image(),
+                now,
+                TaskState::Scheduled,
+            ))
+            .await
+            .expect("create");
+        let _ = claim_ready(store.as_ref(), leased_task).await;
+        let request = cancel_request(&task_ref(leased_task));
+        let bytes = encode_task_cancel_request_frame(&request).expect("encode");
+        sink.handle(&session, &bytes).expect("cancel");
+        let response = poll_writer(&writer, 6).await;
+        let decoded = decode_task_cancel_response_frame(&response).expect("decode");
+        assert_eq!(
+            decoded.result.kind,
+            TaskCancelResultKindWire::AlreadyStarted
+        );
+
+        let request = cancel_request(&task_ref(task_id));
+        let bytes = encode_task_cancel_request_frame(&request).expect("encode");
+        sink.handle(&session, &bytes).expect("cancel");
+        let response = poll_writer(&writer, 7).await;
+        let decoded = decode_task_cancel_response_frame(&response).expect("decode");
+        assert_eq!(
+            decoded.result.kind,
+            TaskCancelResultKindWire::AlreadyTerminal
+        );
+
+        let request = cancel_request(&task_ref("missing-cancel"));
+        let bytes = encode_task_cancel_request_frame(&request).expect("encode");
+        sink.handle(&session, &bytes).expect("cancel");
+        let response = poll_writer(&writer, 8).await;
+        let decoded = decode_task_cancel_response_frame(&response).expect("decode");
+        assert_eq!(decoded.result.kind, TaskCancelResultKindWire::Expired);
+    }
+
+    #[tokio::test]
+    async fn status_and_cancel_transient_store_failure_is_store_unavailable_error() {
+        let store = Arc::new(ScriptedControlStore::new());
+        let store_dyn = Arc::clone(&store) as Arc<dyn TaskStore>;
+        let (scheduler, sink, writer, counters) =
+            scripted_control_rig(store_dyn, Arc::clone(&store));
+        let session = RuntimeSessionEpoch {
+            replica_id: "runtime-a".to_string(),
+            connection_generation: 1,
+        };
+
+        store.script_status(ControlQueryOutcome::Transient);
+        let bytes =
+            encode_task_status_request_frame(&status_request(&task_ref(TASK_ID))).expect("encode");
+        sink.handle(&session, &bytes).expect("status");
+        let error = poll_writer(&writer, 1).await;
+        let decoded = decode_task_status_error_frame(&error).expect("status error");
+        assert_eq!(
+            decoded.error.code,
+            TaskControlRejectionCode::StoreUnavailable.as_str()
+        );
+        assert_eq!(
+            counters.status_unavailable.load(Ordering::Relaxed),
+            1,
+            "transient status failure must increment statusUnavailable"
+        );
+        assert_eq!(counters.status_not_found.load(Ordering::Relaxed), 0);
+
+        store.script_cancel(ControlQueryOutcome::Transient);
+        let bytes =
+            encode_task_cancel_request_frame(&cancel_request(&task_ref(TASK_ID))).expect("encode");
+        sink.handle(&session, &bytes).expect("cancel");
+        let error = poll_writer(&writer, 2).await;
+        let decoded = decode_task_cancel_error_frame(&error).expect("cancel error");
+        assert_eq!(
+            decoded.error.code,
+            TaskControlRejectionCode::StoreUnavailable.as_str()
+        );
+        assert_eq!(
+            counters.cancel_unavailable.load(Ordering::Relaxed),
+            1,
+            "transient cancel failure must increment cancelUnavailable"
+        );
+        assert_eq!(counters.cancel_not_found.load(Ordering::Relaxed), 0);
+        drop(scheduler);
+    }
+
+    #[tokio::test]
+    async fn status_and_cancel_store_not_found_is_not_found_error() {
+        let store = Arc::new(ScriptedControlStore::new());
+        let store_dyn = Arc::clone(&store) as Arc<dyn TaskStore>;
+        let (scheduler, sink, writer, counters) =
+            scripted_control_rig(store_dyn, Arc::clone(&store));
+        let session = RuntimeSessionEpoch {
+            replica_id: "runtime-a".to_string(),
+            connection_generation: 1,
+        };
+
+        store.script_status(ControlQueryOutcome::NotFound);
+        let bytes =
+            encode_task_status_request_frame(&status_request(&task_ref(TASK_ID))).expect("encode");
+        sink.handle(&session, &bytes).expect("status");
+        let error = poll_writer(&writer, 1).await;
+        let decoded = decode_task_status_error_frame(&error).expect("status error");
+        assert_eq!(
+            decoded.error.code,
+            TaskControlRejectionCode::NotFound.as_str()
+        );
+        assert_eq!(counters.status_not_found.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.status_unavailable.load(Ordering::Relaxed), 0);
+
+        store.script_cancel(ControlQueryOutcome::NotFound);
+        let bytes =
+            encode_task_cancel_request_frame(&cancel_request(&task_ref(TASK_ID))).expect("encode");
+        sink.handle(&session, &bytes).expect("cancel");
+        let error = poll_writer(&writer, 2).await;
+        let decoded = decode_task_cancel_error_frame(&error).expect("cancel error");
+        assert_eq!(
+            decoded.error.code,
+            TaskControlRejectionCode::NotFound.as_str()
+        );
+        assert_eq!(counters.cancel_not_found.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.cancel_unavailable.load(Ordering::Relaxed), 0);
+        drop(scheduler);
+    }
+
+    #[tokio::test]
+    async fn status_and_cancel_unknown_owner_is_not_found_error() {
+        let store = Arc::new(MemoryTaskStore::new());
+        let store_dyn = Arc::clone(&store) as Arc<dyn TaskStore>;
+        let scheduler = Arc::new(Scheduler::new(
+            store_dyn,
+            Arc::new(NoopAdmission),
+            Arc::new(skiff_task_control::SystemClock),
+            SchedulerConfig::default(),
+            RetryBackoffPolicy::default(),
+        ));
+        let writer = Arc::new(FakeWriter::default());
+        let counters = Arc::new(TaskControlCounters::default());
+        let sink = Arc::new(DurableTaskFrameSink::new(
+            Arc::clone(&store) as Arc<dyn TaskStore>,
+            Arc::clone(&scheduler),
+            Arc::new(FakeImageSource {
+                image: corpus_image(),
+                services: Vec::new(),
+            }),
+            Arc::new(NoopTaskSubmitParentResolver)
+                as Arc<dyn skiff_router::task::TaskSubmitParentResolver>,
+            None,
+            Arc::clone(&writer) as Arc<dyn WsSessionWriter>,
+            Arc::clone(&counters),
+            noop_telemetry(),
+            4096,
+        ));
+        let session = RuntimeSessionEpoch {
+            replica_id: "runtime-a".to_string(),
+            connection_generation: 1,
+        };
+
+        // The taskRef owner is not in the image source's known services.
+        let bytes =
+            encode_task_status_request_frame(&status_request(&task_ref(TASK_ID))).expect("encode");
+        sink.handle(&session, &bytes).expect("status");
+        let error = poll_writer(&writer, 1).await;
+        let decoded = decode_task_status_error_frame(&error).expect("status error");
+        assert_eq!(
+            decoded.error.code,
+            TaskControlRejectionCode::NotFound.as_str()
+        );
+        assert_eq!(counters.status_not_found.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.status_expired.load(Ordering::Relaxed), 0);
+
+        let bytes =
+            encode_task_cancel_request_frame(&cancel_request(&task_ref(TASK_ID))).expect("encode");
+        sink.handle(&session, &bytes).expect("cancel");
+        let error = poll_writer(&writer, 2).await;
+        let decoded = decode_task_cancel_error_frame(&error).expect("cancel error");
+        assert_eq!(
+            decoded.error.code,
+            TaskControlRejectionCode::NotFound.as_str()
+        );
+        assert_eq!(counters.cancel_not_found.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.cancel_expired.load(Ordering::Relaxed), 0);
+        drop(scheduler);
+    }
+
+    #[tokio::test]
+    async fn status_retention_expired_stays_stable_expired_response() {
+        let (store, _scheduler, sink, writer, counters) = sink_rig();
+        let session = RuntimeSessionEpoch {
+            replica_id: "runtime-a".to_string(),
+            connection_generation: 1,
+        };
+        let now = store.now().await.expect("now");
+        let retention_ms = 30 * 24 * 60 * 60 * 1000i64;
+        let past = DurableUtcTimestamp::from_millis((now.millis() - retention_ms - 1).max(0));
+        store
+            .create(record(
+                "task-expired",
+                corpus_image(),
+                past,
+                TaskState::Scheduled,
+            ))
+            .await
+            .expect("create");
+
+        let bytes = encode_task_status_request_frame(&status_request(&task_ref("task-expired")))
+            .expect("encode");
+        sink.handle(&session, &bytes).expect("status");
+        let response = poll_writer(&writer, 1).await;
+        let decoded = decode_task_status_response_frame(&response).expect("status response");
+        assert_eq!(
+            decoded.status.kind,
+            TaskStatusKindWire::Expired,
+            "retention expiry must stay a stable expired response"
+        );
+        assert_eq!(counters.status_expired.load(Ordering::Relaxed), 1);
+        assert_eq!(counters.status_not_found.load(Ordering::Relaxed), 0);
+        assert_eq!(counters.status_unavailable.load(Ordering::Relaxed), 0);
+    }
 }
 
 // ---------------------------------------------------------------------------

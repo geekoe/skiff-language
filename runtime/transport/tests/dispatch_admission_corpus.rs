@@ -774,159 +774,164 @@ impl DispatchMachine {
     }
 }
 
-#[test]
-fn dispatch_admission_scenarios_match_reference_machine() {
-    for (name, json) in scenario_files() {
-        let scenario: Scenario = serde_json::from_str(json)
-            .unwrap_or_else(|error| panic!("{name} must decode: {error}"));
-        assert_eq!(scenario.schema_version, 1, "{name}");
-        assert_eq!(scenario.scenario, name, "{name}");
-        assert!(
-            REQUIRED_SCENARIOS.contains(&name),
-            "{name} must be a required scenario"
-        );
-        assert!(!scenario.epoch.deployment.service_id.is_empty(), "{name}");
-        assert!(
-            !scenario.epoch.deployment.contract_version.is_empty()
-                && !scenario.epoch.deployment.deployment_revision.is_empty()
-                && !scenario
-                    .epoch
-                    .deployment
-                    .deployment_artifact_identity
-                    .is_empty(),
-            "{name} deployment coordinates"
-        );
-        assert!(scenario.max_concurrency >= 1, "{name}");
-        let mut session_ids = HashSet::new();
-        for session in &scenario.sessions {
-            assert!(!session.replica_id.is_empty(), "{name}");
-            assert!(session.connection_generation >= 1, "{name}");
-            assert!(session_ids.insert(session.id.as_str()), "{name}");
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        let mut machine = DispatchMachine::new(&scenario);
-        for event in &scenario.events {
-            match event {
-                Event::Request {
-                    request_id,
-                    mode,
-                    prefer_session,
-                    revalidate_outcome,
-                } => machine.request(
-                    request_id,
-                    mode,
-                    prefer_session.as_deref(),
-                    revalidate_outcome.as_deref(),
-                ),
-                Event::ResponseStart { request_id } => machine.response_start(request_id),
-                Event::ResponseChunk { request_id, seq } => {
-                    machine.response_chunk(request_id, *seq)
-                }
-                Event::ResponseEnd {
-                    request_id,
-                    payload_present,
-                } => machine.response_end(request_id, *payload_present),
-                Event::ResponseError { request_id } => machine.response_error(request_id),
-                Event::RuntimeCancel { request_id, reason } => {
-                    assert!(
-                        reason.as_ref().is_some_and(|reason| !reason.is_empty()),
-                        "{name} runtimeCancel requires a reason"
-                    );
-                    machine.terminal(request_id, "cancelled", "runtime_request_cancel", None);
-                }
-                Event::Timeout { request_id } => {
-                    machine.terminal(request_id, "cancelled", "timeout", Some("timeout"))
-                }
-                Event::ClientAbort { request_id } => machine.terminal(
-                    request_id,
-                    "cancelled",
-                    "caller_abort",
-                    Some("caller_cancel"),
-                ),
-                Event::Disconnect { session } => machine.disconnect_session(session),
-                Event::Replacement {
-                    old_session,
-                    new_session,
-                } => {
-                    machine.disconnect_session(old_session);
-                    let _ = new_session;
-                }
-                Event::Shutdown => machine.shutdown(),
-                Event::SpawnFunction {
-                    request_id,
-                    parent_request_id,
-                    target,
-                } => {
-                    assert!(
-                        target.as_ref().is_some_and(|target| !target.is_empty()),
-                        "{name} spawnFunction requires a target"
-                    );
-                    machine.spawn_function(request_id, parent_request_id);
-                }
-                Event::SpawnActorMethod {
-                    request_id,
-                    parent_request_id,
-                } => machine.spawn_actor_method(request_id, parent_request_id),
+    #[test]
+    fn dispatch_admission_scenarios_match_reference_machine() {
+        for (name, json) in scenario_files() {
+            let scenario: Scenario = serde_json::from_str(json)
+                .unwrap_or_else(|error| panic!("{name} must decode: {error}"));
+            assert_eq!(scenario.schema_version, 1, "{name}");
+            assert_eq!(scenario.scenario, name, "{name}");
+            assert!(
+                REQUIRED_SCENARIOS.contains(&name),
+                "{name} must be a required scenario"
+            );
+            assert!(!scenario.epoch.deployment.service_id.is_empty(), "{name}");
+            assert!(
+                !scenario.epoch.deployment.contract_version.is_empty()
+                    && !scenario.epoch.deployment.deployment_revision.is_empty()
+                    && !scenario
+                        .epoch
+                        .deployment
+                        .deployment_artifact_identity
+                        .is_empty(),
+                "{name} deployment coordinates"
+            );
+            assert!(scenario.max_concurrency >= 1, "{name}");
+            let mut session_ids = HashSet::new();
+            for session in &scenario.sessions {
+                assert!(!session.replica_id.is_empty(), "{name}");
+                assert!(session.connection_generation >= 1, "{name}");
+                assert!(session_ids.insert(session.id.as_str()), "{name}");
             }
+
+            let mut machine = DispatchMachine::new(&scenario);
+            for event in &scenario.events {
+                match event {
+                    Event::Request {
+                        request_id,
+                        mode,
+                        prefer_session,
+                        revalidate_outcome,
+                    } => machine.request(
+                        request_id,
+                        mode,
+                        prefer_session.as_deref(),
+                        revalidate_outcome.as_deref(),
+                    ),
+                    Event::ResponseStart { request_id } => machine.response_start(request_id),
+                    Event::ResponseChunk { request_id, seq } => {
+                        machine.response_chunk(request_id, *seq)
+                    }
+                    Event::ResponseEnd {
+                        request_id,
+                        payload_present,
+                    } => machine.response_end(request_id, *payload_present),
+                    Event::ResponseError { request_id } => machine.response_error(request_id),
+                    Event::RuntimeCancel { request_id, reason } => {
+                        assert!(
+                            reason.as_ref().is_some_and(|reason| !reason.is_empty()),
+                            "{name} runtimeCancel requires a reason"
+                        );
+                        machine.terminal(request_id, "cancelled", "runtime_request_cancel", None);
+                    }
+                    Event::Timeout { request_id } => {
+                        machine.terminal(request_id, "cancelled", "timeout", Some("timeout"))
+                    }
+                    Event::ClientAbort { request_id } => machine.terminal(
+                        request_id,
+                        "cancelled",
+                        "caller_abort",
+                        Some("caller_cancel"),
+                    ),
+                    Event::Disconnect { session } => machine.disconnect_session(session),
+                    Event::Replacement {
+                        old_session,
+                        new_session,
+                    } => {
+                        machine.disconnect_session(old_session);
+                        let _ = new_session;
+                    }
+                    Event::Shutdown => machine.shutdown(),
+                    Event::SpawnFunction {
+                        request_id,
+                        parent_request_id,
+                        target,
+                    } => {
+                        assert!(
+                            target.as_ref().is_some_and(|target| !target.is_empty()),
+                            "{name} spawnFunction requires a target"
+                        );
+                        machine.spawn_function(request_id, parent_request_id);
+                    }
+                    Event::SpawnActorMethod {
+                        request_id,
+                        parent_request_id,
+                    } => machine.spawn_actor_method(request_id, parent_request_id),
+                }
+            }
+
+            let actual_cancel_frames: Vec<CancelFrame> = machine
+                .cancel_frames
+                .iter()
+                .map(|(request_id, reason)| CancelFrame {
+                    request_id: request_id.clone(),
+                    reason: reason.clone(),
+                })
+                .collect();
+            assert_eq!(machine.outcomes, scenario.expect.request_outcomes, "{name}");
+            assert_eq!(
+                machine.reject_reasons, scenario.expect.reject_reasons,
+                "{name} reject reasons"
+            );
+            assert_eq!(
+                machine.terminal_sources, scenario.expect.terminal_sources,
+                "{name} terminal sources"
+            );
+            assert_eq!(
+                machine.session_bindings, scenario.expect.session_bindings,
+                "{name} session bindings"
+            );
+            assert_eq!(
+                actual_cancel_frames, scenario.expect.cancel_frames,
+                "{name} cancel frames"
+            );
+            assert_eq!(
+                machine.permits_held(),
+                scenario.expect.permits_held,
+                "{name} permits held"
+            );
+            assert_eq!(
+                machine.releases, scenario.expect.releases,
+                "{name} releases"
+            );
+            assert_eq!(
+                machine.actor_lane_spawns, scenario.expect.actor_lane_spawns,
+                "{name} actor lane spawns"
+            );
+            assert_eq!(
+                machine.derived_spawns, scenario.expect.derived_spawns,
+                "{name} derived spawns"
+            );
+            assert!(
+                !scenario.expect.fail_stop,
+                "{name} reference model has no fail-stop path"
+            );
         }
-
-        let actual_cancel_frames: Vec<CancelFrame> = machine
-            .cancel_frames
-            .iter()
-            .map(|(request_id, reason)| CancelFrame {
-                request_id: request_id.clone(),
-                reason: reason.clone(),
-            })
-            .collect();
-        assert_eq!(machine.outcomes, scenario.expect.request_outcomes, "{name}");
-        assert_eq!(
-            machine.reject_reasons, scenario.expect.reject_reasons,
-            "{name} reject reasons"
-        );
-        assert_eq!(
-            machine.terminal_sources, scenario.expect.terminal_sources,
-            "{name} terminal sources"
-        );
-        assert_eq!(
-            machine.session_bindings, scenario.expect.session_bindings,
-            "{name} session bindings"
-        );
-        assert_eq!(
-            actual_cancel_frames, scenario.expect.cancel_frames,
-            "{name} cancel frames"
-        );
-        assert_eq!(
-            machine.permits_held(),
-            scenario.expect.permits_held,
-            "{name} permits held"
-        );
-        assert_eq!(
-            machine.releases, scenario.expect.releases,
-            "{name} releases"
-        );
-        assert_eq!(
-            machine.actor_lane_spawns, scenario.expect.actor_lane_spawns,
-            "{name} actor lane spawns"
-        );
-        assert_eq!(
-            machine.derived_spawns, scenario.expect.derived_spawns,
-            "{name} derived spawns"
-        );
-        assert!(
-            !scenario.expect.fail_stop,
-            "{name} reference model has no fail-stop path"
-        );
     }
-}
 
-#[test]
-fn scenarios_cover_every_required_dispatch_rule() {
-    let names: HashSet<&str> = scenario_files().iter().map(|(name, _)| *name).collect();
-    for required in REQUIRED_SCENARIOS {
-        assert!(
-            names.contains(required),
-            "required scenario {required} is missing"
-        );
+    #[test]
+    fn scenarios_cover_every_required_dispatch_rule() {
+        let names: HashSet<&str> = scenario_files().iter().map(|(name, _)| *name).collect();
+        for required in REQUIRED_SCENARIOS {
+            assert!(
+                names.contains(required),
+                "required scenario {required} is missing"
+            );
+        }
+        assert_eq!(names.len(), REQUIRED_SCENARIOS.len());
     }
-    assert_eq!(names.len(), REQUIRED_SCENARIOS.len());
 }

@@ -661,541 +661,548 @@ fn invoke_invocation_id(rig: &Rig) -> String {
 // Branch 1: live incarnation, same implementation
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn branch1_live_incarnation_same_implementation_admits_ordinary_invocation() {
-    let rig = rig();
-    commit_owner(&rig, &implementation(), b"[]");
-    let record = actor_record(
-        "task-actor",
-        &implementation(),
-        b"[]",
-        rig.store.now().await.expect("now"),
-    );
-    let claimed = create_and_claim(&rig, record).await;
-    let decision = rig.admission.admit(&claimed).await;
-    assert_eq!(decision, AdmissionDecision::Accepted);
-    assert_eq!(rig.control.pending_attempt_count(), 1);
-    let frames = rig.port.frames.lock().expect("frames");
-    assert_eq!(frames.len(), 1, "exactly one owner invoke, no activation");
-    let (header, payload) = decode_actor_owner_invoke_frame(&frames[0].1).expect("decode");
-    assert_eq!(header.activation_bootstrap, None);
-    assert_eq!(payload, br#"[1,2,3]"#);
-    assert_eq!(
-        header.invoke.actor_implementation_identity,
-        implementation()
-    );
-    assert_eq!(
-        header.invoke.test_case_capability, None,
-        "ordinary production actor attempts must not carry test-case capability"
-    );
-    assert_eq!(header.invoke.test_case_parent_request_id, None);
-    rig.worker.abort();
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[tokio::test]
-async fn test_case_actor_attempt_carries_capability_and_parent_on_invoke() {
-    let rig = rig();
-    commit_owner(&rig, &implementation(), b"[]");
-    let mut record = actor_record(
-        "task-actor",
-        &implementation(),
-        b"[]",
-        rig.store.now().await.expect("now"),
-    );
-    record.test_case = Some(TaskTestCaseAuthority {
-        test_case_capability: "test-case:cap-1".to_string(),
-        parent_request_id: "parent-request".to_string(),
-        origin_runtime_id: "runtime-a".to_string(),
-        origin_connection_generation: 1,
-    });
-    let claimed = create_and_claim(&rig, record).await;
-    let decision = rig.admission.admit(&claimed).await;
-    assert_eq!(decision, AdmissionDecision::Accepted);
-    let frames = rig.port.frames.lock().expect("frames");
-    assert_eq!(frames.len(), 1, "exactly one owner invoke");
-    let (header, _) = decode_actor_owner_invoke_frame(&frames[0].1).expect("decode");
-    assert_eq!(
-        header.invoke.test_case_capability.as_deref(),
-        Some("test-case:cap-1")
-    );
-    assert_eq!(
-        header.invoke.test_case_parent_request_id.as_deref(),
-        Some("parent-request")
-    );
-    let invocation_id = header.invoke.invocation_id;
-    assert_eq!(
-        rig.actor
-            .relay
-            .parent_test_capability("runtime-a#1", &invocation_id),
-        Some("test-case:cap-1".to_string()),
-        "the relay must retain the invocation's case capability for recursive task submits"
-    );
-    rig.worker.abort();
-}
-
-#[tokio::test]
-async fn test_case_actor_attempt_without_origin_candidate_is_permanent_failure() {
-    let rig = rig();
-    commit_owner(&rig, &implementation(), b"[]");
-    let mut record = actor_record(
-        "task-actor",
-        &implementation(),
-        b"[]",
-        rig.store.now().await.expect("now"),
-    );
-    record.test_case = Some(TaskTestCaseAuthority {
-        test_case_capability: "test-case:cap-1".to_string(),
-        parent_request_id: "parent-request".to_string(),
-        origin_runtime_id: "runtime-missing".to_string(),
-        origin_connection_generation: 9,
-    });
-    let claimed = create_and_claim(&rig, record).await;
-    let decision = rig.admission.admit(&claimed).await;
-    assert!(
-        matches!(decision, AdmissionDecision::PermanentFailure { .. }),
-        "test-case actor task with a missing origin connection must fail closed: {decision:?}"
-    );
-    assert_eq!(rig.port.frames.lock().expect("frames").len(), 0);
-    rig.worker.abort();
-}
-
-#[tokio::test]
-async fn test_case_actor_attempt_cross_service_is_permanent_failure() {
-    let rig = rig();
-    commit_owner(&rig, &implementation(), b"[]");
-    let mut record = actor_record(
-        "task-actor",
-        &implementation(),
-        b"[]",
-        rig.store.now().await.expect("now"),
-    );
-    if let skiff_task_control::model::DetachedCallTarget::ActorMethod {
-        actor, activation, ..
-    } = &mut record.target
-    {
-        actor.service_id = "example.com/service-2".to_string();
-        activation.key = RecoverablePayload::new(
-            serde_json::to_vec(&serde_json::json!({
-                "serviceId": "example.com/service-2",
-                "actorTypeIdentity": actor_type_identity(),
-                "actorIdTypeIdentity": actor_id_type_identity(),
-                "actorIdEncodingVersion": "v1",
-                "canonicalActorIdKeyBytesBase64": "a2V5",
-                "actorIdHash": format!("sha256:{}", "a".repeat(64)),
-            }))
-            .expect("cross-service key json"),
+    #[tokio::test]
+    async fn branch1_live_incarnation_same_implementation_admits_ordinary_invocation() {
+        let rig = rig();
+        commit_owner(&rig, &implementation(), b"[]");
+        let record = actor_record(
+            "task-actor",
+            &implementation(),
+            b"[]",
+            rig.store.now().await.expect("now"),
         );
+        let claimed = create_and_claim(&rig, record).await;
+        let decision = rig.admission.admit(&claimed).await;
+        assert_eq!(decision, AdmissionDecision::Accepted);
+        assert_eq!(rig.control.pending_attempt_count(), 1);
+        let frames = rig.port.frames.lock().expect("frames");
+        assert_eq!(frames.len(), 1, "exactly one owner invoke, no activation");
+        let (header, payload) = decode_actor_owner_invoke_frame(&frames[0].1).expect("decode");
+        assert_eq!(header.activation_bootstrap, None);
+        assert_eq!(payload, br#"[1,2,3]"#);
+        assert_eq!(
+            header.invoke.actor_implementation_identity,
+            implementation()
+        );
+        assert_eq!(
+            header.invoke.test_case_capability, None,
+            "ordinary production actor attempts must not carry test-case capability"
+        );
+        assert_eq!(header.invoke.test_case_parent_request_id, None);
+        rig.worker.abort();
     }
-    record.test_case = Some(TaskTestCaseAuthority {
-        test_case_capability: "test-case:cap-1".to_string(),
-        parent_request_id: "parent-request".to_string(),
-        origin_runtime_id: "runtime-a".to_string(),
-        origin_connection_generation: 1,
-    });
-    let claimed = create_and_claim(&rig, record).await;
-    let decision = rig.admission.admit(&claimed).await;
-    assert!(
-        matches!(decision, AdmissionDecision::PermanentFailure { ref reason } if reason.contains("differs from the parent service")),
-        "test-case actor tasks must not cross the parent service: {decision:?}"
-    );
-    assert_eq!(rig.port.frames.lock().expect("frames").len(), 0);
-    rig.worker.abort();
-}
 
-// ---------------------------------------------------------------------------
-// Branch 2: registry entry exists, no live incarnation
-// ---------------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_case_actor_attempt_carries_capability_and_parent_on_invoke() {
+        let rig = rig();
+        commit_owner(&rig, &implementation(), b"[]");
+        let mut record = actor_record(
+            "task-actor",
+            &implementation(),
+            b"[]",
+            rig.store.now().await.expect("now"),
+        );
+        record.test_case = Some(TaskTestCaseAuthority {
+            test_case_capability: "test-case:cap-1".to_string(),
+            parent_request_id: "parent-request".to_string(),
+            origin_runtime_id: "runtime-a".to_string(),
+            origin_connection_generation: 1,
+        });
+        let claimed = create_and_claim(&rig, record).await;
+        let decision = rig.admission.admit(&claimed).await;
+        assert_eq!(decision, AdmissionDecision::Accepted);
+        let frames = rig.port.frames.lock().expect("frames");
+        assert_eq!(frames.len(), 1, "exactly one owner invoke");
+        let (header, _) = decode_actor_owner_invoke_frame(&frames[0].1).expect("decode");
+        assert_eq!(
+            header.invoke.test_case_capability.as_deref(),
+            Some("test-case:cap-1")
+        );
+        assert_eq!(
+            header.invoke.test_case_parent_request_id.as_deref(),
+            Some("parent-request")
+        );
+        let invocation_id = header.invoke.invocation_id;
+        assert_eq!(
+            rig.actor
+                .relay
+                .parent_test_capability("runtime-a#1", &invocation_id),
+            Some("test-case:cap-1".to_string()),
+            "the relay must retain the invocation's case capability for recursive task submits"
+        );
+        rig.worker.abort();
+    }
 
-#[tokio::test]
-async fn branch2_entry_exists_uses_entry_create_input_to_activate() {
-    let rig = rig();
-    // Registry entry exists with entry-frozen create input; no live owner.
-    let key = actor_key();
-    rig.actor.registry.ensure_present(
-        &key,
-        actor_abi(),
-        implementation(),
-        declaration_owner(),
-        br#"[9]"#,
-    );
-    let record = actor_record(
-        "task-actor",
-        &implementation(),
-        br#"[1]"#, // task snapshot differs; entry input must win
-        rig.store.now().await.expect("now"),
-    );
-    let claimed = create_and_claim(&rig, record).await;
-    let admission = Arc::clone(&rig.admission);
-    let record = claimed.clone();
-    let admit = tokio::spawn(async move { admission.admit(&record).await });
-    let request = wait_for_activation_request(&rig).await;
-    assert_eq!(
-        request.bootstrap_bytes, br#"[9]"#,
-        "entry create input wins"
-    );
-    let ack = rig.actor.activation_broker.on_activation_ack(
-        &request.request_id,
-        &request.owner_runtime_id,
-        &request.owner_connection,
-        true,
-        rig.clock.now_ms(),
-    );
-    assert!(matches!(
-        ack,
-        skiff_router::actor::ActivationAckOutcome::Committed { .. }
-    ));
-    let decision = admit.await.expect("admit task");
-    assert_eq!(decision, AdmissionDecision::Accepted);
-    let frames = rig.port.frames.lock().expect("frames");
-    assert_eq!(frames.len(), 1, "one owner invoke after activation");
-    assert_eq!(
-        rig.actor.registry.entry(&key).expect("entry").create_input,
-        br#"[9]"#
-    );
-    rig.worker.abort();
-}
+    #[tokio::test]
+    async fn test_case_actor_attempt_without_origin_candidate_is_permanent_failure() {
+        let rig = rig();
+        commit_owner(&rig, &implementation(), b"[]");
+        let mut record = actor_record(
+            "task-actor",
+            &implementation(),
+            b"[]",
+            rig.store.now().await.expect("now"),
+        );
+        record.test_case = Some(TaskTestCaseAuthority {
+            test_case_capability: "test-case:cap-1".to_string(),
+            parent_request_id: "parent-request".to_string(),
+            origin_runtime_id: "runtime-missing".to_string(),
+            origin_connection_generation: 9,
+        });
+        let claimed = create_and_claim(&rig, record).await;
+        let decision = rig.admission.admit(&claimed).await;
+        assert!(
+            matches!(decision, AdmissionDecision::PermanentFailure { .. }),
+            "test-case actor task with a missing origin connection must fail closed: {decision:?}"
+        );
+        assert_eq!(rig.port.frames.lock().expect("frames").len(), 0);
+        rig.worker.abort();
+    }
 
-// ---------------------------------------------------------------------------
-// Branch 3: registry entry lost, snapshot restores a minimal entry
-// ---------------------------------------------------------------------------
+    #[tokio::test]
+    async fn test_case_actor_attempt_cross_service_is_permanent_failure() {
+        let rig = rig();
+        commit_owner(&rig, &implementation(), b"[]");
+        let mut record = actor_record(
+            "task-actor",
+            &implementation(),
+            b"[]",
+            rig.store.now().await.expect("now"),
+        );
+        if let skiff_task_control::model::DetachedCallTarget::ActorMethod {
+            actor,
+            activation,
+            ..
+        } = &mut record.target
+        {
+            actor.service_id = "example.com/service-2".to_string();
+            activation.key = RecoverablePayload::new(
+                serde_json::to_vec(&serde_json::json!({
+                    "serviceId": "example.com/service-2",
+                    "actorTypeIdentity": actor_type_identity(),
+                    "actorIdTypeIdentity": actor_id_type_identity(),
+                    "actorIdEncodingVersion": "v1",
+                    "canonicalActorIdKeyBytesBase64": "a2V5",
+                    "actorIdHash": format!("sha256:{}", "a".repeat(64)),
+                }))
+                .expect("cross-service key json"),
+            );
+        }
+        record.test_case = Some(TaskTestCaseAuthority {
+            test_case_capability: "test-case:cap-1".to_string(),
+            parent_request_id: "parent-request".to_string(),
+            origin_runtime_id: "runtime-a".to_string(),
+            origin_connection_generation: 1,
+        });
+        let claimed = create_and_claim(&rig, record).await;
+        let decision = rig.admission.admit(&claimed).await;
+        assert!(
+            matches!(decision, AdmissionDecision::PermanentFailure { ref reason } if reason.contains("differs from the parent service")),
+            "test-case actor tasks must not cross the parent service: {decision:?}"
+        );
+        assert_eq!(rig.port.frames.lock().expect("frames").len(), 0);
+        rig.worker.abort();
+    }
 
-#[tokio::test]
-async fn branch3_snapshot_restores_minimal_entry_and_first_restore_wins() {
-    let rig = rig();
-    let record = actor_record(
-        "task-actor",
-        &implementation(),
-        br#"[7]"#,
-        rig.store.now().await.expect("now"),
-    );
-    let claimed = create_and_claim(&rig, record).await;
-    let admission = Arc::clone(&rig.admission);
-    let record = claimed.clone();
-    let admit = tokio::spawn(async move { admission.admit(&record).await });
-    let request = wait_for_activation_request(&rig).await;
-    assert_eq!(
-        request.bootstrap_bytes, br#"[7]"#,
-        "snapshot create input restores the minimal entry"
-    );
-    let ack = rig.actor.activation_broker.on_activation_ack(
-        &request.request_id,
-        &request.owner_runtime_id,
-        &request.owner_connection,
-        true,
-        rig.clock.now_ms(),
-    );
-    assert!(matches!(
-        ack,
-        skiff_router::actor::ActivationAckOutcome::Committed { .. }
-    ));
-    let decision = admit.await.expect("admit task");
-    assert_eq!(decision, AdmissionDecision::Accepted);
-    assert_eq!(
-        rig.actor
+    // ---------------------------------------------------------------------------
+    // Branch 2: registry entry exists, no live incarnation
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn branch2_entry_exists_uses_entry_create_input_to_activate() {
+        let rig = rig();
+        // Registry entry exists with entry-frozen create input; no live owner.
+        let key = actor_key();
+        rig.actor.registry.ensure_present(
+            &key,
+            actor_abi(),
+            implementation(),
+            declaration_owner(),
+            br#"[9]"#,
+        );
+        let record = actor_record(
+            "task-actor",
+            &implementation(),
+            br#"[1]"#, // task snapshot differs; entry input must win
+            rig.store.now().await.expect("now"),
+        );
+        let claimed = create_and_claim(&rig, record).await;
+        let admission = Arc::clone(&rig.admission);
+        let record = claimed.clone();
+        let admit = tokio::spawn(async move { admission.admit(&record).await });
+        let request = wait_for_activation_request(&rig).await;
+        assert_eq!(
+            request.bootstrap_bytes, br#"[9]"#,
+            "entry create input wins"
+        );
+        let ack = rig.actor.activation_broker.on_activation_ack(
+            &request.request_id,
+            &request.owner_runtime_id,
+            &request.owner_connection,
+            true,
+            rig.clock.now_ms(),
+        );
+        assert!(matches!(
+            ack,
+            skiff_router::actor::ActivationAckOutcome::Committed { .. }
+        ));
+        let decision = admit.await.expect("admit task");
+        assert_eq!(decision, AdmissionDecision::Accepted);
+        let frames = rig.port.frames.lock().expect("frames");
+        assert_eq!(frames.len(), 1, "one owner invoke after activation");
+        assert_eq!(
+            rig.actor.registry.entry(&key).expect("entry").create_input,
+            br#"[9]"#
+        );
+        rig.worker.abort();
+    }
+
+    // ---------------------------------------------------------------------------
+    // Branch 3: registry entry lost, snapshot restores a minimal entry
+    // ---------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn branch3_snapshot_restores_minimal_entry_and_first_restore_wins() {
+        let rig = rig();
+        let record = actor_record(
+            "task-actor",
+            &implementation(),
+            br#"[7]"#,
+            rig.store.now().await.expect("now"),
+        );
+        let claimed = create_and_claim(&rig, record).await;
+        let admission = Arc::clone(&rig.admission);
+        let record = claimed.clone();
+        let admit = tokio::spawn(async move { admission.admit(&record).await });
+        let request = wait_for_activation_request(&rig).await;
+        assert_eq!(
+            request.bootstrap_bytes, br#"[7]"#,
+            "snapshot create input restores the minimal entry"
+        );
+        let ack = rig.actor.activation_broker.on_activation_ack(
+            &request.request_id,
+            &request.owner_runtime_id,
+            &request.owner_connection,
+            true,
+            rig.clock.now_ms(),
+        );
+        assert!(matches!(
+            ack,
+            skiff_router::actor::ActivationAckOutcome::Committed { .. }
+        ));
+        let decision = admit.await.expect("admit task");
+        assert_eq!(decision, AdmissionDecision::Accepted);
+        assert_eq!(
+            rig.actor
+                .registry
+                .entry(&actor_key())
+                .expect("restored entry")
+                .create_input,
+            br#"[7]"#
+        );
+        assert_eq!(
+            rig.activation_control
+                .requests
+                .lock()
+                .expect("requests")
+                .len(),
+            1
+        );
+        rig.worker.abort();
+    }
+
+    #[tokio::test]
+    async fn branch3_concurrent_snapshot_restores_put_if_absent_once() {
+        let rig = rig();
+        let now = rig.store.now().await.expect("now");
+        let first = create_and_claim(
+            &rig,
+            actor_record("task-actor", &implementation(), br#"[1]"#, now),
+        )
+        .await;
+        let second = create_and_claim(
+            &rig,
+            actor_record("task-actor-2", &implementation(), br#"[2]"#, now),
+        )
+        .await;
+        let admission_a = Arc::clone(&rig.admission);
+        let admission_b = Arc::clone(&rig.admission);
+        let record_a = first.clone();
+        let record_b = second.clone();
+        let task_a = tokio::spawn(async move { admission_a.admit(&record_a).await });
+        let task_b = tokio::spawn(async move { admission_b.admit(&record_b).await });
+        let request = wait_for_activation_request(&rig).await;
+        let ack = rig.actor.activation_broker.on_activation_ack(
+            &request.request_id,
+            &request.owner_runtime_id,
+            &request.owner_connection,
+            true,
+            rig.clock.now_ms(),
+        );
+        assert!(matches!(
+            ack,
+            skiff_router::actor::ActivationAckOutcome::Committed { .. }
+        ));
+        let decision_a = task_a.await.expect("task a");
+        let decision_b = task_b.await.expect("task b");
+        assert_eq!(decision_a, AdmissionDecision::Accepted);
+        assert_eq!(decision_b, AdmissionDecision::Accepted);
+        assert_eq!(
+            rig.activation_control
+                .requests
+                .lock()
+                .expect("requests")
+                .len(),
+            1,
+            "concurrent restores share one identity-fenced claim"
+        );
+        let restored = rig
+            .actor
             .registry
             .entry(&actor_key())
             .expect("restored entry")
-            .create_input,
-        br#"[7]"#
-    );
-    assert_eq!(
-        rig.activation_control
-            .requests
-            .lock()
-            .expect("requests")
-            .len(),
-        1
-    );
-    rig.worker.abort();
-}
+            .create_input;
+        assert!(
+            restored == br#"[1]"# || restored == br#"[2]"#,
+            "first successful restore wins: {restored:?}"
+        );
+        rig.worker.abort();
+    }
 
-#[tokio::test]
-async fn branch3_concurrent_snapshot_restores_put_if_absent_once() {
-    let rig = rig();
-    let now = rig.store.now().await.expect("now");
-    let first = create_and_claim(
-        &rig,
-        actor_record("task-actor", &implementation(), br#"[1]"#, now),
-    )
-    .await;
-    let second = create_and_claim(
-        &rig,
-        actor_record("task-actor-2", &implementation(), br#"[2]"#, now),
-    )
-    .await;
-    let admission_a = Arc::clone(&rig.admission);
-    let admission_b = Arc::clone(&rig.admission);
-    let record_a = first.clone();
-    let record_b = second.clone();
-    let task_a = tokio::spawn(async move { admission_a.admit(&record_a).await });
-    let task_b = tokio::spawn(async move { admission_b.admit(&record_b).await });
-    let request = wait_for_activation_request(&rig).await;
-    let ack = rig.actor.activation_broker.on_activation_ack(
-        &request.request_id,
-        &request.owner_runtime_id,
-        &request.owner_connection,
-        true,
-        rig.clock.now_ms(),
-    );
-    assert!(matches!(
-        ack,
-        skiff_router::actor::ActivationAckOutcome::Committed { .. }
-    ));
-    let decision_a = task_a.await.expect("task a");
-    let decision_b = task_b.await.expect("task b");
-    assert_eq!(decision_a, AdmissionDecision::Accepted);
-    assert_eq!(decision_b, AdmissionDecision::Accepted);
-    assert_eq!(
-        rig.activation_control
-            .requests
-            .lock()
-            .expect("requests")
-            .len(),
-        1,
-        "concurrent restores share one identity-fenced claim"
-    );
-    let restored = rig
-        .actor
-        .registry
-        .entry(&actor_key())
-        .expect("restored entry")
-        .create_input;
-    assert!(
-        restored == br#"[1]"# || restored == br#"[2]"#,
-        "first successful restore wins: {restored:?}"
-    );
-    rig.worker.abort();
-}
+    // ---------------------------------------------------------------------------
+    // Branch 4: ActorUpgradingError -> release + backoff
+    // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Branch 4: ActorUpgradingError -> release + backoff
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn branch4_upgrading_error_releases_attempt_with_backoff() {
-    let rig = rig();
-    commit_owner(&rig, &implementation(), b"[]");
-    let record = actor_record(
-        "task-actor",
-        &implementation(),
-        b"[]",
-        rig.store.now().await.expect("now"),
-    );
-    let claimed = create_and_claim(&rig, record).await;
-    assert_eq!(
-        rig.admission.admit(&claimed).await,
-        AdmissionDecision::Accepted
-    );
-    let invocation_id = invoke_invocation_id(&rig);
-    let bytes = owner_error_frame(
-        &invocation_id,
-        ActorMethodErrorFramePayload::ActorUpgradingError {
-            actor_ref: ActorLogicalRefFrameHeader {
-                service_id: SERVICE_ID.to_string(),
-                actor_type_identity: actor_type_identity(),
-                actor_id_type_identity: actor_id_type_identity(),
-                actor_id_encoding_version: "v1".to_string(),
-                canonical_actor_id_key_bytes_base64: "a2V5".to_string(),
-                actor_id_hash: format!("sha256:{}", "a".repeat(64)),
-                epoch: 1,
+    #[tokio::test]
+    async fn branch4_upgrading_error_releases_attempt_with_backoff() {
+        let rig = rig();
+        commit_owner(&rig, &implementation(), b"[]");
+        let record = actor_record(
+            "task-actor",
+            &implementation(),
+            b"[]",
+            rig.store.now().await.expect("now"),
+        );
+        let claimed = create_and_claim(&rig, record).await;
+        assert_eq!(
+            rig.admission.admit(&claimed).await,
+            AdmissionDecision::Accepted
+        );
+        let invocation_id = invoke_invocation_id(&rig);
+        let bytes = owner_error_frame(
+            &invocation_id,
+            ActorMethodErrorFramePayload::ActorUpgradingError {
+                actor_ref: ActorLogicalRefFrameHeader {
+                    service_id: SERVICE_ID.to_string(),
+                    actor_type_identity: actor_type_identity(),
+                    actor_id_type_identity: actor_id_type_identity(),
+                    actor_id_encoding_version: "v1".to_string(),
+                    canonical_actor_id_key_bytes_base64: "a2V5".to_string(),
+                    actor_id_hash: format!("sha256:{}", "a".repeat(64)),
+                    epoch: 1,
+                },
+                retry_after_ms: 5_000,
             },
-            retry_after_ms: 5_000,
-        },
-    );
-    rig.sink.handle(&rig.session, &bytes).expect("handle error");
-    let released = timeout(Duration::from_secs(2), async {
-        loop {
-            let record = rig
-                .store
-                .status(StatusInput {
-                    task_id: TaskId::new("task-actor"),
-                    retention: DurableDuration::from_millis(60_000),
-                })
-                .await
-                .expect("status");
-            match record.kind {
-                TaskStatusKind::Running => {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+        );
+        rig.sink.handle(&rig.session, &bytes).expect("handle error");
+        let released = timeout(Duration::from_secs(2), async {
+            loop {
+                let record = rig
+                    .store
+                    .status(StatusInput {
+                        task_id: TaskId::new("task-actor"),
+                        retention: DurableDuration::from_millis(60_000),
+                    })
+                    .await
+                    .expect("status");
+                match record.kind {
+                    TaskStatusKind::Running => {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                    TaskStatusKind::Ready => {
+                        let records = rig
+                            .store
+                            .scan_due(DueScanInput { limit: 10 })
+                            .await
+                            .expect("scan");
+                        let record = records
+                            .into_iter()
+                            .find(|record| record.task_id.as_str() == "task-actor")
+                            .expect("ready task");
+                        return record;
+                    }
+                    other => panic!("unexpected status {other:?}"),
                 }
-                TaskStatusKind::Ready => {
-                    let records = rig
-                        .store
-                        .scan_due(DueScanInput { limit: 10 })
-                        .await
-                        .expect("scan");
-                    let record = records
-                        .into_iter()
-                        .find(|record| record.task_id.as_str() == "task-actor")
-                        .expect("ready task");
-                    return record;
-                }
-                other => panic!("unexpected status {other:?}"),
             }
-        }
-    })
-    .await
-    .expect("released to ready");
-    let not_before = released.retry_not_before.expect("backoff set");
-    let now = rig.store.now().await.expect("now");
-    assert!(
-        not_before > now,
-        "release must carry future retry-not-before ({not_before} > {now})"
-    );
-    assert!(
-        rig.control
-            .counters()
-            .settlements_upgrading
-            .load(Ordering::Relaxed)
-            >= 1
-    );
-    rig.worker.abort();
-}
+        })
+        .await
+        .expect("released to ready");
+        let not_before = released.retry_not_before.expect("backoff set");
+        let now = rig.store.now().await.expect("now");
+        assert!(
+            not_before > now,
+            "release must carry future retry-not-before ({not_before} > {now})"
+        );
+        assert!(
+            rig.control
+                .counters()
+                .settlements_upgrading
+                .load(Ordering::Relaxed)
+                >= 1
+        );
+        rig.worker.abort();
+    }
 
-// ---------------------------------------------------------------------------
-// Branch 5: fence taken over by a new implementation -> platform-failed
-// ---------------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
+    // Branch 5: fence taken over by a new implementation -> platform-failed
+    // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn branch5_taken_over_implementation_rejects_old_task_platform_failed() {
-    let rig = rig();
-    commit_owner(&rig, &implementation_new(), b"[]");
-    let record = actor_record(
-        "task-actor",
-        &implementation(),
-        b"[]",
-        rig.store.now().await.expect("now"),
-    );
-    let claimed = create_and_claim(&rig, record).await;
-    let decision = rig.admission.admit(&claimed).await;
-    assert!(matches!(
-        decision,
-        AdmissionDecision::PermanentFailure { reason } if reason.contains("ActorVersionRejectedError")
-    ));
-    assert!(
-        rig.control
-            .counters()
-            .admissions_permanent_failure
-            .load(Ordering::Relaxed)
-            >= 1
-    );
-    rig.worker.abort();
-}
+    #[tokio::test]
+    async fn branch5_taken_over_implementation_rejects_old_task_platform_failed() {
+        let rig = rig();
+        commit_owner(&rig, &implementation_new(), b"[]");
+        let record = actor_record(
+            "task-actor",
+            &implementation(),
+            b"[]",
+            rig.store.now().await.expect("now"),
+        );
+        let claimed = create_and_claim(&rig, record).await;
+        let decision = rig.admission.admit(&claimed).await;
+        assert!(matches!(
+            decision,
+            AdmissionDecision::PermanentFailure { reason } if reason.contains("ActorVersionRejectedError")
+        ));
+        assert!(
+            rig.control
+                .counters()
+                .admissions_permanent_failure
+                .load(Ordering::Relaxed)
+                >= 1
+        );
+        rig.worker.abort();
+    }
 
-// ---------------------------------------------------------------------------
-// Settlement mapping through the actor frame sink
-// ---------------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
+    // Settlement mapping through the actor frame sink
+    // ---------------------------------------------------------------------------
 
-#[tokio::test]
-async fn actor_attempt_return_settles_succeeded() {
-    let rig = rig();
-    commit_owner(&rig, &implementation(), b"[]");
-    let record = actor_record(
-        "task-actor",
-        &implementation(),
-        b"[]",
-        rig.store.now().await.expect("now"),
-    );
-    let claimed = create_and_claim(&rig, record).await;
-    assert_eq!(
-        rig.admission.admit(&claimed).await,
-        AdmissionDecision::Accepted
-    );
-    let invocation_id = invoke_invocation_id(&rig);
-    rig.sink
-        .handle(&rig.session, &owner_return_frame(&invocation_id))
-        .expect("handle return");
-    wait_for_status(rig.store.as_ref(), "task-actor", TaskStatusKind::Succeeded).await;
-    rig.worker.abort();
-}
+    #[tokio::test]
+    async fn actor_attempt_return_settles_succeeded() {
+        let rig = rig();
+        commit_owner(&rig, &implementation(), b"[]");
+        let record = actor_record(
+            "task-actor",
+            &implementation(),
+            b"[]",
+            rig.store.now().await.expect("now"),
+        );
+        let claimed = create_and_claim(&rig, record).await;
+        assert_eq!(
+            rig.admission.admit(&claimed).await,
+            AdmissionDecision::Accepted
+        );
+        let invocation_id = invoke_invocation_id(&rig);
+        rig.sink
+            .handle(&rig.session, &owner_return_frame(&invocation_id))
+            .expect("handle return");
+        wait_for_status(rig.store.as_ref(), "task-actor", TaskStatusKind::Succeeded).await;
+        rig.worker.abort();
+    }
 
-#[tokio::test]
-async fn actor_attempt_owner_failure_settles_failed() {
-    let rig = rig();
-    commit_owner(&rig, &implementation(), b"[]");
-    let record = actor_record(
-        "task-actor",
-        &implementation(),
-        b"[]",
-        rig.store.now().await.expect("now"),
-    );
-    let claimed = create_and_claim(&rig, record).await;
-    assert_eq!(
-        rig.admission.admit(&claimed).await,
-        AdmissionDecision::Accepted
-    );
-    let invocation_id = invoke_invocation_id(&rig);
-    rig.sink
-        .handle(&rig.session, &owner_failure_frame(&invocation_id))
-        .expect("handle owner failure");
-    wait_for_status(rig.store.as_ref(), "task-actor", TaskStatusKind::Failed).await;
-    rig.worker.abort();
-}
+    #[tokio::test]
+    async fn actor_attempt_owner_failure_settles_failed() {
+        let rig = rig();
+        commit_owner(&rig, &implementation(), b"[]");
+        let record = actor_record(
+            "task-actor",
+            &implementation(),
+            b"[]",
+            rig.store.now().await.expect("now"),
+        );
+        let claimed = create_and_claim(&rig, record).await;
+        assert_eq!(
+            rig.admission.admit(&claimed).await,
+            AdmissionDecision::Accepted
+        );
+        let invocation_id = invoke_invocation_id(&rig);
+        rig.sink
+            .handle(&rig.session, &owner_failure_frame(&invocation_id))
+            .expect("handle owner failure");
+        wait_for_status(rig.store.as_ref(), "task-actor", TaskStatusKind::Failed).await;
+        rig.worker.abort();
+    }
 
-#[tokio::test]
-async fn actor_attempt_version_rejected_settles_platform_failed() {
-    let rig = rig();
-    commit_owner(&rig, &implementation(), b"[]");
-    let record = actor_record(
-        "task-actor",
-        &implementation(),
-        b"[]",
-        rig.store.now().await.expect("now"),
-    );
-    let claimed = create_and_claim(&rig, record).await;
-    assert_eq!(
-        rig.admission.admit(&claimed).await,
-        AdmissionDecision::Accepted
-    );
-    let invocation_id = invoke_invocation_id(&rig);
-    let bytes = owner_error_frame(
-        &invocation_id,
-        ActorMethodErrorFramePayload::ActorVersionRejectedError {
-            actor_ref: ActorLogicalRefFrameHeader {
-                service_id: SERVICE_ID.to_string(),
-                actor_type_identity: actor_type_identity(),
-                actor_id_type_identity: actor_id_type_identity(),
-                actor_id_encoding_version: "v1".to_string(),
-                canonical_actor_id_key_bytes_base64: "a2V5".to_string(),
-                actor_id_hash: format!("sha256:{}", "a".repeat(64)),
-                epoch: 1,
+    #[tokio::test]
+    async fn actor_attempt_version_rejected_settles_platform_failed() {
+        let rig = rig();
+        commit_owner(&rig, &implementation(), b"[]");
+        let record = actor_record(
+            "task-actor",
+            &implementation(),
+            b"[]",
+            rig.store.now().await.expect("now"),
+        );
+        let claimed = create_and_claim(&rig, record).await;
+        assert_eq!(
+            rig.admission.admit(&claimed).await,
+            AdmissionDecision::Accepted
+        );
+        let invocation_id = invoke_invocation_id(&rig);
+        let bytes = owner_error_frame(
+            &invocation_id,
+            ActorMethodErrorFramePayload::ActorVersionRejectedError {
+                actor_ref: ActorLogicalRefFrameHeader {
+                    service_id: SERVICE_ID.to_string(),
+                    actor_type_identity: actor_type_identity(),
+                    actor_id_type_identity: actor_id_type_identity(),
+                    actor_id_encoding_version: "v1".to_string(),
+                    canonical_actor_id_key_bytes_base64: "a2V5".to_string(),
+                    actor_id_hash: format!("sha256:{}", "a".repeat(64)),
+                    epoch: 1,
+                },
+                requested_implementation_identity: implementation(),
+                accepted_implementation_identity: implementation_new(),
             },
-            requested_implementation_identity: implementation(),
-            accepted_implementation_identity: implementation_new(),
-        },
-    );
-    rig.sink.handle(&rig.session, &bytes).expect("handle error");
-    wait_for_status(
-        rig.store.as_ref(),
-        "task-actor",
-        TaskStatusKind::PlatformFailed,
-    )
-    .await;
-    rig.worker.abort();
-}
+        );
+        rig.sink.handle(&rig.session, &bytes).expect("handle error");
+        wait_for_status(
+            rig.store.as_ref(),
+            "task-actor",
+            TaskStatusKind::PlatformFailed,
+        )
+        .await;
+        rig.worker.abort();
+    }
 
-#[tokio::test]
-async fn actor_attempt_owner_disconnect_is_uncertain_no_settlement() {
-    let rig = rig();
-    commit_owner(&rig, &implementation(), b"[]");
-    let record = actor_record(
-        "task-actor",
-        &implementation(),
-        b"[]",
-        rig.store.now().await.expect("now"),
-    );
-    let claimed = create_and_claim(&rig, record).await;
-    assert_eq!(
-        rig.admission.admit(&claimed).await,
-        AdmissionDecision::Accepted
-    );
-    // The owner session closes: no settlement, the attempt stays leased and
-    // lease expiry recovery owns the next attempt.
-    rig.sink.on_runtime_session_closed(&rig.session);
-    assert_eq!(
-        status_kind(rig.store.as_ref(), "task-actor").await,
-        TaskStatusKind::Running
-    );
-    rig.worker.abort();
+    #[tokio::test]
+    async fn actor_attempt_owner_disconnect_is_uncertain_no_settlement() {
+        let rig = rig();
+        commit_owner(&rig, &implementation(), b"[]");
+        let record = actor_record(
+            "task-actor",
+            &implementation(),
+            b"[]",
+            rig.store.now().await.expect("now"),
+        );
+        let claimed = create_and_claim(&rig, record).await;
+        assert_eq!(
+            rig.admission.admit(&claimed).await,
+            AdmissionDecision::Accepted
+        );
+        // The owner session closes: no settlement, the attempt stays leased and
+        // lease expiry recovery owns the next attempt.
+        rig.sink.on_runtime_session_closed(&rig.session);
+        assert_eq!(
+            status_kind(rig.store.as_ref(), "task-actor").await,
+            TaskStatusKind::Running
+        );
+        rig.worker.abort();
+    }
 }
 
 async fn wait_for_activation_request(rig: &Rig) -> ActivateInitialControlRequest {

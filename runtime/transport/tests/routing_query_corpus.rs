@@ -224,94 +224,100 @@ fn candidate_query(
     candidates
 }
 
-#[test]
-fn routing_query_scenarios_match_frozen_projection() {
-    for (name, json) in scenario_files() {
-        let scenario: Scenario = serde_json::from_str(json)
-            .unwrap_or_else(|error| panic!("{name} must decode: {error}"));
-        assert_eq!(scenario.schema_version, 1, "{name}");
-        assert_eq!(scenario.scenario, name, "{name}");
-        assert!(
-            !scenario.epoch.deployment.service_id.is_empty()
-                && !scenario.epoch.deployment.contract_version.is_empty()
-                && !scenario.epoch.deployment.deployment_revision.is_empty()
-                && !scenario
-                    .epoch
-                    .deployment
-                    .deployment_artifact_identity
-                    .is_empty(),
-            "{name} deployment coordinates"
-        );
-        assert!(!scenario.expect.note.is_empty(), "{name} note");
-        assert!(
-            scenario.epoch.generation >= 1,
-            "{name} captured epoch generation must be positive"
-        );
-        assert!(
-            !scenario.epoch.profile.is_empty()
-                && !scenario.epoch.assembly_identity.is_empty()
-                && !scenario.epoch.config_snapshot_id.is_empty(),
-            "{name} captured epoch tuple coordinates"
-        );
-        assert!(
-            REQUIRED_SCENARIOS.contains(&name),
-            "{name} must be a required scenario"
-        );
-        let mut ids = std::collections::HashSet::new();
-        for session in &scenario.sessions {
-            assert!(!session.id.is_empty(), "{name} session id");
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn routing_query_scenarios_match_frozen_projection() {
+        for (name, json) in scenario_files() {
+            let scenario: Scenario = serde_json::from_str(json)
+                .unwrap_or_else(|error| panic!("{name} must decode: {error}"));
+            assert_eq!(scenario.schema_version, 1, "{name}");
+            assert_eq!(scenario.scenario, name, "{name}");
             assert!(
-                ids.insert(session.id.as_str()),
-                "{name} duplicate session id {}",
-                session.id
+                !scenario.epoch.deployment.service_id.is_empty()
+                    && !scenario.epoch.deployment.contract_version.is_empty()
+                    && !scenario.epoch.deployment.deployment_revision.is_empty()
+                    && !scenario
+                        .epoch
+                        .deployment
+                        .deployment_artifact_identity
+                        .is_empty(),
+                "{name} deployment coordinates"
+            );
+            assert!(!scenario.expect.note.is_empty(), "{name} note");
+            assert!(
+                scenario.epoch.generation >= 1,
+                "{name} captured epoch generation must be positive"
             );
             assert!(
-                !session.session_epoch.replica_id.is_empty(),
-                "{name} session replica"
+                !scenario.epoch.profile.is_empty()
+                    && !scenario.epoch.assembly_identity.is_empty()
+                    && !scenario.epoch.config_snapshot_id.is_empty(),
+                "{name} captured epoch tuple coordinates"
+            );
+            assert!(
+                REQUIRED_SCENARIOS.contains(&name),
+                "{name} must be a required scenario"
+            );
+            let mut ids = std::collections::HashSet::new();
+            for session in &scenario.sessions {
+                assert!(!session.id.is_empty(), "{name} session id");
+                assert!(
+                    ids.insert(session.id.as_str()),
+                    "{name} duplicate session id {}",
+                    session.id
+                );
+                assert!(
+                    !session.session_epoch.replica_id.is_empty(),
+                    "{name} session replica"
+                );
+            }
+
+            let candidates = candidate_query(
+                &scenario.query,
+                &scenario.router_artifact_root,
+                scenario.directory_revision,
+                &scenario.sessions,
+            );
+            assert_eq!(candidates, scenario.expect.candidates, "{name}");
+        }
+    }
+
+    #[test]
+    fn scenarios_cover_every_required_projection_rule() {
+        let names: HashSet<&str> = scenario_files().iter().map(|(name, _)| *name).collect();
+        for required in REQUIRED_SCENARIOS {
+            assert!(
+                names.contains(required),
+                "required scenario {required} is missing"
             );
         }
+        assert_eq!(names.len(), REQUIRED_SCENARIOS.len());
+    }
 
+    #[test]
+    fn heartbeat_freshness_never_enters_candidate_projection() {
+        // The corpus scenario 08 freezes this rule; this test pins the reference
+        // model to ignore the field entirely (it is only parsed for documentation).
+        let json =
+            include_str!("../testdata/routing-query/scenarios/08-heartbeat-freshness-ignored.json");
+        let scenario: Scenario =
+            serde_json::from_str(json).expect("heartbeat scenario must decode");
+        assert!(
+            scenario
+                .sessions
+                .iter()
+                .all(|session| !session.heartbeat_fresh),
+            "fixture session must be heartbeat-stale"
+        );
         let candidates = candidate_query(
             &scenario.query,
             &scenario.router_artifact_root,
             scenario.directory_revision,
             &scenario.sessions,
         );
-        assert_eq!(candidates, scenario.expect.candidates, "{name}");
+        assert_eq!(candidates.len(), 1);
     }
-}
-
-#[test]
-fn scenarios_cover_every_required_projection_rule() {
-    let names: HashSet<&str> = scenario_files().iter().map(|(name, _)| *name).collect();
-    for required in REQUIRED_SCENARIOS {
-        assert!(
-            names.contains(required),
-            "required scenario {required} is missing"
-        );
-    }
-    assert_eq!(names.len(), REQUIRED_SCENARIOS.len());
-}
-
-#[test]
-fn heartbeat_freshness_never_enters_candidate_projection() {
-    // The corpus scenario 08 freezes this rule; this test pins the reference
-    // model to ignore the field entirely (it is only parsed for documentation).
-    let json =
-        include_str!("../testdata/routing-query/scenarios/08-heartbeat-freshness-ignored.json");
-    let scenario: Scenario = serde_json::from_str(json).expect("heartbeat scenario must decode");
-    assert!(
-        scenario
-            .sessions
-            .iter()
-            .all(|session| !session.heartbeat_fresh),
-        "fixture session must be heartbeat-stale"
-    );
-    let candidates = candidate_query(
-        &scenario.query,
-        &scenario.router_artifact_root,
-        scenario.directory_revision,
-        &scenario.sessions,
-    );
-    assert_eq!(candidates.len(), 1);
 }

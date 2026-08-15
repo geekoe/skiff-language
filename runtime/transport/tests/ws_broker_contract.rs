@@ -372,219 +372,224 @@ fn source(sender: &'static str, session: &'static str) -> RuntimeSource {
     RuntimeSource { sender, session }
 }
 
-#[test]
-fn outbound_roundtrip_settles_exact_runtime_source() {
-    let mut broker = BrokerRef::default();
-    let gen = broker.attach("c1", "g1");
-    let runtime = source("r1", "s1");
-    assert_eq!(
-        broker.handle_runtime_request(&gen, "req-1", &runtime),
-        RuntimeOutcome::Success
-    );
-    assert_eq!(broker.outbound_pending(), 1);
-    assert_eq!(broker.writer(&gen).writes.len(), 1);
-    assert!(broker.writer(&gen).writes[0].contains("\"id\":\"g1:0\""));
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    assert!(broker.peer_response(&gen, "g1:0").is_ok());
-    assert_eq!(broker.outbound_pending(), 0);
-    assert_eq!(broker.outbound_tombstones, vec!["g1:0"]);
-}
-
-#[test]
-fn out_of_order_responses_and_late_response_isolation() {
-    let mut broker = BrokerRef::default();
-    let gen = broker.attach("c1", "g1");
-    let runtime = source("r1", "s1");
-    assert_eq!(
-        broker.handle_runtime_request(&gen, "req-1", &runtime),
-        RuntimeOutcome::Success
-    );
-    assert_eq!(
-        broker.handle_runtime_request(&gen, "req-2", &runtime),
-        RuntimeOutcome::Success
-    );
-    assert!(broker.peer_response(&gen, "g1:1").is_ok());
-    assert!(broker.peer_response(&gen, "g1:0").is_ok());
-    assert_eq!(broker.outbound_pending(), 0);
-    // Late response for a settled id is isolated by the tombstone.
-    assert!(broker.peer_response(&gen, "g1:1").is_ok());
-    assert!(
-        broker.generations.contains_key(&gen),
-        "generation stays open"
-    );
-}
-
-#[test]
-fn deadline_wins_exactly_once() {
-    let mut broker = BrokerRef::default();
-    let gen = broker.attach("c1", "g1");
-    let runtime = source("r1", "s1");
-    assert_eq!(
-        broker.handle_runtime_request(&gen, "req-1", &runtime),
-        RuntimeOutcome::Success
-    );
-    broker.deadline(&gen, "req-1", &runtime);
-    assert_eq!(broker.outbound_pending(), 0);
-    assert_eq!(broker.outbound_tombstones.len(), 1);
-    // Late peer response after the deadline is isolated.
-    assert!(broker.peer_response(&gen, "g1:0").is_ok());
-    assert!(
-        broker.generations.contains_key(&gen),
-        "deadline does not close the generation"
-    );
-}
-
-#[test]
-fn runtime_cancel_detaches_without_peer_write() {
-    let mut broker = BrokerRef::default();
-    let gen = broker.attach("c1", "g1");
-    let runtime = source("r1", "s1");
-    assert_eq!(
-        broker.handle_runtime_request(&gen, "req-1", &runtime),
-        RuntimeOutcome::Success
-    );
-    assert!(broker.runtime_cancel(&runtime, "req-1"));
-    assert_eq!(broker.outbound_pending(), 0);
-    assert_eq!(broker.outbound_tombstones.len(), 1);
-    assert_eq!(
-        broker.writer(&gen).writes.len(),
-        1,
-        "cancel must not write a peer frame"
-    );
-}
-
-#[test]
-fn runtime_disconnect_detaches_only_that_session() {
-    let mut broker = BrokerRef::default();
-    let gen_a = broker.attach("c1", "g1");
-    let gen_b = broker.attach("c2", "g2");
-    let runtime_a = source("r1", "s1");
-    let runtime_b = source("r2", "s2");
-    assert_eq!(
-        broker.handle_runtime_request(&gen_a, "req-a", &runtime_a),
-        RuntimeOutcome::Success
-    );
-    assert_eq!(
-        broker.handle_runtime_request(&gen_b, "req-b", &runtime_b),
-        RuntimeOutcome::Success
-    );
-    assert_eq!(broker.runtime_disconnect(&runtime_a), 1);
-    assert_eq!(broker.outbound_pending(), 1);
-    assert_eq!(broker.outbound_tombstones.len(), 1);
-    assert!(broker.peer_response(&gen_b, "g2:0").is_ok());
-    assert_eq!(broker.outbound_pending(), 0);
-}
-
-#[test]
-fn capacity_and_duplicate_runtime_key_fail_closed() {
-    let mut broker = BrokerRef::default();
-    let gen = broker.attach("c1", "g1");
-    let runtime = source("r1", "s1");
-    assert_eq!(
-        broker.handle_runtime_request(&gen, "req-1", &runtime),
-        RuntimeOutcome::Success
-    );
-    assert_eq!(
-        broker.handle_runtime_request(&gen, "req-2", &runtime),
-        RuntimeOutcome::Success
-    );
-    assert_eq!(
-        broker.handle_runtime_request(&gen, "req-3", &runtime),
-        RuntimeOutcome::ResourceLimit
-    );
-    assert_eq!(
-        broker.writer(&gen).writes.len(),
-        2,
-        "capacity rejection must not write"
-    );
-    assert_eq!(
-        broker.handle_runtime_request(&gen, "req-1", &runtime),
-        RuntimeOutcome::ProtocolError
-    );
-    assert_eq!(broker.protocol_violations.len(), 1);
-}
-
-#[test]
-fn duplicate_inbound_id_and_unknown_response_close_generation() {
-    let mut broker = BrokerRef::default();
-    let gen = broker.attach("c1", "g1");
-    assert!(broker.peer_request(&gen, "p1").is_ok());
-    broker.inbound_dispatch(&gen, "p1");
-    assert_eq!(broker.inbound_pending(), 0);
-    assert_eq!(broker.inbound_tombstones, vec!["p1"]);
-    assert!(broker.peer_request(&gen, "p1").is_err());
-    broker.close_generation(&gen, 1002, "duplicate JSON-RPC request id");
-    assert!(!broker.generations.contains_key(&gen));
-    assert_eq!(broker.outbound_tombstones.len(), 0);
-    assert_eq!(broker.inbound_tombstones.len(), 0);
-
-    let mut broker = BrokerRef::default();
-    let gen = broker.attach("c1", "g1");
-    let error = broker
-        .peer_response(&gen, "unknown:0")
-        .expect_err("unknown response id must close");
-    assert_eq!(error.0, 1002);
-}
-
-#[test]
-fn peer_disconnect_settles_all_pending_and_removes_generation() {
-    let mut broker = BrokerRef::default();
-    let gen = broker.attach("c1", "g1");
-    let runtime = source("r1", "s1");
-    assert_eq!(
-        broker.handle_runtime_request(&gen, "req-1", &runtime),
-        RuntimeOutcome::Success
-    );
-    assert!(broker.peer_request(&gen, "p1").is_ok());
-    broker.peer_disconnect(&gen);
-    assert_eq!(broker.outbound_pending(), 0);
-    assert_eq!(broker.inbound_pending(), 0);
-    assert_eq!(broker.outbound_by_peer.len(), 0);
-    assert_eq!(broker.inbound_by_peer.len(), 0);
-    assert!(!broker.generations.contains_key(&gen));
-    // Tombstones were removed with the generation; a late response now has
-    // nowhere to land and is treated as unknown by the endpoint owner.
-    assert_eq!(broker.outbound_tombstones.len(), 0);
-}
-
-#[test]
-fn writer_failure_fences_only_the_exact_request() {
-    let mut broker = BrokerRef::default();
-    let gen = broker.attach("c1", "g1");
-    let runtime = source("r1", "s1");
-    broker.writer(&gen).fail_next = true;
-    assert_eq!(
-        broker.handle_runtime_request(&gen, "req-1", &runtime),
-        RuntimeOutcome::TransportUnavailable
-    );
-    assert_eq!(broker.outbound_pending(), 0);
-    assert_eq!(broker.writer(&gen).writes.len(), 0);
-    assert_eq!(
-        broker.handle_runtime_request(&gen, "req-2", &runtime),
-        RuntimeOutcome::Success
-    );
-    assert_eq!(broker.outbound_pending(), 1);
-    assert_eq!(broker.writer(&gen).writes.len(), 1);
-}
-
-#[test]
-fn tombstone_fifo_eviction_permits_reuse_but_keeps_active_fence() {
-    let mut broker = BrokerRef::with_limits(3, 2, 2);
-    let gen = broker.attach("c1", "g1");
-    let runtime = source("r1", "s1");
-    for request_id in ["req-1", "req-2", "req-3"] {
+    #[test]
+    fn outbound_roundtrip_settles_exact_runtime_source() {
+        let mut broker = BrokerRef::default();
+        let gen = broker.attach("c1", "g1");
+        let runtime = source("r1", "s1");
         assert_eq!(
-            broker.handle_runtime_request(&gen, request_id, &runtime),
+            broker.handle_runtime_request(&gen, "req-1", &runtime),
             RuntimeOutcome::Success
         );
+        assert_eq!(broker.outbound_pending(), 1);
+        assert_eq!(broker.writer(&gen).writes.len(), 1);
+        assert!(broker.writer(&gen).writes[0].contains("\"id\":\"g1:0\""));
+
+        assert!(broker.peer_response(&gen, "g1:0").is_ok());
+        assert_eq!(broker.outbound_pending(), 0);
+        assert_eq!(broker.outbound_tombstones, vec!["g1:0"]);
     }
-    assert_eq!(broker.outbound_tombstones.len(), 0);
-    assert!(broker.peer_response(&gen, "g1:0").is_ok());
-    assert!(broker.peer_response(&gen, "g1:1").is_ok());
-    assert!(broker.peer_response(&gen, "g1:2").is_ok());
-    assert_eq!(broker.outbound_tombstones.len(), 2);
-    // The first tombstone was evicted by FIFO; its late response is no longer
-    // isolated and must not reopen state.
-    assert_eq!(broker.peer_response(&gen, "g1:0").unwrap_err().0, 1002);
-    assert_eq!(broker.outbound_pending(), 0);
+
+    #[test]
+    fn out_of_order_responses_and_late_response_isolation() {
+        let mut broker = BrokerRef::default();
+        let gen = broker.attach("c1", "g1");
+        let runtime = source("r1", "s1");
+        assert_eq!(
+            broker.handle_runtime_request(&gen, "req-1", &runtime),
+            RuntimeOutcome::Success
+        );
+        assert_eq!(
+            broker.handle_runtime_request(&gen, "req-2", &runtime),
+            RuntimeOutcome::Success
+        );
+        assert!(broker.peer_response(&gen, "g1:1").is_ok());
+        assert!(broker.peer_response(&gen, "g1:0").is_ok());
+        assert_eq!(broker.outbound_pending(), 0);
+        // Late response for a settled id is isolated by the tombstone.
+        assert!(broker.peer_response(&gen, "g1:1").is_ok());
+        assert!(
+            broker.generations.contains_key(&gen),
+            "generation stays open"
+        );
+    }
+
+    #[test]
+    fn deadline_wins_exactly_once() {
+        let mut broker = BrokerRef::default();
+        let gen = broker.attach("c1", "g1");
+        let runtime = source("r1", "s1");
+        assert_eq!(
+            broker.handle_runtime_request(&gen, "req-1", &runtime),
+            RuntimeOutcome::Success
+        );
+        broker.deadline(&gen, "req-1", &runtime);
+        assert_eq!(broker.outbound_pending(), 0);
+        assert_eq!(broker.outbound_tombstones.len(), 1);
+        // Late peer response after the deadline is isolated.
+        assert!(broker.peer_response(&gen, "g1:0").is_ok());
+        assert!(
+            broker.generations.contains_key(&gen),
+            "deadline does not close the generation"
+        );
+    }
+
+    #[test]
+    fn runtime_cancel_detaches_without_peer_write() {
+        let mut broker = BrokerRef::default();
+        let gen = broker.attach("c1", "g1");
+        let runtime = source("r1", "s1");
+        assert_eq!(
+            broker.handle_runtime_request(&gen, "req-1", &runtime),
+            RuntimeOutcome::Success
+        );
+        assert!(broker.runtime_cancel(&runtime, "req-1"));
+        assert_eq!(broker.outbound_pending(), 0);
+        assert_eq!(broker.outbound_tombstones.len(), 1);
+        assert_eq!(
+            broker.writer(&gen).writes.len(),
+            1,
+            "cancel must not write a peer frame"
+        );
+    }
+
+    #[test]
+    fn runtime_disconnect_detaches_only_that_session() {
+        let mut broker = BrokerRef::default();
+        let gen_a = broker.attach("c1", "g1");
+        let gen_b = broker.attach("c2", "g2");
+        let runtime_a = source("r1", "s1");
+        let runtime_b = source("r2", "s2");
+        assert_eq!(
+            broker.handle_runtime_request(&gen_a, "req-a", &runtime_a),
+            RuntimeOutcome::Success
+        );
+        assert_eq!(
+            broker.handle_runtime_request(&gen_b, "req-b", &runtime_b),
+            RuntimeOutcome::Success
+        );
+        assert_eq!(broker.runtime_disconnect(&runtime_a), 1);
+        assert_eq!(broker.outbound_pending(), 1);
+        assert_eq!(broker.outbound_tombstones.len(), 1);
+        assert!(broker.peer_response(&gen_b, "g2:0").is_ok());
+        assert_eq!(broker.outbound_pending(), 0);
+    }
+
+    #[test]
+    fn capacity_and_duplicate_runtime_key_fail_closed() {
+        let mut broker = BrokerRef::default();
+        let gen = broker.attach("c1", "g1");
+        let runtime = source("r1", "s1");
+        assert_eq!(
+            broker.handle_runtime_request(&gen, "req-1", &runtime),
+            RuntimeOutcome::Success
+        );
+        assert_eq!(
+            broker.handle_runtime_request(&gen, "req-2", &runtime),
+            RuntimeOutcome::Success
+        );
+        assert_eq!(
+            broker.handle_runtime_request(&gen, "req-3", &runtime),
+            RuntimeOutcome::ResourceLimit
+        );
+        assert_eq!(
+            broker.writer(&gen).writes.len(),
+            2,
+            "capacity rejection must not write"
+        );
+        assert_eq!(
+            broker.handle_runtime_request(&gen, "req-1", &runtime),
+            RuntimeOutcome::ProtocolError
+        );
+        assert_eq!(broker.protocol_violations.len(), 1);
+    }
+
+    #[test]
+    fn duplicate_inbound_id_and_unknown_response_close_generation() {
+        let mut broker = BrokerRef::default();
+        let gen = broker.attach("c1", "g1");
+        assert!(broker.peer_request(&gen, "p1").is_ok());
+        broker.inbound_dispatch(&gen, "p1");
+        assert_eq!(broker.inbound_pending(), 0);
+        assert_eq!(broker.inbound_tombstones, vec!["p1"]);
+        assert!(broker.peer_request(&gen, "p1").is_err());
+        broker.close_generation(&gen, 1002, "duplicate JSON-RPC request id");
+        assert!(!broker.generations.contains_key(&gen));
+        assert_eq!(broker.outbound_tombstones.len(), 0);
+        assert_eq!(broker.inbound_tombstones.len(), 0);
+
+        let mut broker = BrokerRef::default();
+        let gen = broker.attach("c1", "g1");
+        let error = broker
+            .peer_response(&gen, "unknown:0")
+            .expect_err("unknown response id must close");
+        assert_eq!(error.0, 1002);
+    }
+
+    #[test]
+    fn peer_disconnect_settles_all_pending_and_removes_generation() {
+        let mut broker = BrokerRef::default();
+        let gen = broker.attach("c1", "g1");
+        let runtime = source("r1", "s1");
+        assert_eq!(
+            broker.handle_runtime_request(&gen, "req-1", &runtime),
+            RuntimeOutcome::Success
+        );
+        assert!(broker.peer_request(&gen, "p1").is_ok());
+        broker.peer_disconnect(&gen);
+        assert_eq!(broker.outbound_pending(), 0);
+        assert_eq!(broker.inbound_pending(), 0);
+        assert_eq!(broker.outbound_by_peer.len(), 0);
+        assert_eq!(broker.inbound_by_peer.len(), 0);
+        assert!(!broker.generations.contains_key(&gen));
+        // Tombstones were removed with the generation; a late response now has
+        // nowhere to land and is treated as unknown by the endpoint owner.
+        assert_eq!(broker.outbound_tombstones.len(), 0);
+    }
+
+    #[test]
+    fn writer_failure_fences_only_the_exact_request() {
+        let mut broker = BrokerRef::default();
+        let gen = broker.attach("c1", "g1");
+        let runtime = source("r1", "s1");
+        broker.writer(&gen).fail_next = true;
+        assert_eq!(
+            broker.handle_runtime_request(&gen, "req-1", &runtime),
+            RuntimeOutcome::TransportUnavailable
+        );
+        assert_eq!(broker.outbound_pending(), 0);
+        assert_eq!(broker.writer(&gen).writes.len(), 0);
+        assert_eq!(
+            broker.handle_runtime_request(&gen, "req-2", &runtime),
+            RuntimeOutcome::Success
+        );
+        assert_eq!(broker.outbound_pending(), 1);
+        assert_eq!(broker.writer(&gen).writes.len(), 1);
+    }
+
+    #[test]
+    fn tombstone_fifo_eviction_permits_reuse_but_keeps_active_fence() {
+        let mut broker = BrokerRef::with_limits(3, 2, 2);
+        let gen = broker.attach("c1", "g1");
+        let runtime = source("r1", "s1");
+        for request_id in ["req-1", "req-2", "req-3"] {
+            assert_eq!(
+                broker.handle_runtime_request(&gen, request_id, &runtime),
+                RuntimeOutcome::Success
+            );
+        }
+        assert_eq!(broker.outbound_tombstones.len(), 0);
+        assert!(broker.peer_response(&gen, "g1:0").is_ok());
+        assert!(broker.peer_response(&gen, "g1:1").is_ok());
+        assert!(broker.peer_response(&gen, "g1:2").is_ok());
+        assert_eq!(broker.outbound_tombstones.len(), 2);
+        // The first tombstone was evicted by FIFO; its late response is no longer
+        // isolated and must not reopen state.
+        assert_eq!(broker.peer_response(&gen, "g1:0").unwrap_err().0, 1002);
+        assert_eq!(broker.outbound_pending(), 0);
+    }
 }

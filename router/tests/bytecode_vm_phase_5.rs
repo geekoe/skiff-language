@@ -81,42 +81,47 @@ struct HealthCounters {
     task_requests_active: u64,
 }
 
-#[test]
-fn phase_5_router_full_chain_vcp() {
-    let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("Router crate has repository parent");
-    let script = repository.join("scripts/lib/bytecode-vm-phase-5-router-harness.mjs");
-    assert!(script.is_file(), "Phase 5 Router harness is missing");
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    let output = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
-        .arg(&script)
-        .current_dir(repository)
-        .env(ROUTER_BIN_ENV, env!("CARGO_BIN_EXE_skiff-router"))
-        .output()
-        .expect("start Phase 5 production Router harness");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    #[test]
+    fn phase_5_router_full_chain_vcp() {
+        let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("Router crate has repository parent");
+        let script = repository.join("scripts/lib/bytecode-vm-phase-5-router-harness.mjs");
+        assert!(script.is_file(), "Phase 5 Router harness is missing");
 
-    assert!(
+        let output = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
+            .arg(&script)
+            .current_dir(repository)
+            .env(ROUTER_BIN_ENV, env!("CARGO_BIN_EXE_skiff-router"))
+            .output()
+            .expect("start Phase 5 production Router harness");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(
         output.status.success(),
         "Phase 5 production Router harness failed at a real process boundary\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
-    let evidence_lines = stdout
-        .lines()
-        .filter(|line| line.trim_start().starts_with('{'))
-        .collect::<Vec<_>>();
-    assert_eq!(
-        evidence_lines.len(),
-        1,
-        "Phase 5 Router harness must emit exactly one JSON evidence line:\n{stdout}"
-    );
-    let evidence =
-        serde_json::from_str::<RouterProofEvidence>(evidence_lines[0]).unwrap_or_else(|error| {
-            panic!("Phase 5 Router evidence is not the exact typed DTO: {error}")
-        });
-    println!("phase-5-router-evidence={}", evidence_lines[0]);
-    assert_exact_evidence(&evidence);
+        let evidence_lines = stdout
+            .lines()
+            .filter(|line| line.trim_start().starts_with('{'))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            evidence_lines.len(),
+            1,
+            "Phase 5 Router harness must emit exactly one JSON evidence line:\n{stdout}"
+        );
+        let evidence = serde_json::from_str::<RouterProofEvidence>(evidence_lines[0])
+            .unwrap_or_else(|error| {
+                panic!("Phase 5 Router evidence is not the exact typed DTO: {error}")
+            });
+        println!("phase-5-router-evidence={}", evidence_lines[0]);
+        assert_exact_evidence(&evidence);
+    }
 }
 
 fn assert_exact_evidence(evidence: &RouterProofEvidence) {
