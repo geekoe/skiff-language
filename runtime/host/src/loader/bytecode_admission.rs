@@ -1,11 +1,12 @@
 use std::{
+    collections::BTreeMap,
     path::Path,
     sync::{Arc, Mutex},
 };
 
 use skiff_artifact_model::{
-    ContractOperationId, GatewayAdapterKind, GatewayAdapterSource, GatewayEntryIdentity,
-    GatewayEntryKey, IngressSelector, ServiceDeploymentRef,
+    ContractOperationId, DeploymentArtifactIdentity, GatewayAdapterKind, GatewayAdapterSource,
+    GatewayEntryIdentity, GatewayEntryKey, IngressSelector, ServiceDeploymentRef,
 };
 use skiff_runtime_deployment_image::{
     DeploymentImageCache, DeploymentLoadError, DeploymentLoadFailureReason, DeploymentOwnerIdentity,
@@ -60,13 +61,26 @@ pub(crate) enum BytecodeRouteSelector {
 #[derive(Clone)]
 pub(crate) struct BytecodeDeploymentRegistry {
     cache: DeploymentImageCache<DeploymentExecutionImage, BytecodeDeploymentLoadError>,
+    loaded_sync: Arc<Mutex<BTreeMap<DeploymentArtifactIdentity, Arc<DeploymentExecutionImage>>>>,
 }
 
 impl BytecodeDeploymentRegistry {
     pub(crate) fn new() -> Self {
         Self {
             cache: DeploymentImageCache::new(),
+            loaded_sync: Arc::new(Mutex::new(BTreeMap::new())),
         }
+    }
+
+    pub(crate) fn loaded_sync(
+        &self,
+        deployment: &ServiceDeploymentRef,
+    ) -> Option<Arc<DeploymentExecutionImage>> {
+        self.loaded_sync
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&deployment.deployment_artifact_identity)
+            .cloned()
     }
 
     pub(crate) async fn is_loaded_build_id(&self, build_id: &str) -> bool {
@@ -148,7 +162,20 @@ impl BytecodeDeploymentRegistry {
             })
             .await;
         match result {
-            Ok(image) => Ok(Some(image)),
+            Ok(image) => {
+                self.loaded_sync
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(
+                        image
+                            .owner()
+                            .deployment()
+                            .deployment_artifact_identity
+                            .clone(),
+                        Arc::clone(&image),
+                    );
+                Ok(Some(image))
+            }
             Err(error) if is_legacy_assembly(&error) => Ok(None),
             Err(error) => Err(anyhow::anyhow!("bytecode deployment load failed: {error}")),
         }

@@ -21,6 +21,7 @@ pub mod service_value_plan;
 pub mod stream;
 pub mod type_descriptor;
 pub mod value;
+pub mod vm_materialize;
 pub use error::{Result, RuntimeError};
 pub use service_value_plan::{DecodedSelectedServiceValue, ServiceValueSelection};
 

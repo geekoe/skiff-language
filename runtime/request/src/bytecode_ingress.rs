@@ -52,6 +52,10 @@ use skiff_runtime_vm::{
 };
 
 use crate::{
+    bytecode_children::{
+        execute_service_child, BytecodeChildHeapFactory, BytecodeRequestChildComposition,
+        RequestChildHeapFactory,
+    },
     bytecode_host_effects::{
         BytecodeHttpFailure, BytecodeHttpRequest, BytecodeHttpResponse,
         BytecodeHttpStreamRegistrar, BytecodeHttpStreamResponse, BytecodeServerStreamWriteFailure,
@@ -84,6 +88,9 @@ pub struct BytecodeRequestExecutionInput {
     /// server-stream entry. Capacity, sequence and terminal state stay in the
     /// scheduler-owned resource table.
     pub server_stream_writer: Option<Arc<dyn crate::BytecodeServerStreamWriterPort>>,
+    /// Child composition injected by the host/request seam. Service children
+    /// fail closed when the resolver/factory is absent.
+    pub child_composition: BytecodeRequestChildComposition,
     /// Optional injected VM heap (production composition or a recording heap
     /// spy). When `None`, the driver constructs the production
     /// [`RequestVmHeap`] from `handles.request_heap_limits`. The injected heap
@@ -232,6 +239,7 @@ fn start_bytecode_request(
         handles,
         http_client,
         server_stream_writer,
+        child_composition: _,
         heap: injected_heap,
     } = input;
 
@@ -370,6 +378,8 @@ pub fn drive_runtime_bytecode_request_controlled(
     input: BytecodeRequestExecutionInput,
 ) -> ControlledBytecodeDrive {
     let mut context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
+    let input_child_composition = input.child_composition.clone();
+    let observer = input.observer.clone();
     let start = match start_bytecode_request(input, context.resource_table()) {
         Ok(start) => start,
         Err(error) => {
@@ -406,10 +416,19 @@ pub fn drive_runtime_bytecode_request_controlled(
         http_client: start.http_client.clone(),
         execution_control: start.execution_control.clone(),
         stream_registrar,
+        child_composition: input_child_composition.clone(),
         cleanup_roots: Mutex::new(Vec::new()),
         materialization_escrows: Mutex::new(Vec::new()),
         manual_sleep_completion: Mutex::new(None),
     });
+    let child_heap_factory: Arc<dyn BytecodeChildHeapFactory> = input_child_composition
+        .child_heap_factory
+        .clone()
+        .unwrap_or_else(|| {
+            Arc::new(RequestChildHeapFactory::new(
+                context.child_heap_registration(),
+            ))
+        });
     let stream_supervisor: Option<Arc<dyn BytecodeStreamSupervisor<VmFiber>>> =
         start.server_stream.as_ref().map(|stream| {
             Arc::new(BytecodeServerStreamSupervisor::new(
@@ -421,6 +440,9 @@ pub fn drive_runtime_bytecode_request_controlled(
     let mut context = context.with_ports(BytecodeSchedulerPorts {
         child_executor: Some(Arc::new(BytecodeHostExecutor {
             runtime: Arc::clone(&runtime),
+            child_composition: input_child_composition,
+            child_heap_factory,
+            observer,
         })),
         stream_supervisor,
     });
@@ -592,6 +614,8 @@ pub(super) struct RequestPendingRuntime {
     pub(super) execution_control: crate::OwnedExecutionControl,
     #[allow(dead_code)]
     stream_registrar: BytecodeHttpStreamRegistrar,
+    #[allow(dead_code)]
+    child_composition: BytecodeRequestChildComposition,
     /// Owners whose explicit release failed during synchronous host-result
     /// materialization. No pending or GC safepoint intervenes before terminal
     /// request retention takes this escrow.
@@ -705,6 +729,9 @@ where
 /// Exhaustive executor over the closed linked host-effect identity set.
 struct BytecodeHostExecutor {
     runtime: Arc<RequestPendingRuntime>,
+    child_composition: BytecodeRequestChildComposition,
+    child_heap_factory: Arc<dyn BytecodeChildHeapFactory>,
+    observer: BytecodeExecutionObserver,
 }
 
 enum HostArgumentUseFailure {
@@ -954,17 +981,29 @@ impl BytecodeHostExecutor {
 impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
     fn execute_child(
         &self,
-        _invocation: skiff_runtime_vm::ChildInvocation,
-        _heap: &mut dyn VmHeap,
-        _budget: &mut dyn VmBudget,
+        invocation: skiff_runtime_vm::ChildInvocation,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
     ) -> Result<
         BytecodeChildHandoff<VmFiber>,
         BytecodePortFailure<skiff_runtime_vm::ChildInvocation, VmResumeToken>,
     > {
-        Err(BytecodePortFailure::input(
-            BytecodeSchedulerError::UnsupportedChild,
-            _invocation,
-        ))
+        match invocation.target() {
+            skiff_runtime_vm::ChildTarget::Service(_) => execute_service_child(
+                invocation,
+                heap,
+                budget,
+                &self.child_composition,
+                Arc::clone(&self.child_heap_factory),
+                self.runtime.resources.clone(),
+                self.observer.clone(),
+                vm_limits(),
+            ),
+            _ => Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::UnsupportedChild,
+                invocation,
+            )),
+        }
     }
 
     fn execute_adapter(

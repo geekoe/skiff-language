@@ -363,6 +363,7 @@ fn absent_supervisor_input(
         },
         http_client: None,
         server_stream_writer: Some(Arc::new(UnusedWriter)),
+        child_composition: Default::default(),
         heap: Some(heap),
     }
 }

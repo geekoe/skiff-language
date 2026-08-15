@@ -7,7 +7,8 @@ use skiff_runtime_model::bytecode_execution_observation::{
     BytecodeExecutionCorrelation, BytecodeExecutionObserver,
 };
 use skiff_runtime_request::{
-    execution_budget::admit_request_deadline, RequestError, RouterWriterMessage,
+    execution_budget::admit_request_deadline, BytecodeRequestChildComposition, RequestError,
+    RouterWriterMessage,
 };
 use skiff_runtime_transport::protocol::{
     BytecodeRequestDeadlineFrameHeader, BytecodeRequestIngressProtocol,
@@ -489,6 +490,12 @@ fn bytecode_route_target(route: &BytecodeRoute) -> Result<DeploymentExecutionEnt
     route
         .execution_entry()
         .map_err(|error| RuntimeError::Decode(error.to_string()))
+}
+
+pub(super) fn production_bytecode_request_child_composition(
+    host: &RuntimeHost,
+) -> BytecodeRequestChildComposition {
+    crate::host::bytecode_capability_adapter::bytecode_request_child_composition(host)
 }
 
 fn bytecode_required_error(deployment: &ServiceDeploymentRef) -> RuntimeError {

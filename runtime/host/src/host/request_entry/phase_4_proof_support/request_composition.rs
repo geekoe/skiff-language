@@ -192,6 +192,7 @@ async fn drive_phase_4_seam(
         },
         http_client: None,
         server_stream_writer: None,
+        child_composition: Default::default(),
         heap: Some(heap),
     })
 }

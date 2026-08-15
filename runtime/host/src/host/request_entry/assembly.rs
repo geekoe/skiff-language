@@ -19,8 +19,9 @@ use tracing::error;
 
 use super::{
     assembly_wire::{
-        AdmittedBytecodeHttpRequest, AdmittedBytecodeTaskRequest,
-        AdmittedBytecodeWebSocketConnectRequest, AdmittedBytecodeWebSocketConnectionClosedRequest,
+        production_bytecode_request_child_composition, AdmittedBytecodeHttpRequest,
+        AdmittedBytecodeTaskRequest, AdmittedBytecodeWebSocketConnectRequest,
+        AdmittedBytecodeWebSocketConnectionClosedRequest,
     },
     request_error_into_runtime_error, response_event_into_transport_message,
     response_into_transport_message,
@@ -55,6 +56,7 @@ impl RuntimeHost {
             body,
             target,
         } = request;
+        self.preload_service_dependencies(target.image()).await;
         let request_envelope = match bytecode_http_request_envelope(&route, &header, body) {
             Ok(envelope) => envelope,
             Err(error) => {
@@ -108,6 +110,7 @@ impl RuntimeHost {
         ));
         let request_id = header.request_id.clone();
         let host = self.clone();
+        let child_composition = production_bytecode_request_child_composition(self);
         tokio::spawn(async move {
             let request_runner::DrivenBytecodeRequest {
                 result,
@@ -123,6 +126,7 @@ impl RuntimeHost {
                     handles,
                     http_client,
                     server_stream_writer,
+                    child_composition,
                     heap: None,
                 },
             )
@@ -161,6 +165,7 @@ impl RuntimeHost {
             target,
             payload,
         } = request;
+        self.preload_service_dependencies(target.image()).await;
         let request_envelope = bytecode_task_request_envelope(&route, &header, payload);
         let telemetry = bytecode_task_telemetry_context(self, &header, &route);
         let observer = reservation.observer().clone();
@@ -188,6 +193,7 @@ impl RuntimeHost {
         let handles = bytecode_request_execution_handles(self, http_response_max_bytes);
         let request_id = header.request_id.clone();
         let host = self.clone();
+        let child_composition = production_bytecode_request_child_composition(self);
         tokio::spawn(async move {
             let request_runner::DrivenBytecodeRequest {
                 result,
@@ -203,6 +209,7 @@ impl RuntimeHost {
                     handles,
                     http_client,
                     server_stream_writer: None,
+                    child_composition,
                     heap: None,
                 },
             )
@@ -268,6 +275,7 @@ impl RuntimeHost {
             header,
             target,
         } = request;
+        self.preload_service_dependencies(target.image()).await;
         let request_envelope = bytecode_websocket_connect_request_envelope(&route, &header);
         let telemetry = bytecode_websocket_connect_telemetry_context(self, &header, &route);
         let observer = reservation.observer().clone();
@@ -295,6 +303,7 @@ impl RuntimeHost {
         let handles = bytecode_request_execution_handles(self, http_response_max_bytes);
         let request_id = header.request_id.clone();
         let host = self.clone();
+        let child_composition = production_bytecode_request_child_composition(self);
         tokio::spawn(async move {
             let request_runner::DrivenBytecodeRequest {
                 result,
@@ -310,6 +319,7 @@ impl RuntimeHost {
                     handles,
                     http_client,
                     server_stream_writer: None,
+                    child_composition,
                     heap: None,
                 },
             )
@@ -353,6 +363,7 @@ impl RuntimeHost {
             header,
             target,
         } = request;
+        self.preload_service_dependencies(target.image()).await;
         let request_envelope =
             bytecode_websocket_connection_closed_request_envelope(&route, &header);
         let telemetry =
@@ -374,6 +385,7 @@ impl RuntimeHost {
         let execution_budget = supervised_request.execution_budget();
         let handles = bytecode_request_execution_handles(self, http_response_max_bytes);
         let host = self.clone();
+        let child_composition = production_bytecode_request_child_composition(self);
         tokio::spawn(async move {
             let request_runner::DrivenBytecodeRequest {
                 result,
@@ -389,6 +401,7 @@ impl RuntimeHost {
                     handles,
                     http_client,
                     server_stream_writer: None,
+                    child_composition,
                     heap: None,
                 },
             )

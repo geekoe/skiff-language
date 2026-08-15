@@ -11,6 +11,7 @@ skiff-artifact-identity = { path = "../../artifact-identity" }
 skiff-artifact-model = { path = "../../artifact-model" }
 skiff-runtime-boundary = { path = "../boundary" }
 skiff-runtime-capability-context = { path = "../capability-context" }
+skiff-runtime-deployment-image = { path = "../deployment-image" }
 skiff-runtime-linked-bytecode = { path = "../linked-bytecode" }
 skiff-runtime-linker = { path = "../linker" }
 skiff-runtime-model = { path = "../model" }

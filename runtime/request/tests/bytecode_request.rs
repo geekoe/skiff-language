@@ -1278,6 +1278,7 @@ fn server_stream_input_for_fixture(
         },
         http_client: None,
         server_stream_writer: Some(writer),
+        child_composition: Default::default(),
         heap: None,
     }
 }
@@ -1684,6 +1685,7 @@ fn pending_sleep_input(
         },
         http_client: None,
         server_stream_writer: None,
+        child_composition: Default::default(),
         heap: None,
     }
 }
@@ -1890,6 +1892,7 @@ fn execute_scalar_gateway(
         },
         http_client: None,
         server_stream_writer: None,
+        child_composition: Default::default(),
         heap: None,
     })
 }
@@ -1948,6 +1951,7 @@ mod tests {
             },
             http_client: None,
             server_stream_writer: None,
+            child_composition: Default::default(),
             heap: None,
         });
 
@@ -1997,6 +2001,7 @@ mod tests {
             },
             http_client: None,
             server_stream_writer: None,
+            child_composition: Default::default(),
             heap: None,
         };
         input.heap = Some(Box::new(RecordingServerStreamHeap::new(Arc::clone(&trace))));
@@ -2052,6 +2057,7 @@ mod tests {
             },
             http_client: None,
             server_stream_writer: None,
+            child_composition: Default::default(),
             heap: None,
         });
 
@@ -2230,6 +2236,7 @@ mod tests {
             },
             http_client: None,
             server_stream_writer: Some(writer),
+            child_composition: Default::default(),
             heap: None,
         })
         .unwrap_err();
@@ -2271,6 +2278,7 @@ mod tests {
             },
             http_client: None,
             server_stream_writer: None,
+            child_composition: Default::default(),
             heap: None,
         })
         .unwrap();

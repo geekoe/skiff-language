@@ -1,5 +1,6 @@
 #![allow(clippy::large_enum_variant)]
 
+mod bytecode_children;
 mod bytecode_host_effects;
 mod bytecode_ingress;
 mod bytecode_server_stream;
@@ -15,6 +16,10 @@ mod response_event;
 mod runner;
 pub mod vm_heap;
 
+pub use bytecode_children::{
+    BytecodeChildError, BytecodeChildHeapFactory, BytecodeRequestChildComposition,
+    BytecodeServiceChildError, BytecodeServiceResolver, RequestChildHeapFactory,
+};
 pub use bytecode_host_effects::{
     BytecodeHttpClientPort, BytecodeHttpFailure, BytecodeHttpFuture, BytecodeHttpRequest,
     BytecodeHttpResponse, BytecodeHttpStreamRegistrar, BytecodeHttpStreamResponse,

@@ -2620,6 +2620,8 @@ dependencies = [
  "serde_json",
  "skiff-artifact-identity",
  "skiff-artifact-model",
+ "skiff-runtime-linked-bytecode",
+ "skiff-runtime-linker",
  "skiff-runtime-model",
  "thiserror 2.0.18",
  "time",

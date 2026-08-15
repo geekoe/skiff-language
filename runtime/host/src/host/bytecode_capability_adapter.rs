@@ -8,8 +8,9 @@ use skiff_runtime_capability_context::{CancellationToken, HttpRuntimeOptions};
 use skiff_runtime_model::{error::WirePayload, type_plan::leaf_bytes_plan};
 use skiff_runtime_request::{
     BytecodeHttpClientPort, BytecodeHttpFailure, BytecodeHttpFuture, BytecodeHttpRequest,
-    BytecodeHttpResponse, BytecodeHttpStreamRegistrar, BytecodeHttpStreamResponse, HttpNameValue,
-    OwnedExecutionControl,
+    BytecodeHttpResponse, BytecodeHttpStreamRegistrar, BytecodeHttpStreamResponse,
+    BytecodeRequestChildComposition, BytecodeServiceChildError, BytecodeServiceResolver,
+    HttpNameValue, OwnedExecutionControl, RequestMemoryLedger,
 };
 
 use crate::{
@@ -272,6 +273,127 @@ fn ordinary_http_failure(error: RuntimeError) -> Box<dyn WirePayload> {
         OrdinaryRuntimeError::try_new(error)
             .expect("bytecode HTTP cancellation was split before ordinary trait erasure"),
     )
+}
+
+pub(crate) struct ProductionBytecodeServiceResolver {
+    host: RuntimeHost,
+}
+
+impl ProductionBytecodeServiceResolver {
+    pub(crate) fn new(host: RuntimeHost) -> Self {
+        Self { host }
+    }
+}
+
+impl BytecodeServiceResolver for ProductionBytecodeServiceResolver {
+    fn resolve_service(
+        &self,
+        slot: &skiff_runtime_deployment_image::ServiceDependencySlot,
+        _operation: &skiff_artifact_model::ContractOperationId,
+        expected_protocol: &skiff_artifact_model::ServiceProtocolIdentity,
+    ) -> Result<
+        std::sync::Arc<skiff_runtime_linker::DeploymentExecutionImage>,
+        BytecodeServiceChildError,
+    > {
+        let root = self.host.bootstrap_artifact_root().ok_or_else(|| {
+            BytecodeServiceChildError::ProviderMissing {
+                service_id: slot.contract().service_id.clone(),
+                contract_version: slot.contract().contract_version.clone(),
+            }
+        })?;
+        let profile = self.host.frozen_profile.get().ok_or_else(|| {
+            BytecodeServiceChildError::ProviderMissing {
+                service_id: slot.contract().service_id.clone(),
+                contract_version: slot.contract().contract_version.clone(),
+            }
+        })?;
+        let store =
+            skiff_deployment::storage::CanonicalArtifactStore::open(std::path::Path::new(&root))
+                .map_err(|error| BytecodeServiceChildError::Load {
+                    message: error.to_string(),
+                })?;
+        let pointer = store
+            .read_release_pointer(
+                profile,
+                &slot.contract().service_id,
+                &slot.contract().contract_version,
+            )
+            .map_err(|error| BytecodeServiceChildError::Load {
+                message: error.to_string(),
+            })?
+            .ok_or_else(|| BytecodeServiceChildError::ProviderMissing {
+                service_id: slot.contract().service_id.clone(),
+                contract_version: slot.contract().contract_version.clone(),
+            })?;
+        if &pointer.deployment.service_id != &slot.contract().service_id
+            || &pointer.deployment.contract_version != &slot.contract().contract_version
+        {
+            return Err(BytecodeServiceChildError::DeploymentDrift);
+        }
+        let image = self
+            .host
+            .bytecode_deployments
+            .loaded_sync(&pointer.deployment)
+            .ok_or_else(|| BytecodeServiceChildError::ProviderMissing {
+                service_id: slot.contract().service_id.clone(),
+                contract_version: slot.contract().contract_version.clone(),
+            })?;
+        if image.owner().deployment() != &pointer.deployment {
+            return Err(BytecodeServiceChildError::DeploymentDrift);
+        }
+        if image.service_protocol_identity() != expected_protocol {
+            return Err(BytecodeServiceChildError::ProtocolMismatch {
+                expected: expected_protocol.clone(),
+                actual: image.service_protocol_identity().clone(),
+            });
+        }
+        Ok(image)
+    }
+}
+
+pub(crate) fn bytecode_request_child_composition(
+    host: &RuntimeHost,
+) -> BytecodeRequestChildComposition {
+    let limits = host.request_heap_limits();
+    BytecodeRequestChildComposition {
+        memory_ledger: Arc::new(RequestMemoryLedger::new(limits.max_estimated_bytes)),
+        service_resolver: Arc::new(ProductionBytecodeServiceResolver::new(host.clone())),
+        child_heap_factory: None,
+        heap_limits: limits,
+    }
+}
+
+impl RuntimeHost {
+    pub(super) async fn preload_service_dependencies(
+        &self,
+        caller_image: &std::sync::Arc<skiff_runtime_linker::DeploymentExecutionImage>,
+    ) {
+        let Some(root) = self.bootstrap_artifact_root() else {
+            return;
+        };
+        let Some(profile) = self.frozen_profile.get() else {
+            return;
+        };
+        let Ok(store) =
+            skiff_deployment::storage::CanonicalArtifactStore::open(std::path::Path::new(&root))
+        else {
+            return;
+        };
+        for slot in caller_image.dependency_slots() {
+            let contract = slot.contract();
+            let Ok(Some(pointer)) = store.read_release_pointer(
+                profile,
+                &contract.service_id,
+                &contract.contract_version,
+            ) else {
+                continue;
+            };
+            let _ = self
+                .bytecode_deployments
+                .get_or_load(&pointer.deployment, std::path::Path::new(&root))
+                .await;
+        }
+    }
 }
 
 #[cfg(test)]

@@ -97,6 +97,7 @@ pub(in crate::host::request_entry) async fn drive_phase_3_vcp_request(
         },
         http_client: None,
         server_stream_writer: None,
+        child_composition: Default::default(),
         heap: Some(heap),
     });
     let owner_inventory = driven.owner_inventory.into_snapshot();

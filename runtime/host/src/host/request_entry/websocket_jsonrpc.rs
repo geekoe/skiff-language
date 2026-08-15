@@ -103,6 +103,7 @@ impl RuntimeHost {
                     handles,
                     http_client,
                     server_stream_writer: None,
+                    child_composition: Default::default(),
                     heap: None,
                 },
             )
