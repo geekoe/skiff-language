@@ -17,8 +17,9 @@ use skiff_runtime_transport::{
         decode_typed_binary_frame, ActorFindResponseFrameHeader,
         ActorGetOrCreateResponseFrameHeader, ActorRemoveResponseFrameHeader,
         ActorReplaceResponseFrameHeader, ActorTaskRuntimeErrorFrameHeader,
-        RequestCancelFrameHeader, RuntimeErrorFramePayload, RuntimeHealthCountersFrameHeader,
-        RuntimeRegisteredFrameHeader, TaskCancelResponseFrameHeader, TaskStatusResponseFrameHeader,
+        RequestCancelFrameHeader, RouterBootstrapServiceDbFrameHeader, RuntimeErrorFramePayload,
+        RuntimeHealthCountersFrameHeader, RuntimeRegisteredFrameHeader,
+        TaskCancelResponseFrameHeader, TaskStatusResponseFrameHeader,
         TaskSubmitResponseFrameHeader, TypedEnvelope,
     },
     request_mapper::request_cancel_from_frame_header,
@@ -381,7 +382,10 @@ fn test_connection_bootstrap(name: &str) -> Result<ConnectionBootstrap> {
 fn decode_connection_bootstrap(
     typed: TypedEnvelope,
     payload: &[u8],
-) -> Result<ConnectionBootstrap> {
+) -> Result<(
+    ConnectionBootstrap,
+    Option<RouterBootstrapServiceDbFrameHeader>,
+)> {
     if !payload.is_empty() {
         return Err(RuntimeError::Decode(
             "router.bootstrap binary frame payload must be empty".to_string(),
@@ -395,15 +399,19 @@ fn decode_connection_bootstrap(
         &header.artifacts_path,
     )
     .map_err(|error| RuntimeError::invalid_artifact(error.to_string()))?;
-    Ok(ConnectionBootstrap {
-        resolver,
-        activation: header.activation,
-        max_response_bytes: usize::try_from(header.http.max_response_bytes).map_err(|_| {
-            RuntimeError::Decode(
-                "router.bootstrap http.maxResponseBytes exceeds Runtime address space".to_string(),
-            )
-        })?,
-    })
+    let max_response_bytes = usize::try_from(header.http.max_response_bytes).map_err(|_| {
+        RuntimeError::Decode(
+            "router.bootstrap http.maxResponseBytes exceeds Runtime address space".to_string(),
+        )
+    })?;
+    Ok((
+        ConnectionBootstrap {
+            resolver,
+            activation: header.activation,
+            max_response_bytes,
+        },
+        Some(header.service_db),
+    ))
 }
 
 #[derive(Default)]
@@ -632,7 +640,8 @@ async fn dispatch_router_binary_frame_inner(
                     "router.bootstrap must appear exactly once per connection".to_string(),
                 ));
             }
-            let installed = decode_connection_bootstrap(typed, &payload)?;
+            let (installed, service_db) = decode_connection_bootstrap(typed, &payload)?;
+            host.set_db_service_db(service_db);
             // Bootstrap carries only the profile and the artifact root: no
             // committed tuple, no config snapshot, no recovery.
             host.freeze_bootstrap_profile(&installed.activation.profile)

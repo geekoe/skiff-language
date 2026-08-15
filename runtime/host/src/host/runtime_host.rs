@@ -9,6 +9,7 @@ use skiff_runtime_capability_context::{
 use skiff_runtime_model::{
     bytecode_execution_observation::BytecodeExecutionEventSink, request_heap::RequestHeapLimits,
 };
+use skiff_runtime_transport::protocol::RouterBootstrapServiceDbFrameHeader;
 use tokio::sync::Mutex;
 
 use crate::{
@@ -63,6 +64,8 @@ pub struct RuntimeHost {
     pub(super) router_url: String,
     pub(super) base_runtime_id: String,
     pub(super) runtime_home: PathBuf,
+    pub(super) db_provider: DbProviderSource,
+    pub(super) db_service_db: Arc<StdMutex<Option<RouterBootstrapServiceDbFrameHeader>>>,
     pub(super) frozen_profile: OnceLock<String>,
     pub(super) default_http_response_max_bytes: usize,
     pub(super) http_runtime_options: HttpRuntimeOptions,
@@ -189,11 +192,12 @@ impl RuntimeHost {
             telemetry.clone(),
             base_runtime_id.clone(),
         ));
-        let _ = &db_provider;
         Ok(Self {
             router_url,
             base_runtime_id: base_runtime_id.clone(),
             runtime_home,
+            db_provider,
+            db_service_db: Arc::new(StdMutex::new(None)),
             frozen_profile,
             default_http_response_max_bytes: http_response_max_bytes,
             http_runtime_options,
@@ -222,6 +226,19 @@ impl RuntimeHost {
                 *slot = Some(root.into());
             }
         }
+    }
+
+    pub(crate) fn set_db_service_db(
+        &self,
+        service_db: Option<RouterBootstrapServiceDbFrameHeader>,
+    ) {
+        if let Ok(mut slot) = self.db_service_db.lock() {
+            *slot = service_db;
+        }
+    }
+
+    pub(crate) fn db_service_db(&self) -> Option<RouterBootstrapServiceDbFrameHeader> {
+        self.db_service_db.lock().ok().and_then(|slot| slot.clone())
     }
 
     pub(crate) fn bootstrap_artifact_root(&self) -> Option<String> {

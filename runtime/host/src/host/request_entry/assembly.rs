@@ -56,6 +56,7 @@ impl RuntimeHost {
             header,
             body,
             target,
+            db_source,
         } = request;
         self.preload_service_dependencies(target.image()).await;
         let request_envelope = match bytecode_http_request_envelope(&route, &header, body) {
@@ -111,7 +112,12 @@ impl RuntimeHost {
         ));
         let request_id = header.request_id.clone();
         let host = self.clone();
-        let child_composition = production_bytecode_request_child_composition(self);
+        let child_composition = production_bytecode_request_child_composition(
+            self,
+            target.image().as_ref(),
+            db_source.as_ref(),
+            &request_envelope.request_id,
+        );
         let child_composition_probe = child_composition.clone();
         tokio::spawn(async move {
             let request_runner::DrivenBytecodeRequest {
@@ -168,6 +174,7 @@ impl RuntimeHost {
             header,
             target,
             payload,
+            db_source,
         } = request;
         self.preload_service_dependencies(target.image()).await;
         let request_envelope = bytecode_task_request_envelope(&route, &header, payload);
@@ -197,7 +204,12 @@ impl RuntimeHost {
         let handles = bytecode_request_execution_handles(self, http_response_max_bytes);
         let request_id = header.request_id.clone();
         let host = self.clone();
-        let child_composition = production_bytecode_request_child_composition(self);
+        let child_composition = production_bytecode_request_child_composition(
+            self,
+            target.image().as_ref(),
+            db_source.as_ref(),
+            &request_envelope.request_id,
+        );
         tokio::spawn(async move {
             let request_runner::DrivenBytecodeRequest {
                 result,
@@ -278,6 +290,7 @@ impl RuntimeHost {
             route,
             header,
             target,
+            db_source,
         } = request;
         self.preload_service_dependencies(target.image()).await;
         let request_envelope = bytecode_websocket_connect_request_envelope(&route, &header);
@@ -307,7 +320,12 @@ impl RuntimeHost {
         let handles = bytecode_request_execution_handles(self, http_response_max_bytes);
         let request_id = header.request_id.clone();
         let host = self.clone();
-        let child_composition = production_bytecode_request_child_composition(self);
+        let child_composition = production_bytecode_request_child_composition(
+            self,
+            target.image().as_ref(),
+            db_source.as_ref(),
+            &request_envelope.request_id,
+        );
         tokio::spawn(async move {
             let request_runner::DrivenBytecodeRequest {
                 result,
@@ -366,6 +384,7 @@ impl RuntimeHost {
             route,
             header,
             target,
+            db_source,
         } = request;
         self.preload_service_dependencies(target.image()).await;
         let request_envelope =
@@ -389,7 +408,12 @@ impl RuntimeHost {
         let execution_budget = supervised_request.execution_budget();
         let handles = bytecode_request_execution_handles(self, http_response_max_bytes);
         let host = self.clone();
-        let child_composition = production_bytecode_request_child_composition(self);
+        let child_composition = production_bytecode_request_child_composition(
+            self,
+            target.image().as_ref(),
+            db_source.as_ref(),
+            &request_envelope.request_id,
+        );
         tokio::spawn(async move {
             let request_runner::DrivenBytecodeRequest {
                 result,

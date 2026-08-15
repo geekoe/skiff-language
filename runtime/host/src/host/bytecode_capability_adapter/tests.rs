@@ -3,10 +3,23 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 
-use skiff_runtime_capability_context::CancellationToken;
-use skiff_runtime_request::{
-    BytecodeHttpFailure, BytecodeHttpRequest, ExecutionBudget, ExecutionControl,
+use skiff_artifact_model::{
+    FileIrRef, PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity,
 };
+use skiff_runtime_boundary::recoverable::FailClosedRecoverableBehaviorHooks;
+use skiff_runtime_capability_context::{
+    CancellationToken, DbCapabilitySource, DbCapabilityTarget, DbCapabilityTargetId,
+    DbRecoverableRuntimeContext, DbRecoverableRuntimeExpectedPlans,
+};
+use skiff_runtime_model::recoverable::{
+    RuntimeRecoverableBoundaryContext, RuntimeRecoverableBoundaryKind,
+    RuntimeRecoverableStorageLane, RuntimeRecoverableTrustBoundary,
+};
+use skiff_runtime_request::{
+    BytecodeDbChildComposition, BytecodeHttpFailure, BytecodeHttpRequest, ExecutionBudget,
+    ExecutionControl,
+};
+use skiff_runtime_service_db::ServiceDbRuntime;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -66,6 +79,94 @@ fn test_host() -> RuntimeHost {
         http_egress_proxy: None,
     })
     .expect("Phase 5 bytecode HTTP host")
+}
+
+fn exact_db_target() -> DbCapabilityTarget {
+    DbCapabilityTarget::new(
+        DbCapabilityTargetId {
+            package_artifact_ref: PackageArtifactRef {
+                package_id: "test.local/db".to_string(),
+                package_version: "1.0.0".to_string(),
+                package_build_id: PackageBuildId::new("build:db"),
+                package_local_abi_identity: PackageLocalAbiIdentity::new("abi:db"),
+            },
+            file_ir_ref: FileIrRef::new("file:db", "test/main.skiff"),
+            type_index: 0,
+        },
+        "Doc",
+    )
+}
+
+fn recoverable_db_context() -> DbRecoverableRuntimeContext {
+    DbRecoverableRuntimeContext {
+        behavior_hooks: Arc::new(FailClosedRecoverableBehaviorHooks),
+        expected_plans: DbRecoverableRuntimeExpectedPlans::default(),
+        artifact_identity: "artifact:test".to_string(),
+        build_id: "build:test".to_string(),
+        boundary_context: RuntimeRecoverableBoundaryContext::new(
+            RuntimeRecoverableBoundaryKind::DbValue,
+            RuntimeRecoverableTrustBoundary::OwnerInternal,
+            RuntimeRecoverableStorageLane::RecoverableEnvelope,
+        ),
+        retention_expires_at_epoch_millis: None,
+    }
+}
+
+fn real_db_capability_source() -> DbCapabilitySource {
+    let runtime = Arc::new(
+        ServiceDbRuntime::new(
+            "test".to_string(),
+            "test.local/db".to_string(),
+            "mongodb://127.0.0.1:1/?directConnection=true".to_string(),
+            &[],
+        )
+        .expect("empty serviceDb runtime builds without connecting"),
+    );
+    DbCapabilitySource::new(Some(runtime.capability_factory()))
+}
+
+#[test]
+fn host_composition_injects_real_db_child_composition() {
+    let host = test_host();
+    let db_child = BytecodeDbChildComposition {
+        capability_context: Some(
+            real_db_capability_source().context_for_request("test.local/db", "request"),
+        ),
+        recoverable_context: Some(recoverable_db_context()),
+        exact_target: Some(exact_db_target()),
+    };
+    let composition = bytecode_request_child_composition_with_db_child(&host, db_child);
+
+    assert!(composition.db_child.is_available());
+    assert!(composition.db_child.exact_target().is_ok());
+}
+
+#[test]
+fn host_composition_db_child_fails_closed_when_capability_is_missing() {
+    let host = test_host();
+    let db_child = BytecodeDbChildComposition {
+        capability_context: None,
+        recoverable_context: Some(recoverable_db_context()),
+        exact_target: Some(exact_db_target()),
+    };
+    let composition = bytecode_request_child_composition_with_db_child(&host, db_child);
+
+    assert!(!composition.db_child.is_available());
+}
+
+#[test]
+fn host_composition_db_child_fails_closed_when_exact_target_is_missing() {
+    let host = test_host();
+    let db_child = BytecodeDbChildComposition {
+        capability_context: Some(
+            real_db_capability_source().context_for_request("test.local/db", "request"),
+        ),
+        recoverable_context: Some(recoverable_db_context()),
+        exact_target: None,
+    };
+    let composition = bytecode_request_child_composition_with_db_child(&host, db_child);
+
+    assert!(!composition.db_child.is_available());
 }
 
 fn execution_control(

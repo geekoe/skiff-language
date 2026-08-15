@@ -1,8 +1,10 @@
 use std::sync::Arc;
 
 use skiff_artifact_model::{IngressProtocol, IngressSelector, ServiceDeploymentRef};
-use skiff_runtime_capability_context::ExecutionBudgetReason;
-use skiff_runtime_linker::DeploymentExecutionEntry;
+use skiff_runtime_capability_context::{
+    DbCapabilitySource, DbProviderBuildInput, DbProviderConfig, ExecutionBudgetReason,
+};
+use skiff_runtime_linker::{DeploymentExecutionEntry, DeploymentExecutionImage};
 use skiff_runtime_model::bytecode_execution_observation::{
     BytecodeExecutionCorrelation, BytecodeExecutionObserver,
 };
@@ -39,18 +41,21 @@ pub(super) struct AdmittedBytecodeHttpRequest {
     pub(super) header: BytecodeRequestStartFrameHeader,
     pub(super) body: Vec<u8>,
     pub(super) target: DeploymentExecutionEntry,
+    pub(super) db_source: Option<DbCapabilitySource>,
 }
 
 pub(super) struct AdmittedBytecodeWebSocketConnectRequest {
     pub(super) route: BytecodeRoute,
     pub(super) header: BytecodeWebSocketConnectRequestStartFrameHeader,
     pub(super) target: DeploymentExecutionEntry,
+    pub(super) db_source: Option<DbCapabilitySource>,
 }
 
 pub(super) struct AdmittedBytecodeWebSocketConnectionClosedRequest {
     pub(super) route: BytecodeRoute,
     pub(super) header: BytecodeWebSocketConnectionClosedRequestStartFrameHeader,
     pub(super) target: DeploymentExecutionEntry,
+    pub(super) db_source: Option<DbCapabilitySource>,
 }
 
 pub(super) struct AdmittedBytecodeWebSocketJsonRpcRequest {
@@ -58,6 +63,7 @@ pub(super) struct AdmittedBytecodeWebSocketJsonRpcRequest {
     pub(super) header: BytecodeWebSocketJsonRpcRequestStartFrameHeader,
     pub(super) target: DeploymentExecutionEntry,
     pub(super) params: Vec<u8>,
+    pub(super) db_source: Option<DbCapabilitySource>,
 }
 
 pub(super) struct AdmittedBytecodeTaskRequest {
@@ -65,6 +71,7 @@ pub(super) struct AdmittedBytecodeTaskRequest {
     pub(super) header: BytecodeTaskRequestStartFrameHeader,
     pub(super) target: DeploymentExecutionEntry,
     pub(super) payload: Vec<u8>,
+    pub(super) db_source: Option<DbCapabilitySource>,
 }
 
 enum AdmittedBytecodeRequest {
@@ -270,6 +277,23 @@ impl RuntimeHost {
         Ok(route)
     }
 
+    fn db_source_for_route(
+        &self,
+        route: &BytecodeRoute,
+        bootstrap: &ConnectionBootstrap,
+    ) -> Option<DbCapabilitySource> {
+        let service_db = self.db_service_db()?;
+        let config = DbProviderConfig::mongo(service_db.mongo_url.clone()).ok()?;
+        self.db_provider
+            .build(DbProviderBuildInput {
+                environment: bootstrap.activation.profile.clone(),
+                service_id: route.deployment().service_id.clone(),
+                config,
+                runtime_program_db: Vec::new(),
+            })
+            .ok()
+    }
+
     async fn websocket_connect_request_from_wire(
         &self,
         mut header: BytecodeWebSocketConnectRequestStartFrameHeader,
@@ -309,11 +333,13 @@ impl RuntimeHost {
             return Err(deadline_exceeded());
         }
         let target = bytecode_route_target(&route)?;
+        let db_source = self.db_source_for_route(&route, bootstrap);
         Ok(AdmittedBytecodeRequest::WebSocketConnect(
             AdmittedBytecodeWebSocketConnectRequest {
                 route,
                 header,
                 target,
+                db_source,
             },
         ))
     }
@@ -357,11 +383,13 @@ impl RuntimeHost {
             return Err(deadline_exceeded());
         }
         let target = bytecode_route_target(&route)?;
+        let db_source = self.db_source_for_route(&route, bootstrap);
         Ok(AdmittedBytecodeRequest::WebSocketConnectionClosed(
             AdmittedBytecodeWebSocketConnectionClosedRequest {
                 route,
                 header,
                 target,
+                db_source,
             },
         ))
     }
@@ -403,11 +431,13 @@ impl RuntimeHost {
         {
             return Err(deadline_exceeded());
         }
+        let db_source = self.db_source_for_route(&route, bootstrap);
         Ok(AdmittedBytecodeRequest::Http(AdmittedBytecodeHttpRequest {
             route,
             header,
             body,
             target,
+            db_source,
         }))
     }
 
@@ -475,12 +505,14 @@ impl RuntimeHost {
             return Err(deadline_exceeded());
         }
         let target = bytecode_route_target(&route)?;
+        let db_source = self.db_source_for_route(&route, bootstrap);
         Ok(AdmittedBytecodeRequest::WebSocketJsonRpc(
             AdmittedBytecodeWebSocketJsonRpcRequest {
                 route,
                 header,
                 target,
                 params,
+                db_source,
             },
         ))
     }
@@ -494,8 +526,13 @@ fn bytecode_route_target(route: &BytecodeRoute) -> Result<DeploymentExecutionEnt
 
 pub(super) fn production_bytecode_request_child_composition(
     host: &RuntimeHost,
+    image: &DeploymentExecutionImage,
+    db_source: Option<&DbCapabilitySource>,
+    request_id: &str,
 ) -> BytecodeRequestChildComposition {
-    crate::host::bytecode_capability_adapter::bytecode_request_child_composition(host)
+    crate::host::bytecode_capability_adapter::bytecode_request_child_composition(
+        host, image, db_source, request_id,
+    )
 }
 
 fn bytecode_required_error(deployment: &ServiceDeploymentRef) -> RuntimeError {

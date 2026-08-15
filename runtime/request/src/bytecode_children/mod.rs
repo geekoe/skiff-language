@@ -180,8 +180,9 @@ pub struct BytecodeRequestChildComposition {
     /// back into the caller. The host uses this to classify a successful unary
     /// service response as start/chunk/end instead of a bare unary end.
     pub unary_response_start: Arc<AtomicBool>,
-    /// D6R capability context registered by X6. It stays fail-closed until F6
-    /// emits a VM DB child/effect and K6 owns the transaction token.
+    /// D6R capability/recoverable contexts registered by X6. The exact target
+    /// stays fail-closed until F6 emits `DbObjectTargetId` and K6 owns the
+    /// transaction token.
     pub db_child: BytecodeDbChildComposition,
 }
 

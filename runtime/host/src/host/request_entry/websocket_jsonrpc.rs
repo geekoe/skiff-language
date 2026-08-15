@@ -18,7 +18,9 @@ use tracing::error;
 
 use super::{
     assembly::bytecode_request_execution_handles,
-    assembly_wire::AdmittedBytecodeWebSocketJsonRpcRequest,
+    assembly_wire::{
+        production_bytecode_request_child_composition, AdmittedBytecodeWebSocketJsonRpcRequest,
+    },
 };
 use crate::{
     host::{
@@ -60,6 +62,7 @@ impl RuntimeHost {
             header,
             target,
             params,
+            db_source,
         } = request;
         let request_envelope = bytecode_websocket_jsonrpc_request_envelope(&route, &header, params);
         let telemetry = bytecode_websocket_jsonrpc_telemetry_context(self, &header, &route);
@@ -88,6 +91,12 @@ impl RuntimeHost {
         let handles = bytecode_request_execution_handles(self, http_response_max_bytes);
         let request_id = header.request_id.clone();
         let host = self.clone();
+        let child_composition = production_bytecode_request_child_composition(
+            self,
+            target.image().as_ref(),
+            db_source.as_ref(),
+            &request_envelope.request_id,
+        );
         tokio::spawn(async move {
             let request_runner::DrivenBytecodeRequest {
                 result,
@@ -103,7 +112,7 @@ impl RuntimeHost {
                     handles,
                     http_client,
                     server_stream_writer: None,
-                    child_composition: Default::default(),
+                    child_composition,
                     heap: None,
                 },
             )

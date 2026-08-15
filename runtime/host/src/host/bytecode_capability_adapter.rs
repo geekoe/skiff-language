@@ -3,15 +3,28 @@
 use std::{future, sync::Arc};
 
 use serde_json::{Map, Value};
+use skiff_runtime_boundary::recoverable::FailClosedRecoverableBehaviorHooks;
 use skiff_runtime_boundary::value::{bytes_payload, bytes_value};
-use skiff_runtime_capability_context::{CancellationToken, HttpRuntimeOptions};
-use skiff_runtime_model::{error::WirePayload, type_plan::leaf_bytes_plan};
+use skiff_runtime_capability_context::{
+    CancellationToken, DbCapabilitySource, DbRecoverableRuntimeContext,
+    DbRecoverableRuntimeExpectedPlans, HttpRuntimeOptions,
+};
+use skiff_runtime_linker::DeploymentExecutionImage;
+use skiff_runtime_model::{
+    error::WirePayload,
+    recoverable::{
+        RuntimeRecoverableBoundaryContext, RuntimeRecoverableBoundaryKind,
+        RuntimeRecoverableServiceRef, RuntimeRecoverableStorageLane,
+        RuntimeRecoverableTrustBoundary,
+    },
+    type_plan::leaf_bytes_plan,
+};
 use skiff_runtime_request::{
-    BytecodeHttpClientPort, BytecodeHttpFailure, BytecodeHttpFuture, BytecodeHttpRequest,
-    BytecodeHttpResponse, BytecodeHttpStreamRegistrar, BytecodeHttpStreamResponse,
-    BytecodeRequestChildComposition, BytecodeServiceChildError, BytecodeServiceResolver,
-    FailClosedServiceChildThrowMaterializer, HttpNameValue, OwnedExecutionControl,
-    RequestMemoryLedger,
+    BytecodeDbChildComposition, BytecodeHttpClientPort, BytecodeHttpFailure, BytecodeHttpFuture,
+    BytecodeHttpRequest, BytecodeHttpResponse, BytecodeHttpStreamRegistrar,
+    BytecodeHttpStreamResponse, BytecodeRequestChildComposition, BytecodeServiceChildError,
+    BytecodeServiceResolver, FailClosedServiceChildThrowMaterializer, HttpNameValue,
+    OwnedExecutionControl, RequestMemoryLedger,
 };
 
 use crate::{
@@ -355,6 +368,26 @@ impl BytecodeServiceResolver for ProductionBytecodeServiceResolver {
 
 pub(crate) fn bytecode_request_child_composition(
     host: &RuntimeHost,
+    image: &DeploymentExecutionImage,
+    db_source: Option<&DbCapabilitySource>,
+    request_id: &str,
+) -> BytecodeRequestChildComposition {
+    let owner = image.owner();
+    let deployment = owner.deployment();
+    let db_child = BytecodeDbChildComposition {
+        capability_context: db_source
+            .map(|source| source.context_for_request(deployment.service_id.clone(), request_id)),
+        recoverable_context: Some(bytecode_db_recoverable_context(image)),
+        // F6 has not yet emitted DbObjectTargetId into the execution image;
+        // an absent exact target must fail closed before any provider call.
+        exact_target: None,
+    };
+    bytecode_request_child_composition_with_db_child(host, db_child)
+}
+
+pub(crate) fn bytecode_request_child_composition_with_db_child(
+    host: &RuntimeHost,
+    db_child: BytecodeDbChildComposition,
 ) -> BytecodeRequestChildComposition {
     let limits = host.request_heap_limits();
     BytecodeRequestChildComposition {
@@ -364,7 +397,33 @@ pub(crate) fn bytecode_request_child_composition(
         heap_limits: limits,
         throw_materializer: Arc::new(FailClosedServiceChildThrowMaterializer),
         unary_response_start: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        db_child: Default::default(),
+        db_child,
+    }
+}
+
+fn bytecode_db_recoverable_context(
+    image: &DeploymentExecutionImage,
+) -> DbRecoverableRuntimeContext {
+    let owner = image.owner();
+    let deployment = owner.deployment();
+    let build_id = owner.build_id().as_str().to_string();
+    DbRecoverableRuntimeContext {
+        behavior_hooks: Arc::new(FailClosedRecoverableBehaviorHooks),
+        expected_plans: DbRecoverableRuntimeExpectedPlans::default(),
+        artifact_identity: deployment.deployment_artifact_identity.as_str().to_string(),
+        build_id: build_id.clone(),
+        boundary_context: RuntimeRecoverableBoundaryContext::new(
+            RuntimeRecoverableBoundaryKind::DbValue,
+            RuntimeRecoverableTrustBoundary::OwnerInternal,
+            RuntimeRecoverableStorageLane::RecoverableEnvelope,
+        )
+        .with_origin_service(RuntimeRecoverableServiceRef {
+            service_id: deployment.service_id.clone(),
+            version: Some(deployment.contract_version.clone()),
+            build_id: Some(build_id),
+        })
+        .with_explicit_recoverable_slot(),
+        retention_expires_at_epoch_millis: None,
     }
 }
 
