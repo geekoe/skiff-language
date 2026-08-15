@@ -6,7 +6,10 @@ use super::{
 
 pub async fn scheduler_to_request(capability: Capability, prefix: &str) {
     let response = drive(capability, prefix).await;
-    assert_eq!(response.status, 200, "Phase 6 capability did not produce its success terminal");
+    assert_eq!(
+        response.status, 200,
+        "Phase 6 capability did not produce its success terminal"
+    );
 }
 
 pub async fn request_to_terminal(capability: Capability, prefix: &str) {

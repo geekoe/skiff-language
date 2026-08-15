@@ -124,15 +124,9 @@ fn build_service_positive(repository: &Path, prefix: &str) -> BuildOutcome {
     let root = TempRoot::new(prefix);
     let sources = CompilerPlatformSources::new(repository).expect("open compiler platform sources");
     seed_official_std_package(&sources, root.path()).expect("seed production std package");
-    let provider = repository.join(
-        "runtime/host/tests/fixtures/bytecode-vm-phase-6/service-provider",
-    );
-    match build_single_into(
-        &provider,
-        "example.com/payments",
-        "1.0.0",
-        root.path(),
-    ) {
+    let provider =
+        repository.join("runtime/host/tests/fixtures/bytecode-vm-phase-6/service-provider");
+    match build_single_into(&provider, "example.com/payments", "1.0.0", root.path()) {
         BuildOutcome::Published(_) => {}
         BuildOutcome::Rejected { error_chain, .. } => {
             return BuildOutcome::Rejected {
@@ -142,9 +136,8 @@ fn build_service_positive(repository: &Path, prefix: &str) -> BuildOutcome {
             }
         }
     }
-    let consumer = repository.join(
-        "runtime/host/tests/fixtures/bytecode-vm-phase-6/service-positive",
-    );
+    let consumer =
+        repository.join("runtime/host/tests/fixtures/bytecode-vm-phase-6/service-positive");
     let mut outcome = build_single_into(
         &consumer,
         "test.skiff/bytecode-vm-phase-6-service",
@@ -181,7 +174,8 @@ fn build_single_into(
     root_path: &Path,
 ) -> BuildOutcome {
     let repository = repository_root();
-    let sources = CompilerPlatformSources::new(&repository).expect("open compiler platform sources");
+    let sources =
+        CompilerPlatformSources::new(&repository).expect("open compiler platform sources");
     let receipt = match build_authoring_object(
         &sources,
         AuthoringObject::Package,
@@ -192,7 +186,8 @@ fn build_single_into(
     ) {
         Ok(receipt) => receipt,
         Err(error) => {
-            let store = CanonicalArtifactStore::open(root_path).expect("open rejected carrier store");
+            let store =
+                CanonicalArtifactStore::open(root_path).expect("open rejected carrier store");
             let package_pointer_absent = store
                 .read_package_artifact_pointer(package_id, version)
                 .expect("read rejected carrier package pointer")
@@ -278,7 +273,7 @@ impl PublishedFixture {
         }
     }
 
-    pub fn link(&self) -> Arc<DeploymentExecutionImage> {
+    pub(super) fn link(&self) -> Arc<DeploymentExecutionImage> {
         let store = self.store();
         let hydrated = load_deployment_bytecode_from_store(&store, &self.deployment)
             .expect("hydrate admitted carrier through production loader");

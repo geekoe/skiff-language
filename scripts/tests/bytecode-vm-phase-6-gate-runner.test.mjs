@@ -23,6 +23,10 @@ import {
   PHASE6_RUNTIME_BIN_ENV,
   runPhase6Gate,
 } from '../lib/bytecode-vm-phase-6-gate-runner.mjs';
+import {
+  PHASE5_CARRIER_ENV,
+  PHASE5_RUNTIME_BIN_ENV,
+} from '../lib/bytecode-vm-phase-5-gate-runner.mjs';
 import { COMMIT, TREE, tap } from './bytecode-vm-phase-6-gate-fixture.mjs';
 
 test('runner accepts the independent Phase 6 caller inputs', () => {
@@ -112,6 +116,8 @@ test('runner receipts all one hundred twenty three commands and freezes provenan
       CARGO_TARGET_DIR: PHASE6_CARGO_TARGET_DIR,
       [PHASE6_CARRIER_ENV]: `${outputDir}.carrier`,
       [PHASE6_RUNTIME_BIN_ENV]: `${PHASE6_CARGO_TARGET_DIR}/debug/runtime`,
+      [PHASE5_CARRIER_ENV]: `${outputDir}.carrier`,
+      [PHASE5_RUNTIME_BIN_ENV]: `${PHASE6_CARGO_TARGET_DIR}/debug/runtime`,
     }));
     assert.equal(receipt.identity.sourcePhase, 6);
     assert.equal(receipt.identity.originChain.at(-1).id, 'phase-6-gate-self-tests');
