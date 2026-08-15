@@ -5,7 +5,10 @@
 
 mod service;
 
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 use skiff_artifact_model::{ContractOperationId, ServiceProtocolIdentity};
 use skiff_runtime_deployment_image::{DeploymentOwnerIdentity, ServiceDependencySlot};
@@ -144,6 +147,10 @@ pub struct BytecodeRequestChildComposition {
     /// Cross-image throw materialization seam. The default is fail-closed and
     /// preserves the child completion until K6 supplies a real mint.
     pub throw_materializer: Arc<dyn ServiceChildThrowMaterializer>,
+    /// Set only after a service child has successfully materialized its result
+    /// back into the caller. The host uses this to classify a successful unary
+    /// service response as start/chunk/end instead of a bare unary end.
+    pub unary_response_start: Arc<AtomicBool>,
 }
 
 impl Default for BytecodeRequestChildComposition {
@@ -154,7 +161,14 @@ impl Default for BytecodeRequestChildComposition {
             child_heap_factory: None,
             heap_limits: RequestHeapLimits::default(),
             throw_materializer: Arc::new(FailClosedServiceChildThrowMaterializer),
+            unary_response_start: Arc::new(AtomicBool::new(false)),
         }
+    }
+}
+
+impl BytecodeRequestChildComposition {
+    pub fn unary_response_started(&self) -> bool {
+        self.unary_response_start.load(Ordering::Acquire)
     }
 }
 

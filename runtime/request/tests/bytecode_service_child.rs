@@ -220,6 +220,15 @@ mod tests {
     }
 
     #[test]
+    fn service_unary_response_start_signal_defaults_to_false() {
+        let composition = BytecodeRequestChildComposition::default();
+        assert!(
+            !composition.unary_response_started(),
+            "a request with no completed service child must keep ordinary unary framing"
+        );
+    }
+
+    #[test]
     fn provider_drift_resolver_failure_is_typed() {
         struct DriftResolver;
 

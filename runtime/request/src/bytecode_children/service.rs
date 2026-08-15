@@ -1,6 +1,9 @@
 //! First accepted child lane: same-runtime service operations.
 
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 use skiff_runtime_boundary::vm_materialize::{
     linked_type_for_contract, materialize_linked_value, release_boundary_source,
@@ -211,6 +214,7 @@ pub(crate) fn execute_service_child(
     let finish = ServiceChildFinish {
         boundary_plan,
         throw_materializer: Arc::clone(&composition.throw_materializer),
+        unary_response_start: Arc::clone(&composition.unary_response_start),
     };
     Ok(BytecodeChildHandoff::Ready(BytecodeChildStart {
         unit: fiber,
@@ -269,6 +273,7 @@ fn service_error(error: BytecodeServiceChildError) -> BytecodeSchedulerError {
 struct ServiceChildFinish {
     boundary_plan: skiff_runtime_linked_bytecode::LinkedServiceBoundaryPlan,
     throw_materializer: Arc<dyn ServiceChildThrowMaterializer>,
+    unary_response_start: Arc<AtomicBool>,
 }
 
 impl ChildFinish<VmFiber, VmResumeToken> for ServiceChildFinish {
@@ -347,6 +352,7 @@ impl ChildFinish<VmFiber, VmResumeToken> for ServiceChildFinish {
                     if let Err(error) = child_escrow.release_all(child_heap.heap_mut()) {
                         return Err(ChildFinishError::Failure(BytecodeSchedulerError::Vm(error)));
                     }
+                    self.unary_response_start.store(true, Ordering::Release);
                     return Ok(ResumeOutcome::Values(caller_values_owned));
                 }
                 if !self.boundary_plan.results().is_empty() {
@@ -358,6 +364,7 @@ impl ChildFinish<VmFiber, VmResumeToken> for ServiceChildFinish {
                 let _ = child_values
                     .into_terminal_escrow()
                     .release_all(child_heap.heap_mut());
+                self.unary_response_start.store(true, Ordering::Release);
                 ResumeOutcome::Empty
             }
             other => other,
