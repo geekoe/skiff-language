@@ -724,7 +724,7 @@ fn detached_contract_callee(operation: &BoundaryOperationDescriptor) -> Option<C
     state
         .effects
         .pending_effect_categories
-        .push(PendingEffectCategory::Unknown);
+        .push(PendingEffectCategory::ServiceCall);
     state.return_origins.insert(Origin::Fresh);
     state.return_direct_origins.insert(Origin::Fresh);
     state.throw_origins.insert(Origin::Fresh);

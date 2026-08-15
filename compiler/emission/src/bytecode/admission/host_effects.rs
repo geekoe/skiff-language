@@ -129,6 +129,7 @@ impl RegistryValueAuthority {
 #[derive(Debug, Default)]
 pub(super) struct HostEffectAdmissions {
     calls: BTreeMap<u32, HostEffectExecutorIdentity>,
+    service_calls: BTreeSet<u32>,
     expressions: BTreeMap<u32, Vec<RegistryValueAuthority>>,
     slots: BTreeMap<u32, Vec<RegistryValueAuthority>>,
     stream_for_in_statements: BTreeSet<u32>,
@@ -148,6 +149,13 @@ impl HostEffectAdmissions {
             let ExprIr::Call { call } = &expression.expression else {
                 continue;
             };
+            if matches!(
+                call.target,
+                skiff_artifact_model::CallTargetIr::ServiceCall { .. }
+            ) {
+                admissions.service_calls.insert(expression.index);
+                continue;
+            }
             let skiff_artifact_model::CallTargetIr::Native { target } = &call.target else {
                 continue;
             };
@@ -626,6 +634,9 @@ impl HostEffectAdmissions {
         }
         if stream_pending {
             expected.insert(PendingEffectCategory::Stream);
+        }
+        if !self.service_calls.is_empty() {
+            expected.insert(PendingEffectCategory::ServiceCall);
         }
 
         let actual_categories = actual

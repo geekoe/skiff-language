@@ -1410,7 +1410,8 @@ fn admit_call(
                 &format!("expression {} call target", expression.index),
             ));
         }
-        CallTargetIr::ServiceDependencySymbol { .. } | CallTargetIr::ServiceCall { .. } => {
+        CallTargetIr::ServiceCall { .. } => return Ok(()),
+        CallTargetIr::ServiceDependencySymbol { .. } => {
             return Err(rejected_function(
                 unit,
                 function_key,
