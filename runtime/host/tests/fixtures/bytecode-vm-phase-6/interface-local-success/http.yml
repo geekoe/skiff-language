@@ -6,3 +6,11 @@ run:
   adapterArgs:
     - param: seed
       source: { kind: http.body }
+stage:
+  method: POST
+  path: /phase-6/interface
+  kind: typedJson
+  handler: main.run
+  adapterArgs:
+    - param: seed
+      source: { kind: http.body }

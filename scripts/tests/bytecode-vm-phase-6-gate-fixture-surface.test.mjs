@@ -83,6 +83,8 @@ test('J2 focused fixtures use unary owner-internal production paths', async () =
   assert.doesNotMatch(db, /rawHttp/);
   assert.match(localHttp, /typedJson/);
   assert.doesNotMatch(localHttp, /rawHttp/);
+  assert.match(localHttp, /path: \/phase-6\/interface\n/);
+  assert.match(localHttp, /path: \/phase-6\/interface-local\n/);
 });
 
 test('every interface-local focused fixture has canonical authoring files', async () => {
