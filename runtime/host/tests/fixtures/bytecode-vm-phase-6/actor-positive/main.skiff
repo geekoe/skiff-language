@@ -1,0 +1,31 @@
+import std
+
+type Counter {
+  id: string,
+  count: number,
+}
+
+actor Counter {
+  key(id)
+  create()
+}
+
+impl Counter {
+  function create() -> void {
+    self.count = 0
+  }
+
+  function increment() -> number {
+    self.count = self.count + 1
+    return self.count
+  }
+}
+
+function run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  final counter = std.actor.get<Counter>("phase6")
+  final value = counter.increment()
+  emit({ tag: "start", status: 200, headers: [] })
+  emit({ tag: "chunk", value: bytes.fromUtf8(value.toString()) })
+  emit({ tag: "end" })
+  return null
+}

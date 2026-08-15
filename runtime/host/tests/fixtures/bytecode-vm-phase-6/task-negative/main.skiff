@@ -1,0 +1,16 @@
+db object Doc {
+  primary key(id)
+  value: string,
+}
+
+function work(value: string) -> string {
+  return value
+}
+
+function run(seed: number) -> number {
+  db transaction {
+    final task = dispatch work("bad")
+    db insert Doc { id = "bad" value = "bad" }
+  }
+  return seed
+}

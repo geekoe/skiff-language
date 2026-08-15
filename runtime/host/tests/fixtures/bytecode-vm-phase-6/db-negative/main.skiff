@@ -1,0 +1,14 @@
+db object Doc {
+  primary key(id)
+  value: string,
+}
+
+function run(seed: number) -> number {
+  db transaction {
+    db insert Doc { id = "nested" value = "bad" }
+    db transaction {
+      db delete Doc("nested")
+    }
+  }
+  return seed
+}

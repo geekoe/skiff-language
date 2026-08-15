@@ -38,6 +38,7 @@ const selectorGraph = {
     'bytecode-vm-phase-3-gate',
     'bytecode-vm-phase-4-gate',
     'bytecode-vm-phase-5-gate',
+    'bytecode-vm-phase-6-gate',
     'scripts-dev-sync',
     'scripts-syntax',
     'checks',

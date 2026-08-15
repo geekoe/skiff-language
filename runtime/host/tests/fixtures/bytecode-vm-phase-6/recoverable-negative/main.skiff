@@ -1,0 +1,13 @@
+type Box {
+  value: number,
+}
+
+function durable(input: Box) -> Box {
+  return input
+}
+
+function run(seed: number) -> number {
+  var box = Box { value: seed }
+  dispatch durable(inout box)
+  return box.value
+}

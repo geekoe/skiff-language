@@ -1,0 +1,19 @@
+interface Reader {
+  function label(self: Self) -> string
+}
+
+type Impl implements Reader {
+  value: string,
+}
+
+impl Impl {
+  function label() -> string {
+    return self.value
+  }
+}
+
+function run(seed: number) -> number {
+  var reader = Impl { value: "bad" } as Reader
+  inout reader.label()
+  return seed
+}

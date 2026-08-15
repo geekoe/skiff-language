@@ -1,0 +1,6 @@
+id: test.skiff/bytecode-vm-phase-6-service
+version: 1.0.0
+services:
+  - id: example.com/payments
+    version: 1.0.0
+    alias: payments
