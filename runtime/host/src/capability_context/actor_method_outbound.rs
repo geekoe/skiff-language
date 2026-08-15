@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+pub(crate) mod handoff;
+
 use std::{
     collections::HashMap,
     sync::{

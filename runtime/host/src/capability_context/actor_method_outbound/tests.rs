@@ -28,6 +28,46 @@ async fn f445h_i6_actor_scope_method_registry_commits_only_exact_response_once()
 }
 
 #[tokio::test]
+async fn actor_pending_response_requires_exact_epoch_and_implementation() {
+    let registry = ActorMethodOutboundRegistry::default();
+    let mut lease = registry
+        .register(
+            "invoke-pending".into(),
+            "cancel-pending".into(),
+            1,
+            implementation(),
+        )
+        .unwrap();
+    assert_eq!(registry.pending_count(), 1);
+    assert!(!registry.complete_failure(
+        "invoke-pending",
+        2,
+        &implementation(),
+        ActorInvocationTransportError {
+            code: "StaleEpoch".into(),
+            message: "stale".into(),
+        }
+    ));
+    assert!(registry.complete_failure(
+        "invoke-pending",
+        1,
+        &implementation(),
+        ActorInvocationTransportError {
+            code: "RuntimeExecutionFailed".into(),
+            message: "boom".into(),
+        }
+    ));
+    assert_eq!(
+        lease.receive().await.unwrap().unwrap_err(),
+        ActorInvocationTransportError {
+            code: "RuntimeExecutionFailed".into(),
+            message: "boom".into(),
+        }
+    );
+    assert_eq!(registry.pending_count(), 0);
+}
+
+#[tokio::test]
 async fn fail_all_delivers_connection_error_and_fences_late_response() {
     let registry = ActorMethodOutboundRegistry::default();
     let mut lease = registry

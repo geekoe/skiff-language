@@ -3,10 +3,17 @@ use std::sync::{
     Mutex,
 };
 
+use std::{future::Future, pin::Pin};
+
+use skiff_artifact_model::{
+    ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity,
+};
 use skiff_runtime_transport::{
     actor_method::{
-        encode_actor_method_frame, ActorMethodDeadlineFrameHeader, ActorOwnerFileFrameHeader,
-        ActorOwnerUnitFrameHeader,
+        encode_actor_method_frame, ActorDeclarationOwnerFrameHeader, ActorLogicalRefFrameHeader,
+        ActorMethodDeadlineFrameHeader, ActorMethodFrame, ActorMethodInvokeFrameHeader,
+        ActorOwnerFileFrameHeader, ActorOwnerUnitFrameHeader, ACTOR_ARGUMENTS_ENCODING_V1,
+        ACTOR_RETURN_ENCODING_V1,
     },
     protocol::RUNTIME_FRAME_SCHEMA_VERSION,
 };
@@ -15,6 +22,13 @@ use super::*;
 
 fn identity(prefix: &str, byte: char) -> String {
     format!("{prefix}:{}", byte.to_string().repeat(64))
+}
+
+fn build_id() -> String {
+    identity(
+        skiff_artifact_identity::DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX,
+        'f',
+    )
 }
 
 fn invoke() -> ActorMethodInvokeFrameHeader {
@@ -62,6 +76,7 @@ fn admitted() -> AdmittedActorMethodInput {
             owner_runtime_id: "runtime-1".into(),
             owner_lease_id: "lease-1".into(),
             epoch: invoke.actor_ref.epoch,
+            build_id: build_id(),
             actor_abi_identity: invoke.actor_abi_identity.clone(),
             actor_implementation_identity: invoke.actor_implementation_identity.clone(),
             declaration_owner: invoke.declaration_owner.clone(),

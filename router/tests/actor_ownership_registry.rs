@@ -7,7 +7,7 @@ mod actor_support;
 use serde::Deserialize;
 use serde_json::Value;
 use skiff_router::actor::{
-    ActorClaimId, ActorClaimToken, ActorIncarnationFence, ActorOwnershipRegistry,
+    ActorClaimId, ActorClaimToken, ActorIncarnationFence, ActorOwnerFence, ActorOwnershipRegistry,
     OwnerReleaseReason, OwnershipError,
 };
 use std::collections::BTreeMap;
@@ -293,6 +293,116 @@ mod tests {
             .renew(&key, &fence, 30_000, 30_000)
             .expect_err("expired lease must reject renew");
         assert!(matches!(error, OwnershipError::LeaseExpired));
+    }
+
+    #[test]
+    fn committed_fence_pins_the_exact_route_build() {
+        let registry = ActorOwnershipRegistry::new();
+        let key = actor_key();
+        registry.ensure_present(
+            &key,
+            abi(),
+            actor_implementation_identity(),
+            declaration_owner(),
+            &[],
+        );
+        let token = registry
+            .reserve(&key, 1, "runtime-b", &route_authority(), 0)
+            .expect("reserve");
+        let fence = registry
+            .commit(&token, &fence_facts(), 0, 30_000)
+            .expect("commit");
+        assert_eq!(fence.build_id, route_authority().build_id);
+        assert_eq!(
+            registry
+                .current_owner(&key)
+                .expect("current owner")
+                .build_id,
+            route_authority().build_id
+        );
+    }
+
+    #[test]
+    fn actor_reacquire_uses_the_same_exact_route_build() {
+        let registry = ActorOwnershipRegistry::new();
+        let key = actor_key();
+        registry.ensure_present(
+            &key,
+            abi(),
+            actor_implementation_identity(),
+            declaration_owner(),
+            &[],
+        );
+        let first_token = registry
+            .reserve(&key, 1, "runtime-a", &route_authority(), 0)
+            .expect("first reserve");
+        let first = registry
+            .commit(&first_token, &fence_facts(), 0, 30_000)
+            .expect("first commit");
+        registry
+            .release(&key, &first, OwnerReleaseReason::Disconnected)
+            .expect("release");
+
+        let second_token = registry
+            .reserve(&key, 1, "runtime-b", &route_authority(), 1_000)
+            .expect("reacquire reserve");
+        let second = registry
+            .commit(&second_token, &fence_facts(), 1_000, 30_000)
+            .expect("reacquire commit");
+        assert_eq!(second.build_id, route_authority().build_id);
+        assert_eq!(second.epoch, 1);
+        assert_eq!(registry.health().releases, 1);
+        assert_eq!(registry.health().commits, 2);
+    }
+
+    #[test]
+    fn stale_route_build_cannot_renew_or_release_the_new_incarnation() {
+        let registry = ActorOwnershipRegistry::new();
+        let key = actor_key();
+        registry.ensure_present(
+            &key,
+            abi(),
+            actor_implementation_identity(),
+            declaration_owner(),
+            &[],
+        );
+        let first_token = registry
+            .reserve(&key, 1, "runtime-a", &route_authority(), 0)
+            .expect("first reserve");
+        let first = registry
+            .commit(&first_token, &fence_facts(), 0, 30_000)
+            .expect("first commit");
+        registry
+            .release(&key, &first, OwnerReleaseReason::Disconnected)
+            .expect("release");
+
+        let replacement_authority = skiff_router::actor::ActorOwnerRouteAuthority {
+            build_id: format!("skiff-deployment-artifact-v4:sha256:{}", "d".repeat(64)),
+        };
+        let replacement_token = registry
+            .reserve(&key, 1, "runtime-b", &replacement_authority, 1_000)
+            .expect("replacement reserve");
+        let replacement = registry
+            .commit(&replacement_token, &fence_facts(), 1_000, 30_000)
+            .expect("replacement commit");
+
+        let stale = ActorOwnerFence {
+            build_id: route_authority().build_id,
+            ..replacement.clone()
+        };
+        assert!(matches!(
+            registry
+                .renew(&key, &stale, 30_000, 2_000)
+                .expect_err("stale build renew"),
+            OwnershipError::FenceMismatch
+        ));
+        assert!(matches!(
+            registry
+                .release(&key, &stale, OwnerReleaseReason::Upgraded)
+                .expect_err("stale build release"),
+            OwnershipError::FenceMismatch
+        ));
+        assert!(registry.current_owner(&key).is_some());
     }
 
     #[test]

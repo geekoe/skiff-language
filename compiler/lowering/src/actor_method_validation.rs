@@ -872,3 +872,179 @@ fn check_query_block_self_calls(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use skiff_syntax::parser::parse_source;
+
+    use super::validate_actor_source_rules;
+
+    fn validate(source: &str) -> skiff_syntax::error::Result<()> {
+        let ast = parse_source(source).expect("fixture source must parse");
+        validate_actor_source_rules(&ast)
+    }
+
+    #[test]
+    fn actor_db_only_transaction_rejects_actor_field_write() {
+        let error = validate(
+            r#"
+              type Counter {
+                id: string,
+                count: number,
+              }
+
+              actor Counter {
+                key(id)
+                create()
+              }
+
+              impl Counter {
+                function create(self: Counter) -> void {
+                  self.count = 0
+                }
+
+                function run(self: Counter) -> void {
+                  db transaction {
+                    self.count = 1
+                  }
+                }
+              }
+            "#,
+        )
+        .expect_err("DB-only actor transaction must reject actor field writes")
+        .to_string();
+        assert!(
+            error.contains("db transaction bodies cannot write actor field count in v1"),
+            "unexpected DB-only transaction error: {error}"
+        );
+    }
+
+    #[test]
+    fn actor_db_only_transaction_rejects_field_receiver_mutation() {
+        let error = validate(
+            r#"
+              type Counter {
+                id: string,
+                count: number,
+                items: Array<number>,
+              }
+
+              actor Counter {
+                key(id)
+                create()
+              }
+
+              impl Counter {
+                function create(self: Counter) -> void {
+                  self.count = 0
+                  self.items = Array.empty<number>()
+                }
+
+                function run(self: Counter) -> void {
+                  db transaction {
+                    self.items.push(1)
+                  }
+                }
+              }
+            "#,
+        )
+        .expect_err("DB-only actor transaction must reject field receiver mutation")
+        .to_string();
+        assert!(
+            error.contains("db transaction bodies cannot mutate actor fields"),
+            "unexpected DB-only transaction receiver error: {error}"
+        );
+    }
+
+    #[test]
+    fn actor_db_only_transaction_allows_transaction_without_actor_field_write() {
+        validate(
+            r#"
+              type Counter {
+                id: string,
+                count: number,
+              }
+
+              actor Counter {
+                key(id)
+                create()
+              }
+
+              impl Counter {
+                function create(self: Counter) -> void {
+                  self.count = 0
+                }
+
+                function run(self: Counter) -> void {
+                  db transaction {
+                    db.Widget.create({ id: "w", count: self.count })
+                  }
+                }
+              }
+            "#,
+        )
+        .expect("a DB-only actor transaction with no actor field write must validate");
+    }
+
+    #[test]
+    fn actor_create_must_assign_every_non_key_field() {
+        let error = validate(
+            r#"
+              type Counter {
+                id: string,
+                count: number,
+              }
+
+              actor Counter {
+                key(id)
+                create()
+              }
+
+              impl Counter {
+                function create(self: Counter) -> void {
+                  return
+                }
+              }
+            "#,
+        )
+        .expect_err("actor create must initialize every non-key field")
+        .to_string();
+        assert!(
+            error.contains("create returns before assigning field(s): count"),
+            "unexpected actor create error: {error}"
+        );
+    }
+
+    #[test]
+    fn actor_key_field_writes_are_rejected_in_every_method() {
+        let error = validate(
+            r#"
+              type Counter {
+                id: string,
+                count: number,
+              }
+
+              actor Counter {
+                key(id)
+                create()
+              }
+
+              impl Counter {
+                function create(self: Counter) -> void {
+                  self.count = 0
+                }
+
+                function run(self: Counter) -> void {
+                  self.id = "new"
+                }
+              }
+            "#,
+        )
+        .expect_err("actor key field writes must be rejected")
+        .to_string();
+        assert!(
+            error.contains("key field id is platform-owned and read-only"),
+            "unexpected actor key write error: {error}"
+        );
+    }
+}

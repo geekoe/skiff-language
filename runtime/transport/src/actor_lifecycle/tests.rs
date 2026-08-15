@@ -177,6 +177,24 @@ fn actor_fence_rejects_service_and_counter_mismatches_structurally() {
 }
 
 #[test]
+fn actor_arena_cap_rejects_unsafe_epoch_values() {
+    assert_eq!(
+        ActorArenaEpoch::new(0),
+        Err(ActorLifecycleContractError::InvalidPositiveSequence {
+            field: "arenaEpoch",
+            value: 0,
+        })
+    );
+    assert_eq!(
+        ActorArenaEpoch::new(JAVASCRIPT_MAX_SAFE_INTEGER + 1),
+        Err(ActorLifecycleContractError::InvalidPositiveSequence {
+            field: "arenaEpoch",
+            value: JAVASCRIPT_MAX_SAFE_INTEGER + 1,
+        })
+    );
+}
+
+#[test]
 fn actor_execution_identity_validates_typed_actor_identities() {
     let result = ExactActorExecutionIdentityFrameMetadata::new(
         deployment_owner('d'),
