@@ -121,6 +121,12 @@ Amendment r4（2026-08-15）：X6 service child focused tests 使用独立
 `runtime/request/tests/bytecode_service_child.rs`；`runtime/host/Cargo.toml`允许为 host-owned service
 resolver/child factory 增加依赖。两者均为 X6 写集，不改变其它 lane 的语义 owner。
 
+Amendment r5（2026-08-15）：Phase 6 增加 cross-owner boundary materializer 后，runtime crate DAG 允许
+`skiff-runtime-boundary` 依赖 `skiff-runtime-linked-bytecode`/`skiff-runtime-linker`，并允许
+`skiff-runtime-request` 依赖 `skiff-runtime-deployment-image`；`scripts/check-runtime-crate-dag.mjs` 由
+P6D/G6 机械更新，不改变执行 authority。F6 的 service boundary plan coverage 移到 function admission 前，
+保证 missing-plan 在最早门 fail closed。
+
 同一文件即使只需一行也不跨owner。例如A6不能改`runtime/model/src/lib.rs`，T6不能改
 `runtime/request/src/outbound.rs`，I6C不能改`runtime/linked-bytecode/src/targets/interface.rs`；分别由K6、X6、F6
 落中央join。Integrator/G6不得代改。
