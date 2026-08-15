@@ -1126,7 +1126,7 @@ fn production_entry_links_reachable_service_operation_from_compiler_plan() {
     assert_eq!(target.boundary_plan().results().len(), 0);
     assert_eq!(
         target.boundary_plan().callbacks(),
-        skiff_runtime_linked_bytecode::LinkedServiceCallbackPlan::None
+        &skiff_runtime_linked_bytecode::LinkedServiceCallbackPlan::None
     );
     assert!(matches!(
         target

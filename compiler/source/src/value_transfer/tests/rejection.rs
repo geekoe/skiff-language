@@ -142,8 +142,8 @@ fn callbacks_actors_db_schema_and_unregistered_native_nominals_are_rejected() {
     );
     assert_eq!(
         plan(&facts, &local(1)),
-        Err(SourceValueTransferError::ActorUnsupported {
-            nominal: local_id(1),
+        Ok(skiff_artifact_model::ValueTransferPlan::SnapshotShare {
+            drop: skiff_artifact_model::ValueDropPlan::Trivial,
         })
     );
     assert_eq!(

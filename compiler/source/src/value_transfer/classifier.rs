@@ -470,15 +470,16 @@ impl<'facts, 'registry> Classifier<'facts, 'registry> {
         if fact.declaration_module.is_empty() {
             return Err(SourceValueTransferError::MissingNominalDeclarationModule { nominal });
         }
-        match &fact.semantics {
-            SourceValueTransferNominalSemantics::Actor => {
-                return Err(SourceValueTransferError::ActorUnsupported { nominal });
+        let actor_semantics = matches!(&fact.semantics, SourceValueTransferNominalSemantics::Actor);
+        if !actor_semantics {
+            match &fact.semantics {
+                SourceValueTransferNominalSemantics::NativeOpaque
+                | SourceValueTransferNominalSemantics::Capability => {
+                    return Err(SourceValueTransferError::NativeNominalNotRegistered { nominal });
+                }
+                SourceValueTransferNominalSemantics::Ordinary(_) => {}
+                SourceValueTransferNominalSemantics::Actor => unreachable!("handled above"),
             }
-            SourceValueTransferNominalSemantics::NativeOpaque
-            | SourceValueTransferNominalSemantics::Capability => {
-                return Err(SourceValueTransferError::NativeNominalNotRegistered { nominal });
-            }
-            SourceValueTransferNominalSemantics::Ordinary(_) => {}
         }
 
         let mut stable_arguments = Vec::with_capacity(arguments.len());
@@ -502,6 +503,15 @@ impl<'facts, 'registry> Classifier<'facts, 'registry> {
         }
 
         let stable_ty = nominal_type_ref(stable_base, stable_arguments);
+        if actor_semantics {
+            return Ok(Classification::concrete(
+                stable_ty,
+                ValueTransferPlan::SnapshotShare {
+                    drop: ValueDropPlan::Trivial,
+                },
+                NativeValueEmbedding::Ordinary,
+            ));
+        }
         if !self.active_nominals.insert(nominal.clone()) {
             return Err(SourceValueTransferError::RecursiveNominal { nominal });
         }

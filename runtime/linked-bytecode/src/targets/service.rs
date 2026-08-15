@@ -84,9 +84,14 @@ impl LinkedServiceBoundaryErrorPlan {
 }
 
 /// Callback surface accepted by the linked service boundary table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkedServiceCallbackPlan {
     None,
+    RequestScoped {
+        interface_types: Box<[skiff_artifact_model::PackageSchemaTypeRef]>,
+        lifetime: skiff_artifact_model::BoundaryCallbackLifetime,
+        expiration_error: skiff_artifact_model::BoundaryCallbackExpirationError,
+    },
 }
 
 /// Canonical linked service boundary table consumed by cross-owner
@@ -135,7 +140,7 @@ impl LinkedServiceBoundaryPlan {
         self.stream_item.as_deref()
     }
 
-    pub const fn callbacks(&self) -> LinkedServiceCallbackPlan {
-        self.callbacks
+    pub fn callbacks(&self) -> &LinkedServiceCallbackPlan {
+        &self.callbacks
     }
 }

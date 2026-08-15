@@ -1068,9 +1068,9 @@ fn validate_service_boundary_plan_coverage(
             }
         })?;
         if plan.stream_item.is_some()
-            || !matches!(
+            || matches!(
                 plan.callbacks,
-                skiff_artifact_model::ServiceCallbackPlan::None
+                skiff_artifact_model::ServiceCallbackPlan::Unsupported { .. }
             )
         {
             return Err(BytecodeEmissionError::UnsupportedServiceBoundaryPlan {

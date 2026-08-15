@@ -157,7 +157,7 @@ fn symbolic_service_target_retains_protocol_without_provider() {
     assert_eq!(target.signature().parameter_types(), [TypeIndex::new(0)]);
     assert_eq!(
         target.boundary_plan().callbacks(),
-        LinkedServiceCallbackPlan::None
+        &LinkedServiceCallbackPlan::None
     );
     assert!(target.boundary_plan().arguments().is_empty());
 }

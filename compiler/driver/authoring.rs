@@ -13,11 +13,13 @@ use std::{
 
 use serde_json::{json, Map, Value};
 use skiff_artifact_identity::{
-    package_artifact_ref, service_contract_ref, service_deployment_ref,
-    validate_package_artifact_identities, PackageArtifactPointerPath, ReleasePointerPath,
-    ServiceContractPointerPath, ServiceDeploymentPointerPath,
+    assign_package_artifact_identities, package_artifact_ref, service_contract_ref,
+    service_deployment_ref, validate_package_artifact_identities, PackageArtifactPointerPath,
+    ReleasePointerPath, ServiceContractPointerPath, ServiceDeploymentPointerPath,
 };
-use skiff_artifact_model::{ContractRequirement, PackageArtifact, ServiceAuthoringKind};
+use skiff_artifact_model::{
+    ContractRequirement, PackageArtifact, PackageRequirement, ServiceAuthoringKind,
+};
 use skiff_compiler_input::{
     package_config::{read_user_package_manifest, PackageManifest, PACKAGE_CONFIG_FILE},
     package_sources::read_package_sources,
@@ -176,7 +178,7 @@ fn build_package_after_platform_context_guard(
     .with_canonical_dependencies(&dependencies, &contracts)
     .with_available_canonical_packages(&available)
     .with_canonical_artifact_root(store.root());
-    let (published, bytecode, service_data, service_api_receipt) = if service_root {
+    let (mut published, bytecode, service_data, service_api_receipt) = if service_root {
         let service = read_service_package_root(root)?;
         if service.service.kind == ServiceAuthoringKind::Test {
             return Err(invalid_input(format!(
@@ -216,6 +218,59 @@ fn build_package_after_platform_context_guard(
         }
         (published, bytecode, None, None)
     };
+    for dependency in &contracts {
+        if dependency.contract.package_type_requirements.is_empty() {
+            continue;
+        }
+        let Some(owner) = available.iter().find(|artifact| {
+            artifact.package_id == dependency.requirement.service_id
+                && artifact.package_version == dependency.requirement.contract_version
+        }) else {
+            return Err(invalid_input(format!(
+                "service schema owner {}@{} has no exact provider PackageArtifact",
+                dependency.requirement.service_id, dependency.requirement.contract_version
+            )));
+        };
+        if owner.bytecode_schema_records.is_empty() {
+            continue;
+        }
+        if published
+            .artifact
+            .package_requirements
+            .iter()
+            .any(|requirement| requirement.alias == dependency.requirement.alias)
+        {
+            return Err(invalid_input(format!(
+                "service schema owner alias {} collides with an exact package requirement",
+                dependency.requirement.alias
+            )));
+        }
+        published
+            .artifact
+            .package_requirements
+            .push(PackageRequirement {
+                alias: dependency.requirement.alias.clone(),
+                package_id: owner.package_id.clone(),
+                exact_version: owner.package_version.clone(),
+                expected_local_abi: owner.package_local_abi.local_abi_identity.clone(),
+                expected_package_build: None,
+            });
+    }
+    published
+        .artifact
+        .package_requirements
+        .sort_by(|left, right| {
+            (&left.alias, &left.package_id, &left.exact_version).cmp(&(
+                &right.alias,
+                &right.package_id,
+                &right.exact_version,
+            ))
+        });
+    assign_package_artifact_identities(&mut published.artifact).map_err(|error| {
+        invalid_input(format!(
+            "service schema owner closure identity assignment failed: {error}"
+        ))
+    })?;
     let receipt = publish_package_artifact_records_to_store(store, &published, bytecode.handoff())?;
     let mut output = Map::from_iter([(
         "packageArtifactReceipt".to_string(),

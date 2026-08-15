@@ -21,6 +21,7 @@ mod functions;
 mod inputs;
 mod intrinsics;
 mod plans;
+mod schema_records;
 
 pub use admission::{
     admit_phase_1_bytecode_mir, admit_phase_1_bytecode_mir_with_gateway_authorities,
@@ -34,6 +35,9 @@ pub use emitter::emit_bytecode_artifact;
 pub use error::{BytecodeEmissionError, Phase1MirFactMismatch, Phase1UnsupportedCapability};
 pub use plans::{
     derive_bytecode_value_transfer_plans, BytecodeValueTransferPlans, FunctionValueTransferPlans,
+};
+pub use schema_records::{
+    collect_bytecode_schema_facts, BytecodeSchemaFacts, BytecodeSchemaReference,
 };
 pub use skiff_compiler_lowering::mir::MirSourceEventUnavailableReason;
 

@@ -86,6 +86,19 @@ pub(super) fn validate_bytecode_schema_closure(
                     continue;
                 }
             }
+            let public_records = package
+                .artifact()
+                .package_schema_type_records
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            if expected.is_subset(&actual)
+                && actual
+                    .difference(&expected)
+                    .all(|type_id| public_records.contains(type_id))
+            {
+                continue;
+            }
             return manifest_error(
                 package.reference(),
                 DeploymentBytecodeManifestKind::SchemaDescriptor,
@@ -227,6 +240,16 @@ fn collect_service_boundary_plan(
     collect_contract_type_references(&plan.error.fallback_contract_type, &mut references);
     if let Some(value) = &plan.stream_item {
         collect_contract_type_references(&value.contract_type, &mut references);
+    }
+    if let skiff_artifact_model::ServiceCallbackPlan::RequestScoped {
+        interface_types, ..
+    } = &plan.callbacks
+    {
+        references.extend(interface_types.iter().map(|interface| SchemaReference {
+            package_id: interface.package_id.clone(),
+            stable_schema_key: interface.stable_schema_key.clone(),
+            type_id: interface.package_schema_type_id.clone(),
+        }));
     }
     roots.extend(references);
 }

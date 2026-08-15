@@ -268,9 +268,47 @@ impl<'a> Analyzer<'a> {
                     let slot = self.slot_node(function_index, *slot)?;
                     self.equal(output, slot, "LoadSlot")
                 }
+                ExprIr::ActorSelfField { field, field_type } => {
+                    let receiver = function.receiver.as_ref().ok_or_else(|| {
+                        carrier_error(
+                            &key,
+                            format!(
+                                "expression {} ActorSelfField has no exact self receiver",
+                                expression.index
+                            ),
+                        )
+                    })?;
+                    let root = self.slot_node(function_index, receiver.slot)?;
+                    let owner = receiver.ty.clone();
+                    let shape = self.ensure_node_shape(function_index, root, &owner)?;
+                    let field_node = self.shapes[shape]
+                        .fields
+                        .get(field)
+                        .copied()
+                        .ok_or_else(|| {
+                            carrier_error(
+                                &key,
+                                format!(
+                                    "expression {} ActorSelfField `{field}` is absent from the exact self record shape",
+                                    expression.index
+                                ),
+                            )
+                        })?;
+                    if self.nodes[field_node].semantic != *field_type {
+                        return Err(carrier_error(
+                            &key,
+                            format!(
+                                "expression {} ActorSelfField `{field}` type {:?} differs from exact self field type {:?}",
+                                expression.index,
+                                self.nodes[field_node].semantic,
+                                field_type
+                            ),
+                        ));
+                    }
+                    self.equal(output, field_node, "ActorSelfField read");
+                }
                 ExprIr::LoadConst { .. }
                 | ExprIr::LoadPackageConst { .. }
-                | ExprIr::ActorSelfField { .. }
                 | ExprIr::InterfaceBox { .. }
                 | ExprIr::Rethrow { .. }
                 | ExprIr::Timeout { .. }
@@ -512,6 +550,35 @@ impl<'a> Analyzer<'a> {
                                 value,
                             )?;
                         }
+                    }
+                    MirStmtKind::Assign { place, value, .. }
+                        if matches!(place.root, MirWritableRoot::ActorSelfField { .. }) =>
+                    {
+                        let MirWritableRoot::ActorSelfField { field, field_type } = &place.root
+                        else {
+                            unreachable!("guard checked actor self root")
+                        };
+                        let receiver = function.receiver.as_ref().ok_or_else(|| {
+                            carrier_error(
+                                &key,
+                                format!(
+                                    "statement {} ActorSelfField has no exact self receiver",
+                                    statement.statement_index
+                                ),
+                            )
+                        })?;
+                        let root = self.slot_node(function_index, receiver.slot)?;
+                        let value = self.expression_node(function_index, value.expression)?;
+                        self.collect_actor_self_writable_constraints(
+                            function_index,
+                            statement.statement_index,
+                            root,
+                            receiver.ty.clone(),
+                            field,
+                            field_type,
+                            place,
+                            value,
+                        )?;
                     }
                     MirStmtKind::Return { value: Some(value) } => {
                         let Some(result) = self.functions[function_index].result else {
@@ -785,6 +852,148 @@ impl<'a> Analyzer<'a> {
             TypeRefIr::Builtin { name, args } if name == "never" && args.is_empty()
         ) {
             self.equal(current, leaf, "writable path leaf writer");
+        }
+        let prior = self.functions[function_index]
+            .writable_paths
+            .insert(statement_index, WritablePathNodes { root, leaf, steps });
+        if prior.is_some() {
+            return Err(carrier_error(
+                &key,
+                format!("statement {statement_index} has duplicate writable carrier facts"),
+            ));
+        }
+        Ok(())
+    }
+
+    fn collect_actor_self_writable_constraints(
+        &mut self,
+        function_index: usize,
+        statement_index: u32,
+        root: usize,
+        root_ty: TypeRefIr,
+        field: &str,
+        field_type: &TypeRefIr,
+        place: &MirWritablePlace,
+        leaf: usize,
+    ) -> Result<(), BytecodeEmissionError> {
+        let key = self.functions[function_index].key.clone();
+        let shape = self.ensure_node_shape(function_index, root, &root_ty)?;
+        let field_node = self.shapes[shape]
+            .fields
+            .get(field)
+            .copied()
+            .ok_or_else(|| {
+                carrier_error(
+                    &key,
+                    format!(
+                        "statement {statement_index} ActorSelfField `{field}` is absent from the exact self record shape"
+                    ),
+                )
+            })?;
+        let mut steps = vec![WritableStepNodes::DenseField {
+            name: field.to_string(),
+            shape,
+        }];
+        let mut current = field_node;
+        for (ordinal, segment) in place.path.iter().enumerate() {
+            match segment {
+                MirWritablePathSegment::Field { name } => {
+                    let owner = self.nodes[current]
+                        .shape
+                        .map(|shape| self.shapes[shape].owner.clone())
+                        .unwrap_or_else(|| self.nodes[current].semantic.clone());
+                    let shape = self.ensure_node_shape(function_index, current, &owner)?;
+                    let field = self.shapes[shape]
+                        .fields
+                        .get(name)
+                        .copied()
+                        .ok_or_else(|| {
+                            carrier_error(
+                                &key,
+                                format!(
+                                    "statement {statement_index} writable segment {ordinal} field `{name}` is absent from the exact producer shape"
+                                ),
+                            )
+                        })?;
+                    steps.push(WritableStepNodes::DenseField {
+                        name: name.clone(),
+                        shape,
+                    });
+                    current = field;
+                }
+                MirWritablePathSegment::Index { index, access, .. } => {
+                    if matches!(access.receiver_kind, MirIndexReceiverKind::JsonObject) {
+                        return Err(carrier_error(
+                            &key,
+                            format!(
+                                "statement {statement_index} JsonObject writable path has no Phase 5 machine fact"
+                            ),
+                        ));
+                    }
+                    let selector = self.expression_node(function_index, index.expression)?;
+                    let result = self.add_node(
+                        function_index,
+                        access.result_type.clone(),
+                        SemanticRole::Position,
+                        &key,
+                        format!("statement {statement_index} writable segment {ordinal} result"),
+                    );
+                    if access.receiver_kind == MirIndexReceiverKind::Array {
+                        let element = self.ensure_array_element(
+                            function_index,
+                            current,
+                            &access.result_type,
+                            &format!(
+                                "statement {statement_index} writable segment {ordinal} Array element"
+                            ),
+                        )?;
+                        self.equal(result, element, "writable Array index result producer");
+                    }
+                    self.derived.push(DerivedConstraint::Index {
+                        object: current,
+                        selector,
+                        result,
+                        location: format!(
+                            "{key} statement {statement_index} writable segment {ordinal}"
+                        ),
+                    });
+                    match access.receiver_kind {
+                        MirIndexReceiverKind::Array => {
+                            steps.push(WritableStepNodes::ArrayIndex {
+                                selector_expression: index.expression,
+                                selector,
+                                element: result,
+                            });
+                        }
+                        MirIndexReceiverKind::Map => {
+                            steps.push(WritableStepNodes::MapKey {
+                                selector_expression: index.expression,
+                                selector,
+                                key: selector,
+                                value: result,
+                            });
+                        }
+                        MirIndexReceiverKind::JsonObject => unreachable!("rejected above"),
+                    }
+                    current = result;
+                }
+            }
+        }
+        if self.nodes[field_node].semantic != *field_type {
+            return Err(carrier_error(
+                &key,
+                format!(
+                    "statement {statement_index} ActorSelfField `{field}` type {:?} differs from exact self field type {:?}",
+                    self.nodes[field_node].semantic,
+                    field_type
+                ),
+            ));
+        }
+        if !matches!(
+            &self.nodes[leaf].semantic,
+            TypeRefIr::Builtin { name, args } if name == "never" && args.is_empty()
+        ) {
+            self.equal(current, leaf, "actor self writable path leaf writer");
         }
         let prior = self.functions[function_index]
             .writable_paths

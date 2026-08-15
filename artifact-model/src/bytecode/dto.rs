@@ -644,7 +644,7 @@ pub struct BoundaryErrorPlan {
 }
 
 /// Callback surface accepted by the first service boundary lane.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",
@@ -653,6 +653,11 @@ pub struct BoundaryErrorPlan {
 )]
 pub enum ServiceCallbackPlan {
     None,
+    RequestScoped {
+        interface_types: Vec<crate::PackageSchemaTypeRef>,
+        lifetime: crate::BoundaryCallbackLifetime,
+        expiration_error: crate::BoundaryCallbackExpirationError,
+    },
     Unsupported {
         reason: BoundaryFeatureUnavailableReason,
     },

@@ -274,6 +274,20 @@ impl<'a> FunctionEmitter<'a> {
         })
     }
 
+    fn actor_self_slot(&self) -> Result<u32, BytecodeEmissionError> {
+        self.function
+            .receiver
+            .as_ref()
+            .map(|receiver| receiver.slot)
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "actor self field",
+                    "ActorSelfField facts have no exact self receiver",
+                )
+            })
+    }
+
     fn result_carrier(&self) -> Result<&TypeRefIr, BytecodeEmissionError> {
         self.machine_carriers
             .result()
@@ -1245,6 +1259,9 @@ impl<'a> FunctionEmitter<'a> {
             }
             ExprIr::DbTransaction { transaction } => {
                 self.emit_db_transaction(expression, transaction)?;
+            }
+            ExprIr::ActorSelfField { field, field_type } => {
+                self.emit_actor_self_field_read(field, field_type)?;
             }
             other => {
                 return Err(unsupported(
@@ -2701,22 +2718,36 @@ impl<'a> FunctionEmitter<'a> {
         value: ExprRefIr,
         target_object: Option<ExprRefIr>,
     ) -> Result<(), BytecodeEmissionError> {
-        let MirWritableRoot::Slot { slot } = place.root else {
-            return Err(unsupported(
-                &self.key,
-                "writable assignment",
-                "actor durable roots are outside the emitted core",
-            ));
+        let (root_slot, emitted_path) = match &place.root {
+            MirWritableRoot::Slot { slot } => (*slot, place.path.clone()),
+            MirWritableRoot::ActorSelfField { field, .. } => {
+                let root_slot = self.actor_self_slot()?;
+                let mut emitted_path = Vec::with_capacity(place.path.len() + 1);
+                emitted_path.push(MirWritablePathSegment::Field {
+                    name: field.clone(),
+                });
+                emitted_path.extend(place.path.iter().cloned());
+                (root_slot, emitted_path)
+            }
         };
         let root =
-            self.function.slots.get(slot as usize).ok_or_else(|| {
+            self.function.slots.get(root_slot as usize).ok_or_else(|| {
                 unsupported(&self.key, "writable assignment", "root slot is absent")
             })?;
-        if !root.writable_local {
+        if matches!(place.root, MirWritableRoot::Slot { .. }) && !root.writable_local {
             return Err(unsupported(
                 &self.key,
                 "writable assignment",
                 "root slot is not a source-confirmed writable local",
+            ));
+        }
+        if matches!(place.root, MirWritableRoot::ActorSelfField { .. })
+            && root.kind != MirSlotKind::SelfValue
+        {
+            return Err(unsupported(
+                &self.key,
+                "writable assignment",
+                "actor self root is not the exact SelfValue receiver slot",
             ));
         }
         let fact = self
@@ -2730,13 +2761,13 @@ impl<'a> FunctionEmitter<'a> {
                 )
             })?
             .clone();
-        let root_ty = self.emitted_slot_carrier(slot)?;
+        let root_ty = self.emitted_slot_carrier(root_slot)?;
         if fact.root().ty() != &root_ty {
             return Err(unsupported(
                 &self.key,
                 "exact writable carrier facts",
                 &format!(
-                    "statement {statement_index} root {:?} differs from slot {slot} carrier {root_ty:?}",
+                    "statement {statement_index} root {:?} differs from slot {root_slot} carrier {root_ty:?}",
                     fact.root().ty()
                 ),
             ));
@@ -2753,14 +2784,14 @@ impl<'a> FunctionEmitter<'a> {
                 ),
             ));
         }
-        if fact.steps().len() != place.path.len() {
+        if fact.steps().len() != emitted_path.len() {
             return Err(unsupported(
                 &self.key,
                 "exact writable carrier facts",
                 &format!(
-                    "statement {statement_index} analyzed path length {} differs from MIR length {}",
+                    "statement {statement_index} analyzed path length {} differs from emitted MIR length {}",
                     fact.steps().len(),
-                    place.path.len()
+                    emitted_path.len()
                 ),
             ));
         }
@@ -2768,7 +2799,7 @@ impl<'a> FunctionEmitter<'a> {
         let mut selector_expressions = Vec::new();
         let mut segments = Vec::new();
         let mut next_selector_ordinal = 0u32;
-        for (ordinal, (segment, step)) in place.path.iter().zip(fact.steps()).enumerate() {
+        for (ordinal, (segment, step)) in emitted_path.iter().zip(fact.steps()).enumerate() {
             match (segment, step) {
                 (
                     MirWritablePathSegment::Field { name },
@@ -2960,7 +2991,7 @@ impl<'a> FunctionEmitter<'a> {
             .map_err(|_| arithmetic(&self.key, "writable selector count conversion"))?;
         let writable_pc = self.emit_op(
             Opcode::SetWritablePath,
-            vec![slot, path_ref, selector_count],
+            vec![root_slot, path_ref, selector_count],
         )?;
         if let Some(object) = target_object {
             // The assign target object expression is never evaluated as a
@@ -2969,6 +3000,47 @@ impl<'a> FunctionEmitter<'a> {
             // trailing synthetic instructions.
             self.anchor_writable_target_chain(object, writable_pc)?;
         }
+        let site = self.required_statement_site(statement_index)?;
+        self.generated_source_sites.push((writable_pc, site));
+        Ok(())
+    }
+
+    fn emit_actor_self_field_read(
+        &mut self,
+        field: &str,
+        field_type: &TypeRefIr,
+    ) -> Result<(), BytecodeEmissionError> {
+        let slot = self.actor_self_slot()?;
+        let owner = self.slot_carrier(slot)?.clone();
+        let fields = self.machine_slot_shape_fields(slot, &owner, "actor self field read")?;
+        let ordinal = fields
+            .keys()
+            .position(|candidate| candidate == field)
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "actor self field read",
+                    &format!("field `{field}` is absent from the exact self record shape"),
+                )
+            })?;
+        if fields.get(field) != Some(field_type) {
+            return Err(unsupported(
+                &self.key,
+                "actor self field read",
+                &format!(
+                    "field `{field}` type {:?} differs from the exact self field type",
+                    field_type
+                ),
+            ));
+        }
+        let shape = self.image.intern_shape(
+            self.unit.module_path.as_str(),
+            &owner,
+            &fields,
+            &format!("actor self field read `{field}` in `{}`", self.key),
+        )?;
+        self.emit_op(Opcode::LoadSlot, vec![slot])?;
+        self.emit_op(Opcode::GetDenseField, vec![shape, ordinal as u32])?;
         Ok(())
     }
 

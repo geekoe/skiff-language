@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_model::{ExprIr, PackageRefIr, TypeRefIr, ValueTransferPlan};
+use skiff_artifact_model::{
+    ExprIr, PackageRefIr, PackageSymbolRef, TypeRefIr, ValueDropPlan, ValueTransferPlan,
+};
 use skiff_compiler_core::type_ref::walk_type_ref;
 use skiff_compiler_lowering::mir::{MirSlot, MirUnit};
 
@@ -137,6 +139,7 @@ fn collect_exact_type_plans(
     plan_for: &impl Fn(&str, &TypeRefIr) -> Result<ValueTransferPlan, String>,
 ) -> Result<Vec<TypeValueTransferPlan>, BytecodeEmissionError> {
     let mut rows = Vec::new();
+    let mut actor_handles = Vec::new();
     for unit in units {
         let module_path = unit.module_path.as_str();
         let mut register = |ty: &TypeRefIr, location: &str| {
@@ -243,16 +246,17 @@ fn collect_exact_type_plans(
                             ),
                         )?;
                     }
-                    if !is_std_actor_registry_get_call(call) {
-                        for ty in call.type_args.values() {
-                            register(
-                                ty,
-                                &format!(
-                                    "function `{function_key}` expression {} type argument",
-                                    expression.index
-                                ),
-                            )?;
-                        }
+                    for ty in call.type_args.values() {
+                        register(
+                            ty,
+                            &format!(
+                                "function `{function_key}` expression {} type argument",
+                                expression.index
+                            ),
+                        )?;
+                    }
+                    if is_std_actor_registry_get_call(call) {
+                        actor_handles.extend(actor_registry_handle_types(module_path, call));
                     }
                 }
                 match &expression.expression {
@@ -357,7 +361,44 @@ fn collect_exact_type_plans(
             }
         }
     }
+    for handle in actor_handles {
+        if !rows
+            .iter()
+            .any(|row| row.module_path == handle.module_path && row.ty == handle.ty)
+        {
+            rows.push(handle);
+        }
+    }
     Ok(rows)
+}
+
+fn actor_registry_handle_types(
+    module_path: &str,
+    call: &skiff_artifact_model::CallIr,
+) -> Vec<TypeValueTransferPlan> {
+    let mut handles = Vec::new();
+    for ty in call.type_args.values() {
+        let skiff_artifact_model::TypeRefIr::ServiceSymbol { symbol } = ty else {
+            continue;
+        };
+        let handle = TypeRefIr::PackageSymbol {
+            symbol: PackageSymbolRef {
+                package: PackageRefIr::PackageId {
+                    package_id: "skiff.run/std".to_string(),
+                },
+                symbol_path: format!("{}.{}", symbol.module_path, symbol.symbol),
+                abi_expectation: None,
+            },
+        };
+        handles.push(TypeValueTransferPlan {
+            module_path: module_path.to_string(),
+            ty: handle,
+            plan: ValueTransferPlan::SnapshotShare {
+                drop: ValueDropPlan::Trivial,
+            },
+        });
+    }
+    handles
 }
 
 fn register_type_tree(

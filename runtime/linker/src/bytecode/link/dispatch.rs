@@ -286,12 +286,31 @@ impl DeploymentLinker<'_> {
                 )
             })
             .transpose()?;
+        let callbacks = match &plan.callbacks {
+            ServiceCallbackPlan::None => LinkedServiceCallbackPlan::None,
+            ServiceCallbackPlan::RequestScoped {
+                interface_types,
+                lifetime,
+                expiration_error,
+            } => LinkedServiceCallbackPlan::RequestScoped {
+                interface_types: interface_types.clone().into_boxed_slice(),
+                lifetime: *lifetime,
+                expiration_error: *expiration_error,
+            },
+            ServiceCallbackPlan::Unsupported { .. } => {
+                return Err(unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    "unsupported callback service boundary surface".to_string(),
+                ))
+            }
+        };
         Ok(LinkedServiceBoundaryPlan::new(
             arguments,
             results,
             linked_error,
             stream_item,
-            LinkedServiceCallbackPlan::None,
+            callbacks,
         ))
     }
 
@@ -556,17 +575,45 @@ fn validate_service_plan_against_contract(
         contract.stream,
         skiff_artifact_model::BoundaryStreamContract::Unary
     ) || plan.stream_item.is_some()
-        || !matches!(plan.callbacks, ServiceCallbackPlan::None)
-        || !matches!(
-            contract.callbacks,
-            skiff_artifact_model::BoundaryCallbackContract::None
-        )
     {
         return Err(unsatisfied(
             BytecodeLinkObligation::ConcreteTargetTables,
             location.clone(),
             "unsupported stream or callback service boundary surface".to_string(),
         ));
+    }
+    match (&plan.callbacks, &contract.callbacks) {
+        (ServiceCallbackPlan::None, skiff_artifact_model::BoundaryCallbackContract::None) => {}
+        (
+            ServiceCallbackPlan::RequestScoped {
+                interface_types,
+                lifetime,
+                expiration_error,
+            },
+            skiff_artifact_model::BoundaryCallbackContract::RequestScoped {
+                interface_types: contract_interface_types,
+                lifetime: contract_lifetime,
+                expiration_error: contract_expiration_error,
+            },
+        ) => {
+            if interface_types != contract_interface_types
+                || lifetime != contract_lifetime
+                || expiration_error != contract_expiration_error
+            {
+                return Err(unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    "service callback plan drifts from the hydrated contract".to_string(),
+                ));
+            }
+        }
+        _ => {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                "service callback plan drifts from the hydrated contract".to_string(),
+            ))
+        }
     }
     if plan.effects.effects_for_boundary().is_err() {
         return Err(unsatisfied(
@@ -721,7 +768,54 @@ fn contract_type_ref_to_ir(
             })
         }
         ContractTypeRef::TypeParam { .. } => Err(fail("type parameter")),
-        ContractTypeRef::AnyInterface { .. } => Err(fail("any interface")),
+        ContractTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => {
+            let interface_ir = match interface.as_ref() {
+                ContractTypeRef::PackageSchema {
+                    package_id,
+                    stable_schema_key,
+                    ..
+                } => TypeRefIr::PackageSymbol {
+                    symbol: PackageSymbolRef {
+                        package: PackageRefIr::PackageId {
+                            package_id: package_id.clone(),
+                        },
+                        symbol_path: stable_schema_key.clone(),
+                        abi_expectation: None,
+                    },
+                },
+                other => contract_type_ref_to_ir(other, location)?,
+            };
+            let interface_abi_id =
+                skiff_canonical_json::canonical_json_bytes(&interface_ir).map_err(|error| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        location.clone(),
+                        format!(
+                            "service boundary callback interface identity cannot be canonicalized: {error}"
+                        ),
+                    )
+                })?;
+            let interface_abi_id = String::from_utf8(interface_abi_id).map_err(|error| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    format!("service boundary callback interface identity is not UTF-8: {error}"),
+                )
+            })?;
+            let canonical_type_args = arguments
+                .iter()
+                .map(|argument| contract_type_ref_to_ir(argument, location))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(TypeRefIr::AnyInterface {
+                interface: InterfaceInstantiationRef {
+                    interface_abi_id,
+                    canonical_type_args,
+                },
+            })
+        }
     }
 }
 
@@ -736,6 +830,85 @@ fn remote_method_signature_matches_operation(
         && method.parameter_plans().get(1..) == Some(operation.parameter_plans())
         && method.result_plans() == operation.result_plans()
         && method.effect_summary() == operation.effect_summary()
+}
+
+fn replace_self_type(ty: &TypeRefIr, receiver: &TypeRefIr) -> TypeRefIr {
+    match ty {
+        TypeRefIr::Builtin { name, args } if name == "Self" && args.is_empty() => receiver.clone(),
+        TypeRefIr::Builtin { name, args } => TypeRefIr::Builtin {
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|arg| replace_self_type(arg, receiver))
+                .collect(),
+        },
+        TypeRefIr::AppliedNominal { base, arguments } => TypeRefIr::AppliedNominal {
+            base: replace_self_nominal_base(base, receiver),
+            arguments: arguments
+                .iter()
+                .map(|arg| replace_self_type(arg, receiver))
+                .collect(),
+        },
+        TypeRefIr::Record { fields } => TypeRefIr::Record {
+            fields: fields
+                .iter()
+                .map(|(name, field)| (name.clone(), replace_self_type(field, receiver)))
+                .collect(),
+        },
+        TypeRefIr::Union { items } => TypeRefIr::Union {
+            items: items
+                .iter()
+                .map(|item| replace_self_type(item, receiver))
+                .collect(),
+        },
+        TypeRefIr::Nullable { inner } => TypeRefIr::Nullable {
+            inner: Box::new(replace_self_type(inner, receiver)),
+        },
+        TypeRefIr::AnyInterface { interface } => TypeRefIr::AnyInterface {
+            interface: InterfaceInstantiationRef {
+                interface_abi_id: interface.interface_abi_id.clone(),
+                canonical_type_args: interface
+                    .canonical_type_args
+                    .iter()
+                    .map(|arg| replace_self_type(arg, receiver))
+                    .collect(),
+            },
+        },
+        TypeRefIr::Function {
+            params,
+            return_type,
+        } => TypeRefIr::Function {
+            params: params
+                .iter()
+                .map(|param| skiff_artifact_model::FunctionTypeParamIr {
+                    name: param.name.clone(),
+                    ty: replace_self_type(&param.ty, receiver),
+                })
+                .collect(),
+            return_type: Box::new(replace_self_type(return_type, receiver)),
+        },
+        TypeRefIr::LocalType { .. }
+        | TypeRefIr::PublicationType { .. }
+        | TypeRefIr::ServiceSymbol { .. }
+        | TypeRefIr::PackageSymbol { .. }
+        | TypeRefIr::PackageSchema { .. }
+        | TypeRefIr::DbObjectSymbol { .. }
+        | TypeRefIr::Literal { .. }
+        | TypeRefIr::TypeParam { .. } => ty.clone(),
+    }
+}
+
+fn replace_self_nominal_base(
+    base: &skiff_artifact_model::NominalTypeRefBaseIr,
+    receiver: &TypeRefIr,
+) -> skiff_artifact_model::NominalTypeRefBaseIr {
+    match base {
+        skiff_artifact_model::NominalTypeRefBaseIr::LocalType { .. }
+        | skiff_artifact_model::NominalTypeRefBaseIr::PublicationType { .. }
+        | skiff_artifact_model::NominalTypeRefBaseIr::ServiceSymbol { .. }
+        | skiff_artifact_model::NominalTypeRefBaseIr::PackageSymbol { .. }
+        | skiff_artifact_model::NominalTypeRefBaseIr::PackageSchema { .. } => base.clone(),
+    }
 }
 
 fn frame_signature(
@@ -1295,6 +1468,7 @@ impl DeploymentLinker<'_> {
                         let signature = self.link_interface_signature(
                             package,
                             &reference.specialization,
+                            &interface.concrete_type,
                             &method.signature,
                             &method.effects,
                             type_linker,
@@ -1382,11 +1556,15 @@ impl DeploymentLinker<'_> {
                         type_linker,
                         location.clone(),
                     )?;
+                    let receiver_type = TypeRefIr::AnyInterface {
+                        interface: interface.clone(),
+                    };
                     let mut linked_methods = Vec::with_capacity(methods.len());
                     for method in methods {
                         let signature = self.link_interface_signature(
                             package,
                             &reference.specialization,
+                            &receiver_type,
                             &method.signature,
                             &method.effects,
                             type_linker,
@@ -1537,6 +1715,9 @@ impl DeploymentLinker<'_> {
                         let signature = self.link_interface_signature(
                             package,
                             &reference.specialization,
+                            &TypeRefIr::AnyInterface {
+                                interface: interface.interface.clone(),
+                            },
                             &method.signature,
                             operation.signature().effect_summary(),
                             type_linker,
@@ -1709,6 +1890,7 @@ impl DeploymentLinker<'_> {
         &self,
         package: &HydratedBytecodePackage,
         specialization: &SpecializationKey,
+        receiver_type: &TypeRefIr,
         signature: &skiff_artifact_model::InterfaceMethodSlotSignatureIr,
         effects: &CallableEffectSummary,
         type_linker: &mut TypeLinker<'_>,
@@ -1717,10 +1899,11 @@ impl DeploymentLinker<'_> {
         let mut parameter_types = Vec::with_capacity(signature.params.len());
         let mut parameter_plans = Vec::with_capacity(signature.params.len());
         for parameter in &signature.params {
+            let parameter_type = replace_self_type(&parameter.ty, receiver_type);
             let index = type_linker.intern_concrete_type(
                 package,
                 specialization,
-                &parameter.ty,
+                &parameter_type,
                 &BTreeMap::new(),
                 location.clone(),
             )?;
@@ -1740,10 +1923,11 @@ impl DeploymentLinker<'_> {
             parameter_types.push(index);
             parameter_plans.push(plan);
         }
+        let return_type = replace_self_type(&signature.return_type, receiver_type);
         let result_types = vec![type_linker.intern_concrete_type(
             package,
             specialization,
-            &signature.return_type,
+            &return_type,
             &BTreeMap::new(),
             location.clone(),
         )?];

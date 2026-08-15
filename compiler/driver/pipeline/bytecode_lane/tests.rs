@@ -849,6 +849,184 @@ function consume(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseS
 }
 
 #[test]
+fn actor_self_field_emits_exact_self_root_facts() {
+    let package_id = "test.skiff/actor-self-field-emission";
+    let (platform, package_root, artifact_root, temp) = production_fixture(package_id, None);
+    std::fs::write(
+        package_root.join("main.skiff"),
+        r#"
+type Counter {
+  id: string,
+  count: number,
+}
+
+actor Counter {
+  key(id)
+  create()
+}
+
+impl Counter {
+  function create() -> void {
+    self.count = 0
+  }
+
+  function increment() -> number {
+    self.count = self.count + 1
+    return self.count
+  }
+}
+"#,
+    )
+    .expect("write actor self-field fixture");
+    let receipt = crate::authoring::build_authoring_object(
+        &platform,
+        crate::authoring::AuthoringObject::Package,
+        &package_root,
+        &artifact_root,
+        "skiff-test",
+        true,
+    )
+    .expect("actor self-field package publishes bytecode");
+    let package_ref: skiff_artifact_model::PackageArtifactRef =
+        serde_json::from_value(receipt["packageArtifactReceipt"]["artifact"].clone())
+            .expect("authoring receipt carries package ref");
+    let store = skiff_deployment::storage::CanonicalArtifactStore::open(&artifact_root)
+        .expect("open actor artifact store");
+    let package = store
+        .read_package_artifact(&package_ref)
+        .expect("read published actor package");
+    let bytecode = store
+        .read_package_bytecode(
+            &package_ref,
+            package
+                .bytecode
+                .as_ref()
+                .expect("actor publication attaches admitted bytecode"),
+        )
+        .expect("read published actor bytecode");
+    let artifact = bytecode.artifact();
+    for function_key in ["main::Counter.create", "main::Counter.increment"] {
+        let function = artifact
+            .image
+            .functions
+            .get(function_key)
+            .unwrap_or_else(|| panic!("published bytecode carries {function_key}"));
+        let decoded = skiff_artifact_model::bytecode::BoundedDecoder::new()
+            .decode_function(&function.words)
+            .expect("actor self-field wordcode decodes");
+        let write = decoded
+            .instructions
+            .iter()
+            .find(|instruction| instruction.descriptor.kind == Opcode::SetWritablePath)
+            .unwrap_or_else(|| panic!("{function_key} emits ActorSelfField SetWritablePath"));
+        let path_ref = write
+            .descriptor
+            .operand_word(OperandRole::WritablePathRef, &write.operand_words)
+            .expect("ActorSelfField SetWritablePath carries its exact path ref");
+        let BytecodePoolEntry::WritablePath(path) =
+            &artifact.image.pools.writable_paths[path_ref as usize]
+        else {
+            panic!("ActorSelfField writable operand selects a path declaration")
+        };
+        let [WritablePathSegment::DenseField {
+            shape_ref,
+            field_ordinal,
+        }] = path.segments.as_slice()
+        else {
+            panic!("ActorSelfField root retains one exact dense field segment")
+        };
+        let BytecodePoolEntry::ShapeRef { shape } =
+            &artifact.image.pools.shapes[*shape_ref as usize]
+        else {
+            panic!("ActorSelfField path selects one exact shape")
+        };
+        let field = &shape.fields[*field_ordinal as usize];
+        assert_eq!(field.name, "count");
+        let BytecodePoolEntry::TypeRef { ty, .. } =
+            &artifact.image.pools.types[field.type_ref as usize]
+        else {
+            panic!("ActorSelfField count field selects one exact TypeRef row")
+        };
+        assert_eq!(ty, &skiff_artifact_model::TypeRefIr::builtin("number"));
+    }
+    let increment = artifact
+        .image
+        .functions
+        .get("main::Counter.increment")
+        .expect("published bytecode carries increment");
+    let decoded = skiff_artifact_model::bytecode::BoundedDecoder::new()
+        .decode_function(&increment.words)
+        .expect("actor increment wordcode decodes");
+    assert!(decoded
+        .instructions
+        .iter()
+        .any(|instruction| instruction.descriptor.kind == Opcode::LoadSlot));
+    assert!(decoded
+        .instructions
+        .iter()
+        .any(|instruction| instruction.descriptor.kind == Opcode::GetDenseField));
+    std::fs::remove_dir_all(temp).expect("remove actor self-field fixture tree");
+}
+
+#[test]
+fn callback_schema_closure_keeps_provider_owner_and_record() {
+    let record = skiff_artifact_model::PackageSchemaTypeRecord {
+        package_id: "example.com/phase-6-callback-provider".to_string(),
+        stable_schema_key: "Handler".to_string(),
+        package_schema_type_id: skiff_artifact_model::derive_package_schema_type_id(
+            "example.com/phase-6-callback-provider",
+            "Handler",
+            &skiff_artifact_model::PackageSchemaCanonicalDescriptor {
+                type_params: Vec::new(),
+                descriptor: skiff_artifact_model::ContractTypeDescriptor::Record {
+                    fields: BTreeMap::new(),
+                },
+            },
+        )
+        .expect("callback provider schema identity derives"),
+        canonical_descriptor: skiff_artifact_model::PackageSchemaCanonicalDescriptor {
+            type_params: Vec::new(),
+            descriptor: skiff_artifact_model::ContractTypeDescriptor::Record {
+                fields: BTreeMap::new(),
+            },
+        },
+    };
+    let mut artifact = bytecode_artifact_fixture();
+    artifact.image.pools.types = vec![skiff_artifact_model::BytecodePoolEntry::TypeRef {
+        ty: skiff_artifact_model::TypeRefIr::PackageSchema {
+            package_id: record.package_id.clone(),
+            stable_schema_key: record.stable_schema_key.clone(),
+            package_schema_type_id: record.package_schema_type_id.clone(),
+        },
+        representation_carrier: None,
+        plan: skiff_artifact_model::ValueTransferPlan::SnapshotShare {
+            drop: skiff_artifact_model::ValueDropPlan::Trivial,
+        },
+    }];
+    let available = BTreeMap::from([(record.package_schema_type_id.clone(), record.clone())]);
+    let facts = skiff_compiler_emission::bytecode::collect_bytecode_schema_facts(
+        "test.skiff/callback-consumer",
+        &artifact,
+        &available,
+    )
+    .expect("foreign callback schema closure derives");
+    assert!(facts.records.is_empty());
+    assert!(facts
+        .referenced_package_ids
+        .contains("example.com/phase-6-callback-provider"));
+    let owner_facts = skiff_compiler_emission::bytecode::collect_bytecode_schema_facts(
+        "example.com/phase-6-callback-provider",
+        &artifact,
+        &available,
+    )
+    .expect("provider callback schema closure derives");
+    assert_eq!(
+        owner_facts.records.get(&record.package_schema_type_id),
+        Some(&record)
+    );
+}
+
+#[test]
 fn production_multi_carrier_union_frame_fails_before_publication() {
     let package_id = "test.skiff/multi-carrier-union-frame";
     let (platform, package_root, artifact_root, temp) = production_fixture(package_id, None);

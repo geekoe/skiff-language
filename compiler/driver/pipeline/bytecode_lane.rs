@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use skiff_artifact_identity::assign_package_artifact_identities;
 use skiff_artifact_model::{
     derive_bytecode_statement_manifest_identity, derive_package_schema_type_id,
     http_boundary::canonical_http_boundary_type,
@@ -361,6 +362,19 @@ fn compile_service_boundary_plan(
                 .to_string(),
         });
     }
+    let callbacks = match &contract.callbacks {
+        BoundaryCallbackContract::None => ServiceCallbackPlan::None,
+        BoundaryCallbackContract::RequestScoped {
+            interface_types,
+            lifetime,
+            expiration_error,
+        } => ServiceCallbackPlan::RequestScoped {
+            interface_types: interface_types.clone(),
+            lifetime: *lifetime,
+            expiration_error: *expiration_error,
+        },
+        BoundaryCallbackContract::Unsupported { .. } => unreachable!("rejected above"),
+    };
     let arguments = contract
         .parameters
         .iter()
@@ -406,7 +420,7 @@ fn compile_service_boundary_plan(
             source: ValueProvenance::Fresh,
         },
         stream_item: None,
-        callbacks: ServiceCallbackPlan::None,
+        callbacks,
         effects: CallableEffectSummary::Analyzed {
             effects: CallableMayEffects {
                 escapes_caller_value: false,
@@ -620,6 +634,19 @@ fn source_value_transfer_facts_for_units(units: &[MirUnit]) -> SourceValueTransf
                 })
                 .or_insert(Some(fact));
         }
+        for declaration in &unit.actor_declarations {
+            facts.insert_nominal(
+                SourceValueTransferNominalId::ServiceSymbol {
+                    module_path: unit.module_path.clone(),
+                    symbol: declaration.abi.actor_name.clone(),
+                },
+                SourceValueTransferNominalFact {
+                    declaration_module: unit.module_path.clone(),
+                    type_parameters: Vec::new(),
+                    semantics: SourceValueTransferNominalSemantics::Actor,
+                },
+            );
+        }
         for (type_index, declaration) in unit.type_table.iter().enumerate() {
             let fact = SourceValueTransferNominalFact {
                 declaration_module: unit.module_path.clone(),
@@ -715,6 +742,10 @@ pub(super) fn attach_bytecode_execution(
         },
     )
     .map_err(|error| bytecode_projection_error(error.to_string()))?;
+    let mut attached = attached;
+    attached.artifact.bytecode_schema_records = projected.package_schema_type_records.clone();
+    assign_package_artifact_identities(&mut attached.artifact)
+        .map_err(|error| bytecode_projection_error(error.to_string()))?;
     validate_package_execution_state(&attached.artifact, bytecode)?;
     Ok(attached)
 }

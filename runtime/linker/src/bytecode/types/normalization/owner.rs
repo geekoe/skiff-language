@@ -335,11 +335,15 @@ fn unique_canonical_export<'a>(
             format!("{label} has no exact implementation type link"),
         )
     })?;
-    if matches
-        .iter()
-        .skip(1)
-        .any(|(_, candidate)| *candidate != selected.1)
-    {
+    if matches.iter().skip(1).any(|(_, candidate)| {
+        candidate.file != selected.1.file
+            || candidate.type_index != selected.1.type_index
+            || candidate.is_interface != selected.1.is_interface
+            || candidate.descriptor != selected.1.descriptor
+            || candidate.type_params != selected.1.type_params
+            || candidate.interface_methods != selected.1.interface_methods
+            || candidate.actor != selected.1.actor
+    }) {
         return Err(obligation_error(
             location.clone(),
             format!("{label} has conflicting implementation type links"),
