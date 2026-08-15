@@ -1,11 +1,11 @@
 use super::*;
-use crate::VmOwnedValues;
+use crate::{TaskDispatchIndex, VmOwnedValues};
 
 use skiff_artifact_model::bytecode::dto::DbOperationKind;
 use skiff_artifact_model::{
     FileIrRef, PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity,
 };
-use skiff_runtime_linked_bytecode::{LinkedDbObjectTargetId, LinkedDbOperation};
+use skiff_runtime_linked_bytecode::{LinkedDbObjectTargetId, LinkedDbOperation, LinkedTaskTarget};
 
 #[test]
 fn operand_push_preflight_failure_never_partially_installs_or_advances_height() {
@@ -47,6 +47,15 @@ function run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStrea
   final text = body.toUtf8String()
   emit({ tag: "chunk", value: bytes.fromUtf8(text) })
   return null
+}
+"#;
+
+const TASK_INTRINSIC_SOURCE: &str = r#"
+function work(value: number) -> void { return }
+
+function run(seed: number) -> number {
+  dispatch work(seed)
+  return seed
 }
 "#;
 
@@ -175,6 +184,31 @@ fn intrinsic_dispatch_fixture() -> &'static IntrinsicDispatchFixture {
     FIXTURE.get_or_init(IntrinsicDispatchFixture::build)
 }
 
+fn task_intrinsic_fixture() -> &'static ObservationFixture {
+    static FIXTURE: OnceLock<ObservationFixture> = OnceLock::new();
+    FIXTURE.get_or_init(|| {
+        ObservationFixture::build_number_parameter(
+            "example.com/fiber-task-intrinsic",
+            TASK_INTRINSIC_SOURCE,
+        )
+    })
+}
+
+fn task_intrinsic_row(fixture: &ObservationFixture) -> (LinkedIntrinsicTarget, LinkedTaskTarget) {
+    let intrinsic = fixture
+        .image
+        .intrinsics()
+        .iter()
+        .find(|row| row.task_target().is_some())
+        .expect("task fixture links std.task.submit")
+        .clone();
+    let task_target = intrinsic
+        .task_target()
+        .expect("task intrinsic row retains its exact linked target")
+        .clone();
+    (intrinsic, task_target)
+}
+
 const HOST_RESUME_SOURCE: &str = r#"
 import std
 
@@ -257,6 +291,7 @@ pub(super) fn host_result_resume_token() -> crate::VmResumeToken {
         resume.expected_stack_height_before_result(),
         u32::try_from(resume.result_types().len()).unwrap(),
         VmResumeAuthority::Adapter(adapter),
+        None,
         None,
     )
 }
@@ -1900,4 +1935,260 @@ fn linked_db_intrinsic_result_escrow_releases_exact_owner() {
         heap.debug_inventory()
     );
     assert!(matches!(fiber.state, VmFiberState::BlockedOnChild));
+}
+
+#[test]
+fn linked_task_intrinsic_hands_off_flat_child_with_exact_plans() {
+    let fixture = task_intrinsic_fixture();
+    let (intrinsic, task_target) = task_intrinsic_row(fixture);
+    let observer = BytecodeExecutionObserver::new(
+        Arc::new(RecordingSink::default()),
+        observation_correlation(),
+    );
+    let mut fiber = fixture.start(vm_limits(), observer, Box::new([ValueSlot::number(1.0)]));
+    let mut heap = IntrinsicDispatchHeap::default();
+    let argument = ValueSlot::number(7.0);
+    fiber.push_operand(argument).unwrap();
+
+    let frame = fiber.current_frame().unwrap().clone();
+    let mut executor = LifecycleExecutor::new(&mut heap);
+    let outcome = fiber
+        .execute_resolved_intrinsic(
+            &mut executor,
+            frame.function(),
+            frame.instruction(),
+            &intrinsic,
+            1,
+            1,
+        )
+        .expect("linked task intrinsic must hand off to the flat child lifecycle");
+    drop(executor);
+
+    let DispatchOutcome::Handoff(VmControl::EnterChild(invocation)) = outcome else {
+        panic!("linked task intrinsic must produce a flat child handoff");
+    };
+    assert_eq!(
+        invocation.target(),
+        ChildTarget::Task(
+            TaskDispatchIndex::from_task_target_index(task_target.index())
+                .expect("task target maps to a non-zero dispatch index")
+        )
+    );
+    assert!(invocation.arguments().values() == &[argument]);
+    assert_eq!(invocation.resume().expected_result_count(), 1);
+    let plan = invocation
+        .resume()
+        .task_plan()
+        .expect("task resume token retains its exact result plan");
+    assert_eq!(plan.task_target(), &task_target);
+    assert_eq!(plan.result_type(), intrinsic.signature().result_types()[0]);
+    assert_eq!(plan.result_plan(), &intrinsic.signature().result_plans()[0]);
+    assert!(matches!(fiber.state, VmFiberState::BlockedOnChild));
+    assert_eq!(fiber.current_frame().unwrap().operand_height(), 0);
+
+    let (_, arguments, _, resume) = invocation.into_parts();
+    arguments
+        .into_terminal_escrow()
+        .release_all(&mut heap)
+        .expect("task intrinsic argument release uses its exact plan");
+    let result = heap.allocate(
+        IntrinsicDispatchValue::Opaque,
+        compact_tag(intrinsic.signature().result_types()[0].get()),
+        ValueFlags::new(0),
+    );
+    let owned =
+        VmOwnedValues::try_from_task_intrinsic_resume(&resume, Box::new([result]), &task_target)
+            .expect("linked task result plan binds to the intrinsic resume token");
+    fiber
+        .resume(resume, ResumeOutcome::Values(owned))
+        .expect("linked task intrinsic resumes through the same flat lifecycle");
+    assert!(matches!(fiber.state, VmFiberState::Runnable));
+}
+
+#[test]
+fn linked_task_intrinsic_missing_plan_fails_before_argument_move() {
+    let fixture = task_intrinsic_fixture();
+    let (intrinsic, _) = task_intrinsic_row(fixture);
+    let missing_target = LinkedIntrinsicTarget::new(
+        intrinsic.index(),
+        intrinsic.kind().clone(),
+        intrinsic.signature().clone(),
+    );
+    let observer = BytecodeExecutionObserver::new(
+        Arc::new(RecordingSink::default()),
+        observation_correlation(),
+    );
+    let mut fiber = fixture.start(vm_limits(), observer, Box::new([ValueSlot::number(1.0)]));
+    let mut heap = IntrinsicDispatchHeap::default();
+    let argument = ValueSlot::number(7.0);
+    fiber.push_operand(argument).unwrap();
+
+    let frame = fiber.current_frame().unwrap().clone();
+    let mut executor = LifecycleExecutor::new(&mut heap);
+    let error = match fiber.execute_resolved_intrinsic(
+        &mut executor,
+        frame.function(),
+        frame.instruction(),
+        &missing_target,
+        1,
+        1,
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("a task intrinsic with no linked task target must fail closed"),
+    };
+    drop(executor);
+
+    assert!(matches!(
+        error,
+        VmError::FullValueLifecyclePlanUnavailable {
+            opcode: Opcode::InvokeIntrinsic,
+            ..
+        }
+    ));
+    assert_eq!(fiber.current_frame().unwrap().operand_height(), 1);
+    let operand_base = fiber.current_frame().unwrap().operand_base();
+    assert!(fiber.values[operand_base] == argument);
+    assert!(fiber.live_values[operand_base]);
+}
+
+#[test]
+fn linked_task_intrinsic_argument_plan_mismatch_fails_before_argument_move() {
+    let fixture = task_intrinsic_fixture();
+    let (intrinsic, task_target) = task_intrinsic_row(fixture);
+    let mismatched_parameter = LinkedValueTransferPlan::MoveOnly {
+        drop: LinkedValueDropPlan::Trivial,
+    };
+    let signature = LinkedNativeCallableSignature::new(
+        intrinsic
+            .signature()
+            .parameter_types()
+            .to_vec()
+            .into_boxed_slice(),
+        intrinsic
+            .signature()
+            .parameter_modes()
+            .to_vec()
+            .into_boxed_slice(),
+        Box::new([mismatched_parameter]),
+        intrinsic
+            .signature()
+            .result_types()
+            .to_vec()
+            .into_boxed_slice(),
+        intrinsic
+            .signature()
+            .result_plans()
+            .to_vec()
+            .into_boxed_slice(),
+        no_intrinsic_effects(),
+    )
+    .expect("mismatched task signature remains structurally valid");
+    let target = LinkedIntrinsicTarget::new(intrinsic.index(), intrinsic.kind().clone(), signature)
+        .with_task_target(task_target);
+    let observer = BytecodeExecutionObserver::new(
+        Arc::new(RecordingSink::default()),
+        observation_correlation(),
+    );
+    let mut fiber = fixture.start(vm_limits(), observer, Box::new([ValueSlot::number(1.0)]));
+    let mut heap = IntrinsicDispatchHeap::default();
+    let argument = ValueSlot::number(7.0);
+    fiber.push_operand(argument).unwrap();
+
+    let frame = fiber.current_frame().unwrap().clone();
+    let mut executor = LifecycleExecutor::new(&mut heap);
+    let error = match fiber.execute_resolved_intrinsic(
+        &mut executor,
+        frame.function(),
+        frame.instruction(),
+        &target,
+        1,
+        1,
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("a task intrinsic with a mismatched argument plan must fail closed"),
+    };
+    drop(executor);
+
+    assert!(matches!(
+        error,
+        VmError::FullValueLifecyclePlanUnavailable {
+            opcode: Opcode::InvokeIntrinsic,
+            ..
+        }
+    ));
+    assert_eq!(fiber.current_frame().unwrap().operand_height(), 1);
+    let operand_base = fiber.current_frame().unwrap().operand_base();
+    assert!(fiber.values[operand_base] == argument);
+    assert!(fiber.live_values[operand_base]);
+}
+
+#[test]
+fn linked_task_intrinsic_result_plan_mismatch_fails_before_argument_move() {
+    let fixture = task_intrinsic_fixture();
+    let (intrinsic, task_target) = task_intrinsic_row(fixture);
+    let mismatched_result = LinkedValueTransferPlan::MoveOnly {
+        drop: LinkedValueDropPlan::Trivial,
+    };
+    let signature = LinkedNativeCallableSignature::new(
+        intrinsic
+            .signature()
+            .parameter_types()
+            .to_vec()
+            .into_boxed_slice(),
+        intrinsic
+            .signature()
+            .parameter_modes()
+            .to_vec()
+            .into_boxed_slice(),
+        intrinsic
+            .signature()
+            .parameter_plans()
+            .to_vec()
+            .into_boxed_slice(),
+        intrinsic
+            .signature()
+            .result_types()
+            .to_vec()
+            .into_boxed_slice(),
+        Box::new([mismatched_result]),
+        no_intrinsic_effects(),
+    )
+    .expect("mismatched task signature remains structurally valid");
+    let target = LinkedIntrinsicTarget::new(intrinsic.index(), intrinsic.kind().clone(), signature)
+        .with_task_target(task_target);
+    let observer = BytecodeExecutionObserver::new(
+        Arc::new(RecordingSink::default()),
+        observation_correlation(),
+    );
+    let mut fiber = fixture.start(vm_limits(), observer, Box::new([ValueSlot::number(1.0)]));
+    let mut heap = IntrinsicDispatchHeap::default();
+    let argument = ValueSlot::number(7.0);
+    fiber.push_operand(argument).unwrap();
+
+    let frame = fiber.current_frame().unwrap().clone();
+    let mut executor = LifecycleExecutor::new(&mut heap);
+    let error = match fiber.execute_resolved_intrinsic(
+        &mut executor,
+        frame.function(),
+        frame.instruction(),
+        &target,
+        1,
+        1,
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("a task intrinsic with a mismatched result plan must fail closed"),
+    };
+    drop(executor);
+
+    assert!(matches!(
+        error,
+        VmError::FullValueLifecyclePlanUnavailable {
+            opcode: Opcode::InvokeIntrinsic,
+            ..
+        }
+    ));
+    assert_eq!(fiber.current_frame().unwrap().operand_height(), 1);
+    let operand_base = fiber.current_frame().unwrap().operand_base();
+    assert!(fiber.values[operand_base] == argument);
+    assert!(fiber.live_values[operand_base]);
 }

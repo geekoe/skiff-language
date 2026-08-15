@@ -1711,6 +1711,7 @@ fn raw_thrown_failure_is_rejected_unchanged_but_remains_rootless_diagnostic() {
             0,
             0,
             None,
+            None,
         )
         .unwrap();
     fiber.state = VmFiberState::BlockedOnChild;

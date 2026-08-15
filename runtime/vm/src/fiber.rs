@@ -49,9 +49,9 @@ use crate::{
     admission::{is_discardable_root, validate_entry_arguments},
     control::{
         AdapterInvocation, ChildInvocation, ChildTarget, InterfaceCallPlan,
-        RemoteInterfaceCallPlan, StreamItem, VmCompletion, VmLifecycleSite, VmOwnedException,
-        VmOwnedValues, VmResumeAuthority, VmResumeBinding, VmTerminalCause, VmTerminalEscrow,
-        VmTerminalOwner,
+        RemoteInterfaceCallPlan, StreamItem, TaskDispatchIndex, TaskIntrinsicResumePlan,
+        VmCompletion, VmLifecycleSite, VmOwnedException, VmOwnedValues, VmResumeAuthority,
+        VmResumeBinding, VmTerminalCause, VmTerminalEscrow, VmTerminalOwner,
     },
     fiber::entry_admission::validate_entry_contract,
     frame::VmFrame,
@@ -3602,6 +3602,15 @@ impl VmFiber {
                 result_count,
             );
         }
+        if intrinsic.task_target().is_some() {
+            return self.execute_task_intrinsic_child(
+                function,
+                instruction,
+                intrinsic,
+                arg_count,
+                result_count,
+            );
+        }
         if result_count != 1 {
             return Err(VmError::FullValueLifecyclePlanUnavailable {
                 function,
@@ -3710,6 +3719,101 @@ impl VmFiber {
             expected_stack_height,
             result_count as u32,
             None,
+            None,
+        )?;
+        let invocation = ChildInvocation::new(
+            target,
+            VmOwnedValues::new_exact(
+                Arc::clone(self.entry.image()),
+                arguments.into_boxed_slice(),
+                argument_plans.into_boxed_slice(),
+            ),
+            token,
+        )
+        .map_err(|_| VmError::ResumeTokenMismatch)?;
+        self.state = VmFiberState::BlockedOnChild;
+        Ok(DispatchOutcome::Handoff(VmControl::EnterChild(invocation)))
+    }
+
+    fn execute_task_intrinsic_child(
+        &mut self,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        intrinsic: &skiff_runtime_linked_bytecode::LinkedIntrinsicTarget,
+        arg_count: usize,
+        result_count: usize,
+    ) -> Result<DispatchOutcome, VmError> {
+        let task_target = intrinsic.task_target().cloned().ok_or_else(|| {
+            VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::InvokeIntrinsic,
+            }
+        })?;
+        if arg_count != intrinsic.signature().parameter_types().len()
+            || result_count != 1
+            || intrinsic.signature().parameter_plans().len() != arg_count
+            || intrinsic.signature().result_types().len() != 1
+            || intrinsic.signature().result_plans().len() != 1
+        {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::InvokeIntrinsic,
+            });
+        }
+        let target_signature = task_target.signature();
+        if target_signature.parameter_types() != intrinsic.signature().parameter_types()
+            || target_signature.parameter_modes() != intrinsic.signature().parameter_modes()
+            || target_signature.parameter_plans() != intrinsic.signature().parameter_plans()
+        {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::InvokeIntrinsic,
+            });
+        }
+        let result_type = intrinsic.signature().result_types()[0];
+        let result_plan = intrinsic.signature().result_plans()[0].clone();
+        if self.execution_image().type_plan(result_type) != Some(&result_plan) {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::InvokeIntrinsic,
+            });
+        }
+        let dispatch =
+            TaskDispatchIndex::from_task_target_index(task_target.index()).ok_or_else(|| {
+                VmError::FullValueLifecyclePlanUnavailable {
+                    function,
+                    instruction,
+                    opcode: Opcode::InvokeIntrinsic,
+                }
+            })?;
+        let arguments = self.pop_operands(arg_count, false)?;
+        let argument_plans = intrinsic.signature().parameter_plans().to_vec();
+        let expected_stack_height =
+            self.current_frame()?
+                .operand_height()
+                .try_into()
+                .map_err(|_| VmError::VerifiedEntryInvariant {
+                    invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+                })?;
+        let frame = self.current_frame()?.clone();
+        let advance = self.reserve_instruction_advance(&frame, function, instruction)?;
+        let target = ChildTarget::Task(dispatch);
+        let task_plan = TaskIntrinsicResumePlan::new(task_target, result_type, result_plan);
+        let token = self.mint_resume(
+            function,
+            instruction,
+            VmResumeAuthority::Child(target),
+            ResumeSiteIndex::new(0),
+            advance.next_instruction(),
+            None,
+            expected_stack_height,
+            result_count as u32,
+            None,
+            Some(task_plan),
         )?;
         let invocation = ChildInvocation::new(
             target,
@@ -3996,6 +4100,7 @@ impl VmFiber {
             expected_stack_height,
             result_count as u32,
             None,
+            None,
         )?;
         let invocation = ChildInvocation::new(
             target,
@@ -4080,6 +4185,7 @@ impl VmFiber {
             None,
             expected_stack_height,
             result_count as u32,
+            None,
             None,
         )?;
         let invocation = ChildInvocation::new(
@@ -4293,6 +4399,7 @@ impl VmFiber {
             expected_stack_height,
             result_count as u32,
             Some(interface_plan),
+            None,
         )?;
         let invocation = ChildInvocation::new(
             target,
@@ -4426,6 +4533,7 @@ impl VmFiber {
             None,
             expected_stack_height,
             expected_result_count,
+            None,
             None,
         )?;
         let invocation = AdapterInvocation::new(
@@ -4604,6 +4712,7 @@ impl VmFiber {
             expected_stack_height,
             1,
             None,
+            None,
         )?;
         let invocation = ChildInvocation::new_stream_next(
             crate::control::StreamEndpointRef::new(endpoint),
@@ -4694,6 +4803,7 @@ impl VmFiber {
             None,
             expected_stack_height,
             0,
+            None,
             None,
         )?;
         let stream_item = StreamItem::new(
@@ -4923,6 +5033,7 @@ impl VmFiber {
         expected_stack_height: u32,
         expected_result_count: u32,
         interface_plan: Option<crate::control::InterfaceCallPlan>,
+        task_plan: Option<crate::control::TaskIntrinsicResumePlan>,
     ) -> Result<VmResumeToken, VmError> {
         let image = Arc::clone(self.entry.image());
         let sequence = self.resume_sequence;
@@ -4942,6 +5053,7 @@ impl VmFiber {
             expected_result_count,
             authority,
             interface_plan,
+            task_plan,
         );
         self.pending_resume = Some(PendingResume {
             binding: Arc::clone(token.binding()),

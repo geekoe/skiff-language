@@ -3,7 +3,8 @@ use std::{fmt, sync::Arc};
 use skiff_artifact_model::{InstructionSourceSite, Opcode, TypeRefIr};
 use skiff_runtime_deployment_image::DeploymentOwnerIdentity;
 use skiff_runtime_linked_bytecode::{
-    FunctionIndex, InstructionIndex, LinkedDbOperation, LinkedValueTransferPlan, TypeIndex,
+    FunctionIndex, InstructionIndex, LinkedDbOperation, LinkedTaskTarget, LinkedValueTransferPlan,
+    TypeIndex,
 };
 use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_model::{
@@ -16,8 +17,8 @@ use skiff_runtime_model::{
 use crate::{
     admission::is_discardable_root,
     control::{
-        visit_values, visit_vm_error, ChildTarget, ResumeOutcome, VmResumeAuthority,
-        VmResumeBinding, VmResumeKind, VmResumeToken,
+        visit_values, visit_vm_error, ChildTarget, ResumeOutcome, TaskDispatchIndex,
+        VmResumeAuthority, VmResumeBinding, VmResumeKind, VmResumeToken,
     },
     fiber::runtime_leaf_catch_identity,
     lifecycle::LifecycleExecutor,
@@ -163,6 +164,82 @@ impl VmOwnedValues {
         }
         let result_type = operation.result_type();
         let result_plan = operation.result_plan();
+        if image.type_plan(result_type) != Some(result_plan)
+            || !resume_value_matches(&image, &values[0], result_type, result_plan)
+        {
+            return Err(VmOwnedValuesRejected::new(
+                image,
+                VmError::FullValueLifecyclePlanUnavailable {
+                    function: resume.function(),
+                    instruction: resume.instruction(),
+                    opcode: Opcode::InvokeIntrinsic,
+                },
+                values,
+            ));
+        }
+        let mut owned = Self::new_exact(image, values, Box::new([result_plan.clone()]));
+        owned.resume_binding = Some(Arc::clone(resume.binding()));
+        Ok(owned)
+    }
+
+    /// Binds one task intrinsic result to the exact continuation minted by
+    /// the VM for the linked `std.task.submit` target.
+    ///
+    /// The result type and lifecycle plan are sealed in the resume token.
+    /// The caller must still pass the exact linked task target, so the binder
+    /// rejects a target index collision or a reconstructed target even when
+    /// the numeric continuation matches.
+    pub fn try_from_task_intrinsic_resume(
+        resume: &VmResumeToken,
+        values: Box<[ValueSlot]>,
+        task_target: &LinkedTaskTarget,
+    ) -> Result<Self, VmOwnedValuesRejected> {
+        let image = Arc::clone(resume.image());
+        let VmResumeAuthority::Child(ChildTarget::Task(dispatch_index)) = resume.authority() else {
+            return Err(VmOwnedValuesRejected::new(
+                image,
+                VmError::ResumeTokenMismatch,
+                values,
+            ));
+        };
+        if TaskDispatchIndex::from_task_target_index(task_target.index()) != Some(dispatch_index) {
+            return Err(VmOwnedValuesRejected::new(
+                image,
+                VmError::ResumeTokenMismatch,
+                values,
+            ));
+        }
+        let Some(plan) = resume.task_plan() else {
+            return Err(VmOwnedValuesRejected::new(
+                image,
+                VmError::FullValueLifecyclePlanUnavailable {
+                    function: resume.function(),
+                    instruction: resume.instruction(),
+                    opcode: Opcode::InvokeIntrinsic,
+                },
+                values,
+            ));
+        };
+        if plan.task_target() != task_target {
+            return Err(VmOwnedValuesRejected::new(
+                image,
+                VmError::FullValueLifecyclePlanUnavailable {
+                    function: resume.function(),
+                    instruction: resume.instruction(),
+                    opcode: Opcode::InvokeIntrinsic,
+                },
+                values,
+            ));
+        }
+        if resume.expected_result_count() != 1 || values.len() != 1 {
+            return Err(VmOwnedValuesRejected::new(
+                image,
+                VmError::ResumeTokenMismatch,
+                values,
+            ));
+        }
+        let result_type = plan.result_type();
+        let result_plan = plan.result_plan();
         if image.type_plan(result_type) != Some(result_plan)
             || !resume_value_matches(&image, &values[0], result_type, result_plan)
         {

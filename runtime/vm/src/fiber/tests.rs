@@ -2068,6 +2068,7 @@ fn resume_throw_rejects_a_duplicate_type_index_from_another_execution_image() {
             0,
             0,
             None,
+            None,
         )
         .unwrap();
     let sequence = token.sequence();
@@ -2150,6 +2151,7 @@ fn controlled_resume_throw_preserves_the_exact_envelope_into_the_catch_handler()
             None,
             0,
             0,
+            None,
             None,
         )
         .expect("mint a pending resume at the protected throw site");

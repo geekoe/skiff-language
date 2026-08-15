@@ -8,8 +8,8 @@ use skiff_artifact_model::Opcode;
 use skiff_runtime_linked_bytecode::{
     ActorMethodIndex, FunctionIndex, HostEffectAdapterIndex, InstructionIndex, InterfaceTableIndex,
     IntrinsicIndex, LinkedCallableSignature, LinkedRemoteInterfaceMethod,
-    LinkedRemoteInterfaceTable, LinkedValueTransferPlan, ResumeSiteIndex, ServiceOperationIndex,
-    ShapeIndex, SyntheticCallbackIndex, TypeIndex,
+    LinkedRemoteInterfaceTable, LinkedTaskTarget, LinkedValueTransferPlan, ResumeSiteIndex,
+    ServiceOperationIndex, ShapeIndex, SyntheticCallbackIndex, TaskTargetIndex, TypeIndex,
 };
 use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_model::{
@@ -190,6 +190,7 @@ pub(crate) struct VmResumeBinding {
     expected_result_count: u32,
     authority: VmResumeAuthority,
     interface_plan: Option<InterfaceCallPlan>,
+    task_plan: Option<TaskIntrinsicResumePlan>,
 }
 
 impl VmResumeToken {
@@ -209,6 +210,7 @@ impl VmResumeToken {
         expected_result_count: u32,
         authority: VmResumeAuthority,
         interface_plan: Option<InterfaceCallPlan>,
+        task_plan: Option<TaskIntrinsicResumePlan>,
     ) -> Self {
         Self {
             binding: Arc::new(VmResumeBinding {
@@ -223,6 +225,7 @@ impl VmResumeToken {
                 expected_result_count,
                 authority,
                 interface_plan,
+                task_plan,
             }),
         }
     }
@@ -282,6 +285,14 @@ impl VmResumeToken {
     /// complete plan before leaving the VM core.
     pub fn interface_plan(&self) -> Option<&InterfaceCallPlan> {
         self.binding.interface_plan.as_ref()
+    }
+
+    /// Exact linked task intrinsic result facts carried by this continuation.
+    ///
+    /// Non-task resumes carry `None`; task resumes must carry a complete plan
+    /// before leaving the VM core.
+    pub(crate) fn task_plan(&self) -> Option<&TaskIntrinsicResumePlan> {
+        self.binding.task_plan.as_ref()
     }
 
     pub(crate) const fn binding(&self) -> &Arc<VmResumeBinding> {
@@ -355,6 +366,56 @@ impl TaskDispatchIndex {
 
     pub const fn get(self) -> u32 {
         self.0.get()
+    }
+
+    /// Maps the linker's zero-based task target table into the opaque,
+    /// deliberately non-zero scheduler dispatch index.
+    pub fn from_task_target_index(index: TaskTargetIndex) -> Option<Self> {
+        Self::try_new(index.get().checked_add(1)?)
+    }
+
+    /// Recovers the exact linked task target row selected by this dispatch
+    /// index. Returns `None` only for the invalid zero dispatch index.
+    pub fn task_target_index(self) -> Option<TaskTargetIndex> {
+        Some(TaskTargetIndex::new(self.0.get().checked_sub(1)?))
+    }
+}
+
+/// Sealed exact task intrinsic facts retained by a task continuation.
+///
+/// The VM mints this plan from the linked intrinsic row so the task resume
+/// binder can validate the exact target and result plan without reconstructing
+/// either from a runtime tag or table name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TaskIntrinsicResumePlan {
+    task_target: LinkedTaskTarget,
+    result_type: TypeIndex,
+    result_plan: LinkedValueTransferPlan,
+}
+
+impl TaskIntrinsicResumePlan {
+    pub(crate) fn new(
+        task_target: LinkedTaskTarget,
+        result_type: TypeIndex,
+        result_plan: LinkedValueTransferPlan,
+    ) -> Self {
+        Self {
+            task_target,
+            result_type,
+            result_plan,
+        }
+    }
+
+    pub(crate) const fn task_target(&self) -> &LinkedTaskTarget {
+        &self.task_target
+    }
+
+    pub(crate) const fn result_type(&self) -> TypeIndex {
+        self.result_type
+    }
+
+    pub(crate) const fn result_plan(&self) -> &LinkedValueTransferPlan {
+        &self.result_plan
     }
 }
 
@@ -1043,7 +1104,8 @@ mod tests {
     };
     use skiff_runtime_linked_bytecode::{
         LinkedCallableSignature, LinkedPublicInstanceKey, LinkedRemoteInterfaceMethod,
-        LinkedRemoteInterfaceTable, LinkedValueDropPlan, LinkedValueTransferPlan, TypeIndex,
+        LinkedRemoteInterfaceTable, LinkedValueDropPlan, LinkedValueTransferPlan, TaskTargetIndex,
+        TypeIndex,
     };
     use skiff_runtime_model::{
         vm_heap::VmHeapError,
@@ -1124,6 +1186,16 @@ mod tests {
         let first = TaskDispatchIndex::try_new(1).expect("one is valid");
         let second = TaskDispatchIndex::try_new(2).expect("two is valid");
         assert_ne!(first, second);
+        assert_eq!(
+            first,
+            TaskDispatchIndex::from_task_target_index(TaskTargetIndex::new(0))
+                .expect("zero-based task target maps to one")
+        );
+        assert_eq!(first.task_target_index(), Some(TaskTargetIndex::new(0)));
+        assert_eq!(
+            TaskDispatchIndex::from_task_target_index(TaskTargetIndex::new(u32::MAX)),
+            None
+        );
         assert_eq!(
             ChildTarget::Task(first),
             ChildTarget::Task(TaskDispatchIndex::try_new(1).expect("one is valid"))
