@@ -5,11 +5,16 @@ use std::{
 };
 
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryEffectGuarantee, BoundaryOperationContract,
-    BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract, BoundaryValueCarrier,
-    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
-    ContractRequirement, ContractTypeRef, DeploymentOperationBinding, PackageCallableId,
-    PackageRequirement, PackageSchemaIndexEntry, ServiceCallRef, ServiceRequirement,
+    BoundaryCallbackContract, BoundaryDropPlan, BoundaryEffectGuarantee, BoundaryErrorAdmission,
+    BoundaryErrorFallbackIdentity, BoundaryErrorPlan, BoundaryErrorPolicy,
+    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryReturn, BoundaryStreamContract,
+    BoundaryTransfer, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
+    BoundaryValueOwner, BoundaryValuePlan, BytecodePoolEntry, BytecodeRelocation,
+    ContractOperationId, ContractRequirement, ContractTypeDescriptor, ContractTypeRef,
+    DeploymentOperationBinding, PackageCallableId, PackageExecutableCoordinate, PackageRequirement,
+    PackageSchemaCanonicalDescriptor, PackageSchemaIndexEntry, PackageSchemaTypeRecord,
+    ResumeDescriptor, ResumeErrorMode, ServiceCallBoundaryFacts, ServiceCallRef,
+    ServiceCallbackPlan, ServiceRequirement, ValueProvenance,
 };
 
 use super::*;
@@ -542,4 +547,241 @@ fn load_rejects_binding_and_slot_owner_mismatches() {
             ..
         }) if key == expected_key
     ));
+}
+
+#[test]
+fn load_hydrates_service_fallback_schema_from_bytecode_relocation() {
+    let record = service_internal_error_record();
+    let fallback = ContractTypeRef::package_schema(
+        record.package_id.clone(),
+        record.stable_schema_key.clone(),
+        record.package_schema_type_id.clone(),
+    );
+    let (provider_contract, provider_reference, provider_operation) =
+        valid_contract("example.provider", true);
+    let provider_operation = provider_operation.expect("provider contract has an operation");
+    let (bytecode, coordinate, callable) = service_operation_bytecode(
+        fallback,
+        provider_operation.clone(),
+        provider_reference.service_protocol_identity.clone(),
+    );
+    let provider_requirement = ContractRequirement {
+        alias: "provider".to_string(),
+        service_id: provider_reference.service_id.clone(),
+        contract_version: provider_reference.contract_version.clone(),
+        expected_protocol_identity: provider_reference.service_protocol_identity.clone(),
+    };
+    let std_package = std_fallback_package(record);
+    let std_reference = package_reference(&std_package);
+    let mut implementation = callable_package(
+        &bytecode,
+        &coordinate,
+        &callable,
+        skiff_artifact_model::OperationCallableKind::InternalFunction,
+    )
+    .as_ref()
+    .clone();
+    implementation.package_requirements = vec![PackageRequirement {
+        alias: "std".to_string(),
+        package_id: std_reference.package_id.clone(),
+        exact_version: std_reference.package_version.clone(),
+        expected_local_abi: std_reference.package_local_abi_identity.clone(),
+        expected_package_build: None,
+    }];
+    implementation.contract_requirements = vec![provider_requirement.clone()];
+    implementation.service_requirements = vec![ServiceRequirement {
+        contract_requirement: provider_requirement,
+        service_binding_slot: 3,
+        used_operations: BTreeSet::from([provider_operation.clone()]),
+    }];
+    implementation.service_call_refs = vec![ServiceCallRef {
+        service_requirement_slot: 3,
+        contract_operation_id: provider_operation.clone(),
+        expected_protocol_identity: provider_reference.service_protocol_identity.clone(),
+    }];
+    let implementation = Arc::new(implementation);
+    let implementation_reference = package_reference(&implementation);
+    let implementation_hydrated = HydratedBytecodePackage::checked(
+        implementation_reference.clone(),
+        Arc::clone(&implementation),
+        Arc::clone(&bytecode),
+    )
+    .expect("caller bytecode package hydrates");
+    let std_hydrated =
+        HydratedBytecodePackage::checked_type_only(std_reference.clone(), Arc::clone(&std_package))
+            .expect("type-only std fallback package hydrates");
+    let service_key = ServiceRequirementKey {
+        caller_package_build_id: implementation_reference.package_build_id.clone(),
+        service_requirement_slot: 3,
+    };
+    let std_key = skiff_artifact_model::PackageRequirementKey {
+        caller_package_build_id: implementation_reference.package_build_id.clone(),
+        package_requirement_alias: "std".to_string(),
+    };
+    let (own_contract, own_contract_reference, _) = valid_contract("example.consumer", false);
+    let mut deployment_record = deployment(
+        implementation_reference.clone(),
+        own_contract_reference.clone(),
+        vec![ServiceSelectorBinding {
+            key: service_key.clone(),
+            contract: provider_reference.clone(),
+        }],
+    )
+    .as_ref()
+    .clone();
+    deployment_record.package_bindings = vec![skiff_artifact_model::PackageBinding {
+        key: std_key,
+        package: std_reference.clone(),
+    }];
+    skiff_artifact_identity::assign_service_deployment_identity(&mut deployment_record).unwrap();
+    let deployment_reference = deployment_reference(&deployment_record);
+    let contracts = BTreeMap::from([
+        (own_contract_reference, own_contract),
+        (provider_reference.clone(), provider_contract),
+    ]);
+    let dependency = HydratedServiceDependency::new(
+        service_key,
+        provider_reference,
+        BTreeSet::from([provider_operation]),
+    );
+    let hydrated = HydratedDeploymentBytecode::checked(
+        deployment_reference,
+        Arc::new(deployment_record),
+        contracts,
+        vec![dependency],
+        vec![implementation_hydrated, std_hydrated],
+    )
+    .expect("service fallback PackageSchema must hydrate from the bytecode relocation");
+
+    assert!(hydrated
+        .packages()
+        .contains_key(&std_reference.package_build_id));
+    assert_eq!(
+        hydrated
+            .packages()
+            .get(&std_reference.package_build_id)
+            .unwrap()
+            .reference(),
+        &std_reference
+    );
+}
+
+fn service_operation_bytecode(
+    fallback: ContractTypeRef,
+    operation: ContractOperationId,
+    protocol: ServiceProtocolIdentity,
+) -> (
+    Arc<ValidatedBytecodeArtifact>,
+    PackageExecutableCoordinate,
+    PackageCallableId,
+) {
+    let (bytecode, coordinate, callable) = callable_bytecode(false);
+    let mut artifact = bytecode.artifact().clone();
+    let function = artifact
+        .image
+        .functions
+        .get_mut("manifest::run")
+        .expect("callable fixture function");
+    function.words = vec![0x22, 0, 0, 0, 0, 0x25];
+    function.source_map[0].end_pc = 6;
+    function.relocations = vec![BytecodeRelocation::ServiceOperationRef {
+        service_call: ServiceCallBoundaryFacts::new(
+            ServiceCallRef {
+                service_requirement_slot: 3,
+                contract_operation_id: operation,
+                expected_protocol_identity: protocol,
+            },
+            service_boundary_plan(fallback),
+        ),
+    }];
+    artifact
+        .image
+        .pools
+        .resume
+        .push(BytecodePoolEntry::ResumeDescriptor(ResumeDescriptor {
+            function_key: "manifest::run".to_string(),
+            site_pc: 0,
+            resume_pc: 5,
+            end_resume_pc: None,
+            expected_stack_height_before_result: 0,
+            result_type_refs: Vec::new(),
+            result_plans: Vec::new(),
+            result_materializations: Vec::new(),
+            emit_stream_item_shape_ref: None,
+            error_mode: ResumeErrorMode::RaiseAtSite,
+        }));
+    skiff_artifact_identity::assign_bytecode_identity(&mut artifact).unwrap();
+    (
+        Arc::new(ValidatedBytecodeArtifact::admit(artifact).unwrap()),
+        coordinate,
+        callable,
+    )
+}
+
+fn service_boundary_plan(fallback: ContractTypeRef) -> skiff_artifact_model::ServiceBoundaryPlan {
+    skiff_artifact_model::ServiceBoundaryPlan {
+        arguments: Vec::new(),
+        results: Vec::new(),
+        error: BoundaryErrorPlan {
+            fallback_contract_type: fallback,
+            fallback: BoundaryValuePlan::Linkable {
+                carrier: BoundaryValueCarrier::DetachedValueGraph,
+                encoding: BoundaryValueEncoding::CanonicalValue,
+                owner: BoundaryValueOwner::Caller,
+                lifetime: BoundaryValueLifetime::Call,
+            },
+            policy: BoundaryErrorPolicy::DynamicPublicSchema {
+                admission: BoundaryErrorAdmission::PublicNameableSchemaClosed,
+                fallback_identity: BoundaryErrorFallbackIdentity::StdServiceInternalError,
+            },
+            transfer: BoundaryTransfer::Move,
+            drop: BoundaryDropPlan::SnapshotRelease,
+            source: ValueProvenance::Fresh,
+        },
+        stream_item: None,
+        callbacks: ServiceCallbackPlan::None,
+        effects: skiff_artifact_model::CallableEffectSummary::analysis_pending(),
+    }
+}
+
+fn service_internal_error_record() -> PackageSchemaTypeRecord {
+    let descriptor = PackageSchemaCanonicalDescriptor {
+        type_params: Vec::new(),
+        descriptor: ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([
+                ("message".to_string(), ContractTypeRef::builtin("string")),
+                ("traceId".to_string(), ContractTypeRef::builtin("string")),
+                ("errorId".to_string(), ContractTypeRef::builtin("string")),
+            ]),
+        },
+    };
+    let type_id = skiff_artifact_model::derive_package_schema_type_id(
+        "skiff.run/std",
+        "std.service.InternalError",
+        &descriptor,
+    )
+    .unwrap();
+    PackageSchemaTypeRecord {
+        package_id: "skiff.run/std".to_string(),
+        stable_schema_key: "std.service.InternalError".to_string(),
+        package_schema_type_id: type_id,
+        canonical_descriptor: descriptor,
+    }
+}
+
+fn std_fallback_package(record: PackageSchemaTypeRecord) -> Arc<PackageArtifact> {
+    let mut artifact = package_artifact("skiff.run/std", "build:std-fallback", None)
+        .as_ref()
+        .clone();
+    artifact.package_schema_index.package_schema_index_identity =
+        skiff_artifact_identity::package_schema_index_identity(
+            &artifact.package_id,
+            &BTreeMap::<String, PackageSchemaIndexEntry>::new(),
+        )
+        .unwrap();
+    artifact
+        .bytecode_schema_records
+        .insert(record.package_schema_type_id.clone(), record);
+    skiff_artifact_identity::assign_package_artifact_identities(&mut artifact).unwrap();
+    Arc::new(artifact)
 }

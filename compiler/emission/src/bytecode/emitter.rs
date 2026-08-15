@@ -13,7 +13,7 @@ use skiff_compiler_lowering::{mir::MirUnit, FrozenConstantBundle};
 use super::{
     admission::AdmittedPhase1BytecodeMir,
     carriers::{analyze_machine_carriers, PackageMachineCarrierFacts},
-    constants::build_constant_image,
+    constants::{build_constant_image, emit_service_fallback_type_facts},
     functions::{emit_functions, SourceAttributionMode},
     inputs::ValidatedEmissionInputs,
     BytecodeEmissionError, BytecodeValueTransferPlans,
@@ -105,6 +105,7 @@ fn emit_bytecode_artifact_with_mode(
     )?;
 
     let mut constants = build_constant_image(&inputs)?;
+    emit_service_fallback_type_facts(&mut constants, service_boundary_plans)?;
     let emitted_functions = emit_functions(&inputs, &mut constants, source_attribution)?;
 
     let mut artifact = BytecodeArtifact {

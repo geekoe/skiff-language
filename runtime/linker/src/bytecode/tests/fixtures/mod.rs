@@ -190,6 +190,19 @@ impl Fixture {
             None,
             false,
             Some(artifact::service_operation_artifact(true)),
+            true,
+        )
+    }
+
+    pub(super) fn service_operation_missing_fallback_schema() -> Self {
+        Self::new_with_options(
+            RootProgram::ServiceOperation,
+            false,
+            false,
+            None,
+            false,
+            None,
+            false,
         )
     }
 
@@ -389,7 +402,15 @@ impl Fixture {
     }
 
     fn new(program: RootProgram, entry_alias: bool) -> Self {
-        Self::new_with_options(program, entry_alias, false, None, false, None)
+        Self::new_with_options(
+            program,
+            entry_alias,
+            false,
+            None,
+            false,
+            None,
+            matches!(program, RootProgram::ServiceOperation),
+        )
     }
 
     fn new_gateway(dispatch_mode: GatewayDispatchMode, guard: bool, pre: bool) -> Self {
@@ -461,6 +482,7 @@ impl Fixture {
             }),
             conflicting_type_surfaces,
             None,
+            false,
         )
     }
 
@@ -471,6 +493,7 @@ impl Fixture {
         normalization_dependency: Option<NormalizationDependency>,
         conflicting_type_surfaces: bool,
         bytecode_override: Option<Arc<ValidatedBytecodeArtifact>>,
+        include_service_fallback_schema: bool,
     ) -> Self {
         let bytecode = bytecode_override.unwrap_or_else(|| {
             if include_normalization_surface {
@@ -521,6 +544,20 @@ impl Fixture {
         );
         contracts.insert(own_contract_reference.clone(), own_contract);
 
+        let std_fallback = include_service_fallback_schema.then(|| {
+            let std_package = Arc::new(package::std_fallback_package());
+            let std_reference = records::package_reference(&std_package);
+            package.package_requirements.push(PackageRequirement {
+                alias: "std".to_string(),
+                package_id: std_reference.package_id.clone(),
+                exact_version: std_reference.package_version.clone(),
+                expected_local_abi: std_reference.package_local_abi_identity.clone(),
+                expected_package_build: None,
+            });
+            skiff_artifact_identity::assign_package_artifact_identities(&mut package).unwrap();
+            (std_reference, std_package)
+        });
+
         let service_selector = if matches!(
             program,
             RootProgram::ServiceDependency | RootProgram::ServiceOperation
@@ -544,7 +581,7 @@ impl Fixture {
 
         let package_reference = records::package_reference(&package);
         let entry_callable = alias.unwrap_or_else(|| PackageCallableId::new(ROOT_CALLABLE));
-        let package_bindings = dependency
+        let mut package_bindings: Vec<PackageBinding> = dependency
             .as_ref()
             .map(|(_, dependency_reference, _, _)| PackageBinding {
                 key: PackageRequirementKey {
@@ -555,6 +592,15 @@ impl Fixture {
             })
             .into_iter()
             .collect();
+        if let Some((std_reference, _)) = &std_fallback {
+            package_bindings.push(PackageBinding {
+                key: PackageRequirementKey {
+                    caller_package_build_id: package_reference.package_build_id.clone(),
+                    package_requirement_alias: "std".to_string(),
+                },
+                package: std_reference.clone(),
+            });
+        }
         let (deployment, deployment_reference) = records::deployment(
             package_reference.clone(),
             own_contract_reference,
@@ -572,6 +618,9 @@ impl Fixture {
             ),
             bytecode,
         )]);
+        if let Some((std_reference, std_package)) = std_fallback {
+            packages.insert(std_reference, std_package);
+        }
         if let Some((_, dependency_reference, dependency_package, dependency_bytecode)) = dependency
         {
             bytecodes.insert(

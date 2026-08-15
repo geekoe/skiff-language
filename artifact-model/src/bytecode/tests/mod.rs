@@ -38,7 +38,11 @@ use crate::bytecode::dto::{
 };
 use crate::bytecode::opcodes::opcode_table_fingerprint;
 use crate::types::TypeRefIr;
-use crate::{CallableEffectSummary, CallableMayEffects, ContractTypeRef, PendingEffectCategory};
+use crate::{
+    derive_package_schema_type_id, CallableEffectSummary, CallableMayEffects,
+    ContractTypeDescriptor, ContractTypeRef, PackageSchemaCanonicalDescriptor,
+    PendingEffectCategory,
+};
 
 pub(crate) fn plan(kind: ValueTransferPlanKind) -> ValueTransferPlan {
     match kind {
@@ -89,7 +93,7 @@ pub(crate) fn service_boundary_plan() -> ServiceBoundaryPlan {
         arguments: Vec::new(),
         results: Vec::new(),
         error: BoundaryErrorPlan {
-            fallback_contract_type: ContractTypeRef::builtin("std.service.InternalError"),
+            fallback_contract_type: std_service_internal_error(),
             fallback: BoundaryValuePlan::Linkable {
                 carrier: BoundaryValueCarrier::DetachedValueGraph,
                 encoding: BoundaryValueEncoding::CanonicalValue,
@@ -117,6 +121,23 @@ pub(crate) fn service_boundary_plan() -> ServiceBoundaryPlan {
             },
         },
     }
+}
+
+fn std_service_internal_error() -> ContractTypeRef {
+    let descriptor = PackageSchemaCanonicalDescriptor {
+        type_params: Vec::new(),
+        descriptor: ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([
+                ("message".to_string(), ContractTypeRef::builtin("string")),
+                ("traceId".to_string(), ContractTypeRef::builtin("string")),
+                ("errorId".to_string(), ContractTypeRef::builtin("string")),
+            ]),
+        },
+    };
+    let type_id =
+        derive_package_schema_type_id("skiff.run/std", "std.service.InternalError", &descriptor)
+            .expect("canonical std.service.InternalError schema derives");
+    ContractTypeRef::package_schema("skiff.run/std", "std.service.InternalError", type_id)
 }
 
 pub(crate) fn executable_coordinate(executable_index: u32) -> crate::PackageExecutableCoordinate {

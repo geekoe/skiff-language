@@ -62,13 +62,30 @@ pub(super) fn validate_bytecode_schema_closure(
         let expected = visited_by_owner
             .remove(&package.reference().package_id)
             .unwrap_or_default();
-        let actual = package
+        let mut actual = package
             .artifact()
             .bytecode_schema_records
             .keys()
             .cloned()
             .collect::<BTreeSet<_>>();
         if actual != expected {
+            if package.reference().package_id == "skiff.run/std" {
+                let compiler_owned_fallback = package
+                    .artifact()
+                    .bytecode_schema_records
+                    .values()
+                    .find(|record| {
+                        record.package_id == "skiff.run/std"
+                            && record.stable_schema_key == "std.service.InternalError"
+                    })
+                    .map(|record| record.package_schema_type_id.clone());
+                if let Some(type_id) = compiler_owned_fallback {
+                    actual.remove(&type_id);
+                }
+                if actual == expected {
+                    continue;
+                }
+            }
             return manifest_error(
                 package.reference(),
                 DeploymentBytecodeManifestKind::SchemaDescriptor,
@@ -177,13 +194,30 @@ fn collect_relocation(
             collect_host_signature(package, &intrinsic.signature, roots)?;
         }
         BytecodeRelocation::TypeRef { ty } => collect_type_ref(package, ty, roots)?,
-        BytecodeRelocation::ServiceOperationRef { .. }
-        | BytecodeRelocation::ActorMethodRef { .. }
+        BytecodeRelocation::ServiceOperationRef { service_call } => {
+            collect_service_boundary_plan(service_call.boundary_plan(), roots);
+        }
+        BytecodeRelocation::ActorMethodRef { .. }
         | BytecodeRelocation::SyntheticCallbackRef { .. }
         | BytecodeRelocation::ShapeRef { .. }
         | BytecodeRelocation::FrozenConstantRef { .. } => {}
     }
     Ok(())
+}
+
+fn collect_service_boundary_plan(
+    plan: &skiff_artifact_model::ServiceBoundaryPlan,
+    roots: &mut BTreeSet<SchemaReference>,
+) {
+    let mut references = Vec::new();
+    for value in plan.arguments.iter().chain(&plan.results) {
+        collect_contract_type_references(&value.contract_type, &mut references);
+    }
+    collect_contract_type_references(&plan.error.fallback_contract_type, &mut references);
+    if let Some(value) = &plan.stream_item {
+        collect_contract_type_references(&value.contract_type, &mut references);
+    }
+    roots.extend(references);
 }
 
 fn collect_specialization(

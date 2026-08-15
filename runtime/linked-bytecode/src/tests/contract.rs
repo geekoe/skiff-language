@@ -2,14 +2,15 @@ use std::any::TypeId;
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, BoundaryDropPlan,
-    BoundaryErrorAdmission, BoundaryErrorFallbackIdentity, BoundaryErrorPlan, BoundaryErrorPolicy,
-    BoundaryTransfer, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime,
-    BoundaryValueOwner, BoundaryValuePlan, ContractOperationId, ContractTypeRef,
-    GatewayAdapterKind, GatewayAdapterPlan, HostEffectExecutorIdentity, InterfaceInstantiationRef,
+    derive_package_schema_type_id, ActorAbiIdentity, ActorImplementationIdentity,
+    ActorMethodIdentity, BoundaryDropPlan, BoundaryErrorAdmission, BoundaryErrorFallbackIdentity,
+    BoundaryErrorPlan, BoundaryErrorPolicy, BoundaryTransfer, BoundaryValueCarrier,
+    BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
+    ContractOperationId, ContractTypeDescriptor, ContractTypeRef, GatewayAdapterKind,
+    GatewayAdapterPlan, HostEffectExecutorIdentity, InterfaceInstantiationRef,
     NativeValueAdapterRole, NativeValueLifecycleAdapter, PackageBuildId, PackageCallableId,
-    ReceiverCallAbi, ServiceProtocolIdentity, ServiceRequirementKey, ServiceSymbolRef, TypeRefIr,
-    ValueProvenance,
+    PackageSchemaCanonicalDescriptor, ReceiverCallAbi, ServiceProtocolIdentity,
+    ServiceRequirementKey, ServiceSymbolRef, TypeRefIr, ValueProvenance,
 };
 
 use crate::{
@@ -169,7 +170,7 @@ fn service_boundary_plan() -> LinkedServiceBoundaryPlan {
         lifetime: BoundaryValueLifetime::Call,
     };
     let fallback = LinkedServiceBoundaryValue::new(
-        ContractTypeRef::builtin("std.service.InternalError"),
+        std_service_internal_error(),
         value_plan.clone(),
         BoundaryTransfer::Move,
         BoundaryDropPlan::SnapshotRelease,
@@ -181,7 +182,7 @@ fn service_boundary_plan() -> LinkedServiceBoundaryPlan {
         Vec::new(),
         LinkedServiceBoundaryErrorPlan::new(
             BoundaryErrorPlan {
-                fallback_contract_type: ContractTypeRef::builtin("std.service.InternalError"),
+                fallback_contract_type: std_service_internal_error(),
                 fallback: value_plan,
                 policy: BoundaryErrorPolicy::DynamicPublicSchema {
                     admission: BoundaryErrorAdmission::PublicNameableSchemaClosed,
@@ -196,6 +197,23 @@ fn service_boundary_plan() -> LinkedServiceBoundaryPlan {
         None,
         LinkedServiceCallbackPlan::None,
     )
+}
+
+fn std_service_internal_error() -> ContractTypeRef {
+    let descriptor = PackageSchemaCanonicalDescriptor {
+        type_params: Vec::new(),
+        descriptor: ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([
+                ("message".to_string(), ContractTypeRef::builtin("string")),
+                ("traceId".to_string(), ContractTypeRef::builtin("string")),
+                ("errorId".to_string(), ContractTypeRef::builtin("string")),
+            ]),
+        },
+    };
+    let type_id =
+        derive_package_schema_type_id("skiff.run/std", "std.service.InternalError", &descriptor)
+            .expect("canonical std.service.InternalError schema derives");
+    ContractTypeRef::package_schema("skiff.run/std", "std.service.InternalError", type_id)
 }
 
 #[test]

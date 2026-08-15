@@ -13,10 +13,11 @@ use skiff_artifact_identity::{
 };
 use skiff_artifact_model::{
     contract_for_opcode, derive_bytecode_statement_manifest_identity,
-    BytecodeFunctionStatementManifest, HostEffectExecutorIdentity, InstructionSourceSite, Opcode,
-    PendingContract, PrivilegedAffineCompositeIdentity, ServiceDeploymentRef, SourcePosition,
-    SourceSpanRef, StatementAttributionId, StatementContract, StructuralValidationError,
-    SyntheticInstructionSiteReason, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    BytecodeFunctionStatementManifest, ContractTypeRef, HostEffectExecutorIdentity,
+    InstructionSourceSite, Opcode, PendingContract, PrivilegedAffineCompositeIdentity,
+    ServiceDeploymentRef, SourcePosition, SourceSpanRef, StatementAttributionId, StatementContract,
+    StructuralValidationError, SyntheticInstructionSiteReason, TypeRefIr,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, seed_official_std_package, AuthoringObject},
@@ -1096,6 +1097,33 @@ fn production_entry_links_reachable_service_operation_from_compiler_plan() {
         target.boundary_plan().callbacks(),
         skiff_runtime_linked_bytecode::LinkedServiceCallbackPlan::None
     );
+    assert!(matches!(
+        target
+            .boundary_plan()
+            .error()
+            .fallback()
+            .contract_type(),
+        ContractTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } if package_id == "skiff.run/std"
+            && stable_schema_key == "std.service.InternalError"
+    ));
+}
+
+#[test]
+fn production_entry_rejects_service_operation_without_std_fallback_schema() {
+    let fixture = Fixture::service_operation_missing_fallback_schema();
+    assert!(matches!(
+        fixture.try_hydrate(),
+        Err(skiff_runtime_loader::DeploymentBytecodeHydrationError::MissingSchemaPackageOwner {
+            package_id,
+            stable_schema_key,
+            ..
+        }) if package_id == "skiff.run/std"
+            && stable_schema_key == "std.service.InternalError"
+    ));
 }
 
 #[test]

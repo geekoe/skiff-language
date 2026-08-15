@@ -1,9 +1,12 @@
 use std::path::Path;
 
-use skiff_artifact_identity::validate_package_artifact_identities;
+use skiff_artifact_identity::{
+    assign_package_artifact_identities, validate_package_artifact_identities,
+};
 use skiff_artifact_model::{
-    ContractRequirement, FileIrUnit, NativeSignatureTypeExpr, NativeTarget, PackageArtifact,
-    PackageRefIr, PackageRequirement, ServiceContract, STD_NATIVE_SIGNATURES,
+    derive_package_schema_type_id, ContractRequirement, FileIrUnit, NativeSignatureTypeExpr,
+    NativeTarget, PackageArtifact, PackageRefIr, PackageRequirement, ServiceContract,
+    STD_NATIVE_SIGNATURES,
 };
 use skiff_compiler_contract::{
     compile_service_contract_definition, project_service_api_with_public_instance_operations,
@@ -187,8 +190,9 @@ fn compile_package_core(
         &unattached.artifact,
     )?;
     let projected = bytecode_lane::attach_bytecode_execution(&projected, &bytecode)?;
-    let package = publish_projected_package_artifact(&projected, &file_ir_units)
+    let mut package = publish_projected_package_artifact(&projected, &file_ir_units)
         .map_err(PackageCompileError::from)?;
+    attach_compiler_owned_std_fallback_schema(&mut package)?;
     let attached_gateway = project_http_gateway_after_package_validation(
         http,
         &package.artifact,
@@ -596,10 +600,14 @@ fn complete_package_requirement_closure(
     file_ir_units: &[FileIrUnit],
     available_artifacts: &[PackageArtifact],
 ) -> Result<Vec<PackageRequirement>, PackageCompileError> {
+    let needs_std_for_service_fallback = file_ir_units
+        .iter()
+        .any(|unit| !unit.external_refs.service_call_refs.is_empty());
     if owner_package_id == SKIFF_STD_PUBLICATION_ID
-        || !file_ir_units
+        || (!file_ir_units
             .iter()
             .any(file_ir_unit_references_platform_std)
+            && !needs_std_for_service_fallback)
     {
         return Ok(requirements);
     }
@@ -634,6 +642,9 @@ fn complete_package_requirement_closure(
             std_artifact.package_id, std_artifact.package_version
         ))
     })?;
+    if needs_std_for_service_fallback {
+        validate_compiler_owned_std_fallback_schema(std_artifact)?;
+    }
 
     requirements.push(PackageRequirement {
         alias: "std".to_string(),
@@ -643,6 +654,101 @@ fn complete_package_requirement_closure(
         expected_package_build: None,
     });
     Ok(requirements)
+}
+
+fn attach_compiler_owned_std_fallback_schema(
+    published: &mut PublishedPackageArtifact,
+) -> Result<(), PackageCompileError> {
+    if published.artifact.package_id != SKIFF_STD_PUBLICATION_ID {
+        return Ok(());
+    }
+    const FALLBACK_KEY: &str = "std.service.InternalError";
+    let entry = published
+        .package_schema_index
+        .types
+        .get(FALLBACK_KEY)
+        .ok_or_else(|| {
+            validation_error(format!(
+                "official std package schema index has no exact {FALLBACK_KEY} entry"
+            ))
+        })?;
+    let record = published
+        .package_schema_type_records
+        .get(&entry.package_schema_type_id)
+        .ok_or_else(|| {
+            validation_error(format!(
+                "official std package schema {FALLBACK_KEY} has no exact PackageSchema record"
+            ))
+        })?;
+    validate_std_fallback_record(record, &entry.package_schema_type_id)?;
+    published
+        .artifact
+        .bytecode_schema_records
+        .insert(record.package_schema_type_id.clone(), record.clone());
+    assign_package_artifact_identities(&mut published.artifact).map_err(|error| {
+        validation_error(format!(
+            "official std PackageArtifact identity assignment failed after bytecode schema attachment: {error}"
+        ))
+    })?;
+    Ok(())
+}
+
+fn validate_compiler_owned_std_fallback_schema(
+    std_artifact: &PackageArtifact,
+) -> Result<(), PackageCompileError> {
+    const FALLBACK_KEY: &str = "std.service.InternalError";
+    let record = std_artifact
+        .bytecode_schema_records
+        .values()
+        .find(|record| {
+            record.package_id == SKIFF_STD_PUBLICATION_ID
+                && record.stable_schema_key == FALLBACK_KEY
+        })
+        .ok_or_else(|| {
+            validation_error(format!(
+                "official std bytecode schema closure lacks exact {FALLBACK_KEY} record"
+            ))
+        })?;
+    if !std_artifact
+        .package_schema_type_records
+        .contains_key(&record.package_schema_type_id)
+    {
+        return Err(validation_error(format!(
+            "official std bytecode fallback schema {FALLBACK_KEY} is absent from the PackageSchema record index"
+        )));
+    }
+    validate_std_fallback_record(record, &record.package_schema_type_id)
+}
+
+fn validate_std_fallback_record(
+    record: &skiff_artifact_model::PackageSchemaTypeRecord,
+    expected_type_id: &skiff_artifact_model::PackageSchemaTypeId,
+) -> Result<(), PackageCompileError> {
+    if record.package_id != SKIFF_STD_PUBLICATION_ID
+        || record.stable_schema_key != "std.service.InternalError"
+        || record.package_schema_type_id != *expected_type_id
+    {
+        return Err(validation_error(
+            "std.service.InternalError bytecode schema record disagrees with its exact PackageSchema identity".to_string(),
+        ));
+    }
+    let derived = derive_package_schema_type_id(
+        &record.package_id,
+        &record.stable_schema_key,
+        &record.canonical_descriptor,
+    )
+    .map_err(|error| {
+        validation_error(format!(
+            "std.service.InternalError bytecode schema record identity is invalid: {error}"
+        ))
+    })?;
+    if derived != record.package_schema_type_id {
+        return Err(validation_error(
+            "std.service.InternalError bytecode schema record identity drifts from its descriptor"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn file_ir_unit_references_platform_std(file: &FileIrUnit) -> bool {

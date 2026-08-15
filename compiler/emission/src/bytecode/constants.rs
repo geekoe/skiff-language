@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    bytecode::limits, BytecodeConstantRef, BytecodePoolEntry, BytecodePools,
-    CallableRegistryTypeExpression, ExprIr, FrozenConstantGraph, FrozenConstantNode,
-    NativeResourceDropPlan, NativeValueDropPlan, NativeValueLifecycleConcrete,
+    bytecode::limits, BoundaryDropPlan, BoundaryValuePlan, BytecodeConstantRef, BytecodePoolEntry,
+    BytecodePools, CallableRegistryTypeExpression, ContractTypeRef, ExprIr, FrozenConstantGraph,
+    FrozenConstantNode, NativeResourceDropPlan, NativeValueDropPlan, NativeValueLifecycleConcrete,
     NominalTypeRefBaseIr, PackageRefIr, PrivilegedAffineCompositeIdentity,
-    RepresentationCarrierDeclaration, ResourceDropPlan, ResumeDescriptor, ShapeDeclaration,
-    ShapeFieldDeclaration, TypeRefIr, ValueDropPlan, ValueTransferPlan, WritablePathDeclaration,
-    WritablePathSegment,
+    RepresentationCarrierDeclaration, ResourceDropPlan, ResumeDescriptor, ServiceBoundaryPlan,
+    ServiceCallRef, ShapeDeclaration, ShapeFieldDeclaration, TypeRefIr, ValueDropPlan,
+    ValueTransferPlan, WritablePathDeclaration, WritablePathSegment,
 };
 use skiff_compiler_core::type_ref::{map_type_ref, walk_type_ref};
 use skiff_compiler_lowering::mir::{MirFunction, MirUnit};
@@ -71,6 +71,48 @@ impl ConstantImage {
         for child in nested_types(&qualified) {
             self.intern_type(module_path, &child, context)?;
         }
+        Ok(index)
+    }
+
+    pub(crate) fn intern_service_fallback_type(
+        &mut self,
+        module_path: &str,
+        ty: &TypeRefIr,
+        plan: ValueTransferPlan,
+        context: &str,
+    ) -> Result<u32, BytecodeEmissionError> {
+        let qualified = qualify_local_types(module_path, ty);
+        let key = type_key(&qualified, context)?;
+        if let Some(index) = self.type_indices.get(&key).copied() {
+            let existing_plan = self
+                .pools
+                .types
+                .get(index as usize)
+                .and_then(|entry| match entry {
+                    BytecodePoolEntry::TypeRef { plan, .. } => Some(plan),
+                    _ => None,
+                })
+                .ok_or_else(|| BytecodeEmissionError::CanonicalSerialization {
+                    context: context.to_string(),
+                    message: "existing service fallback type row has no exact plan".to_string(),
+                })?;
+            if existing_plan != &plan {
+                return Err(BytecodeEmissionError::CanonicalSerialization {
+                    context: context.to_string(),
+                    message: format!(
+                        "service fallback type {qualified:?} already has a conflicting type-pool plan"
+                    ),
+                });
+            }
+            return Ok(index);
+        }
+        let index = checked_index(self.pools.types.len(), "indexing service fallback types")?;
+        self.pools.types.push(BytecodePoolEntry::TypeRef {
+            ty: qualified,
+            representation_carrier: None,
+            plan,
+        });
+        self.type_indices.insert(key, index);
         Ok(index)
     }
 
@@ -460,6 +502,70 @@ pub(crate) fn build_constant_image(
     };
 
     merge_graphs(inputs, pools, type_indices)
+}
+
+pub(crate) fn emit_service_fallback_type_facts(
+    image: &mut ConstantImage,
+    service_boundary_plans: &BTreeMap<ServiceCallRef, ServiceBoundaryPlan>,
+) -> Result<(), BytecodeEmissionError> {
+    let mut seen = Vec::new();
+    for plan in service_boundary_plans.values() {
+        let ty = service_fallback_type_ir(&plan.error.fallback_contract_type)?;
+        if seen.contains(&ty) {
+            continue;
+        }
+        seen.push(ty.clone());
+        let plan = service_fallback_transfer_plan(&plan.error.fallback, &plan.error.drop)?;
+        image.intern_service_fallback_type("std", &ty, plan, "service boundary fallback type")?;
+    }
+    Ok(())
+}
+
+fn service_fallback_type_ir(ty: &ContractTypeRef) -> Result<TypeRefIr, BytecodeEmissionError> {
+    match ty {
+        ContractTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => Ok(TypeRefIr::PackageSchema {
+            package_id: package_id.clone(),
+            stable_schema_key: stable_schema_key.clone(),
+            package_schema_type_id: package_schema_type_id.clone(),
+        }),
+        _ => Err(BytecodeEmissionError::CanonicalSerialization {
+            context: "service boundary fallback type".to_string(),
+            message: "fallback contract type is not the exact compiler-owned PackageSchema"
+                .to_string(),
+        }),
+    }
+}
+
+fn service_fallback_transfer_plan(
+    value_plan: &BoundaryValuePlan,
+    drop: &BoundaryDropPlan,
+) -> Result<ValueTransferPlan, BytecodeEmissionError> {
+    match value_plan {
+        BoundaryValuePlan::Linkable { .. } => Ok(ValueTransferPlan::SnapshotShare {
+            drop: match drop {
+                BoundaryDropPlan::Trivial => ValueDropPlan::Trivial,
+                BoundaryDropPlan::SnapshotRelease => ValueDropPlan::SnapshotRelease,
+                BoundaryDropPlan::RecursiveShape { shape_ref } => ValueDropPlan::RecursiveShape {
+                    shape_ref: *shape_ref,
+                },
+                BoundaryDropPlan::NativeAdapter { adapter } => ValueDropPlan::NativeAdapter {
+                    adapter: adapter.clone(),
+                },
+            },
+        }),
+        BoundaryValuePlan::Unsupported { reason } => {
+            Err(BytecodeEmissionError::CanonicalSerialization {
+                context: "service boundary fallback type".to_string(),
+                message: format!(
+                    "fallback value plan is unsupported for caller type-pool emission: {reason:?}"
+                ),
+            })
+        }
+    }
 }
 
 fn collect_canonical_types(

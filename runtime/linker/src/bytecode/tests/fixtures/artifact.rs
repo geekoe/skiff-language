@@ -670,10 +670,19 @@ fn pools(program: RootProgram) -> BytecodePools {
                 type_entry(number_stream_type(), stream_plan()),
                 type_entry(TypeRefIr::builtin("number"), snapshot_plan()),
             ],
-            RootProgram::ServiceOperation => vec![type_entry(
-                TypeRefIr::builtin("std.service.InternalError"),
-                snapshot_plan(),
-            )],
+            RootProgram::ServiceOperation => {
+                let record = super::records::std_service_internal_error_record();
+                vec![type_entry(
+                    TypeRefIr::PackageSchema {
+                        package_id: record.package_id,
+                        stable_schema_key: record.stable_schema_key,
+                        package_schema_type_id: record.package_schema_type_id,
+                    },
+                    ValueTransferPlan::SnapshotShare {
+                        drop: ValueDropPlan::SnapshotRelease,
+                    },
+                )]
+            }
             _ => Vec::new(),
         },
         shapes: match program {

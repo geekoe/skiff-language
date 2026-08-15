@@ -1,18 +1,20 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use skiff_artifact_model::{
-    BoundaryCallbackContract, BoundaryDropPlan, BoundaryEffectGuarantee, BoundaryErrorAdmission,
-    BoundaryErrorFallbackIdentity, BoundaryErrorPlan, BoundaryErrorPolicy,
-    BoundaryOperationContract, BoundaryOperationDescriptor, BoundaryParameter, BoundaryReturn,
-    BoundaryStreamContract, BoundaryTransfer, BoundaryValueCarrier, BoundaryValueEncoding,
-    BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary,
-    CallableMayEffects, ContractDiagnosticText, ContractOperationId, ContractRequirement,
-    ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
-    DeploymentOperationBinding, DeploymentRevision, PackageArtifact, PackageArtifactRef,
-    PackageBinding, PackageCallableId, PendingEffectCategory, ServiceBoundaryPlan, ServiceCallRef,
-    ServiceCallbackPlan, ServiceContract, ServiceContractRef, ServiceDeployment,
-    ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding,
-    ValueProvenance, SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    derive_package_schema_type_id, BoundaryCallbackContract, BoundaryDropPlan,
+    BoundaryEffectGuarantee, BoundaryErrorAdmission, BoundaryErrorFallbackIdentity,
+    BoundaryErrorPlan, BoundaryErrorPolicy, BoundaryOperationContract, BoundaryOperationDescriptor,
+    BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryTransfer,
+    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
+    BoundaryValuePlan, CallableEffectSummary, CallableMayEffects, ContractDiagnosticText,
+    ContractOperationId, ContractRequirement, ContractTypeDescriptor, ContractTypeRef,
+    DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentOperationBinding,
+    DeploymentRevision, PackageArtifact, PackageArtifactRef, PackageBinding, PackageCallableId,
+    PackageSchemaCanonicalDescriptor, PackageSchemaTypeRecord, PendingEffectCategory,
+    ServiceBoundaryPlan, ServiceCallRef, ServiceCallbackPlan, ServiceContract, ServiceContractRef,
+    ServiceDeployment, ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey,
+    ServiceSelectorBinding, ValueProvenance, SERVICE_CONTRACT_SCHEMA_VERSION,
+    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
 use super::RootProgram;
@@ -173,7 +175,7 @@ pub(super) fn service_boundary_plan() -> ServiceBoundaryPlan {
         arguments: Vec::new(),
         results: Vec::new(),
         error: BoundaryErrorPlan {
-            fallback_contract_type: ContractTypeRef::builtin("std.service.InternalError"),
+            fallback_contract_type: std_service_internal_error(),
             fallback: BoundaryValuePlan::Linkable {
                 carrier: BoundaryValueCarrier::DetachedValueGraph,
                 encoding: BoundaryValueEncoding::CanonicalValue,
@@ -200,6 +202,37 @@ pub(super) fn service_boundary_plan() -> ServiceBoundaryPlan {
                 inout_path_effects: Vec::new(),
             },
         },
+    }
+}
+
+pub(super) fn std_service_internal_error() -> ContractTypeRef {
+    let record = std_service_internal_error_record();
+    ContractTypeRef::package_schema(
+        record.package_id,
+        record.stable_schema_key,
+        record.package_schema_type_id,
+    )
+}
+
+pub(super) fn std_service_internal_error_record() -> PackageSchemaTypeRecord {
+    let descriptor = PackageSchemaCanonicalDescriptor {
+        type_params: Vec::new(),
+        descriptor: ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([
+                ("message".to_string(), ContractTypeRef::builtin("string")),
+                ("traceId".to_string(), ContractTypeRef::builtin("string")),
+                ("errorId".to_string(), ContractTypeRef::builtin("string")),
+            ]),
+        },
+    };
+    let type_id =
+        derive_package_schema_type_id("skiff.run/std", "std.service.InternalError", &descriptor)
+            .expect("canonical std.service.InternalError schema derives");
+    PackageSchemaTypeRecord {
+        package_id: "skiff.run/std".to_string(),
+        stable_schema_key: "std.service.InternalError".to_string(),
+        package_schema_type_id: type_id.clone(),
+        canonical_descriptor: descriptor,
     }
 }
 

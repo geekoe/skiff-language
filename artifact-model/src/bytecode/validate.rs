@@ -45,7 +45,7 @@ use crate::bytecode::dto::{
 };
 use crate::bytecode::opcodes::{opcode_table_fingerprint, PoolCategory};
 use crate::types::TypeRefIr;
-use crate::ContractLiteral;
+use crate::{ContractLiteral, ContractTypeRef, PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX};
 
 /// Structured validation failure: check category (C1–C8) plus location and
 /// details.
@@ -1920,6 +1920,35 @@ fn validate_boundary_error_plan(
             admission: BoundaryErrorAdmission::PublicNameableSchemaClosed,
             fallback_identity: BoundaryErrorFallbackIdentity::StdServiceInternalError,
         } => {}
+    }
+    match &plan.fallback_contract_type {
+        ContractTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => {
+            if package_id != "skiff.run/std"
+                || stable_schema_key != "std.service.InternalError"
+                || !package_schema_type_id
+                    .as_str()
+                    .starts_with(PACKAGE_SCHEMA_TYPE_IDENTITY_PREFIX)
+            {
+                return Err(table_error(
+                    "",
+                    format!(
+                        "{location}.fallbackContractType must be the exact std.service.InternalError PackageSchema triple"
+                    ),
+                ));
+            }
+        }
+        _ => {
+            return Err(table_error(
+                "",
+                format!(
+                    "{location}.fallbackContractType must be the exact compiler-owned std.service.InternalError PackageSchema"
+                ),
+            ))
+        }
     }
     if !matches!(
         plan.transfer,

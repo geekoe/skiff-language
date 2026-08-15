@@ -4,9 +4,12 @@ use super::*;
 use skiff_artifact_identity::{assign_package_artifact_identities, package_schema_index_identity};
 use skiff_artifact_model::{
     current_platform_error_projection_registry_ref, derive_bytecode_statement_manifest_identity,
+    derive_package_schema_type_id, ContractOperationId, ContractTypeDescriptor,
     InstructionSourceSite, PackageBuildId, PackageCallableId, PackageCallableRef,
     PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity,
-    PackageRuntimeRequirements, PackageSchemaIndex, PackageSchemaIndexRef, PackageSymbolRef,
+    PackageRuntimeRequirements, PackageSchemaCanonicalDescriptor, PackageSchemaIndex,
+    PackageSchemaIndexEntry, PackageSchemaIndexRef, PackageSchemaTypeRecord,
+    PackageSchemaTypeRecordRef, PackageSymbolRef, ServiceCallRef, ServiceProtocolIdentity,
     PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
@@ -362,6 +365,68 @@ fn native_signature_package_type_adds_exact_std_requirement() {
     assert_eq!(
         requirements[0].expected_local_abi,
         std_artifact.package_local_abi.local_abi_identity
+    );
+}
+
+#[test]
+fn service_call_adds_exact_compiler_owned_std_fallback_requirement() {
+    let std_artifact = std_artifact_with_fallback_schema();
+    let mut file = FileIrUnit::empty("main", "source");
+    file.external_refs.service_call_refs.push(ServiceCallRef {
+        service_requirement_slot: 3,
+        contract_operation_id: ContractOperationId::new("operation:echo"),
+        expected_protocol_identity: ServiceProtocolIdentity::new("protocol:echo"),
+    });
+
+    let requirements = complete_package_requirement_closure(
+        "example.com/app",
+        Vec::new(),
+        std::slice::from_ref(&file),
+        std::slice::from_ref(&std_artifact),
+    )
+    .unwrap();
+
+    assert_eq!(requirements.len(), 1);
+    assert_eq!(requirements[0].alias, "std");
+    assert_eq!(requirements[0].package_id, SKIFF_STD_PUBLICATION_ID);
+}
+
+#[test]
+fn service_call_rejects_std_fallback_schema_that_is_missing_or_drifted() {
+    let mut file = FileIrUnit::empty("main", "source");
+    file.external_refs.service_call_refs.push(ServiceCallRef {
+        service_requirement_slot: 3,
+        contract_operation_id: ContractOperationId::new("operation:echo"),
+        expected_protocol_identity: ServiceProtocolIdentity::new("protocol:echo"),
+    });
+
+    let missing = complete_package_requirement_closure(
+        "example.com/app",
+        Vec::new(),
+        std::slice::from_ref(&file),
+        std::slice::from_ref(&canonical_artifact(SKIFF_STD_PUBLICATION_ID, "1.0.0")),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        missing.contains("bytecode schema closure lacks"),
+        "{missing}"
+    );
+
+    let mut drifted = std_artifact_with_fallback_schema();
+    drifted.package_schema_type_records.clear();
+    assign_package_artifact_identities(&mut drifted).unwrap();
+    let drift_error = complete_package_requirement_closure(
+        "example.com/app",
+        Vec::new(),
+        std::slice::from_ref(&file),
+        std::slice::from_ref(&drifted),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(
+        drift_error.contains("absent from the PackageSchema record index"),
+        "{drift_error}"
     );
 }
 
@@ -776,4 +841,71 @@ fn canonical_artifact(package_id: &str, version: &str) -> PackageArtifact {
     };
     assign_package_artifact_identities(&mut artifact).unwrap();
     artifact
+}
+
+fn std_artifact_with_fallback_schema() -> PackageArtifact {
+    let mut artifact = canonical_artifact(SKIFF_STD_PUBLICATION_ID, "1.0.0");
+    let record = std_service_internal_error_record();
+    let type_id = record.package_schema_type_id.clone();
+    artifact.package_schema_index = PackageSchemaIndexRef {
+        package_id: SKIFF_STD_PUBLICATION_ID.to_string(),
+        package_schema_index_identity: package_schema_index_identity(
+            SKIFF_STD_PUBLICATION_ID,
+            &BTreeMap::from([(
+                "std.service.InternalError".to_string(),
+                PackageSchemaIndexEntry {
+                    package_schema_type_id: record.package_schema_type_id.clone(),
+                    public_path: Some("std.service.InternalError".to_string()),
+                    nameability: skiff_artifact_model::ContractTypeNameability::PublicNameable,
+                },
+            )]),
+        )
+        .unwrap(),
+    };
+    artifact
+        .bytecode_schema_records
+        .insert(type_id.clone(), record);
+    artifact.package_schema_type_records = BTreeMap::from([(
+        type_id.clone(),
+        PackageSchemaTypeRecordRef {
+            package_id: SKIFF_STD_PUBLICATION_ID.to_string(),
+            package_schema_type_id: type_id,
+        },
+    )]);
+    assign_package_artifact_identities(&mut artifact).unwrap();
+    artifact
+}
+
+fn std_service_internal_error_record() -> PackageSchemaTypeRecord {
+    let descriptor = PackageSchemaCanonicalDescriptor {
+        type_params: Vec::new(),
+        descriptor: ContractTypeDescriptor::Record {
+            fields: BTreeMap::from([
+                (
+                    "message".to_string(),
+                    skiff_artifact_model::ContractTypeRef::builtin("string"),
+                ),
+                (
+                    "traceId".to_string(),
+                    skiff_artifact_model::ContractTypeRef::builtin("string"),
+                ),
+                (
+                    "errorId".to_string(),
+                    skiff_artifact_model::ContractTypeRef::builtin("string"),
+                ),
+            ]),
+        },
+    };
+    let type_id = derive_package_schema_type_id(
+        SKIFF_STD_PUBLICATION_ID,
+        "std.service.InternalError",
+        &descriptor,
+    )
+    .unwrap();
+    PackageSchemaTypeRecord {
+        package_id: SKIFF_STD_PUBLICATION_ID.to_string(),
+        stable_schema_key: "std.service.InternalError".to_string(),
+        package_schema_type_id: type_id,
+        canonical_descriptor: descriptor,
+    }
 }

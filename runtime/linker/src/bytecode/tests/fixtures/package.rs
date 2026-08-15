@@ -381,6 +381,57 @@ pub(super) fn dependency_type_owner_package(
     artifact
 }
 
+pub(super) fn std_fallback_package() -> PackageArtifact {
+    let record = super::records::std_service_internal_error_record();
+    let mut artifact = PackageArtifact {
+        schema_version: PACKAGE_ARTIFACT_SCHEMA_VERSION.to_string(),
+        package_id: "skiff.run/std".to_string(),
+        package_version: "1.0.0".to_string(),
+        package_build_id: PackageBuildId::new("unassigned"),
+        platform_error_projection_registry:
+            skiff_artifact_model::current_platform_error_projection_registry_ref().clone(),
+        files: Vec::new(),
+        static_resources: Vec::new(),
+        bytecode: None,
+        bytecode_statement_manifest_identity: derive_bytecode_statement_manifest_identity(
+            "skiff.run/std",
+            &[],
+        )
+        .unwrap(),
+        package_local_abi: PackageLocalAbi {
+            local_abi_identity: PackageLocalAbiIdentity::new("unassigned"),
+            public_symbols: BTreeMap::new(),
+            implementation_symbols: BTreeMap::new(),
+        },
+        package_schema_index: PackageSchemaIndexRef {
+            package_id: "skiff.run/std".to_string(),
+            package_schema_index_identity: PackageSchemaIndexIdentity::new("unassigned"),
+        },
+        package_schema_type_records: BTreeMap::new(),
+        implementation_links: PackageImplementationLinks::default(),
+        callable_links: BTreeMap::new(),
+        synthetic_callback_owners: Vec::new(),
+        bytecode_schema_records: BTreeMap::from([(record.package_schema_type_id.clone(), record)]),
+        actor_implementations: Vec::new(),
+        local_interface_conformances: Vec::new(),
+        package_requirements: Vec::new(),
+        contract_requirements: Vec::new(),
+        service_requirements: Vec::new(),
+        runtime_requirements: PackageRuntimeRequirements { config: Vec::new() },
+        callable_semantic_facts: BTreeMap::new(),
+        boundary_projections: BTreeMap::new(),
+        service_call_refs: Vec::new(),
+    };
+    artifact.package_schema_index.package_schema_index_identity =
+        skiff_artifact_identity::package_schema_index_identity(
+            &artifact.package_id,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+    skiff_artifact_identity::assign_package_artifact_identities(&mut artifact).unwrap();
+    artifact
+}
+
 fn interface_method(name: &str) -> InterfaceMethodSignature {
     InterfaceMethodSignature {
         name: name.to_string(),

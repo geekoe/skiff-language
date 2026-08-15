@@ -798,6 +798,54 @@ fn exact_package_closure_is_required_and_binding_changes_identity() {
 }
 
 #[test]
+fn exact_package_closure_preserves_compiler_owned_std_fallback_binding() {
+    let mut fixture = ProjectionFixture::new();
+    let mut dependency = dependency_artifact("std-fallback");
+    dependency.package_id = "skiff.run/std".to_string();
+    dependency.bytecode_statement_manifest_identity =
+        derive_bytecode_statement_manifest_identity("skiff.run/std", &[]).unwrap();
+    dependency.package_schema_index.package_id = "skiff.run/std".to_string();
+    dependency
+        .package_schema_index
+        .package_schema_index_identity =
+        package_schema_index_identity("skiff.run/std", &BTreeMap::new()).unwrap();
+    assign_package_artifact_identities(&mut dependency).unwrap();
+    fixture.implementation.package_requirements = vec![PackageRequirement {
+        alias: "std".to_string(),
+        package_id: dependency.package_id.clone(),
+        exact_version: dependency.package_version.clone(),
+        expected_local_abi: dependency.package_local_abi.local_abi_identity.clone(),
+        expected_package_build: None,
+    }];
+    fixture.refresh_implementation_ref();
+    let binding_key = PackageRequirementKey {
+        caller_package_build_id: fixture.implementation.package_build_id.clone(),
+        package_requirement_alias: "std".to_string(),
+    };
+    fixture.input.package_bindings = vec![PackageBinding {
+        key: binding_key,
+        package: package_ref(&dependency),
+    }];
+
+    let deployment = project_service_deployment(
+        fixture.input,
+        &fixture.contract,
+        &[fixture.implementation, dependency.clone()],
+        &fixture.package_schema_records,
+    )
+    .unwrap();
+    assert_eq!(deployment.package_bindings.len(), 1);
+    assert_eq!(
+        deployment.package_bindings[0].key.package_requirement_alias,
+        "std"
+    );
+    assert_eq!(
+        deployment.package_bindings[0].package,
+        package_ref(&dependency)
+    );
+}
+
+#[test]
 fn exact_package_closure_rejects_multiple_builds_for_one_package_id() {
     let mut fixture = ProjectionFixture::new();
     let dependency_a = dependency_artifact("resource-a");

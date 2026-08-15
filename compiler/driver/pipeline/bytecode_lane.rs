@@ -1,16 +1,17 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    derive_bytecode_statement_manifest_identity, http_boundary::canonical_http_boundary_type,
+    derive_bytecode_statement_manifest_identity, derive_package_schema_type_id,
+    http_boundary::canonical_http_boundary_type,
     validate_current_platform_error_projection_registry_ref, BoundaryDropPlan,
     BoundaryErrorAdmission, BoundaryErrorFallbackIdentity, BoundaryErrorPlan, BoundaryErrorPolicy,
     BoundaryTransfer, BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueFact,
     BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan, BytecodeArtifactRef,
     BytecodeFunctionStatementManifest, CallableEffectSummary, CallableMayEffects, ContractLiteral,
     ContractTypeRef, GatewayDispatchMode, GatewayProtocolSurface, LiteralIr, PackageArtifact,
-    PackageLocalAbiSymbol, PackageRefIr, PackageTypeRef, PendingEffectCategory,
-    ServiceBoundaryPlan, ServiceCallRef, ServiceCallbackPlan, TypeDescriptorIr, TypeRefIr,
-    ValueProvenance,
+    PackageLocalAbiSymbol, PackageRefIr, PackageSchemaTypeRecord, PackageTypeRef,
+    PendingEffectCategory, ServiceBoundaryPlan, ServiceCallRef, ServiceCallbackPlan,
+    TypeDescriptorIr, TypeRefIr, ValueProvenance,
 };
 use skiff_compiler_compiled::{
     BytecodeCompilationHandoff, BytecodeCompilationOutcome, BytecodeCompilationReceipt,
@@ -235,14 +236,7 @@ fn service_boundary_plans(
 ) -> Result<BTreeMap<ServiceCallRef, ServiceBoundaryPlan>, PackageCompileError> {
     let mut plans = BTreeMap::new();
     let fallback_contract_type = if !compiled.lowered().service_calls().call_sites().is_empty() {
-        let fallback_record = compiled
-            .compile_model()
-            .dependency_analysis()
-            .package_type_by_owner_and_stable_key("skiff.run/std", "std.service.InternalError")
-            .ok_or_else(|| PackageCompileError::ContractValidation {
-                message: "service bytecode lane cannot resolve std.service.InternalError"
-                    .to_string(),
-            })?;
+        let fallback_record = exact_std_service_internal_error(compiled)?;
         Some(ContractTypeRef::package_schema(
             fallback_record.package_id.clone(),
             fallback_record.stable_schema_key.clone(),
@@ -280,6 +274,69 @@ fn service_boundary_plans(
         }
     }
     Ok(plans)
+}
+
+fn exact_std_service_internal_error(
+    compiled: &CompiledPackage,
+) -> Result<PackageSchemaTypeRecord, PackageCompileError> {
+    let mut matches = Vec::new();
+    for dependency in compiled
+        .compile_model()
+        .dependency_analysis()
+        .contract_dependencies()
+        .dependencies()
+    {
+        for record in dependency.schema_records().values() {
+            if record.package_id == "skiff.run/std"
+                && record.stable_schema_key == "std.service.InternalError"
+            {
+                matches.push(record.clone());
+            }
+        }
+    }
+    for (_, _, record) in compiled
+        .compile_model()
+        .dependency_analysis()
+        .package_schema_records()
+    {
+        if record.package_id == "skiff.run/std"
+            && record.stable_schema_key == "std.service.InternalError"
+        {
+            matches.push(record.clone());
+        }
+    }
+    let [record] = matches.as_slice() else {
+        if matches.is_empty() {
+            return Err(PackageCompileError::ContractValidation {
+                message: "service bytecode lane cannot resolve std.service.InternalError"
+                    .to_string(),
+            });
+        }
+        return Err(PackageCompileError::ContractValidation {
+            message: format!(
+                "service bytecode lane resolved {} ambiguous std.service.InternalError fallback schema facts",
+                matches.len()
+            ),
+        });
+    };
+    let expected = derive_package_schema_type_id(
+        &record.package_id,
+        &record.stable_schema_key,
+        &record.canonical_descriptor,
+    )
+    .map_err(|error| PackageCompileError::ContractValidation {
+        message: format!("std.service.InternalError fallback schema is invalid: {error}"),
+    })?;
+    if record.package_id != "skiff.run/std"
+        || record.stable_schema_key != "std.service.InternalError"
+        || record.package_schema_type_id != expected
+    {
+        return Err(PackageCompileError::ContractValidation {
+            message: "std.service.InternalError fallback schema identity drifts from its exact descriptor"
+                .to_string(),
+        });
+    }
+    Ok(record.clone())
 }
 
 fn compile_service_boundary_plan(

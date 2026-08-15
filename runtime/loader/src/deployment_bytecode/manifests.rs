@@ -9,12 +9,13 @@ use skiff_artifact_model::{
     intrinsic_registry_identity, native_value_lifecycle_registry_identity,
     value_lifecycle_policy_identity, BytecodeConstantRef, BytecodeFunctionStatementManifest,
     BytecodePoolEntry, BytecodeRelocation, BytecodeSpecialization, ContractOperationId,
-    HostEffectSignature, InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr,
-    NominalTypeRefBaseIr, OperationCallableKind, PackageArtifact, PackageArtifactRef,
-    PackageBuildId, PackageCallableId, PackageCallableSignature, PackageExecutableCoordinate,
-    PackageLocalAbiSymbol, PackageRefIr, PackageRequirement, PackageSymbolRef, PackageTypeRef,
-    ServiceContract, ServiceContractRef, ServiceDeployment, ServiceRequirementKey, TypeRefIr,
-    ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    ContractTypeRef, HostEffectSignature, InterfaceInstantiationRef,
+    InterfaceMethodSlotSignatureIr, NominalTypeRefBaseIr, OperationCallableKind, PackageArtifact,
+    PackageArtifactRef, PackageBuildId, PackageCallableId, PackageCallableSignature,
+    PackageExecutableCoordinate, PackageLocalAbiSymbol, PackageRefIr, PackageRequirement,
+    PackageSymbolRef, PackageTypeRef, ServiceContract, ServiceContractRef, ServiceDeployment,
+    ServiceRequirementKey, TypeRefIr, ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
+    BYTECODE_SCHEMA_VERSION,
 };
 
 use super::{
@@ -1491,6 +1492,12 @@ fn validate_relocation(
                 contracts,
                 service_dependencies,
             )?;
+            validate_service_boundary_contract_refs(
+                package,
+                service_call.boundary_plan(),
+                deployment,
+                packages,
+            )?;
         }
         BytecodeRelocation::ActorMethodRef {
             actor,
@@ -1536,6 +1543,75 @@ fn validate_relocation(
         | BytecodeRelocation::FrozenConstantRef { .. } => {}
     }
     Ok(())
+}
+
+fn validate_service_boundary_contract_refs(
+    caller: &HydratedBytecodePackage,
+    plan: &skiff_artifact_model::ServiceBoundaryPlan,
+    deployment: &ServiceDeployment,
+    packages: &BTreeMap<PackageBuildId, HydratedBytecodePackage>,
+) -> Result<(), DeploymentBytecodeHydrationError> {
+    for value in plan.arguments.iter().chain(&plan.results) {
+        validate_contract_type_ref(caller, &value.contract_type, deployment, packages)?;
+    }
+    validate_contract_type_ref(
+        caller,
+        &plan.error.fallback_contract_type,
+        deployment,
+        packages,
+    )?;
+    if let Some(value) = &plan.stream_item {
+        validate_contract_type_ref(caller, &value.contract_type, deployment, packages)?;
+    }
+    Ok(())
+}
+
+fn validate_contract_type_ref(
+    caller: &HydratedBytecodePackage,
+    ty: &ContractTypeRef,
+    deployment: &ServiceDeployment,
+    packages: &BTreeMap<PackageBuildId, HydratedBytecodePackage>,
+) -> Result<(), DeploymentBytecodeHydrationError> {
+    match ty {
+        ContractTypeRef::PackageSchema {
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+        } => validate_package_schema_type(
+            caller,
+            package_id,
+            stable_schema_key,
+            package_schema_type_id,
+            packages,
+        ),
+        ContractTypeRef::Builtin { arguments, .. } => arguments
+            .iter()
+            .try_for_each(|child| validate_contract_type_ref(caller, child, deployment, packages)),
+        ContractTypeRef::Record { fields } => fields
+            .values()
+            .try_for_each(|child| validate_contract_type_ref(caller, child, deployment, packages)),
+        ContractTypeRef::StructuralUnion { variants } => variants
+            .iter()
+            .try_for_each(|child| validate_contract_type_ref(caller, child, deployment, packages)),
+        ContractTypeRef::Nullable { inner } => {
+            validate_contract_type_ref(caller, inner, deployment, packages)
+        }
+        ContractTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => {
+            validate_contract_type_ref(caller, interface, deployment, packages)?;
+            arguments.iter().try_for_each(|child| {
+                validate_contract_type_ref(caller, child, deployment, packages)
+            })
+        }
+        ContractTypeRef::Literal { .. } => Ok(()),
+        ContractTypeRef::TypeParam { .. } => manifest_error(
+            caller.reference(),
+            DeploymentBytecodeManifestKind::ServiceOperation,
+            "service boundary contract type parameter remains unbound".to_string(),
+        ),
+    }
 }
 
 fn validate_package_constant(

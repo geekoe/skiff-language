@@ -14,16 +14,17 @@ mod tests {
     };
     use crate::BytecodeValueTransferPlans;
     use skiff_artifact_model::{
-        ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, AssignTargetIr,
-        BoxSourceIr, BytecodeIntrinsicRef, BytecodePoolEntry, BytecodeRelocation, CallIr,
-        CallTargetIr, CallableEffectSummary, ContractOperationId, DbBodyIr, DbOpKindIr,
-        DbOperationIr, DbTargetIr, ExprIr, ExprRefIr, ExternalRefTable, FileIrUnit,
-        FunctionTypeParamIr, InstructionSourceSite, InterfaceInstantiationRef,
-        InterfaceMethodSlotSignatureIr, LiteralIr, NativeTarget, PackageCallableId, PatternIr,
-        RemoteOperationSlotPlanIr, RemoteOperationTablePlanIr, ResourceDropPlan,
-        ServiceBoundaryPlan, ServiceCallRef, ServiceProtocolIdentity, ServiceSymbolRef,
-        SourcePosition, SourceSpanRef, SyntheticInstructionSiteReason, TypeDeclIr,
-        TypeDescriptorIr, TypeRefIr, ValueDropPlan, ValueTransferPlan,
+        derive_package_schema_type_id, ActorAbiIdentity, ActorImplementationIdentity,
+        ActorMethodIdentity, AssignTargetIr, BoxSourceIr, BytecodeIntrinsicRef, BytecodePoolEntry,
+        BytecodeRelocation, CallIr, CallTargetIr, CallableEffectSummary, ContractOperationId,
+        ContractTypeDescriptor, DbBodyIr, DbOpKindIr, DbOperationIr, DbTargetIr, ExprIr, ExprRefIr,
+        ExternalRefTable, FileIrUnit, FunctionTypeParamIr, InstructionSourceSite,
+        InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr, LiteralIr, NativeTarget,
+        PackageCallableId, PackageSchemaCanonicalDescriptor, PatternIr, RemoteOperationSlotPlanIr,
+        RemoteOperationTablePlanIr, ResourceDropPlan, ServiceBoundaryPlan, ServiceCallRef,
+        ServiceProtocolIdentity, ServiceSymbolRef, SourcePosition, SourceSpanRef,
+        SyntheticInstructionSiteReason, TypeDeclIr, TypeDescriptorIr, TypeRefIr, ValueDropPlan,
+        ValueTransferPlan,
     };
     use skiff_artifact_model::{
         BoundaryDropPlan, BoundaryErrorAdmission, BoundaryErrorFallbackIdentity, BoundaryErrorPlan,
@@ -151,9 +152,7 @@ mod tests {
             arguments: Vec::new(),
             results: Vec::new(),
             error: BoundaryErrorPlan {
-                fallback_contract_type: skiff_artifact_model::ContractTypeRef::builtin(
-                    "std.service.InternalError",
-                ),
+                fallback_contract_type: std_service_internal_error(),
                 fallback: BoundaryValuePlan::Linkable {
                     carrier: BoundaryValueCarrier::DetachedValueGraph,
                     encoding: BoundaryValueEncoding::CanonicalValue,
@@ -183,6 +182,39 @@ mod tests {
                 },
             },
         }
+    }
+
+    fn std_service_internal_error() -> skiff_artifact_model::ContractTypeRef {
+        let descriptor = PackageSchemaCanonicalDescriptor {
+            type_params: Vec::new(),
+            descriptor: ContractTypeDescriptor::Record {
+                fields: BTreeMap::from([
+                    (
+                        "message".to_string(),
+                        skiff_artifact_model::ContractTypeRef::builtin("string"),
+                    ),
+                    (
+                        "traceId".to_string(),
+                        skiff_artifact_model::ContractTypeRef::builtin("string"),
+                    ),
+                    (
+                        "errorId".to_string(),
+                        skiff_artifact_model::ContractTypeRef::builtin("string"),
+                    ),
+                ]),
+            },
+        };
+        let type_id = derive_package_schema_type_id(
+            "skiff.run/std",
+            "std.service.InternalError",
+            &descriptor,
+        )
+        .expect("canonical std.service.InternalError schema derives");
+        skiff_artifact_model::ContractTypeRef::package_schema(
+            "skiff.run/std",
+            "std.service.InternalError",
+            type_id,
+        )
     }
 
     fn plans(unit: &MirUnit) -> BytecodeValueTransferPlans {
@@ -1006,6 +1038,21 @@ mod tests {
         assert!(relocations
             .iter()
             .any(|relocation| matches!(relocation, BytecodeRelocation::HostEffectRef(_))));
+        assert!(artifact.image.pools.types.iter().any(|entry| matches!(
+            entry,
+            BytecodePoolEntry::TypeRef {
+                ty: TypeRefIr::PackageSchema {
+                    package_id,
+                    stable_schema_key,
+                    ..
+                },
+                plan: ValueTransferPlan::SnapshotShare {
+                    drop: ValueDropPlan::SnapshotRelease
+                },
+                ..
+            } if package_id == "skiff.run/std"
+                && stable_schema_key == "std.service.InternalError"
+        )));
         assert_eq!(artifact.image.pools.resume.len(), 3);
     }
 
