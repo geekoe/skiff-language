@@ -44,20 +44,20 @@ export const PHASE5_REQUIRED_LANES = Object.freeze([
 ]);
 
 const HOST_TEST = Object.freeze({
-  tcp: 'tcp_server::deterministic_tcp_server_gates_unary_and_distinguishes_streams',
-  s1: 'phase_5_stage_sentinel_source_to_admission',
-  s2: 'stages::phase_5_stage_sentinel_admission_to_emission',
-  s3: 'stages::phase_5_stage_sentinel_emission_to_atomic_link_input',
-  s4: 'stages::phase_5_stage_sentinel_atomic_link_to_image',
-  s5: 'phase_5_stage_sentinel_image_to_scheduler',
-  s6: 'phase_5_stage_sentinel_scheduler_to_request_response',
-  vcp: 'phase_5_vcp_production_composition',
-  lifecycle: 'phase_5_lifecycle_race_matrix',
-  canary: 'phase_5_single_worker_canary',
-  structure: 'phase_5_structural_no_bypass',
+  tcp: 'tcp_server::tests::deterministic_tcp_server_gates_unary_and_distinguishes_streams',
+  s1: 'tests::phase_5_stage_sentinel_source_to_admission',
+  s2: 'stages::tests::phase_5_stage_sentinel_admission_to_emission',
+  s3: 'stages::tests::phase_5_stage_sentinel_emission_to_atomic_link_input',
+  s4: 'stages::tests::phase_5_stage_sentinel_atomic_link_to_image',
+  s5: 'tests::phase_5_stage_sentinel_image_to_scheduler',
+  s6: 'tests::phase_5_stage_sentinel_scheduler_to_request_response',
+  vcp: 'tests::phase_5_vcp_production_composition',
+  lifecycle: 'tests::phase_5_lifecycle_race_matrix',
+  canary: 'tests::phase_5_single_worker_canary',
+  structure: 'tests::phase_5_structural_no_bypass',
 });
 
-const ROUTER_VCP = 'phase_5_router_full_chain_vcp';
+const ROUTER_VCP = 'tests::phase_5_router_full_chain_vcp';
 
 export function phase5ScenarioSpecs(root) {
   return Object.freeze([

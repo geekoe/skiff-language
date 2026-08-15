@@ -50,12 +50,12 @@ test('six sentinels select six independent integration tests with nonzero accoun
   assert.equal(sentinels.length, 6);
   assert.equal(new Set(sentinels.map(({ args }) => args.at(-4))).size, 6);
   assert.deepEqual(sentinels.map(({ args }) => args.at(-4)), [
-    'phase_5_stage_sentinel_source_to_admission',
-    'stages::phase_5_stage_sentinel_admission_to_emission',
-    'stages::phase_5_stage_sentinel_emission_to_atomic_link_input',
-    'stages::phase_5_stage_sentinel_atomic_link_to_image',
-    'phase_5_stage_sentinel_image_to_scheduler',
-    'phase_5_stage_sentinel_scheduler_to_request_response',
+    'tests::phase_5_stage_sentinel_source_to_admission',
+    'stages::tests::phase_5_stage_sentinel_admission_to_emission',
+    'stages::tests::phase_5_stage_sentinel_emission_to_atomic_link_input',
+    'stages::tests::phase_5_stage_sentinel_atomic_link_to_image',
+    'tests::phase_5_stage_sentinel_image_to_scheduler',
+    'tests::phase_5_stage_sentinel_scheduler_to_request_response',
   ]);
   for (const sentinel of sentinels) {
     assert.equal(sentinel.command, 'cargo');
@@ -76,7 +76,7 @@ test('G7 is a Router integration binary rather than a host fake dispatcher', () 
     command: 'cargo',
     args: Object.freeze([
       'test', '--no-fail-fast', '--manifest-path', 'router/Cargo.toml',
-      '--test', 'bytecode_vm_phase_5', 'phase_5_router_full_chain_vcp',
+      '--test', 'bytecode_vm_phase_5', 'tests::phase_5_router_full_chain_vcp',
       '--', '--exact', '--nocapture',
     ]),
     cwd: ROOT,
@@ -103,9 +103,9 @@ test('G7 builds the production Runtime process before the Router integration sel
 test('G5/G8 include the gated TCP upstream and single-worker canary', () => {
   const byId = Object.fromEntries(phase5ScenarioSpecs(ROOT).map((entry) => [entry.id, entry]));
   assert.equal(byId['phase-5-deterministic-tcp-upstream'].args.includes(
-    'tcp_server::deterministic_tcp_server_gates_unary_and_distinguishes_streams'), true);
+    'tcp_server::tests::deterministic_tcp_server_gates_unary_and_distinguishes_streams'), true);
   assert.equal(byId['phase-5-single-worker-canary'].args.includes(
-    'phase_5_single_worker_canary'), true);
+    'tests::phase_5_single_worker_canary'), true);
   assert.equal(byId['phase-5-lifecycle-race-matrix'].lanes.includes('G8'), true);
 });
 

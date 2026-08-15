@@ -156,7 +156,7 @@ test('runner records every later receipt after one executable expected-red workl
       acquireCargoLease: fakeCargoLease,
       capture: async (command, args, { env }) => {
         observed.push([command, ...args].join(' '));
-        if (args.includes('phase_5_stage_sentinel_source_to_admission')) {
+        if (args.includes('tests::phase_5_stage_sentinel_source_to_admission')) {
           await mkdir(env[PHASE5_CARRIER_ENV]);
           return {
             code: 101,
