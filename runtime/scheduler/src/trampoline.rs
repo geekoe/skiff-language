@@ -40,7 +40,7 @@ pub struct EnterChildWithFinishError<U: BytecodeUnit, R> {
     child: U,
     resume: R,
     child_heap: ChildHeapCarrier,
-    finish: Box<dyn ChildFinish<U>>,
+    finish: Box<dyn ChildFinish<U, R>>,
 }
 
 impl<U: BytecodeUnit, R> EnterChildWithFinishError<U, R> {
@@ -48,7 +48,7 @@ impl<U: BytecodeUnit, R> EnterChildWithFinishError<U, R> {
         child: U,
         resume: R,
         child_heap: ChildHeapCarrier,
-        finish: Box<dyn ChildFinish<U>>,
+        finish: Box<dyn ChildFinish<U, R>>,
     ) -> Self {
         Self {
             error: EnterChildError::CapacityExceeded,
@@ -64,7 +64,7 @@ impl<U: BytecodeUnit, R> EnterChildWithFinishError<U, R> {
         child: U,
         resume: R,
         child_heap: ChildHeapCarrier,
-        finish: Box<dyn ChildFinish<U>>,
+        finish: Box<dyn ChildFinish<U, R>>,
     ) -> Self {
         Self {
             error: EnterChildError::OwnerCreation(error),
@@ -86,7 +86,7 @@ impl<U: BytecodeUnit, R> EnterChildWithFinishError<U, R> {
         U,
         R,
         ChildHeapCarrier,
-        Box<dyn ChildFinish<U>>,
+        Box<dyn ChildFinish<U, R>>,
     ) {
         (
             self.error,
@@ -312,7 +312,7 @@ pub struct BlockedUnit<U: BytecodeUnit, R> {
     resume: R,
     owner_lease: Option<ChildOwnerLease>,
     parent_heap: Option<ChildHeapCarrier>,
-    finish: Option<Box<dyn ChildFinish<U>>>,
+    finish: Option<Box<dyn ChildFinish<U, R>>>,
 }
 
 impl<U: BytecodeUnit, R: fmt::Debug> fmt::Debug for BlockedUnit<U, R> {
@@ -480,7 +480,7 @@ impl<U: BytecodeUnit, R> FlatTrampoline<U, R> {
         child: U,
         resume: R,
         child_heap: ChildHeapCarrier,
-        finish: Box<dyn ChildFinish<U>>,
+        finish: Box<dyn ChildFinish<U, R>>,
     ) -> Result<(), EnterChildWithFinishError<U, R>> {
         if let Err(_) = self.blocked.try_reserve(1) {
             return Err(EnterChildWithFinishError::capacity(
@@ -522,10 +522,11 @@ impl<U: BytecodeUnit, R> FlatTrampoline<U, R> {
         budget: &mut dyn VmBudget,
         fallback_heap: &mut dyn VmHeap,
     ) -> Result<TrampolineCompletion<U, R, U::ResumeOutcome>, (ChildFinishError<U>, Self)> {
-        let Some(blocked) = self.blocked.last_mut() else {
+        let Some(mut blocked) = self.blocked.pop() else {
             unreachable!("child completion requires a blocked parent");
         };
         let Some(finish) = blocked.finish.take() else {
+            self.blocked.push(blocked);
             return Err((
                 ChildFinishError::result_retained(
                     BytecodeSchedulerError::UnsupportedChild,
@@ -534,8 +535,14 @@ impl<U: BytecodeUnit, R> FlatTrampoline<U, R> {
                 self,
             ));
         };
-        let parent_heap = blocked
-            .parent_heap
+        let BlockedUnit {
+            parent: _,
+            resume,
+            owner_lease: _,
+            parent_heap,
+            finish: _,
+        } = &mut blocked;
+        let parent_heap = parent_heap
             .as_mut()
             .map(ChildHeapCarrier::heap_mut)
             .unwrap_or(fallback_heap);
@@ -543,13 +550,11 @@ impl<U: BytecodeUnit, R> FlatTrampoline<U, R> {
             .active_heap
             .as_mut()
             .expect("a child completion owns its active heap carrier");
-        let outcome = match finish.finish(child_result, child_heap, parent_heap, budget) {
+        let outcome = match finish.finish(resume, child_result, child_heap, parent_heap, budget) {
             Ok(outcome) => outcome,
             Err(error) => {
-                self.blocked
-                    .last_mut()
-                    .expect("the blocked parent remains installed")
-                    .finish = Some(finish);
+                blocked.finish = Some(finish);
+                self.blocked.push(blocked);
                 return Err((error, self));
             }
         };
@@ -561,10 +566,7 @@ impl<U: BytecodeUnit, R> FlatTrampoline<U, R> {
             owner_lease,
             parent_heap,
             finish: _,
-        } = self
-            .blocked
-            .pop()
-            .expect("the blocked parent remains installed");
+        } = blocked;
         self.active = parent;
         self.active_heap = parent_heap;
         let completion = TrampolineCompletion::ResumeParent(ParentResume {

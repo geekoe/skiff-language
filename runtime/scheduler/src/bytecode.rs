@@ -484,9 +484,10 @@ pub type BytecodeUnitControl<U> = BytecodeControl<
 /// The implementation materializes a completed child result into the parent
 /// heap, releases child-owned staging/terminal roots, and returns the exact
 /// parent resume outcome.
-pub trait ChildFinish<U: BytecodeUnit>: Send {
+pub trait ChildFinish<U: BytecodeUnit, R>: Send {
     fn finish(
         &self,
+        resume: &R,
         child_result: U::RootResult,
         child_heap: &mut ChildHeapCarrier,
         parent_heap: &mut dyn VmHeap,
@@ -545,7 +546,7 @@ pub struct BytecodeChildStart<U: BytecodeUnit> {
     pub unit: U,
     pub resume: U::ResumeToken,
     pub child_heap: ChildHeapCarrier,
-    pub finish: Box<dyn ChildFinish<U>>,
+    pub finish: Box<dyn ChildFinish<U, U::ResumeToken>>,
 }
 
 impl<U: BytecodeUnit> fmt::Debug for BytecodeChildStart<U> {
@@ -2129,9 +2130,10 @@ mod tests {
 
     struct TestChildFinish;
 
-    impl ChildFinish<TestUnit> for TestChildFinish {
+    impl ChildFinish<TestUnit, <TestUnit as BytecodeUnit>::ResumeToken> for TestChildFinish {
         fn finish(
             &self,
+            _resume: &<TestUnit as BytecodeUnit>::ResumeToken,
             child_result: usize,
             _child_heap: &mut ChildHeapCarrier,
             _parent_heap: &mut dyn VmHeap,
