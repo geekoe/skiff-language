@@ -633,7 +633,9 @@ where
             self.registrations.child(),
             self.resources.root_pin(),
         );
-        scheduler.run(heap, budget)
+        scheduler
+            .run(heap, budget)
+            .map_err(BytecodeSchedulerFailure::normalize_scheduler_failure)
     }
 
     /// Drives a scheduler restored from a completed pending wake exactly once,

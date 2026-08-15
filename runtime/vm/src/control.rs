@@ -64,22 +64,105 @@ impl VmHostEffectArguments {
 
     /// Releases every transferred owner through the VM's sole lifecycle
     /// executor. Unsupported plans are rejected before the first heap
-    /// mutation. A heap failure terminates the request synchronously; the
-    /// failing and later owners remain in the unique boundary-owned heap for
-    /// terminal teardown and are never submitted a second time here.
-    pub fn release(self, heap: &mut dyn VmHeap) -> Result<(), VmError> {
+    /// mutation. A heap failure returns the failing owner and every later
+    /// suffix owner in an explicit carrier, so request terminal retention can
+    /// retry or keep those roots ahead of heap teardown.
+    pub fn release(
+        self,
+        heap: &mut dyn VmHeap,
+    ) -> Result<(), VmHostEffectArgumentsReleaseError> {
+        let Self {
+            values,
+            plans,
+            function,
+            instruction,
+        } = self;
+        let image = Arc::clone(values.image());
+        let site = VmLifecycleSite {
+            function,
+            instruction,
+            opcode: Opcode::InvokeHost,
+        };
+        if !plans.iter().all(LifecycleExecutor::supports_release) {
+            let escrow = VmTerminalEscrow::from_slots(
+                image,
+                values.values().to_vec(),
+                plans
+                    .iter()
+                    .cloned()
+                    .map(Some)
+                    .collect::<Vec<_>>(),
+                site,
+            );
+            return Err(VmHostEffectArgumentsReleaseError {
+                error: VmError::FullValueLifecyclePlanUnavailable {
+                    function,
+                    instruction,
+                    opcode: Opcode::InvokeHost,
+                },
+                escrow,
+            });
+        }
         let mut executor = LifecycleExecutor::new(heap);
-        executor
-            .release_batch(self.values.values(), &self.plans)
-            .map_err(|error| {
-                error.into_vm_error(self.function, self.instruction, Opcode::InvokeHost)
-            })
+        for (index, (value, plan)) in values.values().iter().zip(plans.iter()).enumerate() {
+            if let Err(error) = executor.release(value, plan) {
+                let remaining = values.values()[index..].to_vec();
+                let remaining_plans = plans[index..]
+                    .iter()
+                    .cloned()
+                    .map(Some)
+                    .collect::<Vec<_>>();
+                let escrow = VmTerminalEscrow::from_slots(image, remaining, remaining_plans, site);
+                return Err(VmHostEffectArgumentsReleaseError {
+                    error: error.into_vm_error(function, instruction, Opcode::InvokeHost),
+                    escrow,
+                });
+            }
+        }
+        Ok(())
     }
 }
 
 impl VmRootSource for VmHostEffectArguments {
     fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
         self.values.visit_roots(visitor)
+    }
+}
+
+/// A failed host-argument release that still owns the failing suffix.
+///
+/// Successful prefix owners are removed as they are released; the failing
+/// owner and every later owner remain in this exact terminal escrow. No
+/// runtime-kind fallback is inferred from the remaining slots.
+#[must_use = "a host-argument release failure still owns its exact suffix"]
+pub struct VmHostEffectArgumentsReleaseError {
+    error: VmError,
+    escrow: VmTerminalEscrow,
+}
+
+impl VmHostEffectArgumentsReleaseError {
+    pub const fn error(&self) -> &VmError {
+        &self.error
+    }
+
+    pub fn into_terminal_escrow(self) -> (VmError, VmTerminalEscrow) {
+        (self.error, self.escrow)
+    }
+}
+
+impl fmt::Debug for VmHostEffectArgumentsReleaseError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VmHostEffectArgumentsReleaseError")
+            .field("error", &self.error)
+            .field("suffix_roots", &self.escrow.root_count())
+            .finish_non_exhaustive()
+    }
+}
+
+impl VmRootSource for VmHostEffectArgumentsReleaseError {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        self.escrow.visit_roots(visitor)
     }
 }
 

@@ -47,7 +47,8 @@ use skiff_runtime_scheduler::{
 use skiff_runtime_vm::{
     AdapterInvocation, ChildInvocation, PendingOperation, ResumeOutcome, Vm, VmBudget,
     VmBudgetClosed, VmBudgetTerminal, VmCompletion, VmError, VmFiber, VmHostEffectArguments,
-    VmInternalTerminal, VmLimits, VmOwnedValues, VmResumeToken, VmTerminalCause, VmTerminalEscrow,
+    VmHostEffectArgumentsReleaseError, VmInternalTerminal, VmLimits, VmOwnedValues,
+    VmResumeToken, VmTerminalCause, VmTerminalEscrow,
 };
 
 use crate::{
@@ -706,18 +707,27 @@ struct BytecodeHostExecutor {
     runtime: Arc<RequestPendingRuntime>,
 }
 
+enum HostArgumentUseFailure {
+    Prepared(BytecodeSchedulerError),
+    Release {
+        primary: Option<BytecodeSchedulerError>,
+        failure: VmHostEffectArgumentsReleaseError,
+    },
+}
+
 fn finish_host_argument_use<T>(
     prepared: Result<T, BytecodeSchedulerError>,
     arguments: VmHostEffectArguments,
     heap: &mut dyn VmHeap,
-) -> Result<T, BytecodeSchedulerError> {
-    let released = arguments
-        .release(heap)
-        .map_err(BytecodeSchedulerError::from);
+) -> Result<T, HostArgumentUseFailure> {
+    let released = arguments.release(heap);
     match (prepared, released) {
         (Ok(prepared), Ok(())) => Ok(prepared),
-        (Err(error), Ok(())) => Err(error),
-        (_, Err(release_error)) => Err(release_error),
+        (Err(error), Ok(())) => Err(HostArgumentUseFailure::Prepared(error)),
+        (prepared, Err(failure)) => Err(HostArgumentUseFailure::Release {
+            primary: prepared.err(),
+            failure,
+        }),
     }
 }
 
@@ -999,8 +1009,16 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                 let (future, first_poll) = match finish_host_argument_use(prepared, arguments, heap)
                 {
                     Ok(prepared) => prepared,
-                    Err(reason) => {
+                    Err(HostArgumentUseFailure::Prepared(reason)) => {
                         return Err(BytecodePortFailure::continuation(reason, resume));
+                    }
+                    Err(HostArgumentUseFailure::Release { primary, failure }) => {
+                        return Err(match primary {
+                            Some(primary) => {
+                                BytecodePortFailure::terminal_host_arguments_release_with_primary(primary, failure)
+                            }
+                            None => BytecodePortFailure::terminal_host_arguments_release(failure),
+                        });
                     }
                 };
                 match first_poll {
@@ -1041,8 +1059,16 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                 let (layout, future, first_poll) =
                     match finish_host_argument_use(prepared, arguments, heap) {
                         Ok(prepared) => prepared,
-                        Err(reason) => {
+                        Err(HostArgumentUseFailure::Prepared(reason)) => {
                             return Err(BytecodePortFailure::continuation(reason, resume));
+                        }
+                        Err(HostArgumentUseFailure::Release { primary, failure }) => {
+                            return Err(match primary {
+                                Some(primary) => {
+                                    BytecodePortFailure::terminal_host_arguments_release_with_primary(primary, failure)
+                                }
+                                None => BytecodePortFailure::terminal_host_arguments_release(failure),
+                            });
                         }
                     };
                 match first_poll {
@@ -1096,8 +1122,16 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                 let (layout, future, first_poll) =
                     match finish_host_argument_use(prepared, arguments, heap) {
                         Ok(prepared) => prepared,
-                        Err(reason) => {
+                        Err(HostArgumentUseFailure::Prepared(reason)) => {
                             return Err(BytecodePortFailure::continuation(reason, resume));
+                        }
+                        Err(HostArgumentUseFailure::Release { primary, failure }) => {
+                            return Err(match primary {
+                                Some(primary) => {
+                                    BytecodePortFailure::terminal_host_arguments_release_with_primary(primary, failure)
+                                }
+                                None => BytecodePortFailure::terminal_host_arguments_release(failure),
+                            });
                         }
                     };
                 match first_poll {
@@ -2653,8 +2687,11 @@ impl ParkedBytecodeRequest {
             &execution_budget,
             failure.reason(),
         ));
-        let (_reason, mut scheduler_failure_owner) = failure.into_parts();
-        let _ = scheduler_failure_owner.release_terminal_escrow(&mut *heap);
+        let (_reason, scheduler_failure_owner) = failure
+            .normalize_terminal(|operation| {
+                runtime.registry.abandon(operation.ticket());
+            })
+            .into_parts();
         let mut materialization_escrows = runtime.take_materialization_escrows();
         for escrow in &mut materialization_escrows {
             let _ = escrow.release_all(&mut *heap);

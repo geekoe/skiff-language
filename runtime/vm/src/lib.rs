@@ -27,7 +27,8 @@ pub use control::{
     AdapterControl, AdapterInvocation, BoundaryStart, ChildInvocation, ChildTarget, EffectStart,
     PendingOperation, PendingTicket, ResumeOutcome, StreamEndpointRef, StreamInvocation,
     StreamItem, StreamItemReleaseError, VmCompletion, VmControl, VmHostEffectArguments,
-    VmInternalTerminal, VmOwnedException, VmOwnedValues, VmOwnedValuesRejected, VmResult,
+    VmHostEffectArgumentsReleaseError, VmInternalTerminal, VmOwnedException, VmOwnedValues,
+    VmOwnedValuesRejected, VmResult,
     VmResumeFailure, VmResumeKind, VmResumeToken, VmTerminalCause, VmTerminalEscrow,
     VmThrownDiagnostic,
 };
