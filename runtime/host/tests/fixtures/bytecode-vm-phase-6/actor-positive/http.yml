@@ -1,8 +1,8 @@
 run:
   method: POST
   path: /phase-6/actor
-  kind: rawHttp
+  kind: typedJson
   handler: main.run
   adapterArgs:
-    - param: request
-      source: { kind: http.request }
+    - param: seed
+      source: { kind: http.body }

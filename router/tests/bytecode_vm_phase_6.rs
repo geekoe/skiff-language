@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use skiff_artifact_identity::DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX;
 use skiff_artifact_model::{
     ActorAbiIdentity, ActorImplementationIdentity, DeploymentArtifactIdentity, DeploymentRevision,
     PackageCallableId, ServiceDeploymentRef,
@@ -17,8 +18,6 @@ use skiff_task_control::model::{
 };
 use skiff_task_control::store::{ClaimInput, DueScanInput, TaskStore};
 use skiff_task_control::MemoryTaskStore;
-
-const PHASE6_IMAGE_PREFIX: &str = "skiff-deployment-artifact-v6:";
 
 #[cfg(test)]
 mod tests {
@@ -198,7 +197,7 @@ mod tests {
             contract_version: "1.0.0".to_string(),
             deployment_revision: DeploymentRevision::new("revision-1"),
             deployment_artifact_identity: DeploymentArtifactIdentity::new(format!(
-                "skiff-deployment-artifact-v4:sha256:{}",
+                "{DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX}:sha256:{}",
                 "a".repeat(64)
             )),
         };
@@ -230,13 +229,14 @@ mod tests {
     }
 
     fn assert_phase6_image(record: &TaskRecord) {
+        let prefix = format!("{DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX}:sha256:");
         assert!(
             record
                 .execution
                 .deployment
                 .deployment_artifact_identity
                 .as_str()
-                .starts_with(PHASE6_IMAGE_PREFIX),
+                .starts_with(&prefix),
             "TaskStore record does not pin the Phase 6 atomic image identity: {}",
             record.execution.deployment.deployment_artifact_identity
         );
@@ -300,8 +300,10 @@ mod tests {
 
     fn route_authority() -> ActorOwnerRouteAuthority {
         ActorOwnerRouteAuthority {
-            build_id: "skiff-service-deployment-v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                .to_string(),
+            build_id: format!(
+                "{DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX}:sha256:{}",
+                "a".repeat(64)
+            ),
         }
     }
 
@@ -315,8 +317,9 @@ mod tests {
     }
 
     fn assert_phase6_owner(fence: &ActorOwnerFence) {
+        let prefix = format!("{DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX}:sha256:");
         assert!(
-            fence.build_id.starts_with(PHASE6_IMAGE_PREFIX),
+            fence.build_id.starts_with(&prefix),
             "Actor owner fence does not pin the Phase 6 atomic image identity: {}",
             fence.build_id
         );

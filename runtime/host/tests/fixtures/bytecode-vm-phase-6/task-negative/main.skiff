@@ -3,14 +3,14 @@ db object Doc {
   value: string,
 }
 
-function work(value: string) -> string {
-  return value
+function work(value: number) -> void {
+  return
 }
 
 function run(seed: number) -> number {
   db transaction {
-    final task = dispatch work("bad")
-    db insert Doc { id = "bad" value = "bad" }
+    dispatch work(seed)
+    db insert Doc { id = "bad" value = "task-negative" }
   }
   return seed
 }

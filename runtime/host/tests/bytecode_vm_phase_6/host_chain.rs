@@ -61,7 +61,12 @@ async fn drive(capability: Capability, prefix: &str) -> HostResponse {
     let path = capability_path(capability);
     let unary_json = matches!(
         capability,
-        Capability::Service | Capability::InterfaceLocal | Capability::Recoverable | Capability::Db
+        Capability::Service
+            | Capability::InterfaceLocal
+            | Capability::Recoverable
+            | Capability::Db
+            | Capability::Task
+            | Capability::Actor
     );
     let mode = if unary_json { "unary" } else { "serverStream" };
     let body = if unary_json {

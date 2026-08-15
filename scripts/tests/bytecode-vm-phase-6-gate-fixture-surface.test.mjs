@@ -74,6 +74,21 @@ test('positive fixtures drive real Phase 6 source semantics, not test seams', as
   }
 });
 
+test('task and actor positive fixtures use the admitted unary scalar surface', async () => {
+  const task = await readFile(fixture('task-positive'), 'utf8');
+  const taskHttp = await readFile(fixture('task-positive', 'http.yml'), 'utf8');
+  const actor = await readFile(fixture('actor-positive'), 'utf8');
+  const actorHttp = await readFile(fixture('actor-positive', 'http.yml'), 'utf8');
+  assert.match(task, /dispatch work\(seed\)/);
+  assert.doesNotMatch(task, /TaskRef|db object|rawHttp|Stream</);
+  assert.match(taskHttp, /typedJson/);
+  assert.doesNotMatch(taskHttp, /rawHttp/);
+  assert.match(actor, /std\.actor\.get<Counter>/);
+  assert.doesNotMatch(actor, /\.toString\(\)|rawHttp|Stream</);
+  assert.match(actorHttp, /typedJson/);
+  assert.doesNotMatch(actorHttp, /rawHttp/);
+});
+
 test('J2 focused fixtures use unary owner-internal production paths', async () => {
   const recoverable = await readFile(fixture('recoverable-positive'), 'utf8');
   const db = await readFile(fixture('db-positive'), 'utf8');
@@ -101,7 +116,7 @@ test('J2 focused fixtures use unary owner-internal production paths', async () =
   assert.match(localHttp, /path: \/phase-6\/interface-local\n/);
   assert.match(
     hostChain,
-    /Capability::Service\s*\|\s*Capability::InterfaceLocal\s*\|\s*Capability::Recoverable\s*\|\s*Capability::Db/,
+    /Capability::Service\s*\|\s*Capability::InterfaceLocal\s*\|\s*Capability::Recoverable\s*\|\s*Capability::Db\s*\|\s*Capability::Task\s*\|\s*Capability::Actor/,
   );
   assert.match(hostChain, /let mode = if unary_json \{ "unary" \}/);
   assert.match(hostChain, /let body = if unary_json \{\s*b"7"\.as_slice\(\)/);

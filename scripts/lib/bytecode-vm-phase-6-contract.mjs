@@ -73,7 +73,7 @@ export function phase6ScenarioSpecs(root) {
       '--test',
       '--test-reporter=tap',
       'scripts/tests/bytecode-vm-phase-6-gate-*.test.mjs',
-    ], 'node-tap', ['G6'], 28),
+    ], 'node-tap', ['G6'], 29),
     hostSuite(root, 'p6-service-matrix', 'service_', HOST_MATRIX_TESTS,
       ['S6', 'F6', 'K6', 'X6']),
     hostSuite(root, 'p6-interface-local-matrix', 'interface_local_', 12,

@@ -21,11 +21,8 @@ impl Counter {
   }
 }
 
-function run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+function run(seed: number) -> number {
   final counter = std.actor.get<Counter>("phase6")
   final value = counter.increment()
-  emit({ tag: "start", status: 200, headers: [] })
-  emit({ tag: "chunk", value: bytes.fromUtf8(value.toString()) })
-  emit({ tag: "end" })
-  return null
+  return value
 }
