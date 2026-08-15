@@ -109,6 +109,10 @@ Amendment r1（2026-08-15）：X6 seam prep确认`BytecodeRequestExecutionInput`
 `runtime/request/Cargo.toml`允许为`vm_materialize`/service child 增加依赖。本 amendment 只扩展 X6 写集，
 不改变语义 authority 或其它 lane。
 
+Amendment r2（2026-08-15）：K6 scheduler integration修改`BytecodeChildExecutor`签名后，唯一跨写集机械适配是
+`runtime/request/src/bytecode_ingress.rs`中现有 `UnsupportedChild` port 及构造点；K6 只允许为编译兼容做机械
+修改，不实现 service child mux、不改变请求语义。X6 仍拥有该文件的 service child 语义 owner。
+
 同一文件即使只需一行也不跨owner。例如A6不能改`runtime/model/src/lib.rs`，T6不能改
 `runtime/request/src/outbound.rs`，I6C不能改`runtime/linked-bytecode/src/targets/interface.rs`；分别由K6、X6、F6
 落中央join。Integrator/G6不得代改。
