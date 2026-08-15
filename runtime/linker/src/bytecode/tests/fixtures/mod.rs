@@ -27,7 +27,7 @@ use skiff_runtime_loader::{
 };
 
 use artifact::bytecode_artifact;
-pub(super) use constants::ConstantProgram;
+pub(super) use constants::{ConstantProgram, RepresentationLiteralCase};
 
 pub(super) const ROOT_CALLABLE: &str = "pkg-callable:example.bytecode-link:top-level:fixture.root";
 pub(super) const HELPER_CALLABLE: &str =

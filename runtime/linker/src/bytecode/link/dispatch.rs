@@ -833,6 +833,12 @@ impl DeploymentLinker<'_> {
                                 type_linker,
                                 &location,
                             )?;
+                            require_executor_representation_carrier(
+                                executor_identity,
+                                &signature,
+                                type_linker,
+                                &location,
+                            )?;
                             let binding_key = entry.binding_key.as_str();
                             if !seen_host.insert(binding_key.to_string()) {
                                 continue;
@@ -1095,6 +1101,35 @@ impl DeploymentLinker<'_> {
                 )
             })
     }
+}
+
+fn require_executor_representation_carrier(
+    executor: HostEffectExecutorIdentity,
+    signature: &LinkedNativeCallableSignature,
+    type_linker: &TypeLinker<'_>,
+    location: &BytecodeLinkLocation,
+) -> Result<(), BytecodeLinkError> {
+    if executor != HostEffectExecutorIdentity::Sleep {
+        return Ok(());
+    }
+    let [parameter] = signature.parameter_types() else {
+        return Err(unsatisfied(
+            BytecodeLinkObligation::ConcreteTargetTables,
+            location.clone(),
+            "Sleep target does not retain exactly one linked parameter type".to_string(),
+        ));
+    };
+    if type_linker
+        .linked_representation_carrier(*parameter)
+        .is_none()
+    {
+        return Err(unsatisfied(
+            BytecodeLinkObligation::ConcreteTargetTables,
+            location.clone(),
+            "Sleep parameter lacks its compiler-owned representation carrier fact".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn native_signature(

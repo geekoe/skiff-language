@@ -5,7 +5,7 @@ use skiff_artifact_model::{
     BytecodeArtifact, BytecodeConstantRef, BytecodePoolEntry, ConstExport, FileIrRef,
     FrozenBehaviorBinding, FrozenConstantGraph, FrozenConstantNode, LiteralIr,
     PackageLocalAbiSymbol, PackageRefIr, PackageSymbolRef, PackageTypeRef, ShapeDeclaration,
-    ShapeFieldDeclaration, TypeRefIr, ValueDropPlan, ValueTransferPlan,
+    ShapeFieldDeclaration, TypeDescriptorIr, TypeRefIr, ValueDropPlan, ValueTransferPlan,
 };
 
 use super::{
@@ -14,6 +14,18 @@ use super::{
 };
 
 const CONSTANT_ROOT: &str = "fixture.answer";
+const REPRESENTATION_TYPE: &str = "fixture.Duration";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::bytecode::tests) enum RepresentationLiteralCase {
+    Exact,
+    MissingFact,
+    WrongDescriptor,
+    WrongPayload,
+    WrongPhysicalCarrier,
+    ReorderedRows,
+    DuplicatePayloadRows,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::bytecode::tests) enum ConstantProgram {
@@ -32,6 +44,7 @@ pub(in crate::bytecode::tests) enum ConstantProgram {
     WrongCarrier,
     WrongPlan,
     WrongStringPlan,
+    RepresentationLiteral(RepresentationLiteralCase),
 }
 
 impl Fixture {
@@ -59,9 +72,19 @@ impl Fixture {
     pub(in crate::bytecode::tests) fn package_symbol_constant() -> Self {
         Self::two_package_constants(ConstantProgram::PackageSymbol, ConstantProgram::Number)
     }
+
+    pub(in crate::bytecode::tests) fn representation_literal(
+        case: RepresentationLiteralCase,
+    ) -> Self {
+        Self::constant(ConstantProgram::RepresentationLiteral(case))
+    }
 }
 
 pub(super) fn populate_bytecode(artifact: &mut BytecodeArtifact, program: ConstantProgram) {
+    if let ConstantProgram::RepresentationLiteral(case) = program {
+        populate_representation_literal(artifact, case);
+        return;
+    }
     let (nodes, root_node, ty, plan) = match program {
         ConstantProgram::Null => literal_parts(LiteralIr::Null, TypeRefIr::builtin("null")),
         ConstantProgram::Bool => {
@@ -200,6 +223,7 @@ pub(super) fn populate_bytecode(artifact: &mut BytecodeArtifact, program: Consta
                 drop: ValueDropPlan::Trivial,
             },
         ),
+        ConstantProgram::RepresentationLiteral(_) => unreachable!(),
     };
 
     let type_plan = exact_fixture_plan(&ty);
@@ -261,6 +285,173 @@ pub(super) fn populate_bytecode(artifact: &mut BytecodeArtifact, program: Consta
         BTreeMap::from([(CONSTANT_ROOT.to_string(), 0)])
     };
     artifact.image.frozen_constant_graph = FrozenConstantGraph { nodes };
+}
+
+pub(super) fn representation_type_symbol(
+    program: RootProgram,
+) -> Option<(String, PackageLocalAbiSymbol)> {
+    let RootProgram::Constant(ConstantProgram::RepresentationLiteral(case)) = program else {
+        return None;
+    };
+    let (descriptor, is_alias) = match case {
+        RepresentationLiteralCase::WrongDescriptor => (
+            TypeDescriptorIr::Alias {
+                target: TypeRefIr::builtin("integer"),
+            },
+            true,
+        ),
+        RepresentationLiteralCase::WrongPayload => (
+            TypeDescriptorIr::Representation {
+                representation: TypeRefIr::builtin("string"),
+            },
+            false,
+        ),
+        _ => (
+            TypeDescriptorIr::Representation {
+                representation: TypeRefIr::builtin("integer"),
+            },
+            false,
+        ),
+    };
+    Some((
+        REPRESENTATION_TYPE.to_string(),
+        PackageLocalAbiSymbol::Type {
+            local_type_id: "type:fixture.Duration".to_string(),
+            descriptor,
+            is_alias,
+            is_interface: false,
+            type_params: Vec::new(),
+            interface_methods: Vec::new(),
+            actor: None,
+        },
+    ))
+}
+
+fn populate_representation_literal(
+    artifact: &mut BytecodeArtifact,
+    case: RepresentationLiteralCase,
+) {
+    let owner = TypeRefIr::PackageSymbol {
+        symbol: PackageSymbolRef {
+            package: PackageRefIr::PackageId {
+                package_id: "example.bytecode-link".to_string(),
+            },
+            symbol_path: REPRESENTATION_TYPE.to_string(),
+            abi_expectation: None,
+        },
+    };
+    let plan = ValueTransferPlan::SnapshotShare {
+        drop: ValueDropPlan::Trivial,
+    };
+    let physical = if case == RepresentationLiteralCase::WrongPhysicalCarrier {
+        TypeRefIr::builtin("bool")
+    } else {
+        TypeRefIr::builtin("number")
+    };
+    let representation = if case == RepresentationLiteralCase::WrongPayload {
+        TypeRefIr::builtin("string")
+    } else {
+        TypeRefIr::builtin("integer")
+    };
+    let (owner_index, representation_index, physical_index, types) = match case {
+        RepresentationLiteralCase::ReorderedRows => (
+            1,
+            2,
+            0,
+            vec![
+                BytecodePoolEntry::TypeRef {
+                    ty: physical,
+                    representation_carrier: None,
+                    plan: plan.clone(),
+                },
+                BytecodePoolEntry::TypeRef {
+                    ty: owner,
+                    representation_carrier: Some(
+                        skiff_artifact_model::RepresentationCarrierDeclaration {
+                            representation_type_ref: 2,
+                            physical_carrier_type_ref: 0,
+                        },
+                    ),
+                    plan: plan.clone(),
+                },
+                BytecodePoolEntry::TypeRef {
+                    ty: representation,
+                    representation_carrier: None,
+                    plan: plan.clone(),
+                },
+            ],
+        ),
+        RepresentationLiteralCase::DuplicatePayloadRows => (
+            0,
+            2,
+            3,
+            vec![
+                BytecodePoolEntry::TypeRef {
+                    ty: owner,
+                    representation_carrier: Some(
+                        skiff_artifact_model::RepresentationCarrierDeclaration {
+                            representation_type_ref: 2,
+                            physical_carrier_type_ref: 3,
+                        },
+                    ),
+                    plan: plan.clone(),
+                },
+                BytecodePoolEntry::TypeRef {
+                    ty: representation,
+                    representation_carrier: None,
+                    plan: plan.clone(),
+                },
+                BytecodePoolEntry::TypeRef {
+                    ty: TypeRefIr::builtin("integer"),
+                    representation_carrier: None,
+                    plan: plan.clone(),
+                },
+                BytecodePoolEntry::TypeRef {
+                    ty: physical,
+                    representation_carrier: None,
+                    plan: plan.clone(),
+                },
+            ],
+        ),
+        _ => (
+            0,
+            1,
+            2,
+            vec![
+                BytecodePoolEntry::TypeRef {
+                    ty: owner,
+                    representation_carrier: (case != RepresentationLiteralCase::MissingFact)
+                        .then_some(skiff_artifact_model::RepresentationCarrierDeclaration {
+                            representation_type_ref: 1,
+                            physical_carrier_type_ref: 2,
+                        }),
+                    plan: plan.clone(),
+                },
+                BytecodePoolEntry::TypeRef {
+                    ty: representation,
+                    representation_carrier: None,
+                    plan: plan.clone(),
+                },
+                BytecodePoolEntry::TypeRef {
+                    ty: physical,
+                    representation_carrier: None,
+                    plan: plan.clone(),
+                },
+            ],
+        ),
+    };
+    artifact.image.pools.types = types;
+    artifact.image.pools.constants = vec![BytecodePoolEntry::ConstantRef {
+        reference: BytecodeConstantRef::LocalNode { node_index: 0 },
+        type_ref: owner_index,
+        plan,
+    }];
+    artifact.image.constant_roots = BTreeMap::from([(CONSTANT_ROOT.to_string(), 0)]);
+    artifact.image.frozen_constant_graph = FrozenConstantGraph {
+        nodes: vec![number_node()],
+    };
+    debug_assert_ne!(owner_index, representation_index);
+    debug_assert_ne!(owner_index, physical_index);
 }
 
 pub(super) fn implementation_symbols(

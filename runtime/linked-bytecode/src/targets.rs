@@ -15,8 +15,8 @@ pub use data::{
     LinkedConstantReference, LinkedConstantRoot, LinkedConstantSymbolPath,
     LinkedConstantSymbolPathParseError, LinkedContainerLayout, LinkedContainerLayoutKind,
     LinkedContainerPosition, LinkedContainerPositionKind, LinkedFrozenBehaviorBinding,
-    LinkedFrozenConstantNode, LinkedFrozenConstantValue, LinkedShapeEntry, LinkedShapeError,
-    LinkedShapeField, LinkedTypeEntry,
+    LinkedFrozenConstantNode, LinkedFrozenConstantValue, LinkedRepresentationCarrier,
+    LinkedShapeEntry, LinkedShapeError, LinkedShapeField, LinkedTypeEntry,
 };
 pub use entry::{
     LinkedGatewayCallable, LinkedGatewayCallableRole, LinkedGatewayEntry, LinkedGatewayEntryError,

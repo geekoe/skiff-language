@@ -65,6 +65,9 @@ pub(super) fn package(
     ]);
     implementation_symbols.extend(constants::implementation_symbols(bytecode, package_id));
     let mut public_symbols = BTreeMap::new();
+    if let Some((symbol_path, symbol)) = constants::representation_type_symbol(program) {
+        public_symbols.insert(symbol_path, symbol);
+    }
     if matches!(
         program,
         RootProgram::Interface | RootProgram::UnreachableInterface

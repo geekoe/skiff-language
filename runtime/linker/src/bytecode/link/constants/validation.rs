@@ -147,40 +147,10 @@ pub(super) fn source_literal(
     }
 }
 
-pub(super) fn source_type(
-    package: &HydratedBytecodePackage,
-    type_ref: u32,
-    location: BytecodeLinkLocation,
-) -> Result<&TypeRefIr, BytecodeLinkError> {
-    let position = usize::try_from(type_ref).map_err(|_| {
-        constant_error(
-            location.clone(),
-            format!("constant type row {type_ref} does not fit usize"),
-        )
-    })?;
-    match package
-        .bytecode()
-        .ok_or_else(|| unavailable(location.clone()))?
-        .view()
-        .pools()
-        .types
-        .get(position)
-    {
-        Some(BytecodePoolEntry::TypeRef { ty, .. }) => Ok(ty),
-        Some(_) => Err(constant_error(
-            location,
-            format!("constant type row {type_ref} has the wrong entry kind"),
-        )),
-        None => Err(constant_error(
-            location,
-            format!("constant type row {type_ref} is absent"),
-        )),
-    }
-}
-
 pub(super) fn require_literal_carrier(
     literal: &LiteralIr,
     ty: &TypeRefIr,
+    physical_carrier: Option<&TypeRefIr>,
     location: BytecodeLinkLocation,
 ) -> Result<(), BytecodeLinkError> {
     match ty {
@@ -207,17 +177,22 @@ pub(super) fn require_literal_carrier(
                 Err(unavailable(location))
             }
         }
-        TypeRefIr::PackageSymbol { symbol }
-            if symbol.symbol_path == "std.time.Duration"
-                && matches!(
-                    &symbol.package,
-                    skiff_artifact_model::PackageRefIr::PackageId { package_id }
-                        if package_id == "skiff.run/std"
-                ) =>
-        {
-            Ok(())
-        }
-        _ => Err(unavailable(location)),
+        _ => match physical_carrier {
+            Some(TypeRefIr::Builtin { name, args })
+                if args.is_empty()
+                    && matches!(
+                        (literal, name.as_str()),
+                        (LiteralIr::Number { .. }, "number")
+                    ) =>
+            {
+                Ok(())
+            }
+            Some(_) => Err(constant_error(
+                location,
+                "frozen literal differs from its exact physical representation carrier".to_string(),
+            )),
+            None => Err(unavailable(location)),
+        },
     }
 }
 

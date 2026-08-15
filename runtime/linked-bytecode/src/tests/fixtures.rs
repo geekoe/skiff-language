@@ -328,6 +328,7 @@ pub(super) fn minimal_parts(functions: Vec<LinkedFunction>) -> LinkedBytecodeCan
             TypeRefIr::builtin("string"),
             snapshot_plan(),
             None,
+            None,
         )],
         shapes: Vec::new(),
         constants: Vec::new(),

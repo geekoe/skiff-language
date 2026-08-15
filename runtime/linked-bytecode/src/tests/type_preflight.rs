@@ -27,6 +27,7 @@ fn parts_with_type(ty: TypeRefIr) -> crate::LinkedBytecodeCandidateParts {
         ty,
         snapshot_plan(),
         None,
+        None,
     )];
     parts
 }

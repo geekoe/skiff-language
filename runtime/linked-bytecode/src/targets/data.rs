@@ -247,16 +247,43 @@ pub enum LinkedContainerPositionKind {
     JsonObjectValue,
 }
 
+/// Exact linked closure from a source representation row to the VM's physical
+/// carrier row. Both references retain their own artifact pool provenance in
+/// the surrounding linked type table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkedRepresentationCarrier {
+    representation_type: TypeIndex,
+    physical_carrier_type: TypeIndex,
+}
+
+impl LinkedRepresentationCarrier {
+    pub const fn new(representation_type: TypeIndex, physical_carrier_type: TypeIndex) -> Self {
+        Self {
+            representation_type,
+            physical_carrier_type,
+        }
+    }
+
+    pub const fn representation_type(&self) -> TypeIndex {
+        self.representation_type
+    }
+
+    pub const fn physical_carrier_type(&self) -> TypeIndex {
+        self.physical_carrier_type
+    }
+}
+
 /// Candidate type entry with exact artifact provenance, the compiler-owned
-/// transfer plan, and, for built-in containers, an exact concrete position
-/// layout. Candidate construction rejects residual `TypeParam` values and
-/// retains only bounded concrete rows.
+/// transfer plan, optional representation carrier fact, and, for built-in
+/// containers, an exact concrete position layout. Candidate construction
+/// rejects residual `TypeParam` values and retains only bounded concrete rows.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LinkedTypeEntry {
     index: TypeIndex,
     origin: LinkedArtifactPoolOrigin<ArtifactTypeIndex>,
     type_ref: TypeRefIr,
     plan: LinkedValueTransferPlan,
+    representation_carrier: Option<LinkedRepresentationCarrier>,
     container_layout: Option<LinkedContainerLayout>,
 }
 
@@ -266,6 +293,7 @@ impl LinkedTypeEntry {
         origin: LinkedArtifactPoolOrigin<ArtifactTypeIndex>,
         type_ref: TypeRefIr,
         plan: LinkedValueTransferPlan,
+        representation_carrier: Option<LinkedRepresentationCarrier>,
         container_layout: Option<LinkedContainerLayout>,
     ) -> Self {
         Self {
@@ -273,6 +301,7 @@ impl LinkedTypeEntry {
             origin,
             type_ref,
             plan,
+            representation_carrier,
             container_layout,
         }
     }
@@ -291,6 +320,10 @@ impl LinkedTypeEntry {
 
     pub const fn plan(&self) -> &LinkedValueTransferPlan {
         &self.plan
+    }
+
+    pub const fn representation_carrier(&self) -> Option<&LinkedRepresentationCarrier> {
+        self.representation_carrier.as_ref()
     }
 
     pub const fn container_layout(&self) -> Option<&LinkedContainerLayout> {

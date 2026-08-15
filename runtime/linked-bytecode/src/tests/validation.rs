@@ -1,9 +1,11 @@
+use std::collections::BTreeMap;
+
 use skiff_artifact_model::{
     current_platform_error_projection_registry_ref, opcode_table_fingerprint, BytecodeArtifactRef,
-    CallableEffectSummary, ContractOperationId, InstructionSourceSite, LinkedOperandKind,
-    LiteralIr, NativeValueAdapterRole, NativeValueLifecycleAdapter, Opcode, PackageCallableId,
-    PackageRefIr, PackageSymbolRef, ParamModeIr, ResumeErrorMode, StatementAttributionId,
-    SyntheticInstructionSiteReason, TypeRefIr, OPCODE_CONTRACTS,
+    CallableEffectSummary, ContractOperationId, HostEffectExecutorIdentity, InstructionSourceSite,
+    LinkedOperandKind, LiteralIr, NativeValueAdapterRole, NativeValueLifecycleAdapter, Opcode,
+    PackageCallableId, PackageRefIr, PackageSymbolRef, ParamModeIr, ResumeErrorMode,
+    StatementAttributionId, SyntheticInstructionSiteReason, TypeRefIr, OPCODE_CONTRACTS,
 };
 
 use crate::{
@@ -19,11 +21,12 @@ use crate::{
     LinkedCallbackCaptureLayout, LinkedCatchMatcher, LinkedConstantEntry, LinkedConstantReference,
     LinkedConstantRoot, LinkedConstantSymbolPath, LinkedContainerLayout, LinkedContainerPosition,
     LinkedContainerPositionKind, LinkedExceptionRegion, LinkedFrameLayout, LinkedFrameLayoutError,
-    LinkedFrozenConstantNode, LinkedFrozenConstantValue, LinkedFunctionTables, LinkedInstruction,
-    LinkedInstructionError, LinkedInstructionTarget, LinkedIntrinsicCanonicalKey,
-    LinkedIntrinsicKind, LinkedIntrinsicTarget, LinkedNativeCallableSignature,
-    LinkedOperationEntry, LinkedPackageBytecodeProvenance, LinkedPackageBytecodeProvenanceError,
-    LinkedParameterSlot, LinkedProgramPointState, LinkedResolvedOperand,
+    LinkedFrozenConstantNode, LinkedFrozenConstantValue, LinkedFunctionTables,
+    LinkedHostBindingKey, LinkedHostEffectAdapterTarget, LinkedInstruction, LinkedInstructionError,
+    LinkedInstructionTarget, LinkedIntrinsicCanonicalKey, LinkedIntrinsicKind,
+    LinkedIntrinsicTarget, LinkedNativeCallableSignature, LinkedOperationEntry,
+    LinkedPackageBytecodeProvenance, LinkedPackageBytecodeProvenanceError, LinkedParameterSlot,
+    LinkedProgramPointState, LinkedRepresentationCarrier, LinkedResolvedOperand,
     LinkedResumeResultMaterialization, LinkedResumeSite, LinkedShapeEntry, LinkedShapeField,
     LinkedSlotState, LinkedSourceMapEntry, LinkedStackMapCandidate, LinkedStackValue,
     LinkedStatementEntry, LinkedStaticIntrinsicTarget, LinkedSwitchCase, LinkedSwitchTable,
@@ -35,8 +38,8 @@ use crate::{
 use super::fixtures::{
     analyzed_effects, authority_pins, authority_pins_with_platform_error_registry, build_id,
     function, function_with_key, historical_platform_error_projection_registry_ref, minimal_parts,
-    package, package_with_authority_pins, signature, snapshot_plan, snapshot_release_plan,
-    specialization_for, type_origin,
+    native_signature, package, package_with_authority_pins, signature, snapshot_plan,
+    snapshot_release_plan, specialization_for, type_origin,
 };
 
 #[test]
@@ -428,12 +431,14 @@ fn artifact_pool_origin_distinguishes_specialization_context() {
             TypeRefIr::builtin("string"),
             snapshot_plan(),
             None,
+            None,
         ),
         LinkedTypeEntry::new(
             TypeIndex::new(2),
             type_origin(1, Some(second_key)),
             TypeRefIr::builtin("string"),
             snapshot_plan(),
+            None,
             None,
         ),
     ]);
@@ -459,6 +464,7 @@ fn candidate_rejects_duplicate_artifact_origin() {
         TypeRefIr::builtin("string"),
         snapshot_plan(),
         None,
+        None,
     ));
 
     assert!(matches!(
@@ -468,6 +474,215 @@ fn candidate_rejects_duplicate_artifact_origin() {
             first_index: 0,
             duplicate_index: 1,
         })
+    ));
+}
+
+fn sleep_candidate_parts(
+    carrier: Option<LinkedRepresentationCarrier>,
+) -> LinkedBytecodeCandidateParts {
+    let mut parts = minimal_parts(Vec::new());
+    parts.types = vec![
+        LinkedTypeEntry::new(
+            TypeIndex::new(0),
+            type_origin(0, None),
+            TypeRefIr::PackageSymbol {
+                symbol: PackageSymbolRef {
+                    package: PackageRefIr::PackageId {
+                        package_id: "skiff.run/std".to_string(),
+                    },
+                    symbol_path: "std.time.Duration".to_string(),
+                    abi_expectation: Some("abi:std".to_string()),
+                },
+            },
+            snapshot_plan(),
+            carrier,
+            None,
+        ),
+        LinkedTypeEntry::new(
+            TypeIndex::new(1),
+            type_origin(1, None),
+            TypeRefIr::builtin("integer"),
+            snapshot_plan(),
+            None,
+            None,
+        ),
+        LinkedTypeEntry::new(
+            TypeIndex::new(2),
+            type_origin(2, None),
+            TypeRefIr::builtin("number"),
+            snapshot_plan(),
+            None,
+            None,
+        ),
+    ];
+    parts.host_effect_adapters = vec![LinkedHostEffectAdapterTarget::new(
+        HostEffectAdapterIndex::new(0),
+        HostEffectExecutorIdentity::Sleep,
+        "std.time",
+        "sleep",
+        LinkedHostBindingKey::parse("std.time.sleep").unwrap(),
+        BTreeMap::new(),
+        native_signature(),
+    )
+    .unwrap()];
+    parts
+}
+
+#[test]
+fn sleep_candidate_requires_the_exact_parameter_carrier_closure() {
+    LinkedBytecodeCandidate::try_from_parts(sleep_candidate_parts(Some(
+        LinkedRepresentationCarrier::new(TypeIndex::new(1), TypeIndex::new(2)),
+    )))
+    .expect("closed Sleep parameter carrier is valid");
+
+    let stripped = sleep_candidate_parts(None);
+    assert!(matches!(
+        LinkedBytecodeCandidate::try_from_parts(stripped),
+        Err(
+            LinkedBytecodeCandidateError::SleepRepresentationCarrierMismatch {
+                host_effect_adapter,
+                detail: "Sleep parameter lacks its exact representation carrier fact",
+            }
+        ) if host_effect_adapter == HostEffectAdapterIndex::new(0)
+    ));
+
+    let wrong_representation = sleep_candidate_parts(Some(LinkedRepresentationCarrier::new(
+        TypeIndex::new(2),
+        TypeIndex::new(1),
+    )));
+    assert!(matches!(
+        LinkedBytecodeCandidate::try_from_parts(wrong_representation),
+        Err(LinkedBytecodeCandidateError::RepresentationCarrierMismatch {
+            type_index,
+            detail: "source representation row is not the exact builtin integer payload",
+        }) if type_index == TypeIndex::new(0)
+    ));
+
+    let mut wrong_owner = sleep_candidate_parts(Some(LinkedRepresentationCarrier::new(
+        TypeIndex::new(1),
+        TypeIndex::new(2),
+    )));
+    wrong_owner.types[0] = LinkedTypeEntry::new(
+        TypeIndex::new(0),
+        type_origin(0, None),
+        TypeRefIr::builtin("OpaqueDuration"),
+        snapshot_plan(),
+        Some(LinkedRepresentationCarrier::new(
+            TypeIndex::new(1),
+            TypeIndex::new(2),
+        )),
+        None,
+    );
+    assert!(matches!(
+        LinkedBytecodeCandidate::try_from_parts(wrong_owner),
+        Err(LinkedBytecodeCandidateError::RepresentationCarrierMismatch {
+            type_index,
+            detail: "representation carrier owner is not an exact normalized package symbol",
+        }) if type_index == TypeIndex::new(0)
+    ));
+
+    let mut wrong_physical = sleep_candidate_parts(Some(LinkedRepresentationCarrier::new(
+        TypeIndex::new(1),
+        TypeIndex::new(3),
+    )));
+    wrong_physical.types.push(LinkedTypeEntry::new(
+        TypeIndex::new(3),
+        type_origin(3, None),
+        TypeRefIr::builtin("bool"),
+        snapshot_plan(),
+        None,
+        None,
+    ));
+    assert!(matches!(
+        LinkedBytecodeCandidate::try_from_parts(wrong_physical),
+        Err(LinkedBytecodeCandidateError::RepresentationCarrierMismatch {
+            type_index,
+            detail: "physical carrier row is not the exact builtin number carrier",
+        }) if type_index == TypeIndex::new(0)
+    ));
+
+    let mut nested = sleep_candidate_parts(Some(LinkedRepresentationCarrier::new(
+        TypeIndex::new(1),
+        TypeIndex::new(2),
+    )));
+    nested.types[1] = LinkedTypeEntry::new(
+        TypeIndex::new(1),
+        type_origin(1, None),
+        TypeRefIr::builtin("integer"),
+        snapshot_plan(),
+        Some(LinkedRepresentationCarrier::new(
+            TypeIndex::new(0),
+            TypeIndex::new(2),
+        )),
+        None,
+    );
+    assert!(matches!(
+        LinkedBytecodeCandidate::try_from_parts(nested),
+        Err(LinkedBytecodeCandidateError::RepresentationCarrierMismatch {
+            type_index,
+            detail: "representation carrier closure must remain exactly one layer",
+        }) if type_index == TypeIndex::new(0)
+    ));
+}
+
+#[test]
+fn representation_carrier_candidate_rejects_oob_plan_and_origin_drift() {
+    let out_of_bounds = sleep_candidate_parts(Some(LinkedRepresentationCarrier::new(
+        TypeIndex::new(9),
+        TypeIndex::new(2),
+    )));
+    assert!(matches!(
+        LinkedBytecodeCandidate::try_from_parts(out_of_bounds),
+        Err(LinkedBytecodeCandidateError::ReferenceOutOfBounds {
+            reference: CandidateReferenceKind::Type,
+            index: 9,
+            ..
+        })
+    ));
+
+    let mut wrong_plan = sleep_candidate_parts(Some(LinkedRepresentationCarrier::new(
+        TypeIndex::new(1),
+        TypeIndex::new(2),
+    )));
+    wrong_plan.types[1] = LinkedTypeEntry::new(
+        TypeIndex::new(1),
+        type_origin(1, None),
+        TypeRefIr::builtin("integer"),
+        snapshot_release_plan(),
+        None,
+        None,
+    );
+    assert!(matches!(
+        LinkedBytecodeCandidate::try_from_parts(wrong_plan),
+        Err(LinkedBytecodeCandidateError::TypePlanMismatch {
+            type_index,
+            ..
+        }) if type_index == TypeIndex::new(1)
+    ));
+
+    let mut wrong_origin = sleep_candidate_parts(Some(LinkedRepresentationCarrier::new(
+        TypeIndex::new(1),
+        TypeIndex::new(2),
+    )));
+    wrong_origin.types[1] = LinkedTypeEntry::new(
+        TypeIndex::new(1),
+        LinkedArtifactPoolOrigin::new(
+            skiff_artifact_model::PackageBuildId::new("other-build"),
+            crate::ArtifactTypeIndex::new(1),
+            None,
+        )
+        .unwrap(),
+        TypeRefIr::builtin("integer"),
+        snapshot_plan(),
+        None,
+        None,
+    );
+    assert!(matches!(
+        LinkedBytecodeCandidate::try_from_parts(wrong_origin),
+        Err(LinkedBytecodeCandidateError::RepresentationCarrierMismatch {
+            type_index,
+            detail: "representation carrier row has a different exact artifact owner or specialization",
+        }) if type_index == TypeIndex::new(0)
     ));
 }
 
@@ -483,6 +698,7 @@ fn candidate_retains_exact_container_position_layouts() {
                 args: vec![TypeRefIr::builtin("string")],
             },
             snapshot_plan(),
+            None,
             Some(LinkedContainerLayout::array(LinkedContainerPosition::new(
                 TypeIndex::new(0),
                 snapshot_plan(),
@@ -493,6 +709,7 @@ fn candidate_retains_exact_container_position_layouts() {
             type_origin(2, None),
             TypeRefIr::builtin("Json"),
             snapshot_plan(),
+            None,
             Some(LinkedContainerLayout::json(LinkedContainerPosition::new(
                 TypeIndex::new(2),
                 snapshot_plan(),
@@ -503,6 +720,7 @@ fn candidate_retains_exact_container_position_layouts() {
             type_origin(3, None),
             TypeRefIr::builtin("JsonObject"),
             snapshot_plan(),
+            None,
             Some(LinkedContainerLayout::json_object(
                 LinkedContainerPosition::new(TypeIndex::new(0), snapshot_plan()),
                 LinkedContainerPosition::new(TypeIndex::new(2), snapshot_plan()),
@@ -516,6 +734,7 @@ fn candidate_retains_exact_container_position_layouts() {
                 args: vec![TypeRefIr::builtin("string"), TypeRefIr::builtin("Json")],
             },
             snapshot_plan(),
+            None,
             Some(LinkedContainerLayout::map(
                 LinkedContainerPosition::new(TypeIndex::new(0), snapshot_plan()),
                 LinkedContainerPosition::new(TypeIndex::new(2), snapshot_plan()),
@@ -558,6 +777,7 @@ fn candidate_does_not_reconstruct_container_layout_from_builtin_name() {
         array_type.clone(),
         snapshot_plan(),
         None,
+        None,
     ));
     LinkedBytecodeCandidate::try_from_parts(missing)
         .expect("a type name does not manufacture a linked container layout");
@@ -568,6 +788,7 @@ fn candidate_does_not_reconstruct_container_layout_from_builtin_name() {
         type_origin(1, None),
         array_type,
         snapshot_plan(),
+        None,
         Some(LinkedContainerLayout::map(
             LinkedContainerPosition::new(TypeIndex::new(0), snapshot_plan()),
             LinkedContainerPosition::new(TypeIndex::new(0), snapshot_plan()),
@@ -585,6 +806,7 @@ fn candidate_rejects_invalid_json_recursive_position() {
         type_origin(1, None),
         TypeRefIr::builtin("Json"),
         snapshot_plan(),
+        None,
         Some(LinkedContainerLayout::json(LinkedContainerPosition::new(
             TypeIndex::new(0),
             snapshot_plan(),
@@ -606,6 +828,7 @@ fn candidate_rejects_invalid_json_recursive_position() {
         type_origin(1, None),
         TypeRefIr::builtin("Json"),
         snapshot_plan(),
+        None,
         Some(LinkedContainerLayout::json(LinkedContainerPosition::new(
             TypeIndex::new(1),
             snapshot_release_plan(),
@@ -937,6 +1160,7 @@ fn damaged_plan_candidate_parts(
                 type_origin(1, None),
                 TypeRefIr::builtin("OpaqueContainer"),
                 snapshot_plan(),
+                None,
                 Some(LinkedContainerLayout::array(LinkedContainerPosition::new(
                     TypeIndex::new(0),
                     wrong_plan,
@@ -1000,6 +1224,7 @@ fn candidate_rejects_live_slot_that_differs_from_its_exact_frame_pair() {
         TypeRefIr::builtin("string"),
         snapshot_plan(),
         None,
+        None,
     ));
 
     assert_eq!(
@@ -1021,6 +1246,7 @@ fn duplicate_abi_type(parts: &mut LinkedBytecodeCandidateParts) {
         type_origin(1, None),
         TypeRefIr::builtin("string"),
         snapshot_plan(),
+        None,
         None,
     ));
 }
@@ -1868,6 +2094,7 @@ fn linked_function_retains_explicit_stream_producer_authority() {
         },
         snapshot_plan(),
         None,
+        None,
     ));
 
     let candidate = LinkedBytecodeCandidate::try_from_parts(parts)
@@ -1897,6 +2124,7 @@ fn ordinary_result_frame_is_not_derived_as_stream_producer() {
         },
         snapshot_plan(),
         None,
+        None,
     ));
 
     let candidate = LinkedBytecodeCandidate::try_from_parts(parts)
@@ -1921,6 +2149,7 @@ fn candidate_rejects_stream_producer_with_ordinary_results() {
             args: vec![TypeRefIr::builtin("string")],
         },
         snapshot_plan(),
+        None,
         None,
     ));
 

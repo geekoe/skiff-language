@@ -140,6 +140,14 @@ pub enum LinkedBytecodeCandidateError {
         type_index: crate::TypeIndex,
         position: crate::LinkedContainerPositionKind,
     },
+    RepresentationCarrierMismatch {
+        type_index: crate::TypeIndex,
+        detail: &'static str,
+    },
+    SleepRepresentationCarrierMismatch {
+        host_effect_adapter: crate::HostEffectAdapterIndex,
+        detail: &'static str,
+    },
     DuplicateExactLocalTarget {
         key: SpecializationKey,
     },

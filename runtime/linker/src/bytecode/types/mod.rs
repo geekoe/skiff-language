@@ -1,5 +1,6 @@
 mod interner;
 mod normalization;
+mod representation;
 mod substitution;
 mod validation;
 
