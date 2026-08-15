@@ -1562,6 +1562,7 @@ fn validate_relocation(
             validate_type_ref(package, ty, deployment, packages)?;
         }
         BytecodeRelocation::SyntheticCallbackRef { .. }
+        | BytecodeRelocation::TaskSubmitRef { .. }
         | BytecodeRelocation::ShapeRef { .. }
         | BytecodeRelocation::FrozenConstantRef { .. } => {}
     }

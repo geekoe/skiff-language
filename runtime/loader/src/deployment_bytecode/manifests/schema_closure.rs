@@ -209,6 +209,7 @@ fn collect_relocation(
         }
         BytecodeRelocation::ActorMethodRef { .. }
         | BytecodeRelocation::SyntheticCallbackRef { .. }
+        | BytecodeRelocation::TaskSubmitRef { .. }
         | BytecodeRelocation::ShapeRef { .. }
         | BytecodeRelocation::FrozenConstantRef { .. } => {}
     }

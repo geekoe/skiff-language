@@ -19,12 +19,12 @@ mod tests {
         BytecodeRelocation, CallIr, CallTargetIr, CallableEffectSummary, ContractOperationId,
         ContractTypeDescriptor, DbBodyIr, DbOpKindIr, DbOperationIr, DbTargetIr, ExprIr, ExprRefIr,
         ExternalRefTable, FileIrUnit, FunctionTypeParamIr, InstructionSourceSite,
-        InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr, LiteralIr, NativeTarget,
-        PackageCallableId, PackageSchemaCanonicalDescriptor, PatternIr, RemoteOperationSlotPlanIr,
-        RemoteOperationTablePlanIr, ResourceDropPlan, ServiceBoundaryPlan, ServiceCallRef,
-        ServiceProtocolIdentity, ServiceSymbolRef, SourcePosition, SourceSpanRef,
-        SyntheticInstructionSiteReason, TypeDeclIr, TypeDescriptorIr, TypeRefIr, ValueDropPlan,
-        ValueTransferPlan,
+        InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr, LiteralIr, MetadataValue,
+        NativeTarget, PackageCallableId, PackageSchemaCanonicalDescriptor, PatternIr,
+        RemoteOperationSlotPlanIr, RemoteOperationTablePlanIr, ResourceDropPlan,
+        ServiceBoundaryPlan, ServiceCallRef, ServiceProtocolIdentity, ServiceSymbolRef,
+        SourcePosition, SourceSpanRef, SyntheticInstructionSiteReason, TypeDeclIr,
+        TypeDescriptorIr, TypeRefIr, ValueDropPlan, ValueTransferPlan,
     };
     use skiff_artifact_model::{
         BoundaryDropPlan, BoundaryErrorAdmission, BoundaryErrorFallbackIdentity, BoundaryErrorPlan,
@@ -34,12 +34,13 @@ mod tests {
     };
     use skiff_compiler_lowering::{
         mir::{
-            liveness::compute_liveness, MirBlock, MirExecutableKind, MirExpression,
-            MirExpressionBlockFact, MirForInBinding, MirForInFacts, MirForInItemKind, MirFunction,
-            MirIndexAccessFacts, MirIndexPolicy, MirIndexReceiverKind, MirLiveness, MirMatchArmIr,
-            MirRemoteInterfaceFacts, MirRemoteInterfaceMethodFacts, MirSlot, MirSlotKind,
-            MirSourceEventPlan, MirSourceEventUnavailableReason, MirStatementEntry, MirStmt,
-            MirStmtKind, MirStreamResultFacts, MirUnit, MirWritablePlace, MirWritableRoot,
+            liveness::compute_liveness, MirBlock, MirDirectCallFacts, MirExecutableKind,
+            MirExpression, MirExpressionBlockFact, MirForInBinding, MirForInFacts,
+            MirForInItemKind, MirFunction, MirIndexAccessFacts, MirIndexPolicy,
+            MirIndexReceiverKind, MirLiveness, MirMatchArmIr, MirRemoteInterfaceFacts,
+            MirRemoteInterfaceMethodFacts, MirSlot, MirSlotKind, MirSourceEventPlan,
+            MirSourceEventUnavailableReason, MirStatementEntry, MirStmt, MirStmtKind,
+            MirStreamResultFacts, MirUnit, MirWritablePlace, MirWritableRoot,
         },
         Bounds, ConstEvaluator, FrozenConstantBundle,
     };
@@ -1054,6 +1055,97 @@ mod tests {
                 && stable_schema_key == "std.service.InternalError"
         )));
         assert_eq!(artifact.image.pools.resume.len(), 3);
+    }
+
+    #[test]
+    fn task_submit_emits_exact_task_relocation_and_target_identity() {
+        let task_call = CallIr {
+            target: CallTargetIr::LocalExecutable {
+                executable_index: 0,
+            },
+            concrete_receiver: None,
+            site: site(),
+            args: Vec::new(),
+            inout_args: Vec::new(),
+            type_args: BTreeMap::new(),
+            metadata: BTreeMap::from([(
+                "dispatchSubmit".to_string(),
+                MetadataValue::Object(BTreeMap::from([
+                    (
+                        "targetKind".to_string(),
+                        MetadataValue::String("function".to_string()),
+                    ),
+                    (
+                        "target".to_string(),
+                        MetadataValue::String("function:main.work".to_string()),
+                    ),
+                    (
+                        "timing".to_string(),
+                        MetadataValue::Object(BTreeMap::from([(
+                            "kind".to_string(),
+                            MetadataValue::String("immediate".to_string()),
+                        )])),
+                    ),
+                ])),
+            )]),
+        };
+        let expressions = vec![MirExpression {
+            index: 0,
+            expression: ExprIr::Call { call: task_call },
+            ty: TypeRefIr::builtin("TaskRef"),
+            writable: None,
+            direct_call: Some(MirDirectCallFacts {
+                concrete_receiver: None,
+                receiver_call_abi: None,
+                parameter_modes: Vec::new(),
+                arguments: Vec::new(),
+            }),
+            stream_result: None,
+            remote_interface: None,
+        }];
+        let function = function(
+            "main",
+            "run",
+            TypeRefIr::builtin("TaskRef"),
+            Vec::new(),
+            expressions,
+            vec![MirBlock {
+                id: 0,
+                label: "entry".to_string(),
+                statements: vec![MirStmt {
+                    statement_index: 0,
+                    span: None,
+                    kind: MirStmtKind::Return {
+                        value: Some(expression(0)),
+                    },
+                }],
+                successors: Vec::new(),
+            }],
+            vec![MirStatementEntry {
+                statement_index: 0,
+                span: None,
+            }],
+            BTreeMap::new(),
+            Vec::new(),
+        );
+        let (unit, bundle) =
+            mir_and_bundle("main", Vec::new(), ExternalRefTable::default(), function);
+        let plans = derive_test_bytecode_value_transfer_plans(&[unit.clone()])
+            .expect("task fixture plans resolve");
+        let artifact = emit_bytecode_artifact(&[unit], &[bundle], &plans)
+            .expect("task submit emits exact relocation");
+        let relocations = &artifact.image.functions["main::run"].relocations;
+        assert!(relocations.iter().any(|relocation| matches!(
+            relocation,
+            BytecodeRelocation::TaskSubmitRef { task }
+                if task.target_identity == "function:main.work"
+                    && matches!(
+                        &task.target,
+                        skiff_artifact_model::bytecode::dto::TaskSubmitTargetRef::Function {
+                            function_key,
+                        } if function_key == "main::run"
+                    )
+        )));
     }
 
     #[test]

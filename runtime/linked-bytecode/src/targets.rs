@@ -5,6 +5,7 @@ mod interface;
 mod intrinsic;
 mod local;
 mod service;
+mod task;
 
 pub use callback::{
     LinkedCallbackCapture, LinkedCallbackCaptureLayout, LinkedCallbackCaptureLayoutError,
@@ -42,3 +43,4 @@ pub use service::{
     LinkedServiceBoundaryErrorPlan, LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue,
     LinkedServiceCallbackPlan,
 };
+pub use task::{LinkedTaskTarget, LinkedTaskTargetError, LinkedTaskTiming};

@@ -546,6 +546,17 @@ impl<'a, 'deployment, 'limits> RelocationContext<'a, 'deployment, 'limits> {
                             .to_string(),
                     )
                 }),
+            BytecodeRelocation::TaskSubmitRef { task } => self
+                .dispatch_tables
+                .task_submit_index(self.source.package, &task.target_identity)
+                .map(LinkedInstructionTarget::Intrinsic)
+                .ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::RelocationResolution,
+                        location,
+                        "task submit target is absent from the linked dispatch table".to_string(),
+                    )
+                }),
             BytecodeRelocation::HostEffectRef(effect) => {
                 let binding_key = effect.target.binding_key.as_deref().ok_or_else(|| {
                     unsatisfied(

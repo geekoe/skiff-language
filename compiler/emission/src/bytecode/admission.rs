@@ -3,8 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use skiff_artifact_model::{
     AssignTargetIr, BinaryOpIr, BoxSourceIr, CallIr, CallTargetIr, CallableEffectSummary, DbBodyIr,
     DbOpKindIr, DbTargetIr, ExprIr, ExprRefIr, FunctionTypeParamIr, InterfaceInstantiationRef,
-    InterfaceMethodSlotSignatureIr, LiteralIr, NamedUnionBranchIr, NativeTarget, ReceiverCallAbi,
-    ServiceBoundaryPlan, ServiceCallRef, StatementAttributionId, TypeDescriptorIr, TypeRefIr,
+    InterfaceMethodSlotSignatureIr, LiteralIr, MetadataValue, NamedUnionBranchIr, NativeTarget,
+    ReceiverCallAbi, ServiceBoundaryPlan, ServiceCallRef, StatementAttributionId, TypeDescriptorIr,
+    TypeRefIr,
 };
 use skiff_compiler_lowering::mir::{
     MirCallArgument, MirEmissionAnchor, MirExecutableKind, MirFunction, MirParamMode, MirSlotKind,
@@ -32,6 +33,8 @@ use server_stream::ServerStreamAdmissions;
 
 pub use gateway_parameter::GatewayParameterAuthority;
 pub use server_stream::{ServerStreamEmitFact, ServerStreamGatewayAuthority};
+
+const TASK_SUBMIT_METADATA_KEY: &str = "dispatchSubmit";
 
 const CANONICAL_DURATION_MILLISECONDS_BINDING_KEY: &str = "core.duration.milliseconds";
 
@@ -2146,6 +2149,10 @@ fn admit_call(
             &format!("expression {} call receiver", expression.index),
         ));
     }
+    if call.metadata.contains_key(TASK_SUBMIT_METADATA_KEY) {
+        admit_task_submit_call(unit, function_key, function, expression, call)?;
+        return Ok(());
+    }
     if !call.metadata.is_empty() {
         return Err(rejected_function(
             unit,
@@ -2453,6 +2460,208 @@ fn admit_duration_milliseconds_constructor(
         ));
     }
     Ok(())
+}
+
+fn admit_task_submit_call(
+    unit: &MirUnit,
+    function_key: &str,
+    _function: &MirFunction,
+    expression: &skiff_compiler_lowering::mir::MirExpression,
+    call: &skiff_artifact_model::CallIr,
+) -> Result<(), BytecodeEmissionError> {
+    if !matches!(
+        &expression.ty,
+        TypeRefIr::Builtin { name, args }
+            if name == "TaskRef" && args.is_empty()
+    ) {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::HostTarget,
+            &format!(
+                "expression {} task submit must produce std.task.TaskRef",
+                expression.index
+            ),
+        ));
+    }
+    let metadata = call.metadata.get(TASK_SUBMIT_METADATA_KEY).ok_or_else(|| {
+        rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::NonLocalCallTarget,
+            &format!(
+                "expression {} task submit metadata is absent",
+                expression.index
+            ),
+        )
+    })?;
+    let MetadataValue::Object(metadata) = metadata else {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::NonLocalCallTarget,
+            &format!(
+                "expression {} task submit metadata must be an object",
+                expression.index
+            ),
+        ));
+    };
+    let target_kind = metadata
+        .get("targetKind")
+        .and_then(|value| match value {
+            MetadataValue::String(value) => Some(value.as_str()),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::NonLocalCallTarget,
+                &format!(
+                    "expression {} task submit targetKind is missing",
+                    expression.index
+                ),
+            )
+        })?;
+    admit_task_timing_shape(unit, function_key, expression, metadata)?;
+    match target_kind {
+        "function" => {
+            let CallTargetIr::LocalExecutable { executable_index } = call.target else {
+                return Err(rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::NonLocalCallTarget,
+                    &format!(
+                        "expression {} function task target must be owner-local",
+                        expression.index
+                    ),
+                ));
+            };
+            let callee = unit
+                .function_by_executable_index(executable_index)
+                .map_err(|_| {
+                    rejected_function(
+                        unit,
+                        function_key,
+                        Phase1UnsupportedCapability::NonLocalCallTarget,
+                        &format!("expression {} task target is absent", expression.index),
+                    )
+                })?;
+            if callee.kind != MirExecutableKind::Function
+                || !callee.type_params.is_empty()
+                || !matches!(
+                    &callee.return_type,
+                    TypeRefIr::Builtin { name, args }
+                        if args.is_empty() && matches!(name.as_str(), "void" | "null")
+                )
+                || call.args.len() != callee.params.len()
+            {
+                return Err(rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::HostTarget,
+                    &format!(
+                        "expression {} task function target has invalid ABI",
+                        expression.index
+                    ),
+                ));
+            }
+        }
+        "actorMethod" => {
+            if !matches!(call.target, CallTargetIr::ActorMethod { .. }) {
+                return Err(rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::Actor,
+                    &format!(
+                        "expression {} actor task target must be an actor method",
+                        expression.index
+                    ),
+                ));
+            }
+        }
+        other => {
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::NonLocalCallTarget,
+                &format!(
+                    "expression {} task submit target kind {other} is unsupported",
+                    expression.index
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn admit_task_timing_shape(
+    unit: &MirUnit,
+    function_key: &str,
+    expression: &skiff_compiler_lowering::mir::MirExpression,
+    metadata: &BTreeMap<String, MetadataValue>,
+) -> Result<(), BytecodeEmissionError> {
+    let Some(timing) = metadata.get("timing") else {
+        return Ok(());
+    };
+    let MetadataValue::Object(timing) = timing else {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::NonLocalCallTarget,
+            &format!(
+                "expression {} task timing must be an object",
+                expression.index
+            ),
+        ));
+    };
+    let kind = timing
+        .get("kind")
+        .and_then(|value| match value {
+            MetadataValue::String(value) => Some(value.as_str()),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::NonLocalCallTarget,
+                &format!(
+                    "expression {} task timing kind is missing",
+                    expression.index
+                ),
+            )
+        })?;
+    match kind {
+        "immediate" => Ok(()),
+        "after" | "at" => {
+            let present = timing
+                .get("expr")
+                .is_some_and(|value| matches!(value, MetadataValue::Number(_)));
+            if present {
+                Ok(())
+            } else {
+                Err(rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::NonLocalCallTarget,
+                    &format!(
+                        "expression {} task timing {kind} requires an expression",
+                        expression.index
+                    ),
+                ))
+            }
+        }
+        other => Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::NonLocalCallTarget,
+            &format!(
+                "expression {} task timing kind {other} is unsupported",
+                expression.index
+            ),
+        )),
+    }
 }
 
 fn admit_local_call_abi(
@@ -2867,6 +3076,12 @@ fn admit_type_nested(
                 true,
             )
         }
+        TypeRefIr::Builtin { name, args }
+            if args.is_empty()
+                && matches!(name.as_str(), "TaskRef" | "TaskStatus" | "TaskCancelResult") =>
+        {
+            Ok(())
+        }
         TypeRefIr::Union { items } => {
             for item in items {
                 admit_type_nested(
@@ -3120,6 +3335,7 @@ fn unsupported_type_capability(
         TypeRefIr::Builtin { name, args }
             if args.is_empty()
                 && (matches!(name.as_str(), "integer" | "number" | "bool" | "null")
+                    || matches!(name.as_str(), "TaskRef" | "TaskStatus" | "TaskCancelResult")
                     || (allow_void && name == "void")) =>
         {
             None

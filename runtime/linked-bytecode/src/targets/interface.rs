@@ -5,7 +5,9 @@ use skiff_artifact_model::{
     ServiceRequirementKey,
 };
 
-use crate::{FunctionIndex, InterfaceTableIndex, LinkedCallableSignature, TypeIndex};
+use crate::{
+    FunctionIndex, InterfaceTableIndex, LinkedCallableSignature, ServiceOperationIndex, TypeIndex,
+};
 
 /// Linked form of an artifact interface instantiation. The exact typed DTO is
 /// retained verbatim for hydration comparison; its type arguments are also
@@ -237,6 +239,7 @@ pub struct LinkedRemoteInterfaceMethod {
     method_abi_id: LinkedInterfaceMethodAbiId,
     signature: LinkedCallableSignature,
     contract_operation_id: ContractOperationId,
+    service_operation: Option<ServiceOperationIndex>,
 }
 
 impl LinkedRemoteInterfaceMethod {
@@ -251,6 +254,7 @@ impl LinkedRemoteInterfaceMethod {
             method_abi_id,
             signature,
             contract_operation_id,
+            service_operation: None,
         }
     }
 
@@ -268,6 +272,15 @@ impl LinkedRemoteInterfaceMethod {
 
     pub const fn contract_operation_id(&self) -> &ContractOperationId {
         &self.contract_operation_id
+    }
+
+    pub fn with_service_operation(mut self, index: ServiceOperationIndex) -> Self {
+        self.service_operation = Some(index);
+        self
+    }
+
+    pub const fn service_operation(&self) -> Option<ServiceOperationIndex> {
+        self.service_operation
     }
 }
 

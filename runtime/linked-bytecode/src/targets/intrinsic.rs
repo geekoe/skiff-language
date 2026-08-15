@@ -4,7 +4,10 @@ use skiff_artifact_model::{
     bytecode::dto::DbOperationKind, BuiltinReceiverOp, FileIrRef, PackageArtifactRef,
 };
 
-use crate::{IntrinsicIndex, LinkedNativeCallableSignature, LinkedValueTransferPlan, TypeIndex};
+use crate::{
+    IntrinsicIndex, LinkedNativeCallableSignature, LinkedTaskTarget, LinkedValueTransferPlan,
+    TypeIndex,
+};
 
 /// Validated static intrinsic key. It is an untrusted registry claim, not an
 /// authority token.
@@ -76,6 +79,7 @@ pub struct LinkedIntrinsicTarget {
     kind: LinkedIntrinsicKind,
     signature: LinkedNativeCallableSignature,
     db_operation: Option<LinkedDbOperation>,
+    task_target: Option<LinkedTaskTarget>,
 }
 
 impl LinkedIntrinsicTarget {
@@ -89,6 +93,7 @@ impl LinkedIntrinsicTarget {
             kind,
             signature,
             db_operation: None,
+            task_target: None,
         }
     }
 
@@ -111,6 +116,15 @@ impl LinkedIntrinsicTarget {
 
     pub const fn db_operation(&self) -> Option<&LinkedDbOperation> {
         self.db_operation.as_ref()
+    }
+
+    pub fn with_task_target(mut self, task_target: LinkedTaskTarget) -> Self {
+        self.task_target = Some(task_target);
+        self
+    }
+
+    pub const fn task_target(&self) -> Option<&LinkedTaskTarget> {
+        self.task_target.as_ref()
     }
 }
 

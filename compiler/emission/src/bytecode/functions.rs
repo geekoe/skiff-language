@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use skiff_artifact_model::bytecode::dto::{DbOperandRole, DbOperationKind, DbOperationReference};
+use skiff_artifact_model::bytecode::dto::{
+    DbOperandRole, DbOperationKind, DbOperationReference, TaskSubmitReference, TaskSubmitTargetRef,
+    TaskSubmitTimingRef,
+};
 use skiff_artifact_model::{
     bytecode::encode_instruction, bytecode::limits, contract_for_opcode, descriptor_for_opcode,
     AssignTargetIr, BoxSourceIr, BytecodeFunctionOrigin, BytecodeIntrinsicRef, BytecodeRelocation,
@@ -8,8 +11,8 @@ use skiff_artifact_model::{
     DbBodyIr, DbOpKindIr, DbTargetIr, ExceptionRegion, ExprIr, ExprRefIr, FrameLayout,
     FunctionTypeParamIr, HostEffectReference, HostEffectSignature, InstructionSourceSite,
     InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr, InterfaceRequirementMethod,
-    IntrinsicReference, LiteralIr, LocalInterfaceMethod, LocalInterfaceRef, NativeTarget, Opcode,
-    ParamModeIr, ParameterSlotDecl, PatternIr, PrivilegedAffineFieldAccess,
+    IntrinsicReference, LiteralIr, LocalInterfaceMethod, LocalInterfaceRef, MetadataValue,
+    NativeTarget, Opcode, ParamModeIr, ParameterSlotDecl, PatternIr, PrivilegedAffineFieldAccess,
     RelocatableBytecodeFunction, RemoteInterfaceMethod, RemoteInterfaceRef, ResumeDescriptor,
     ResumeErrorMode, ResumeResultMaterialization, ServiceBoundaryPlan, ServiceCallRef,
     SourceMapEntry, StatementAttributionId, StatementEntry, SyntheticInstructionSiteReason,
@@ -33,6 +36,8 @@ use super::{
     BytecodeEmissionError, FunctionValueTransferPlans,
 };
 use super::{inputs::is_void, intrinsics::static_intrinsic_canonical_key};
+
+const TASK_SUBMIT_METADATA_KEY: &str = "dispatchSubmit";
 
 pub(super) fn emit_functions(
     inputs: &ValidatedEmissionInputs<'_>,
@@ -2319,8 +2324,13 @@ impl<'a> FunctionEmitter<'a> {
         &mut self,
         expression: &MirExpression,
     ) -> Result<bool, BytecodeEmissionError> {
-        if !matches!(expression.expression, ExprIr::Call { .. }) || expression.direct_call.is_none()
-        {
+        let ExprIr::Call { call } = &expression.expression else {
+            return Ok(false);
+        };
+        if expression.direct_call.is_none() {
+            return Ok(false);
+        }
+        if call.metadata.contains_key(TASK_SUBMIT_METADATA_KEY) {
             return Ok(false);
         }
         if self.has_extra_expression_events(expression.index) {
@@ -2333,11 +2343,158 @@ impl<'a> FunctionEmitter<'a> {
         &mut self,
         expression: &MirExpression,
     ) -> Result<bool, BytecodeEmissionError> {
-        if !matches!(expression.expression, ExprIr::Call { .. }) || expression.direct_call.is_none()
-        {
+        let ExprIr::Call { call } = &expression.expression else {
+            return Ok(false);
+        };
+        if expression.direct_call.is_none() {
             return Ok(false);
         }
+        if call.metadata.contains_key(TASK_SUBMIT_METADATA_KEY) {
+            self.emit_task_submit_call(expression, call)?;
+            return Ok(true);
+        }
         self.emit_direct_call(expression, false)
+    }
+
+    fn emit_task_submit_call(
+        &mut self,
+        expression: &MirExpression,
+        call: &skiff_artifact_model::CallIr,
+    ) -> Result<(), BytecodeEmissionError> {
+        if !call.inout_args.is_empty() || !call.type_args.is_empty() {
+            return Err(unsupported(
+                &self.key,
+                "task submit",
+                "task dispatch must not carry inout or type arguments",
+            ));
+        }
+        let task = self.task_submit_reference(call)?;
+        for argument in &call.args {
+            self.emit_expression(*argument)?;
+        }
+        self.emit_pending_call(
+            expression,
+            Opcode::InvokeIntrinsic,
+            BytecodeRelocation::TaskSubmitRef { task },
+            None,
+            false,
+        )
+    }
+
+    fn task_submit_reference(
+        &self,
+        call: &skiff_artifact_model::CallIr,
+    ) -> Result<TaskSubmitReference, BytecodeEmissionError> {
+        let metadata = call.metadata.get(TASK_SUBMIT_METADATA_KEY).ok_or_else(|| {
+            unsupported(
+                &self.key,
+                "task submit",
+                "dispatch call has no task metadata",
+            )
+        })?;
+        let MetadataValue::Object(metadata) = metadata else {
+            return Err(unsupported(
+                &self.key,
+                "task submit",
+                "dispatchSubmit metadata must be an object",
+            ));
+        };
+        let target_kind = metadata
+            .get("targetKind")
+            .and_then(|value| match value {
+                skiff_artifact_model::MetadataValue::String(value) => Some(value.as_str()),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "task submit",
+                    "dispatchSubmit metadata lacks targetKind",
+                )
+            })?;
+        let target_identity = metadata
+            .get("target")
+            .and_then(|value| match value {
+                skiff_artifact_model::MetadataValue::String(value) => Some(value.clone()),
+                _ => None,
+            })
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "task submit",
+                    "dispatchSubmit metadata lacks target identity",
+                )
+            })?;
+        let timing = task_submit_timing(metadata, &self.key)?;
+        let target = match target_kind {
+            "function" => {
+                let function_key = match &call.target {
+                    CallTargetIr::LocalExecutable { executable_index } => {
+                        let target = self.unit.function_by_executable_index(*executable_index)?;
+                        super::inputs::canonical_function_key(
+                            &self.unit.module_path,
+                            &target.symbol,
+                        )?
+                    }
+                    CallTargetIr::PublicationExecutable {
+                        module_path,
+                        executable_index,
+                    } => {
+                        let target_unit =
+                            self.inputs.units.get(module_path.as_str()).ok_or_else(|| {
+                                unsupported(
+                                    &self.key,
+                                    "task submit",
+                                    &format!("task target module `{module_path}` is absent"),
+                                )
+                            })?;
+                        let target = target_unit.function_by_executable_index(*executable_index)?;
+                        super::inputs::canonical_function_key(module_path, &target.symbol)?
+                    }
+                    _ => {
+                        return Err(unsupported(
+                            &self.key,
+                            "task submit",
+                            "function task target must be an executable function",
+                        ));
+                    }
+                };
+                TaskSubmitTargetRef::Function { function_key }
+            }
+            "actorMethod" => {
+                let CallTargetIr::ActorMethod {
+                    actor,
+                    actor_abi_identity,
+                    actor_implementation_identity,
+                    method_identity,
+                } = &call.target
+                else {
+                    return Err(unsupported(
+                        &self.key,
+                        "task submit",
+                        "actor task target must be an actor method",
+                    ));
+                };
+                TaskSubmitTargetRef::ActorMethod {
+                    actor: actor.clone(),
+                    actor_abi_identity: actor_abi_identity.clone(),
+                    actor_implementation_identity: actor_implementation_identity.clone(),
+                    method_identity: method_identity.clone(),
+                }
+            }
+            other => {
+                return Err(unsupported(
+                    &self.key,
+                    "task submit",
+                    &format!("dispatch target kind {other} is unsupported"),
+                ));
+            }
+        };
+        Ok(TaskSubmitReference {
+            target,
+            target_identity,
+            timing,
+        })
     }
 
     fn emit_direct_call(
@@ -5425,6 +5582,70 @@ fn value_block_body_ids(
         }
     }
     Ok(seen)
+}
+
+fn task_submit_timing(
+    metadata: &BTreeMap<String, MetadataValue>,
+    function_key: &str,
+) -> Result<TaskSubmitTimingRef, BytecodeEmissionError> {
+    let Some(timing) = metadata.get("timing") else {
+        return Ok(TaskSubmitTimingRef::Immediate);
+    };
+    let MetadataValue::Object(timing) = timing else {
+        return Err(unsupported(
+            function_key,
+            "task submit",
+            "dispatchSubmit timing must be an object",
+        ));
+    };
+    let kind = timing
+        .get("kind")
+        .and_then(|value| match value {
+            MetadataValue::String(value) => Some(value.as_str()),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            unsupported(
+                function_key,
+                "task submit",
+                "dispatchSubmit timing kind is missing",
+            )
+        })?;
+    match kind {
+        "immediate" => Ok(TaskSubmitTimingRef::Immediate),
+        "after" | "at" => {
+            let expression = timing
+                .get("expr")
+                .and_then(|value| match value {
+                    MetadataValue::Number(value) => value.as_u64(),
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    unsupported(
+                        function_key,
+                        "task submit",
+                        "dispatchSubmit timing expression is missing",
+                    )
+                })?;
+            let expression = u32::try_from(expression).map_err(|_| {
+                unsupported(
+                    function_key,
+                    "task submit",
+                    "dispatchSubmit timing expression does not fit u32",
+                )
+            })?;
+            if kind == "after" {
+                Ok(TaskSubmitTimingRef::After { expression })
+            } else {
+                Ok(TaskSubmitTimingRef::At { expression })
+            }
+        }
+        other => Err(unsupported(
+            function_key,
+            "task submit",
+            &format!("dispatch timing kind {other} is unsupported"),
+        )),
+    }
 }
 
 fn return_count(function: &MirFunction) -> usize {

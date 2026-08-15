@@ -762,6 +762,9 @@ pub enum BytecodeRelocation {
     SyntheticCallbackRef {
         function_key: String,
     },
+    TaskSubmitRef {
+        task: TaskSubmitReference,
+    },
     HostEffectRef(HostEffectReference),
     IntrinsicRef {
         intrinsic: IntrinsicReference,
@@ -815,6 +818,7 @@ impl BytecodeRelocation {
             Self::SyntheticCallbackRef { .. } => {
                 crate::bytecode::opcodes::RelocationKind::SyntheticCallbackRef
             }
+            Self::TaskSubmitRef { .. } => crate::bytecode::opcodes::RelocationKind::TaskSubmitRef,
             Self::HostEffectRef(..) => crate::bytecode::opcodes::RelocationKind::HostEffectRef,
             Self::IntrinsicRef { .. } => crate::bytecode::opcodes::RelocationKind::IntrinsicRef,
             Self::TypeRef { .. } => crate::bytecode::opcodes::RelocationKind::TypeRef,
@@ -881,6 +885,50 @@ pub struct RemoteInterfaceMethod {
     pub method_abi_id: String,
     pub signature: crate::InterfaceMethodSlotSignatureIr,
     pub contract_operation_id: crate::ContractOperationId,
+}
+
+/// Exact compiler-owned task submission target. Function targets carry the
+/// artifact function key; actor-method targets carry the same exact ABI,
+/// implementation and method identities used by actor dispatch. The linker
+/// resolves neither from the textual target identity.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum TaskSubmitTargetRef {
+    Function {
+        function_key: String,
+    },
+    ActorMethod {
+        actor: crate::ServiceSymbolRef,
+        actor_abi_identity: crate::ActorAbiIdentity,
+        actor_implementation_identity: crate::ActorImplementationIdentity,
+        method_identity: crate::ActorMethodIdentity,
+    },
+}
+
+/// Compiler-owned task scheduling plan. The expression index refers to the
+/// owning executable body expression index exactly as emitted by lowering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum TaskSubmitTimingRef {
+    Immediate,
+    After { expression: u32 },
+    At { expression: u32 },
+}
+
+/// Exact task call relocation payload. The target identity is retained for
+/// host/router projection while the typed target field remains the linker
+/// resolution authority.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskSubmitReference {
+    pub target: TaskSubmitTargetRef,
+    pub target_identity: String,
+    pub timing: TaskSubmitTimingRef,
 }
 
 /// Closed synchronous intrinsic target. Static keys are versioned registry

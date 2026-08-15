@@ -469,13 +469,6 @@ fn validate_instruction_contract(
                 .ok_or_else(|| {
                     descriptor_mismatch(key, instruction.pc, "IntrinsicTarget".to_string())
                 })?;
-            let Some(crate::bytecode::dto::BytecodeRelocation::IntrinsicRef { intrinsic }) =
-                function.relocations.get(relocation_index as usize)
-            else {
-                return Err(operand_error(
-                    "IntrinsicTarget does not select an intrinsic reference".to_string(),
-                ));
-            };
             let argument_count = descriptor
                 .operand_word(OperandRole::ArgCount, &instruction.operand_words)
                 .ok_or_else(|| descriptor_mismatch(key, instruction.pc, "ArgCount".to_string()))?;
@@ -484,14 +477,24 @@ fn validate_instruction_contract(
                 .ok_or_else(|| {
                     descriptor_mismatch(key, instruction.pc, "ResultCount".to_string())
                 })?;
-            if argument_count as usize != intrinsic.signature.parameter_types.len()
-                || result_count as usize != intrinsic.signature.result_types.len()
-            {
-                return Err(operand_error(format!(
-                    "intrinsic arg/result counts ({argument_count}, {result_count}) do not match signature ({}, {})",
-                    intrinsic.signature.parameter_types.len(),
-                    intrinsic.signature.result_types.len()
-                )));
+            match function.relocations.get(relocation_index as usize) {
+                Some(crate::bytecode::dto::BytecodeRelocation::IntrinsicRef { intrinsic }) => {
+                    if argument_count as usize != intrinsic.signature.parameter_types.len()
+                        || result_count as usize != intrinsic.signature.result_types.len()
+                    {
+                        return Err(operand_error(format!(
+                            "intrinsic arg/result counts ({argument_count}, {result_count}) do not match signature ({}, {})",
+                            intrinsic.signature.parameter_types.len(),
+                            intrinsic.signature.result_types.len()
+                        )));
+                    }
+                }
+                Some(crate::bytecode::dto::BytecodeRelocation::TaskSubmitRef { .. }) => {}
+                _ => {
+                    return Err(operand_error(
+                        "IntrinsicTarget does not select an intrinsic reference".to_string(),
+                    ));
+                }
             }
         }
         _ => {}

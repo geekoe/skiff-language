@@ -11,9 +11,9 @@ use skiff_runtime_deployment_image::{
 };
 use skiff_runtime_linked_bytecode::{
     ConstantIndex, FrozenConstantNodeIndex, FunctionIndex, HostEffectAdapterIndex,
-    InstructionIndex, LinkedActorMethodTarget, LinkedBytecodeCandidate, LinkedCallableSignature,
-    LinkedCallbackCaptureLayout, LinkedConstantEntry, LinkedConstantRoot, LinkedExactLocalTarget,
-    LinkedFrozenConstantNode, LinkedInterfaceTable, LinkedIntrinsicTarget,
+    InstructionIndex, LinkedActorCreateTarget, LinkedActorMethodTarget, LinkedBytecodeCandidate,
+    LinkedCallableSignature, LinkedCallbackCaptureLayout, LinkedConstantEntry, LinkedConstantRoot,
+    LinkedExactLocalTarget, LinkedFrozenConstantNode, LinkedInterfaceTable, LinkedIntrinsicTarget,
     LinkedPackageBytecodeProvenance, LinkedRepresentationCarrier, LinkedServiceOperationTarget,
     LinkedShapeEntry, LinkedSyntheticCallbackTarget, LinkedTypeEntry, LinkedWritablePathEntry,
     ResumeSiteIndex, ShapeIndex, TypeIndex,
@@ -191,6 +191,15 @@ impl DeploymentExecutionImage {
         self.linked.intrinsics()
     }
 
+    pub fn task_targets(
+        &self,
+    ) -> impl Iterator<Item = &skiff_runtime_linked_bytecode::LinkedTaskTarget> {
+        self.linked
+            .intrinsics()
+            .iter()
+            .filter_map(LinkedIntrinsicTarget::task_target)
+    }
+
     pub fn db_operations(
         &self,
     ) -> impl Iterator<Item = &skiff_runtime_linked_bytecode::LinkedDbOperation> {
@@ -206,6 +215,10 @@ impl DeploymentExecutionImage {
 
     pub fn service_operations(&self) -> &[LinkedServiceOperationTarget] {
         self.linked.service_operations()
+    }
+
+    pub fn actor_creates(&self) -> &[LinkedActorCreateTarget] {
+        self.linked.actor_creates()
     }
 
     pub fn actor_methods(&self) -> &[LinkedActorMethodTarget] {

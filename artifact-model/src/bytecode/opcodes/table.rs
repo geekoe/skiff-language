@@ -822,7 +822,7 @@ macro_rules! opcode_rows {
             {
                 kind: InvokeIntrinsic, opcode: 0x81, mnemonic: "invoke_intrinsic",
                 operands: [
-                    (OperandKind::Reloc, OperandRole::IntrinsicTarget, LinkedOperandKind::Intrinsic, [RelocationKind::IntrinsicRef]),
+                    (OperandKind::Reloc, OperandRole::IntrinsicTarget, LinkedOperandKind::Intrinsic, [RelocationKind::IntrinsicRef, RelocationKind::TaskSubmitRef]),
                     (OperandKind::Immediate, OperandRole::ArgCount, LinkedOperandKind::Immediate, []),
                     (OperandKind::Immediate, OperandRole::ResultCount, LinkedOperandKind::Immediate, [])
                 ],

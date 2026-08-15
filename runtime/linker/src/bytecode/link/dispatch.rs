@@ -3,13 +3,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use skiff_artifact_model::bytecode::dto::DbOperationReference;
 use skiff_artifact_model::{
     self, BoundaryDropPlan, BoundaryTransfer, BoundaryValueFact, BoundaryValuePlan,
-    BytecodeIntrinsicRef, BytecodeRelocation, CallableEffectSummary,
+    BytecodeIntrinsicRef, BytecodeRelocation, CallableEffectSummary, CallableMayEffects,
     CallableRegistryTypeExpression, ContractLiteral, ContractOperationId, ContractTypeRef,
     HostEffectExecutorIdentity, HostEffectRegistryEntry, InterfaceInstantiationRef, LiteralIr,
     Opcode, PackageBuildId, PackageLocalAbiSymbol, PackageRefIr, PackageSchemaTypeId,
-    PackageSymbolRef, ParamModeIr, ResolvedPackageValueType, ServiceBoundaryPlan,
-    ServiceCallbackPlan, ServiceRequirementKey, TypeRefIr, ValueLifecycleFactResolver,
-    ValueLifecyclePolicyBudget, ValueLifecycleResolverError, ValueProvenance,
+    PackageSymbolRef, ParamModeIr, PendingEffectCategory, ResolvedPackageValueType,
+    ServiceBoundaryPlan, ServiceCallbackPlan, ServiceRequirementKey, TypeRefIr,
+    ValueLifecycleFactResolver, ValueLifecyclePolicyBudget, ValueLifecycleResolverError,
+    ValueProvenance,
 };
 use skiff_runtime_linked_bytecode::{
     ArtifactFunctionKey, FunctionIndex, InterfaceTableIndex, LinkedActorCreateTarget,
@@ -17,10 +18,11 @@ use skiff_runtime_linked_bytecode::{
     LinkedFrameLayout, LinkedHostEffectAdapterTarget, LinkedInterfaceInstantiation,
     LinkedInterfaceMethodAbiId, LinkedInterfaceRequirementMethod, LinkedInterfaceRequirementTable,
     LinkedInterfaceTable, LinkedInterfaceTableKind, LinkedLocalInterfaceMethod,
-    LinkedLocalInterfaceTable, LinkedNativeCallableSignature, LinkedServiceBoundaryErrorPlan,
+    LinkedLocalInterfaceTable, LinkedNativeCallableSignature, LinkedPublicInstanceKey,
+    LinkedRemoteInterfaceMethod, LinkedRemoteInterfaceTable, LinkedServiceBoundaryErrorPlan,
     LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue, LinkedServiceCallbackPlan,
-    LinkedServiceOperationTarget, LinkedSyntheticCallbackTarget, ServiceOperationIndex,
-    SpecializationKey,
+    LinkedServiceOperationTarget, LinkedSyntheticCallbackTarget, LinkedTaskTarget,
+    LinkedTaskTiming, ServiceOperationIndex, SpecializationKey, TaskTargetIndex,
 };
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
@@ -40,6 +42,8 @@ pub(in crate::bytecode) struct LinkedDispatchTables {
     pub(in crate::bytecode) synthetic_callbacks: Vec<LinkedSyntheticCallbackTarget>,
     pub(in crate::bytecode) synthetic_callback_origins:
         BTreeMap<(PackageBuildId, String), skiff_runtime_linked_bytecode::SyntheticCallbackIndex>,
+    pub(in crate::bytecode) task_submit_indices:
+        BTreeMap<(PackageBuildId, String), skiff_runtime_linked_bytecode::IntrinsicIndex>,
     pub(in crate::bytecode) host_effect_adapters: Vec<LinkedHostEffectAdapterTarget>,
     pub(in crate::bytecode) intrinsics: Vec<skiff_runtime_linked_bytecode::LinkedIntrinsicTarget>,
 }
@@ -55,12 +59,17 @@ impl DeploymentLinker<'_> {
         let service_operations = self.link_service_operations(reachable, type_linker)?;
         let (actor_creates, actor_methods) =
             self.link_actor_targets(reachable, indices, frames, type_linker)?;
-        let (interface_tables, requirement_keys) =
-            self.link_interface_tables(reachable, indices, frames, type_linker)?;
+        let (interface_tables, requirement_keys) = self.link_interface_tables(
+            reachable,
+            indices,
+            frames,
+            type_linker,
+            &service_operations,
+        )?;
         let synthetic_callbacks =
             self.link_synthetic_callbacks(reachable, indices, frames, type_linker)?;
-        let (host_effect_adapters, intrinsics) =
-            self.link_host_and_intrinsics(reachable, indices, type_linker)?;
+        let (host_effect_adapters, intrinsics, task_submit_indices) =
+            self.link_host_and_intrinsics(reachable, indices, frames, type_linker)?;
 
         let synthetic_callback_origins = synthetic_callbacks
             .iter()
@@ -95,6 +104,7 @@ impl DeploymentLinker<'_> {
             requirement_keys,
             synthetic_callbacks,
             synthetic_callback_origins,
+            task_submit_indices,
             host_effect_adapters,
             intrinsics,
         };
@@ -344,26 +354,10 @@ impl DeploymentLinker<'_> {
         type_linker: &mut TypeLinker<'_>,
     ) -> Result<(Vec<LinkedActorCreateTarget>, Vec<LinkedActorMethodTarget>), BytecodeLinkError>
     {
-        let creates = Vec::new();
+        let mut creates = Vec::new();
         let mut methods = Vec::new();
         for package in self.deployment.packages().values() {
             for actor in &package.artifact().actor_implementations {
-                let has_reachable_method = reachable.iter().any(|reference| {
-                    matches!(
-                        &reference.relocation,
-                        BytecodeRelocation::ActorMethodRef {
-                            actor: target_actor,
-                            actor_implementation_identity,
-                            ..
-                        } if reference.specialization.package_build_id()
-                            == &package.reference().package_build_id
-                            && target_actor == &actor.actor
-                            && actor_implementation_identity == &actor.actor_implementation_identity
-                    )
-                });
-                if !has_reachable_method {
-                    continue;
-                }
                 let actor_abi = package
                     .artifact()
                     .implementation_links
@@ -390,6 +384,58 @@ impl DeploymentLinker<'_> {
                     actor_abi.actor_abi_identity.clone(),
                     actor.actor_implementation_identity.clone(),
                 );
+                if let Some(create) = &actor.create {
+                    let callable = &create.package_callable_id;
+                    let key = self.key_for_receiver_callable(package, callable, type_linker)?;
+                    let function = indices.get(&key).copied().ok_or_else(|| {
+                        unsatisfied(
+                            BytecodeLinkObligation::ConcreteTargetTables,
+                            self.package_location(package),
+                            format!(
+                                "actor create {:?} is absent from the closure",
+                                create.method_identity
+                            ),
+                        )
+                    })?;
+                    let location = BytecodeLinkLocation::Function {
+                        package: Box::new(package.reference().clone()),
+                        function_key: key.artifact_function_key().as_str().to_string(),
+                    };
+                    let frame = frames.get(function.get() as usize).ok_or_else(|| {
+                        BytecodeLinkError::ImplementationUnavailable {
+                            obligation: BytecodeLinkObligation::FrameAndValueTransferPlan,
+                            location: location.clone(),
+                        }
+                    })?;
+                    let effects = exact_actor_effects(
+                        package.artifact().callable_semantic_facts.get(callable),
+                        location.clone(),
+                    )?;
+                    let signature = frame_signature(frame, effects, location)?;
+                    creates.push(LinkedActorCreateTarget::new(
+                        skiff_runtime_linked_bytecode::ActorCreateIndex::new(creates.len() as u32),
+                        actor_ref.clone(),
+                        create.method_identity.clone(),
+                        function,
+                        signature,
+                    ));
+                }
+                let has_reachable_method = reachable.iter().any(|reference| {
+                    matches!(
+                        &reference.relocation,
+                        BytecodeRelocation::ActorMethodRef {
+                            actor: target_actor,
+                            actor_implementation_identity,
+                            ..
+                        } if reference.specialization.package_build_id()
+                            == &package.reference().package_build_id
+                            && target_actor == &actor.actor
+                            && actor_implementation_identity == &actor.actor_implementation_identity
+                    )
+                });
+                if !has_reachable_method {
+                    continue;
+                }
                 for (method_identity, callable) in &actor.methods {
                     let referenced = reachable.iter().any(|reference| matches!(
                         &reference.relocation,
@@ -679,6 +725,19 @@ fn contract_type_ref_to_ir(
     }
 }
 
+fn remote_method_signature_matches_operation(
+    method: &LinkedCallableSignature,
+    operation: &LinkedCallableSignature,
+) -> bool {
+    method.parameter_types().len() == operation.parameter_types().len().saturating_add(1)
+        && method.result_types() == operation.result_types()
+        && method.parameter_types().get(1..) == Some(operation.parameter_types())
+        && method.parameter_modes().get(1..) == Some(operation.parameter_modes())
+        && method.parameter_plans().get(1..) == Some(operation.parameter_plans())
+        && method.result_plans() == operation.result_plans()
+        && method.effect_summary() == operation.effect_summary()
+}
+
 fn frame_signature(
     frame: &LinkedFrameLayout,
     effects: CallableEffectSummary,
@@ -785,6 +844,35 @@ impl LinkedDispatchTables {
                         }),
                     },
                     "duplicate service operation target".to_string(),
+                ));
+            }
+        }
+        let mut actor_create_seen = BTreeSet::new();
+        for target in &self.actor_creates {
+            let key = (
+                target.owner_package_build_id().clone(),
+                target.actor().module_path.clone(),
+                target.actor().symbol.clone(),
+                target.actor_implementation_identity().clone(),
+                target.create_identity().clone(),
+            );
+            if !actor_create_seen.insert(key) {
+                return Err(unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    BytecodeLinkLocation::Deployment {
+                        deployment: Box::new(skiff_artifact_model::ServiceDeploymentRef {
+                            service_id: "service".to_string(),
+                            contract_version: "1.0.0".to_string(),
+                            deployment_revision: skiff_artifact_model::DeploymentRevision::new(
+                                "revision:targets",
+                            ),
+                            deployment_artifact_identity:
+                                skiff_artifact_model::DeploymentArtifactIdentity::new(
+                                    "deployment:targets",
+                                ),
+                        }),
+                    },
+                    "duplicate actor create target".to_string(),
                 ));
             }
         }
@@ -1147,6 +1235,7 @@ impl DeploymentLinker<'_> {
         indices: &BTreeMap<SpecializationKey, FunctionIndex>,
         _frames: &[LinkedFrameLayout],
         type_linker: &mut TypeLinker<'_>,
+        service_operations: &[LinkedServiceOperationTarget],
     ) -> Result<
         (
             Vec<LinkedInterfaceTable>,
@@ -1366,11 +1455,171 @@ impl DeploymentLinker<'_> {
                     let index = InterfaceTableIndex::new(tables.len() as u32 - 1);
                     requirement_keys.insert(key, index);
                 }
-                BytecodeRelocation::RemoteInterfaceRef { .. } => {
-                    return Err(BytecodeLinkError::ImplementationUnavailable {
-                        obligation: BytecodeLinkObligation::ConcreteTargetTables,
-                        location: self.reachable_relocation_location(reference),
-                    });
+                BytecodeRelocation::RemoteInterfaceRef { interface } => {
+                    let package = self
+                        .deployment
+                        .packages()
+                        .get(reference.specialization.package_build_id())
+                        .ok_or_else(|| {
+                            unsatisfied(
+                                BytecodeLinkObligation::ExactPackageClosure,
+                                self.deployment_location(),
+                                "remote interface relocation owner is absent".to_string(),
+                            )
+                        })?;
+                    let location = self.reachable_relocation_location(reference);
+                    let key = ServiceRequirementKey {
+                        caller_package_build_id: reference
+                            .specialization
+                            .package_build_id()
+                            .clone(),
+                        service_requirement_slot: interface.service_requirement_slot,
+                    };
+                    let dependency = self
+                        .deployment
+                        .service_dependencies()
+                        .get(&key)
+                        .ok_or_else(|| {
+                            unsatisfied(
+                                BytecodeLinkObligation::ConcreteTargetTables,
+                                location.clone(),
+                                "compiler-emitted remote interface has no hydrated dependency slot"
+                                    .to_string(),
+                            )
+                        })?;
+                    if dependency.contract().service_protocol_identity
+                        != interface.callee_protocol_identity
+                    {
+                        return Err(unsatisfied(
+                            BytecodeLinkObligation::ConcreteTargetTables,
+                            location.clone(),
+                            "remote interface protocol drifts from the hydrated contract"
+                                .to_string(),
+                        ));
+                    }
+                    let linked_interface = self.link_interface_instantiation(
+                        package,
+                        &reference.specialization,
+                        &interface.interface,
+                        type_linker,
+                        location.clone(),
+                    )?;
+                    let mut methods = Vec::with_capacity(interface.methods.len());
+                    for method in &interface.methods {
+                        if !dependency
+                            .used_operations()
+                            .contains(&method.contract_operation_id)
+                        {
+                            return Err(unsatisfied(
+                                BytecodeLinkObligation::ConcreteTargetTables,
+                                location.clone(),
+                                "remote interface operation is absent from the dependency slot"
+                                    .to_string(),
+                            ));
+                        }
+                        let operation = service_operations
+                            .iter()
+                            .find(|operation| {
+                                operation.service_requirement_key() == &key
+                                    && operation.contract_operation_id()
+                                        == &method.contract_operation_id
+                                    && operation.expected_protocol_identity()
+                                        == &interface.callee_protocol_identity
+                            })
+                            .ok_or_else(|| {
+                                unsatisfied(
+                                    BytecodeLinkObligation::ConcreteTargetTables,
+                                    location.clone(),
+                                    "remote interface method has no exact linked service operation"
+                                        .to_string(),
+                                )
+                            })?;
+                        let signature = self.link_interface_signature(
+                            package,
+                            &reference.specialization,
+                            &method.signature,
+                            operation.signature().effect_summary(),
+                            type_linker,
+                            location.clone(),
+                        )?;
+                        if !remote_method_signature_matches_operation(
+                            &signature,
+                            operation.signature(),
+                        ) {
+                            return Err(unsatisfied(
+                                BytecodeLinkObligation::ConcreteTargetTables,
+                                location.clone(),
+                                "remote interface method signature drifts from its service operation"
+                                    .to_string(),
+                            ));
+                        }
+                        let method_abi =
+                            LinkedInterfaceMethodAbiId::parse(method.method_abi_id.clone())
+                                .map_err(|error| {
+                                    unsatisfied(
+                                        BytecodeLinkObligation::ConcreteTargetTables,
+                                        location.clone(),
+                                        error.to_string(),
+                                    )
+                                })?;
+                        methods.push(
+                            LinkedRemoteInterfaceMethod::new(
+                                method.slot,
+                                method_abi,
+                                signature,
+                                method.contract_operation_id.clone(),
+                            )
+                            .with_service_operation(operation.index()),
+                        );
+                    }
+                    let public_instance_key =
+                        LinkedPublicInstanceKey::parse(interface.public_instance_key.clone())
+                            .map_err(|error| {
+                                unsatisfied(
+                                    BytecodeLinkObligation::ConcreteTargetTables,
+                                    location.clone(),
+                                    error.to_string(),
+                                )
+                            })?;
+                    let remote = LinkedRemoteInterfaceTable::new(
+                        key,
+                        public_instance_key,
+                        methods.into_boxed_slice(),
+                        interface.callee_protocol_identity.clone(),
+                    )
+                    .map_err(|error| {
+                        unsatisfied(
+                            BytecodeLinkObligation::ConcreteTargetTables,
+                            location.clone(),
+                            error.to_string(),
+                        )
+                    })?;
+                    if let Some(existing) = tables.iter().find(|table| {
+                        table.interface().artifact() == &interface.interface
+                            && matches!(
+                                table.kind(),
+                                LinkedInterfaceTableKind::Remote(row)
+                                    if row.service_requirement_key() == remote.service_requirement_key()
+                                        && row.public_instance_key() == remote.public_instance_key()
+                            )
+                    }) {
+                        let LinkedInterfaceTableKind::Remote(row) = existing.kind() else {
+                            unreachable!("remote table predicate only matches Remote")
+                        };
+                        if row != &remote {
+                            return Err(unsatisfied(
+                                BytecodeLinkObligation::ConcreteTargetTables,
+                                location,
+                                "duplicate remote interface table facts drift".to_string(),
+                            ));
+                        }
+                        continue;
+                    }
+                    tables.push(LinkedInterfaceTable::new(
+                        InterfaceTableIndex::new(tables.len() as u32),
+                        linked_interface,
+                        LinkedInterfaceTableKind::Remote(remote),
+                    ));
                 }
                 _ => {}
             }
@@ -1536,22 +1785,66 @@ impl DeploymentLinker<'_> {
     fn link_synthetic_callbacks(
         &self,
         reachable: &[ReachableRelocation],
-        _indices: &BTreeMap<SpecializationKey, FunctionIndex>,
-        _frames: &[LinkedFrameLayout],
+        indices: &BTreeMap<SpecializationKey, FunctionIndex>,
+        frames: &[LinkedFrameLayout],
         _type_linker: &mut TypeLinker<'_>,
     ) -> Result<Vec<LinkedSyntheticCallbackTarget>, BytecodeLinkError> {
-        if let Some(reference) = reachable.iter().find(|reference| {
-            matches!(
-                &reference.relocation,
-                BytecodeRelocation::SyntheticCallbackRef { .. }
-            )
-        }) {
-            return Err(BytecodeLinkError::ImplementationUnavailable {
-                obligation: BytecodeLinkObligation::ConcreteTargetTables,
-                location: self.reachable_relocation_location(reference),
-            });
+        let mut targets = Vec::new();
+        let mut seen = BTreeSet::new();
+        for reference in reachable {
+            let BytecodeRelocation::SyntheticCallbackRef { function_key } = &reference.relocation
+            else {
+                continue;
+            };
+            let package = self
+                .deployment
+                .packages()
+                .get(reference.specialization.package_build_id())
+                .ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ExactPackageClosure,
+                        self.deployment_location(),
+                        "synthetic callback relocation owner is absent".to_string(),
+                    )
+                })?;
+            if !seen.insert(function_key.clone()) {
+                continue;
+            }
+            let key = self.key_for_synthetic_callback(package, function_key)?;
+            let function = indices.get(&key).copied().ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    self.package_location(package),
+                    format!("synthetic callback {function_key} is absent from the closure"),
+                )
+            })?;
+            let location = BytecodeLinkLocation::Function {
+                package: Box::new(package.reference().clone()),
+                function_key: key.artifact_function_key().as_str().to_string(),
+            };
+            let frame = frames.get(function.get() as usize).ok_or_else(|| {
+                BytecodeLinkError::ImplementationUnavailable {
+                    obligation: BytecodeLinkObligation::FrameAndValueTransferPlan,
+                    location: location.clone(),
+                }
+            })?;
+            let effects = exact_actor_effects(
+                package
+                    .artifact()
+                    .callable_semantic_facts
+                    .get(key.template_function_key()),
+                location.clone(),
+            )?;
+            let signature = frame_signature(frame, effects, location)?;
+            targets.push(LinkedSyntheticCallbackTarget::new(
+                skiff_runtime_linked_bytecode::SyntheticCallbackIndex::new(targets.len() as u32),
+                key.artifact_function_key().clone(),
+                function,
+                None,
+                signature,
+            ));
         }
-        Ok(Vec::new())
+        Ok(targets)
     }
 
     fn reachable_relocation_location(
@@ -1579,18 +1872,22 @@ impl DeploymentLinker<'_> {
         &self,
         reachable: &[ReachableRelocation],
         indices: &BTreeMap<SpecializationKey, FunctionIndex>,
+        frames: &[LinkedFrameLayout],
         type_linker: &mut TypeLinker<'_>,
     ) -> Result<
         (
             Vec<LinkedHostEffectAdapterTarget>,
             Vec<skiff_runtime_linked_bytecode::LinkedIntrinsicTarget>,
+            BTreeMap<(PackageBuildId, String), skiff_runtime_linked_bytecode::IntrinsicIndex>,
         ),
         BytecodeLinkError,
     > {
         let mut host = Vec::new();
         let mut intrinsics = Vec::new();
+        let mut task_submit_indices = BTreeMap::new();
         let mut seen_host = BTreeSet::new();
         let mut seen_intrinsics = BTreeSet::new();
+        let mut seen_task_submit = BTreeSet::new();
         for package in self
             .deployment
             .packages()
@@ -1627,6 +1924,169 @@ impl DeploymentLinker<'_> {
                     }
                     let location = self.function_location(package, function);
                     match relocation {
+                        BytecodeRelocation::TaskSubmitRef { task } => {
+                            let specialization = self.specialization_for_function_key(
+                                package,
+                                &function.function_key,
+                                indices,
+                            )?;
+                            let key = match &task.target {
+                                skiff_artifact_model::bytecode::dto::TaskSubmitTargetRef::Function {
+                                    function_key,
+                                } => self.key_for_task_function(package, function_key)?,
+                                skiff_artifact_model::bytecode::dto::TaskSubmitTargetRef::ActorMethod {
+                                    ..
+                                } => {
+                                    return Err(BytecodeLinkError::ImplementationUnavailable {
+                                        obligation: BytecodeLinkObligation::ConcreteTargetTables,
+                                        location: location.clone(),
+                                    });
+                                }
+                            };
+                            let function_index = indices.get(&key).copied().ok_or_else(|| {
+                                unsatisfied(
+                                    BytecodeLinkObligation::ConcreteTargetTables,
+                                    location.clone(),
+                                    "task submit target function is absent from the closure"
+                                        .to_string(),
+                                )
+                            })?;
+                            let frame =
+                                frames.get(function_index.get() as usize).ok_or_else(|| {
+                                    BytecodeLinkError::ImplementationUnavailable {
+                                        obligation:
+                                            BytecodeLinkObligation::FrameAndValueTransferPlan,
+                                        location: location.clone(),
+                                    }
+                                })?;
+                            let effects = exact_actor_effects(
+                                package
+                                    .artifact()
+                                    .callable_semantic_facts
+                                    .get(key.template_function_key()),
+                                location.clone(),
+                            )?;
+                            let target_signature =
+                                frame_signature(frame, effects, location.clone())?;
+                            let task_ref_index = type_linker.intern_concrete_type(
+                                package,
+                                specialization,
+                                &TypeRefIr::builtin("TaskRef"),
+                                &BTreeMap::new(),
+                                location.clone(),
+                            )?;
+                            let task_ref_plan = type_linker
+                                .linked_type_plan(task_ref_index)
+                                .cloned()
+                                .ok_or_else(|| {
+                                    unsatisfied(
+                                        BytecodeLinkObligation::FrameAndValueTransferPlan,
+                                        location.clone(),
+                                        format!(
+                                            "task submit result type {} has no linked plan",
+                                            task_ref_index.get()
+                                        ),
+                                    )
+                                })?;
+                            let task_effects = CallableMayEffects {
+                                escapes_caller_value: false,
+                                requires_same_heap_identity: false,
+                                invokes_unknown_target: false,
+                                may_pending: true,
+                                pending_effect_categories: vec![PendingEffectCategory::NativeCall],
+                                inout_path_effects: Vec::new(),
+                            };
+                            let native_signature = LinkedNativeCallableSignature::new(
+                                target_signature
+                                    .parameter_types()
+                                    .to_vec()
+                                    .into_boxed_slice(),
+                                target_signature
+                                    .parameter_modes()
+                                    .to_vec()
+                                    .into_boxed_slice(),
+                                target_signature
+                                    .parameter_plans()
+                                    .to_vec()
+                                    .into_boxed_slice(),
+                                vec![task_ref_index].into_boxed_slice(),
+                                vec![task_ref_plan].into_boxed_slice(),
+                                task_effects,
+                            )
+                            .map_err(|error| {
+                                unsatisfied(
+                                    BytecodeLinkObligation::FrameAndValueTransferPlan,
+                                    location.clone(),
+                                    error.to_string(),
+                                )
+                            })?;
+                            let task_key = (
+                                package.reference().package_build_id.clone(),
+                                task.target_identity.clone(),
+                            );
+                            if !seen_task_submit.insert(task_key.clone()) {
+                                continue;
+                            }
+                            let task_target = LinkedTaskTarget::new(
+                                TaskTargetIndex::new(task_submit_indices.len() as u32),
+                                task.target_identity.clone(),
+                                function_index,
+                                target_signature,
+                                match task.timing {
+                                    skiff_artifact_model::bytecode::dto::TaskSubmitTimingRef::Immediate => {
+                                        LinkedTaskTiming::Immediate
+                                    }
+                                    skiff_artifact_model::bytecode::dto::TaskSubmitTimingRef::After {
+                                        expression,
+                                    } => LinkedTaskTiming::After { expression },
+                                    skiff_artifact_model::bytecode::dto::TaskSubmitTimingRef::At {
+                                        expression,
+                                    } => LinkedTaskTiming::At { expression },
+                                },
+                            )
+                            .map_err(|error| {
+                                unsatisfied(
+                                    BytecodeLinkObligation::ConcreteTargetTables,
+                                    location.clone(),
+                                    error.to_string(),
+                                )
+                            })?;
+                            let intrinsic_index =
+                                skiff_runtime_linked_bytecode::IntrinsicIndex::new(
+                                    intrinsics.len() as u32,
+                                );
+                            let kind = skiff_runtime_linked_bytecode::LinkedIntrinsicKind::Static(
+                                skiff_runtime_linked_bytecode::LinkedStaticIntrinsicTarget::new(
+                                    skiff_runtime_linked_bytecode::LinkedIntrinsicCanonicalKey::parse(
+                                        "std.task.submit",
+                                    )
+                                    .map_err(|error| {
+                                        unsatisfied(
+                                            BytecodeLinkObligation::ConcreteTargetTables,
+                                            location.clone(),
+                                            error.to_string(),
+                                        )
+                                    })?,
+                                    1,
+                                )
+                                .map_err(|error| {
+                                    unsatisfied(
+                                        BytecodeLinkObligation::ConcreteTargetTables,
+                                        location.clone(),
+                                        error.to_string(),
+                                    )
+                                })?,
+                            );
+                            task_submit_indices.insert(task_key, intrinsic_index);
+                            intrinsics.push(
+                                skiff_runtime_linked_bytecode::LinkedIntrinsicTarget::new(
+                                    intrinsic_index,
+                                    kind,
+                                    native_signature,
+                                )
+                                .with_task_target(task_target),
+                            );
+                        }
                         BytecodeRelocation::HostEffectRef(effect) => {
                             let specialization = self.specialization_for_function_key(
                                 package,
@@ -1802,7 +2262,7 @@ impl DeploymentLinker<'_> {
                 }
             }
         }
-        Ok((host, intrinsics))
+        Ok((host, intrinsics, task_submit_indices))
     }
 
     fn link_db_operation(
@@ -2087,6 +2547,53 @@ impl DeploymentLinker<'_> {
                     BytecodeLinkObligation::ConcreteTargetTables,
                     location.clone(),
                     format!("synthetic callback {function_key} has no callable identity"),
+                )
+            })?;
+        super::relocations::specialization_key(package, function_key, callable.clone(), location)
+    }
+
+    pub(super) fn key_for_task_function(
+        &self,
+        package: &HydratedBytecodePackage,
+        function_key: &str,
+    ) -> Result<SpecializationKey, BytecodeLinkError> {
+        let location = self.package_location(package);
+        let bytecode = package.bytecode().ok_or_else(|| {
+            unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                "task function owner is type-only".to_string(),
+            )
+        })?;
+        let function = bytecode
+            .view()
+            .functions()
+            .iter()
+            .find(|function| function.function_key == function_key)
+            .ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    format!("task function {function_key} is absent"),
+                )
+            })?;
+        if !matches!(
+            function.origin,
+            skiff_artifact_model::BytecodeFunctionOrigin::Executable { .. }
+        ) {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location,
+                "task target is not an ordinary executable function".to_string(),
+            ));
+        }
+        let callable = package
+            .canonical_implementation_callable_for_function_key(function_key)
+            .ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    format!("task function {function_key} has no callable identity"),
                 )
             })?;
         super::relocations::specialization_key(package, function_key, callable.clone(), location)
@@ -2886,6 +3393,19 @@ impl LinkedDispatchTables {
             .get(&(
                 package.reference().package_build_id.clone(),
                 function_key.to_string(),
+            ))
+            .copied()
+    }
+
+    pub(in crate::bytecode) fn task_submit_index(
+        &self,
+        package: &HydratedBytecodePackage,
+        target_identity: &str,
+    ) -> Option<skiff_runtime_linked_bytecode::IntrinsicIndex> {
+        self.task_submit_indices
+            .get(&(
+                package.reference().package_build_id.clone(),
+                target_identity.to_string(),
             ))
             .copied()
     }

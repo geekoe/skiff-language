@@ -36,6 +36,7 @@ image_index!(ConstantIndex);
 image_index!(ServiceOperationIndex);
 image_index!(ActorMethodIndex);
 image_index!(ActorCreateIndex);
+image_index!(TaskTargetIndex);
 image_index!(InterfaceTableIndex);
 image_index!(SyntheticCallbackIndex);
 image_index!(CallbackCaptureLayoutIndex);

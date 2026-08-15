@@ -2235,6 +2235,9 @@ fn validate_relocation_facts(
                 ));
             }
         }
+        BytecodeRelocation::TaskSubmitRef { task } => {
+            validate_task_submit_reference(key, &location, task)?;
+        }
         BytecodeRelocation::HostEffectRef(effect) => {
             validate_host_effect_reference(effect, pools, &location)?;
         }
@@ -2404,6 +2407,48 @@ fn validate_remote_interface_methods(
             ));
         }
         previous_slot = Some(method.slot);
+    }
+    Ok(())
+}
+
+fn validate_task_submit_reference(
+    key: &str,
+    location: &str,
+    task: &crate::bytecode::dto::TaskSubmitReference,
+) -> Result<(), StructuralValidationError> {
+    if task.target_identity.trim().is_empty() {
+        return Err(table_error(
+            key,
+            format!("{location}.task.targetIdentity must not be empty"),
+        ));
+    }
+    match &task.target {
+        crate::bytecode::dto::TaskSubmitTargetRef::Function { function_key } => {
+            if function_key.trim().is_empty() {
+                return Err(table_error(
+                    key,
+                    format!("{location}.task.target.functionKey must not be empty"),
+                ));
+            }
+        }
+        crate::bytecode::dto::TaskSubmitTargetRef::ActorMethod {
+            actor,
+            actor_abi_identity,
+            actor_implementation_identity,
+            method_identity,
+        } => {
+            if actor.module_path.is_empty()
+                || actor.symbol.is_empty()
+                || actor_abi_identity.as_str().is_empty()
+                || actor_implementation_identity.as_str().is_empty()
+                || method_identity.as_str().is_empty()
+            {
+                return Err(table_error(
+                    key,
+                    format!("{location}.task.target actor identities must be complete"),
+                ));
+            }
+        }
     }
     Ok(())
 }

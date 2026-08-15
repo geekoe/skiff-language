@@ -226,6 +226,21 @@ fn validate_local_targets(artifact: &BytecodeArtifact) -> Result<(), StructuralV
                         ));
                     }
                 }
+                BytecodeRelocation::TaskSubmitRef { task } => {
+                    if let crate::bytecode::dto::TaskSubmitTargetRef::Function {
+                        function_key: target_key,
+                    } = &task.target
+                    {
+                        if !artifact.image.functions.contains_key(target_key) {
+                            return Err(table_error(
+                                function_key,
+                                format!(
+                                    "{location} task submit function target {target_key:?} is missing"
+                                ),
+                            ));
+                        }
+                    }
+                }
                 BytecodeRelocation::LocalInterfaceRef { interface } => {
                     for (method_index, method) in interface.methods.iter().enumerate() {
                         let Some(target) = artifact.image.functions.get(&method.function_key)

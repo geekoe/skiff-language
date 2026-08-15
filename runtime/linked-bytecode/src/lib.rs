@@ -38,7 +38,8 @@ pub use index::{
     CallbackCaptureLayoutIndex, ConstantIndex, ExceptionRegionIndex, FrameSlotIndex,
     FrozenConstantNodeIndex, FunctionIndex, HostEffectAdapterIndex, InstructionBoundaryIndex,
     InstructionIndex, InterfaceTableIndex, IntrinsicIndex, ResumeSiteIndex, ServiceOperationIndex,
-    ShapeIndex, SwitchTableIndex, SyntheticCallbackIndex, TypeIndex, WritablePathIndex,
+    ShapeIndex, SwitchTableIndex, SyntheticCallbackIndex, TaskTargetIndex, TypeIndex,
+    WritablePathIndex,
 };
 pub use instruction::{
     LinkedInstruction, LinkedInstructionError, LinkedInstructionTarget, LinkedResolvedOperand,
@@ -80,7 +81,8 @@ pub use targets::{
     LinkedRepresentationCarrier, LinkedServiceBoundaryErrorPlan, LinkedServiceBoundaryPlan,
     LinkedServiceBoundaryValue, LinkedServiceCallbackPlan, LinkedServiceOperationTarget,
     LinkedShapeEntry, LinkedShapeError, LinkedShapeField, LinkedStaticIntrinsicTarget,
-    LinkedSyntheticCallbackTarget, LinkedTypeEntry,
+    LinkedSyntheticCallbackTarget, LinkedTaskTarget, LinkedTaskTargetError, LinkedTaskTiming,
+    LinkedTypeEntry,
 };
 
 #[cfg(test)]

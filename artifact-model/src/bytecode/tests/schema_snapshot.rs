@@ -449,6 +449,27 @@ fn db_operation_reference_round_trips_camel_case_without_metadata_strings() {
 }
 
 #[test]
+fn task_submit_reference_round_trips_exact_target_and_timing_facts() {
+    let reference = crate::bytecode::dto::TaskSubmitReference {
+        target: crate::bytecode::dto::TaskSubmitTargetRef::Function {
+            function_key: "fixture::work".to_string(),
+        },
+        target_identity: "function:fixture.work".to_string(),
+        timing: crate::bytecode::dto::TaskSubmitTimingRef::After { expression: 3 },
+    };
+    let wire = serde_json::to_value(&reference).expect("task submit reference serializes");
+    assert_eq!(wire["target"]["kind"], "function");
+    assert_eq!(wire["target"]["functionKey"], "fixture::work");
+    assert_eq!(wire["targetIdentity"], "function:fixture.work");
+    assert_eq!(wire["timing"]["kind"], "after");
+    assert_eq!(wire["timing"]["expression"], 3);
+    assert_eq!(
+        serde_json::from_value::<crate::bytecode::dto::TaskSubmitReference>(wire).unwrap(),
+        reference
+    );
+}
+
+#[test]
 fn db_operation_wire_rejects_unsupported_ops_and_roles() {
     assert!(
         serde_json::from_value::<crate::bytecode::dto::DbOperationKind>(serde_json::json!(

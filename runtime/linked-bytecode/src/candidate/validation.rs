@@ -298,6 +298,19 @@ fn validate_dispatch_target_references(
             row: target.index().get(),
         };
         validate_native_signature(target.signature(), location, parts)?;
+        if let Some(task) = target.task_target() {
+            let task_location = CandidateLocation::TableRow {
+                table: CandidateTable::Intrinsics,
+                row: target.index().get(),
+            };
+            check_index(
+                task_location,
+                CandidateReferenceKind::Function,
+                task.function().get(),
+                parts.functions.len(),
+            )?;
+            validate_callable_signature(task.signature(), task_location, parts)?;
+        }
     }
     Ok(())
 }
@@ -458,6 +471,14 @@ fn validate_interface_table(
             )?;
             for method in remote.methods() {
                 validate_callable_signature(method.signature(), location, parts)?;
+                if let Some(operation) = method.service_operation() {
+                    check_index(
+                        location,
+                        CandidateReferenceKind::ServiceOperation,
+                        operation.get(),
+                        parts.service_operations.len(),
+                    )?;
+                }
             }
         }
     }

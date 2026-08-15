@@ -27,8 +27,8 @@ use crate::{
     LinkedRemoteInterfaceTable, LinkedResourceDropPlan, LinkedServiceBoundaryErrorPlan,
     LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue, LinkedServiceCallbackPlan,
     LinkedServiceOperationTarget, LinkedStaticIntrinsicTarget, LinkedSyntheticCallbackTarget,
-    LinkedValueTransferPlan, ServiceOperationIndex, SpecializationKey, SyntheticCallbackIndex,
-    TypeIndex,
+    LinkedTaskTarget, LinkedTaskTiming, LinkedValueTransferPlan, ServiceOperationIndex,
+    SpecializationKey, SyntheticCallbackIndex, TaskTargetIndex, TypeIndex,
 };
 
 use super::fixtures::{
@@ -303,6 +303,41 @@ fn interface_table_keeps_requirement_local_remote_and_callback_carriers_distinct
         callback.interface().artifact().interface_abi_id,
         "interface-abi:chat"
     );
+}
+
+#[test]
+fn remote_method_retains_exact_linked_service_operation() {
+    let method = LinkedRemoteInterfaceMethod::new(
+        0,
+        LinkedInterfaceMethodAbiId::parse("method-abi:read")
+            .expect("fixture method ABI is canonical"),
+        signature(),
+        ContractOperationId::new("operation:read"),
+    )
+    .with_service_operation(ServiceOperationIndex::new(4));
+    assert_eq!(
+        method.service_operation(),
+        Some(ServiceOperationIndex::new(4))
+    );
+    assert_eq!(method.method_slot(), 0);
+    assert_eq!(method.method_abi_id().as_str(), "method-abi:read");
+}
+
+#[test]
+fn task_target_retains_exact_function_and_timing_facts() {
+    let target = LinkedTaskTarget::new(
+        TaskTargetIndex::new(3),
+        "function:work",
+        FunctionIndex::new(1),
+        signature(),
+        LinkedTaskTiming::After { expression: 7 },
+    )
+    .expect("task target identity is canonical");
+    assert_eq!(target.index(), TaskTargetIndex::new(3));
+    assert_eq!(target.target_identity(), "function:work");
+    assert_eq!(target.function(), FunctionIndex::new(1));
+    assert_eq!(target.timing(), LinkedTaskTiming::After { expression: 7 });
+    assert_eq!(target.signature(), &signature());
 }
 
 #[test]
