@@ -18,6 +18,7 @@ use crate::{
 };
 
 mod contract_fixture;
+mod local_table;
 
 use contract_fixture::contract_dependency;
 
