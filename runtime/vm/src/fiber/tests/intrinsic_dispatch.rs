@@ -1329,6 +1329,66 @@ fn stream_item_release_failure_moves_exact_owner_into_terminal_escrow() {
 }
 
 #[test]
+fn host_arguments_release_failure_returns_unreleased_suffix_escrow() {
+    let mut heap = IntrinsicDispatchHeap::default();
+    let image = Arc::clone(&intrinsic_dispatch_fixture().image);
+    let plan = intrinsic_snapshot_plan();
+    let first = heap.allocate(
+        IntrinsicDispatchValue::Opaque,
+        compact_tag(1),
+        ValueFlags::new(0),
+    );
+    let second = heap.allocate(
+        IntrinsicDispatchValue::Opaque,
+        compact_tag(2),
+        ValueFlags::new(0),
+    );
+    let values = crate::VmOwnedValues::new_exact(
+        image,
+        Box::new([first, second]),
+        Box::new([plan.clone(), plan.clone()]),
+    );
+    let arguments = crate::VmHostEffectArguments::new(
+        values,
+        Box::new([plan.clone(), plan]),
+        FunctionIndex::new(0),
+        InstructionIndex::new(0),
+    );
+    heap.fail_release_at = Some(heap.release_attempts + 2);
+
+    let failure = arguments
+        .release(&mut heap)
+        .expect_err("the injected second release must return its suffix carrier");
+    assert_eq!(heap.owner_count(first.as_request_heap_ref().unwrap().get()), 0);
+    assert_eq!(
+        heap.owner_count(second.as_request_heap_ref().unwrap().get()),
+        1
+    );
+    let mut roots = IntrinsicRootHandles::default();
+    failure.visit_roots(&mut roots).unwrap();
+    assert_eq!(roots.0, [second.as_request_heap_ref().unwrap().get()]);
+
+    let (error, mut escrow) = failure.into_terminal_escrow();
+    assert!(matches!(
+        error,
+        VmError::Heap(VmHeapError::HeapOperationFailed {
+            operation: VmHeapOperation::ReleaseSnapshot,
+            ..
+        })
+    ));
+    assert_eq!(escrow.root_count(), 1);
+    heap.fail_release_at = None;
+    escrow
+        .release_all(&mut heap)
+        .expect("the retained suffix releases through the captured exact plans");
+    assert_eq!(
+        heap.owner_count(second.as_request_heap_ref().unwrap().get()),
+        0
+    );
+    assert!(escrow.is_empty());
+}
+
+#[test]
 fn intrinsic_dispatch_executes_phase_5_string_and_bytes_ops_with_typed_rooted_results() {
     let mut heap = IntrinsicDispatchHeap::default();
     let mut fiber = intrinsic_fiber(&mut heap);

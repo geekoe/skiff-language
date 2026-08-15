@@ -13,8 +13,8 @@ use skiff_artifact_model::{
 use skiff_runtime_boundary::http::HttpBoundaryNameValue;
 use skiff_runtime_capability_context::{CancellationToken, ExecutionBudgetReason};
 use skiff_runtime_linked_bytecode::{
-    LinkedNativeCallableSignature, LinkedResumeResultMaterialization, LinkedShapeEntry,
-    LinkedValueDropPlan, LinkedValueTransferPlan, TypeIndex,
+    LinkedNativeCallableSignature, LinkedRepresentationCarrier, LinkedResumeResultMaterialization,
+    LinkedShapeEntry, LinkedValueDropPlan, LinkedValueTransferPlan, TypeIndex,
 };
 use skiff_runtime_linker::{DeploymentExecutionEntry, DeploymentExecutionImage};
 use skiff_runtime_model::{
@@ -988,12 +988,13 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
             HostEffectExecutorIdentity::Sleep => {
                 let prepared: Result<_, BytecodeSchedulerError> = (|| {
                     validate_native_arity(&signature, 1, 0)?;
+                    let carrier = sleep_duration_carrier(&image, &signature)?;
                     let argument = arguments.values().first().ok_or_else(|| {
                         BytecodeSchedulerError::Port(
                             "typed sleep invocation is missing its duration".to_string(),
                         )
                     })?;
-                    let millis = sleep_millis_from_vm_value(argument)?;
+                    let millis = sleep_millis_from_vm_value(argument, carrier)?;
                     tokio::runtime::Handle::try_current().map_err(|_| {
                         BytecodeSchedulerError::Port(
                             "typed sleep requires the current request Tokio runtime".to_string(),
@@ -1338,7 +1339,39 @@ fn validate_native_arity(
     Ok(())
 }
 
-fn sleep_millis_from_vm_value(value: &ValueSlot) -> Result<u64, BytecodeSchedulerError> {
+fn sleep_duration_carrier(
+    image: &DeploymentExecutionImage,
+    signature: &LinkedNativeCallableSignature,
+) -> Result<LinkedRepresentationCarrier, BytecodeSchedulerError> {
+    let [parameter] = signature.parameter_types() else {
+        return Err(BytecodeSchedulerError::Port(
+            "typed sleep target does not retain exactly one duration parameter".to_string(),
+        ));
+    };
+    let entry = image
+        .types()
+        .get(parameter.get() as usize)
+        .filter(|entry| entry.index() == *parameter)
+        .ok_or_else(|| {
+            BytecodeSchedulerError::Port(format!(
+                "typed sleep duration type {} is absent from the verified image",
+                parameter.get()
+            ))
+        })?;
+    let carrier = entry.representation_carrier().copied().ok_or_else(|| {
+        BytecodeSchedulerError::Port(
+            "typed sleep duration lacks its compiler-owned representation carrier fact".to_string(),
+        )
+    })?;
+    validate_builtin_type(image, carrier.representation_type(), "integer")?;
+    validate_builtin_type(image, carrier.physical_carrier_type(), "number")?;
+    Ok(carrier)
+}
+
+fn sleep_millis_from_vm_value(
+    value: &ValueSlot,
+    _carrier: LinkedRepresentationCarrier,
+) -> Result<u64, BytecodeSchedulerError> {
     const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
     const MAX_SLEEP_MILLIS: u64 = 60_000;
 
