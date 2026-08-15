@@ -74,6 +74,7 @@ const runtimeDag = new Map([
       'skiff-runtime-request-contract',
       'skiff-runtime-scheduler',
       'skiff-runtime-vm',
+      'skiff-runtime-deployment-image',
     ],
   ],
   [
@@ -116,7 +117,14 @@ const runtimeDag = new Map([
   ['skiff-runtime-request-contract', []],
   ['skiff-runtime-native-contract', ['skiff-runtime-model']],
   ['skiff-runtime-loader', ['skiff-runtime-model']],
-  ['skiff-runtime-boundary', ['skiff-runtime-model']],
+  [
+    'skiff-runtime-boundary',
+    [
+      'skiff-runtime-linked-bytecode',
+      'skiff-runtime-linker',
+      'skiff-runtime-model',
+    ],
+  ],
   ['skiff-runtime-model', ['skiff-runtime-request-contract']],
 ]);
 

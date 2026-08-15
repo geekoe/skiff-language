@@ -195,6 +195,7 @@ pub fn admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_
             location: format!("server-stream gateway authority: {detail}"),
         },
     )?;
+    validate_service_boundary_plan_coverage(&units, service_boundary_plans)?;
     for unit in &units {
         unit.validate_executable_indices()?;
         if !unit.actor_declarations.is_empty() {
@@ -259,7 +260,6 @@ pub fn admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_
             )?;
         }
     }
-    validate_service_boundary_plan_coverage(&units, service_boundary_plans)?;
     let machine_carriers = analyze_machine_carriers(&units)?;
     let representation_carriers = representation_carrier::analyze(&units, &machine_carriers)?;
     Ok(AdmittedPhase1BytecodeMir {
