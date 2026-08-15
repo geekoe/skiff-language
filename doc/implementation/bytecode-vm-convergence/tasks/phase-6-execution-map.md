@@ -7,8 +7,8 @@
 >
 > Activation input: exact clean accepted Phase 5 commit/tree, recorded dynamically by A0
 
-本MAP是Phase 6文件写集、owner、DAG、Gate workload和join顺序的唯一权威。P6D owner提交A0 activation record，
-integration owner机械合入后再按本文创建worktree。
+本MAP是Phase 6当前文件写集、owner、DAG、Gate workload和join顺序的唯一权威；写集是派发时最佳已知边界，不是
+不可变文件锁。P6D owner提交A0 activation record，integration owner机械合入后再按本文创建worktree。
 
 ## A0. Activation record
 
@@ -67,17 +67,25 @@ skiff-bcvm-p6-actor-r1              # A6
 
 实际agent数可以少于worktree数；同一agent可在clean closeout后串行接新lane。三个中央owner贯穿Phase：
 
-- F6独占bytecode artifact/emission/linked-image facts；capability owner提交fact requirement，不改F6文件；
-- K6独占scheduler/VM/owner/root/budget/memory状态机；capability owner提交kernel requirement，不改K6文件；
-- X6独占generic VM boundary、request child/control mux与host composition；capability owner只实现下表leaf文件。
+- F6是bytecode artifact/emission/linked-image facts的中央owner；capability owner通常只提交fact requirement，
+  不做F6文件写；
+- K6是scheduler/VM/owner/root/budget/memory状态机的中央owner；capability owner通常只提交kernel requirement，
+  不做K6文件写；
+- X6是generic VM boundary、request child/control mux与host composition的中央owner；capability owner通常只实现
+  下表leaf文件。
+
+上述“通常”不是不可变文件锁：实现中为实际 seam 必需的小跨 owner 写允许先完成，在 handoff 的 actual write
+set 中明确列出，由 integrator 核对记录，下一次 MAP amendment 反映 ownership 调整。
 
 I6 integrator只cherry-pick/rebase/机械核对和运行join；它不解决production冲突、不补测试assertion。G6不改
-production。需要共享文件变化时返回其owner；owner在自己的worktree重放最新integration并交新commit。
+production。需要共享文件变化时通常返回其owner；实现中发现必要的小跨owner写按§3.3在handoff上报，由下一MAP
+amendment收编后，owner在自己的worktree重放最新integration并交新commit。
 
 ## 3. 精确写集
 
 `**`只覆盖表中明确目录。新增Cargo dependency、未列`Cargo.toml`、root workspace、其它selector或其它architecture
-文件都不在写集；需要时先Amend。每个文件任一时刻只有一个owner。
+文件都不在默认写集；需要时先Amend，或按§3.3在handoff上报实际 seam 后收编。每个文件按当前MAP任一时刻只有一个
+owner；owner调整以integrator核对的actual write set + 下一次MAP amendment为准。
 
 ### 3.1 Coordination、proof与中央lanes
 
@@ -90,8 +98,8 @@ production。需要共享文件变化时返回其owner；owner在自己的worktr
 | K6 kernel / blocked | `runtime/model/src/{vm_heap.rs,vm_value.rs,vm_root.rs,bytecode_execution_observation.rs,service_error.rs}`；相邻同名test子文件；新`runtime/model/src/{memory_ledger.rs,actor_vm_arena.rs}`；`runtime/model/src/lib.rs`；`runtime/scheduler/src/{bytecode.rs,trampoline.rs,owner_inventory.rs,pending.rs,root_escrow.rs,lib.rs}`；`runtime/scheduler/tests/bytecode_scheduler.rs`；`runtime/vm/src/**`；`runtime/vm/tests/**`；`runtime/request/src/{execution_budget.rs,execution_control.rs,vm_heap.rs}`；相邻同名test子文件；新`runtime/request/src/memory_ledger.rs` | A0+G0；长期唯一child owner/heap/root/budget/memory/Actor arena状态机owner |
 | X6 composition/service / blocked | `runtime/boundary/src/{service_linkable.rs,service_linkable_detached.rs,service_linkable_schema.rs,service_value_plan.rs,package_schema_records.rs,lib.rs}`；`runtime/boundary/src/service_value_plan/**`；`runtime/boundary/Cargo.toml`；新`runtime/boundary/src/vm_materialize.rs`与`vm_materialize/**`；`runtime/request/src/{bytecode_ingress.rs,outbound.rs,lib.rs}`；`runtime/request/Cargo.toml`；`Cargo.lock`；新`runtime/request/src/bytecode_children/mod.rs`与`bytecode_children/service.rs`；`runtime/request/tests/{bytecode_request.rs,bytecode_service_child.rs}`；`runtime/request/src/bytecode_ingress/absent_supervisor_tests.rs`；`runtime/host/Cargo.toml`；`runtime/host/src/loader/bytecode_admission.rs`；`runtime/host/src/host/{bytecode_capability_adapter.rs,bytecode_execution_observation.rs,request_supervisor.rs,runtime_host.rs,request_entry.rs,request_entry/assembly.rs,request_entry/assembly_wire.rs,request_entry/phase_2_proof_support/request_composition.rs,request_entry/phase_3_proof_support/request_composition.rs,request_entry/phase_4_proof_support/request_composition.rs,websocket_jsonrpc.rs,router_session.rs,control_plane.rs,mod.rs}` | F6+K6 J0；service first；长期唯一request/host mux owner |
 
-F6/K6/X6的`lib.rs`/`mod.rs`仅由该owner接module注册。其它lane新增leaf后提交一行注册需求，不能自行编辑这些
-shared files。
+F6/K6/X6的`lib.rs`/`mod.rs`通常仅由该owner接module注册；其它lane新增leaf后通常提交一行注册需求。真实 seam
+需要小跨owner写这些shared files时，按§3.3在handoff上报并由下一MAP amendment收编，不静默自行编辑。
 
 ### 3.2 Capability leaf lanes
 
@@ -139,9 +147,21 @@ Amendment r7（2026-08-15）：service fallback closure 与 host response 并行
 `runtime/model/src/service_error.rs`与`runtime/vm/src/**`，用于 cross-image `VmOwnedException` mint。X6 继续
 持有 `runtime/request`、`runtime/boundary`、`runtime/host` 的 service response 路径；三者 write set 互不重叠。
 
-同一文件即使只需一行也不跨owner。例如A6不能改`runtime/model/src/lib.rs`，T6不能改
-`runtime/request/src/outbound.rs`，I6C不能改`runtime/linked-bytecode/src/targets/interface.rs`；分别由K6、X6、F6
-落中央join。Integrator/G6不得代改。
+Amendment r8（2026-08-15）：记录 J2 收敛时已合入的 ownership 调整。K6 拥有 request child mux 中的 linked
+DB intrinsic child dispatch seam；D6R 拥有 in-memory serviceDb provider，并可为 exercise 它做 minimal
+host-harness wiring。两者是 implementation 中发现的必要跨 owner 写，现已在 MAP 中反映为正式 ownership。
+
+### 3.3 写集是 provisional boundary，不是文件锁
+
+写集是派发时的最佳已知分解边界；dispatch-time reasoning 按设计不完整，因此实现中可能发现必要的小跨 owner
+写。允许的条件是：修改对实际 seam 是必要的；在 task handoff 的 actual write set 中明确列出；integrator
+核对并记录；下一次 MAP amendment 反映 ownership 调整。integrator 不把这类写自动当 violation，也不在冲突里
+发明行为。
+
+硬约束不变：同一 worktree 不并发写；proof line 不修改 production 制造 PASS；每个中央状态机任一时刻只有一个
+write authority，该 authority 可在真实收敛后经 MAP amendment 调整。大范围或非必要跨 owner 写仍按写集外需求
+先上报，不能借“必要 seam”静默扩大。例如没有 amendment 时，A6 不应把 `runtime/model/src/lib.rs` 当成常规写面；
+若真实 seam 要求小跨 owner 写，就按本节上报并收编。
 
 ## 4. Subphase DAG、并行波次与join
 
@@ -322,14 +342,16 @@ capability-specific build/lease/fence/transaction/task outcome
 
 1. exact input commit/tree、branch/worktree、lane与当前evidence epoch；
 2. Contract精确小节和本MAP checkpoint/Gate spec引用；验收判据不得复述语义；
-3. 本表exact write set子集、明确排除其它lane（尤其F6/K6/X6/G6与I6 integration）的文件；
+3. 本表exact write set子集、当前排除其它lane（尤其F6/K6/X6/G6与I6 integration）的文件；若实现中发现必要
+   跨owner写，按§3.3在actual write set中显式列出，不静默扩大；
 4. depends-on commit与首个可观察`status_after`（expected-red/partial/ready-for-join）；
 5. focused command、Cargo lease、唯一`/tmp`日志路径、未运行项；
 6. production seam需要中央owner时，提交`{required fact/API, caller, consumer, failing spec}`，不得附第二实现；
 7. 上报`{完成了什么, 意外点, 尝试过什么, 需要什么}`、output commit/tree、actual write set、status clean。
 
-写集外需求立即partial handoff。MAP amendment先合入integration并广播新tree，之后owner才能继续。任务完成后尽快
-提交；不把dirty worktree当依赖。
+必要的小跨 owner 写允许随任务先完成，并在 actual write set 中上报；其余写集外需求立即 partial handoff。MAP
+amendment 先合入 integration 并广播新 tree，之后 owner 继续按新 ownership 工作。任务完成后尽快提交；不把
+dirty worktree 当依赖。
 
 ## 8. Freeze、Acceptance与资产结案
 
@@ -371,6 +393,6 @@ Phase 7只接收accepted result、`phase6WorkloadSpecs(root)`和ledger，不接�
 本MAP不安排cross-Runtime callback、cross-service behavior envelope、exactly-once task、DB/TaskStore分布式事务、
 Actor live heap迁移、GC/compaction、`concurrent`/`serial`、性能优化或旧schema compatibility。
 
-禁止：并发Cargo；integrator/G6改production；capability owner改F6/K6/X6中央文件；linker按类型重建fact；raw handle
-跨heap；手造image/fiber/owner制造PASS；首个失败后停止matrix；以零测试/skip作为expected-red；nested old Gate；复用
-旧receipt；在merge冲突里添加fallback；未审diff直接删除dirty worktree。
+禁止：并发Cargo；integrator/G6改production；未经handoff上报且未经下一MAP amendment收编的跨owner写；linker
+按类型重建fact；raw handle跨heap；手造image/fiber/owner制造PASS；首个失败后停止matrix；以零测试/skip作为
+expected-red；nested old Gate；复用旧receipt；在merge冲突里添加fallback；未审diff直接删除dirty worktree。

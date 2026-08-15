@@ -23,7 +23,7 @@
 | 项目 / initiative | 最终收敛到什么系统，分几步到达 | 总体实施文档 |
 | Phase | 本轮只改变哪一段支持面，如何算完成 | Phase Contract 与 result |
 | Semantic Closure | 哪一个完整语义协议必须闭合 | 开发线中的 kernel / lane |
-| Write owner | 谁可以修改哪些文件，如何避免覆盖 | Execution Map 的 write set |
+| Write owner | 谁可以修改哪些文件，如何避免覆盖 | Execution Map 的当前 write set；provisional，不是不可变文件锁 |
 | Worktree | 某批提交在哪个版本空间中隔离和合流 | leaf / integration / gate worktree |
 
 它们没有一一对应关系。crate 可以帮助定义写锁，通常不能定义任务；worktree 用于版本隔离，也不应机械地
@@ -80,8 +80,10 @@ Phase Contract 可以来自 canonical architecture、用户决定和前一 Phase
 - 必要的只读 observability；
 - 开发者自己的 focused/unit tests。
 
-开发 Agent 可以进行自己 write set 内的局部设计，也可以实现自己提出的共享设计决定。它不能修改 Proof Line
-的通过标准来迁就实现，也不能给 frozen candidate 作最终验收。
+开发 Agent 可以进行自己 write set 内的局部设计，也可以实现自己提出的共享设计决定。写集是派发时的最佳已知
+边界，不是不可变文件锁；开发 Agent 发现实际 seam 需要小跨 owner 写时，可以做并在 handoff 的 actual write
+set 中上报，由 integrator 核对记录后在下一次 MAP amendment 收编。它不能修改 Proof Line 的通过标准来迁就
+实现，也不能给 frozen candidate 作最终验收。
 
 ### 3.2 Proof Line
 
@@ -214,14 +216,14 @@ Execution Map 初始版本只记录当前 ready frontier：
 重排，不得用“快写完报告了”无限延长。默认 Clarification checkpoint 应短于普通开发 task；超过预计范围的
 调查应返回当前证据和剩余问题，而不是扩写成完整系统设计。
 
-同一 worktree 同时只有一个 write Agent。takeover 前先停止旧 owner；可并行派多个 read-only diagnostic task，
-但中央状态机不能因为超时拆成多个 write authority。
+同一 worktree 同时只有一个 write Agent；这是硬约束，不随写集 provisional 化放宽。takeover 前先停止旧
+owner；可并行派多个 read-only diagnostic task，但中央状态机不能因为超时拆成多个 write authority。
 
 ### 5.2 Task handoff
 
-非只读 task 交付一个可独立合流的 commit，并报告：input/output commit、实际 write set、合同 disposition、
-focused commands、日志位置、未运行项、remaining risk 和下一 ready task。只读 clarification 默认交付短证据
-handoff，不强制 commit。
+非只读 task 交付一个可独立合流的 commit，并报告：input/output commit、实际 write set（含任何必要的小跨
+owner 写）、合同 disposition、focused commands、日志位置、未运行项、remaining risk 和下一 ready task。只读
+clarification 默认交付短证据 handoff，不强制 commit。
 
 预计超过 30 秒的命令将输出重定向到临时或 durable 文件并可轮询。Development Agent 不自行运行无关全仓
 测试；Acceptance Agent 必须完整运行 Phase Contract 指定的 canonical Gate，中断等于未运行。
@@ -316,8 +318,9 @@ todo/ignored/cancelled和未执行项均FAIL。这样一次Gate暴露全部已�
 ## 8. Integration、freeze 和 acceptance
 
 唯一 integration owner 按 rolling join 合流 Development/Proof commits，运行受影响的最小 contract/VCP preflight，
-并重算 ready frontier。Integrator 不通过 type equivalence、字符串特判、registry bypass、默认 owner、第二执行
-路径或无 owner sidecar 解决冲突；出现这类需求退回原 owner或触发 Design task。
+并重算 ready frontier。Integrator 核对 actual write set 时记录必要的小跨 owner 写，并在下一次 MAP amendment
+反映 ownership 调整，不把它自动当 violation。Integrator 不通过 type equivalence、字符串特判、registry bypass、
+默认 owner、第二执行路径或无 owner sidecar 解决冲突；出现这类需求退回原 owner或触发 Design task。
 
 完成两条线的 Phase Contract obligations 后冻结 exact commit/tree。冻结后任何 production/test/fixture/Gate/
 event/schema 变化都开始新 evidence epoch。
@@ -359,7 +362,7 @@ Clarification 与 Design 都是 conditional task；专项 Reviewer只用于实�
 
 - Frozen candidate semantic reviewer / Acceptance owner 不参与 candidate production/test/Gate 写入；
 - Proof owner 不修改 production code 来制造 PASS；
-- 多个 owner 不共同拥有同一状态机；
+- 每个中央状态机任一时刻只有一个 write authority；authority 可在真实收敛后经 MAP amendment 调整；
 - integrator 不在 merge 时补语义。
 
 设计者可以成为开发者；开发者可以写局部 unit tests；同一 Agent 可以串行拥有多个不冲突的 leaf。不要为了

@@ -16,14 +16,21 @@
    幂等插入一次`--no-fail-fast`，不得改target/filter/harness args或给build/fmt/clippy插入。本Phase所有
    `testFormat != null` workload必须声明正整数`expectedTests`；继承spec若历史上缺该字段，必须保留并在handoff
    显式列出，不能猜默认值。
-2. **执行地图**：`tasks/phase-N-execution-map.md` 一张表：lane / worktree / 写集 / join 顺序 / Gate 矩阵。
-   这是写集的唯一权威，任何其它载体不重复文件清单。
+2. **执行地图**：`tasks/phase-N-execution-map.md` 一张表：lane / worktree / 当前写集 / join 顺序 / Gate 矩阵。
+   这是当前写集的唯一权威，任何其它载体不重复文件清单；写集是派发时最佳已知边界，不是不可变文件锁。
 3. **派发**：把本 Phase 写面拆成互不重叠的 lane，能拆几个就并行几个，**不设固定数量和固定角色模板**
    （Phase 4 的写面可能是 scheduler kernel / session-request owner / VM control，Phase 6 是 service/task/
-   interface/callback/Actor 各 lane）。唯一硬约束：每个中央状态机只有一个 write owner；proof lane 独立。
-   lane 数量由写面分区推导，不由角色名决定。派发前花几分钟做只读 gate-map 预调查：目标面会经过哪些
-   pipeline 门、门在谁家，写进 MAP。任务信封 = 引用契约/MAP 条目 + 验收判据 + 预算 + 上报格式。写集外
-   需求先上报，获准后**先改 MAP 再动代码**。
+   interface/callback/Actor 各 lane）。lane 数量由写面分区推导，不由角色名决定。派发前花几分钟做只读
+   gate-map 预调查：目标面会经过哪些 pipeline 门、门在谁家，写进 MAP。任务信封 = 引用契约/MAP 条目 +
+   验收判据 + 预算 + 上报格式。
+
+   写集是派发时的最佳已知分解边界，不是不可变文件锁；派发时按设计无法完整预见真实 seam。实现中为必要接缝
+   做的小跨 owner 写允许先完成，并在 task handoff 的 actual write set 中明确列出；integrator 核对并记录，
+   下一次 MAP amendment 反映 ownership 调整，不把这类写当 violation。大范围或非必要越界仍按写集外需求先
+   上报，获准后**先改 MAP 再动代码**。
+
+   硬约束保持：同一 worktree 不并发写；proof line 不修改 production 制造 PASS；每个中央状态机任一时刻只有
+   一个 write authority，该 authority 可在真实收敛后经 MAP amendment 调整。
    任务信封的"验收判据"必须**引用契约的 VCP/checklist 小节，不得复述**；integrator 派单时机械核对
    信封判据 ⊆ 契约条款，防止复述漂移。
 4. **验证**：focused 每轮跑；三包/全量只在 join 点跑；跨 worker cargo 用目录租约串行；每个`cargo test`
@@ -48,7 +55,7 @@
 9. **上报格式**（所有 lane）：`{完成了什么, 意外点, 尝试过什么, 需要什么}`。
 
 强制隔离只有三条：frozen candidate semantic reviewer / Acceptance 必须是没写本 Phase 候选的全新 agent；proof 不修改生产制造 PASS；
-kernel 状态机只有一个 write owner。
+每个中央状态机任一时刻只有一个 write authority（可经 MAP amendment 调整）。
 
 当前启动指针：Phase 5 accepted，baseline为
 `094215c624712c257aa9455fc499cc6fb3657a9e` / `ec44479d88aca83f94038f84cf8a9c38f3693ba8`；Phase 6已由
