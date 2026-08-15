@@ -334,11 +334,12 @@ impl BytecodeServiceResolver for ProductionBytecodeServiceResolver {
         let image = self
             .host
             .bytecode_deployments
-            .loaded_sync(&pointer.deployment)
+            .loaded_or_failed_sync(&pointer.deployment)
             .ok_or_else(|| BytecodeServiceChildError::ProviderMissing {
                 service_id: slot.contract().service_id.clone(),
                 contract_version: slot.contract().contract_version.clone(),
-            })?;
+            })?
+            .map_err(|message| BytecodeServiceChildError::Load { message })?;
         if image.owner().deployment() != &pointer.deployment {
             return Err(BytecodeServiceChildError::DeploymentDrift);
         }

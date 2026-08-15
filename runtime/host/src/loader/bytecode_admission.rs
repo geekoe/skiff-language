@@ -62,6 +62,7 @@ pub(crate) enum BytecodeRouteSelector {
 pub(crate) struct BytecodeDeploymentRegistry {
     cache: DeploymentImageCache<DeploymentExecutionImage, BytecodeDeploymentLoadError>,
     loaded_sync: Arc<Mutex<BTreeMap<DeploymentArtifactIdentity, Arc<DeploymentExecutionImage>>>>,
+    load_failures: Arc<Mutex<BTreeMap<DeploymentArtifactIdentity, String>>>,
 }
 
 impl BytecodeDeploymentRegistry {
@@ -69,6 +70,7 @@ impl BytecodeDeploymentRegistry {
         Self {
             cache: DeploymentImageCache::new(),
             loaded_sync: Arc::new(Mutex::new(BTreeMap::new())),
+            load_failures: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -81,6 +83,21 @@ impl BytecodeDeploymentRegistry {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&deployment.deployment_artifact_identity)
             .cloned()
+    }
+
+    pub(crate) fn loaded_or_failed_sync(
+        &self,
+        deployment: &ServiceDeploymentRef,
+    ) -> Option<Result<Arc<DeploymentExecutionImage>, String>> {
+        if let Some(image) = self.loaded_sync(deployment) {
+            return Some(Ok(image));
+        }
+        self.load_failures
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&deployment.deployment_artifact_identity)
+            .cloned()
+            .map(Err)
     }
 
     pub(crate) async fn is_loaded_build_id(&self, build_id: &str) -> bool {
@@ -128,6 +145,7 @@ impl BytecodeDeploymentRegistry {
     ) -> anyhow::Result<Option<Arc<DeploymentExecutionImage>>> {
         let owner = DeploymentOwnerIdentity::new(deployment.clone());
         let reference = deployment.clone();
+        let failure_identity = deployment.deployment_artifact_identity.clone();
         let artifact_root = artifact_root.to_path_buf();
         let result = self
             .cache
@@ -163,6 +181,10 @@ impl BytecodeDeploymentRegistry {
             .await;
         match result {
             Ok(image) => {
+                self.load_failures
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&failure_identity);
                 self.loaded_sync
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -177,7 +199,13 @@ impl BytecodeDeploymentRegistry {
                 Ok(Some(image))
             }
             Err(error) if is_legacy_assembly(&error) => Ok(None),
-            Err(error) => Err(anyhow::anyhow!("bytecode deployment load failed: {error}")),
+            Err(error) => {
+                self.load_failures
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(failure_identity, error.to_string());
+                Err(anyhow::anyhow!("bytecode deployment load failed: {error}"))
+            }
         }
     }
 }
@@ -472,5 +500,53 @@ fn production_link_limits() -> LinkLimits {
         max_expanded_type_bytes: 64 * 1024 * 1024,
         max_constant_graph_nodes: 1_000_000,
         max_constant_graph_edges: 1_000_000,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use skiff_artifact_model::DeploymentRevision;
+
+    use super::*;
+
+    static NEXT_FAILURE_TEST: AtomicU64 = AtomicU64::new(0);
+
+    #[tokio::test]
+    async fn failed_deployment_load_is_retained_for_sync_provider_resolution() {
+        let root = std::env::temp_dir().join(format!(
+            "skiff-bcvm-p6-x6-load-failure-{}-{}",
+            std::process::id(),
+            NEXT_FAILURE_TEST.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let deployment = ServiceDeploymentRef {
+            service_id: "example.com/provider".to_string(),
+            contract_version: "1.0.0".to_string(),
+            deployment_revision: DeploymentRevision::new("revision:missing"),
+            deployment_artifact_identity: DeploymentArtifactIdentity::new(
+                "skiff-deployment-artifact-v4:sha256:missing",
+            ),
+        };
+        let registry = BytecodeDeploymentRegistry::new();
+
+        let error = registry
+            .get_or_load(&deployment, &root)
+            .await
+            .expect_err("missing deployment record must fail closed");
+        assert!(error
+            .to_string()
+            .contains("bytecode deployment load failed"));
+
+        let sync_result = registry
+            .loaded_or_failed_sync(&deployment)
+            .expect("failed load must be retained for synchronous resolution");
+        assert!(
+            matches!(sync_result, Err(ref message) if message.contains("deployment bytecode resolver failed")),
+            "sync resolver should observe the typed load failure, got {sync_result:?}"
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
