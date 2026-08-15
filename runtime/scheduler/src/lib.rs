@@ -28,13 +28,13 @@ mod stream;
 mod trampoline;
 
 pub use bytecode::{
-    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeControl,
-    BytecodeHandoff, BytecodeParkFailure, BytecodeParkFailureOwner, BytecodeParkRequest,
-    BytecodePortFailure, BytecodePortFailureOwner, BytecodeResumeFailure, BytecodeScheduler,
-    BytecodeSchedulerError, BytecodeSchedulerFailure, BytecodeSchedulerFailureOwner,
-    BytecodeSchedulerOutcome, BytecodeSchedulerPorts, BytecodeStreamHandoff,
-    BytecodeStreamSupervisor, BytecodeTerminalFailure, BytecodeTerminalOwner, BytecodeUnit,
-    BytecodeUnitControl,
+    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildHandoff, BytecodeChildStart,
+    BytecodeControl, BytecodeHandoff, BytecodeParkFailure, BytecodeParkFailureOwner,
+    BytecodeParkRequest, BytecodePortFailure, BytecodePortFailureOwner, BytecodeResumeFailure,
+    BytecodeScheduler, BytecodeSchedulerError, BytecodeSchedulerFailure,
+    BytecodeSchedulerFailureOwner, BytecodeSchedulerOutcome, BytecodeSchedulerPorts,
+    BytecodeStreamHandoff, BytecodeStreamSupervisor, BytecodeTerminalFailure,
+    BytecodeTerminalOwner, BytecodeUnit, BytecodeUnitControl, ChildFinish, ChildFinishError,
 };
 pub use owner_inventory::{
     ChildHeapOwnerLease, ChildHeapOwnerRegistration, OwnerCreationError, OwnerCreationErrorKind,
@@ -65,6 +65,6 @@ pub use stream::{
     StreamSupervisor, WakeSignal, STREAM_BUFFER_CAPACITY,
 };
 pub use trampoline::{
-    BlockedUnit, ChildHeapCarrier, ChildHeapState, EnterChildError, FlatTrampoline, ParentResume,
-    SuspendedTrampoline, TrampolineCompletion,
+    BlockedUnit, ChildHeapCarrier, ChildHeapState, EnterChildError, EnterChildWithFinishError,
+    FlatTrampoline, ParentResume, SuspendedTrampoline, TrampolineCompletion,
 };

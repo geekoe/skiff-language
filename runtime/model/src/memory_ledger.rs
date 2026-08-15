@@ -6,11 +6,7 @@
 //! [`MemoryLeaseHost`]; the request ledger owns the exact reserve/commit/
 //! release accounting.
 
-use std::{
-    fmt,
-    num::NonZeroU64,
-    sync::Arc,
-};
+use std::{fmt, num::NonZeroU64, sync::Arc};
 
 /// One request-scoped memory lease identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -54,11 +50,7 @@ impl MemoryLease {
     /// Callers must only use a token and amount returned by the same host's
     /// reservation/commit operation. This constructor is public so the
     /// request ledger can produce leases without model-owned allocator logic.
-    pub fn new(
-        host: Arc<dyn MemoryLeaseHost>,
-        token: MemoryLeaseToken,
-        amount: usize,
-    ) -> Self {
+    pub fn new(host: Arc<dyn MemoryLeaseHost>, token: MemoryLeaseToken, amount: usize) -> Self {
         Self {
             host,
             token,

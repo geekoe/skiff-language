@@ -35,7 +35,7 @@ const HTTP_CLIENT_REQUEST_TYPE: &str = "std.http.HttpClientRequest";
 const HTTP_CLIENT_RESPONSE_TYPE: &str = "std.http.HttpClientResponse";
 const HTTP_CLIENT_STREAM_HANDLE_TYPE: &str = "std.http.HttpClientStreamHandle";
 use skiff_runtime_scheduler::{
-    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeHandoff,
+    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildHandoff, BytecodeHandoff,
     BytecodeParkFailure, BytecodeParkRequest, BytecodePortFailure, BytecodeScheduler,
     BytecodeSchedulerError, BytecodeSchedulerFailure, BytecodeSchedulerFailureOwner,
     BytecodeSchedulerOutcome, BytecodeSchedulerPorts, BytecodeStreamHandoff,
@@ -957,8 +957,14 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
         _invocation: skiff_runtime_vm::ChildInvocation,
         _heap: &mut dyn VmHeap,
         _budget: &mut dyn VmBudget,
-    ) -> Result<BytecodeChildStart<VmFiber>, BytecodeSchedulerError> {
-        Err(BytecodeSchedulerError::UnsupportedChild)
+    ) -> Result<
+        BytecodeChildHandoff<VmFiber>,
+        BytecodePortFailure<skiff_runtime_vm::ChildInvocation, VmResumeToken>,
+    > {
+        Err(BytecodePortFailure::input(
+            BytecodeSchedulerError::UnsupportedChild,
+            _invocation,
+        ))
     }
 
     fn execute_adapter(

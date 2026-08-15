@@ -6,7 +6,11 @@ use skiff_runtime_model::{
     vm_root::{VmRootSource, VmRootVisitor},
     vm_value::{ValueKind, ValueSlot},
 };
+use skiff_runtime_vm::VmBudget;
 
+use crate::bytecode::{
+    BytecodeSchedulerError, BytecodeUnit, BytecodeUnitControl, ChildFinish, ChildFinishError,
+};
 use crate::owner_inventory::{
     ChildHeapOwnerLease, ChildOwnerLease, ChildOwnerRegistration, OwnerCreationError,
 };
@@ -28,6 +32,88 @@ impl std::fmt::Display for EnterChildError {
 }
 
 impl std::error::Error for EnterChildError {}
+
+/// An owner-bearing rejection from [`FlatTrampoline::enter_child_with_finish`].
+#[must_use = "a rejected child entry must be returned with its child bundle"]
+pub struct EnterChildWithFinishError<U: BytecodeUnit, R> {
+    error: EnterChildError,
+    child: U,
+    resume: R,
+    child_heap: ChildHeapCarrier,
+    finish: Box<dyn ChildFinish<U>>,
+}
+
+impl<U: BytecodeUnit, R> EnterChildWithFinishError<U, R> {
+    fn capacity(
+        child: U,
+        resume: R,
+        child_heap: ChildHeapCarrier,
+        finish: Box<dyn ChildFinish<U>>,
+    ) -> Self {
+        Self {
+            error: EnterChildError::CapacityExceeded,
+            child,
+            resume,
+            child_heap,
+            finish,
+        }
+    }
+
+    fn owner_creation(
+        error: OwnerCreationError,
+        child: U,
+        resume: R,
+        child_heap: ChildHeapCarrier,
+        finish: Box<dyn ChildFinish<U>>,
+    ) -> Self {
+        Self {
+            error: EnterChildError::OwnerCreation(error),
+            child,
+            resume,
+            child_heap,
+            finish,
+        }
+    }
+
+    pub const fn error(&self) -> EnterChildError {
+        self.error
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        EnterChildError,
+        U,
+        R,
+        ChildHeapCarrier,
+        Box<dyn ChildFinish<U>>,
+    ) {
+        (
+            self.error,
+            self.child,
+            self.resume,
+            self.child_heap,
+            self.finish,
+        )
+    }
+}
+
+impl<U: BytecodeUnit, R> fmt::Debug for EnterChildWithFinishError<U, R> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("EnterChildWithFinishError")
+            .field("error", &self.error)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<U: BytecodeUnit, R> fmt::Display for EnterChildWithFinishError<U, R> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl<U: BytecodeUnit, R> std::error::Error for EnterChildWithFinishError<U, R> {}
 
 /// Observable lifecycle phase of one child heap carrier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,11 +143,7 @@ impl BoundaryStaging {
         }
     }
 
-    fn publish(
-        &mut self,
-        root: ValueSlot,
-        heap: &mut dyn VmHeap,
-    ) -> Result<(), VmHeapError> {
+    fn publish(&mut self, root: ValueSlot, heap: &mut dyn VmHeap) -> Result<(), VmHeapError> {
         if self.state == ChildHeapState::Released {
             return Err(VmHeapError::HeapOperationFailed {
                 operation: VmHeapOperation::ValidateLive,
@@ -79,7 +161,10 @@ impl BoundaryStaging {
     }
 
     fn mark_terminal(&mut self) {
-        if matches!(self.state, ChildHeapState::Prepared | ChildHeapState::Staging) {
+        if matches!(
+            self.state,
+            ChildHeapState::Prepared | ChildHeapState::Staging
+        ) {
             self.state = ChildHeapState::Terminal;
         }
     }
@@ -222,15 +307,25 @@ impl fmt::Debug for ChildHeapCarrier {
 }
 
 /// One parent scheduler unit blocked on its active child.
-#[derive(Debug)]
-pub struct BlockedUnit<U, R> {
+pub struct BlockedUnit<U: BytecodeUnit, R> {
     parent: U,
     resume: R,
     owner_lease: Option<ChildOwnerLease>,
     parent_heap: Option<ChildHeapCarrier>,
+    finish: Option<Box<dyn ChildFinish<U>>>,
 }
 
-impl<U, R> BlockedUnit<U, R> {
+impl<U: BytecodeUnit, R: fmt::Debug> fmt::Debug for BlockedUnit<U, R> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BlockedUnit")
+            .field("resume", &self.resume)
+            .field("parent_heap", &self.parent_heap)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<U: BytecodeUnit, R> BlockedUnit<U, R> {
     pub fn parent(&self) -> &U {
         &self.parent
     }
@@ -244,7 +339,7 @@ impl<U, R> BlockedUnit<U, R> {
     }
 }
 
-impl<U, R> VmRootSource for BlockedUnit<U, R>
+impl<U: BytecodeUnit, R> VmRootSource for BlockedUnit<U, R>
 where
     U: VmRootSource,
 {
@@ -263,14 +358,14 @@ where
 /// child as the next active unit. Completing a child restores exactly one
 /// parent. Neither operation invokes user code or recursively polls a unit.
 #[derive(Debug)]
-pub struct FlatTrampoline<U, R> {
+pub struct FlatTrampoline<U: BytecodeUnit, R> {
     active: U,
     active_heap: Option<ChildHeapCarrier>,
     blocked: Vec<BlockedUnit<U, R>>,
     child_owners: ChildOwnerRegistration,
 }
 
-impl<U, R> FlatTrampoline<U, R> {
+impl<U: BytecodeUnit, R> FlatTrampoline<U, R> {
     pub fn new(root: U, child_owners: ChildOwnerRegistration) -> Self {
         Self {
             active: root,
@@ -318,6 +413,22 @@ impl<U, R> FlatTrampoline<U, R> {
         self.blocked.len()
     }
 
+    /// Runs the active unit against its own child heap carrier when present.
+    ///
+    /// Single-heap callers continue to drive through `heap`; carrier callers
+    /// never hand the parent heap to an active child.
+    pub fn run_active_segment(
+        &mut self,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> BytecodeUnitControl<U> {
+        if let Some(carrier) = self.active_heap.as_mut() {
+            self.active.run_segment(carrier.heap_mut(), budget)
+        } else {
+            self.active.run_segment(heap, budget)
+        }
+    }
+
     pub fn enter_child(&mut self, child: U, resume: R) -> Result<(), EnterChildError> {
         self.blocked
             .try_reserve(1)
@@ -336,6 +447,7 @@ impl<U, R> FlatTrampoline<U, R> {
             resume,
             owner_lease: None,
             parent_heap,
+            finish: None,
         });
         let lease = guard.commit();
         self.blocked
@@ -361,12 +473,116 @@ impl<U, R> FlatTrampoline<U, R> {
         Ok(())
     }
 
+    /// Enters a child and keeps its exact finish continuation with the blocked
+    /// parent.
+    pub fn enter_child_with_finish(
+        &mut self,
+        child: U,
+        resume: R,
+        child_heap: ChildHeapCarrier,
+        finish: Box<dyn ChildFinish<U>>,
+    ) -> Result<(), EnterChildWithFinishError<U, R>> {
+        if let Err(_) = self.blocked.try_reserve(1) {
+            return Err(EnterChildWithFinishError::capacity(
+                child, resume, child_heap, finish,
+            ));
+        }
+        let guard = match self.child_owners.prepare() {
+            Ok(guard) => guard,
+            Err(error) => {
+                return Err(EnterChildWithFinishError::owner_creation(
+                    error, child, resume, child_heap, finish,
+                ));
+            }
+        };
+        let lease = guard.commit();
+        let parent = std::mem::replace(&mut self.active, child);
+        let parent_heap = self.active_heap.take();
+        self.blocked.push(BlockedUnit {
+            parent,
+            resume,
+            owner_lease: Some(lease),
+            parent_heap,
+            finish: Some(finish),
+        });
+        self.active_heap = Some(child_heap);
+        Ok(())
+    }
+
+    /// Completes the active child after `ChildFinish` has materialized its
+    /// result into the parent heap.
+    ///
+    /// The child heap remains active while `finish` runs, then is dropped when
+    /// the parent heap is restored. A finish error returns the unchanged
+    /// trampoline so the child heap and continuation stay in the same failure
+    /// owner.
+    pub fn complete_active_child(
+        mut self,
+        child_result: U::RootResult,
+        budget: &mut dyn VmBudget,
+        fallback_heap: &mut dyn VmHeap,
+    ) -> Result<TrampolineCompletion<U, R, U::ResumeOutcome>, (ChildFinishError<U>, Self)> {
+        let Some(blocked) = self.blocked.last_mut() else {
+            unreachable!("child completion requires a blocked parent");
+        };
+        let Some(finish) = blocked.finish.take() else {
+            return Err((
+                ChildFinishError::result_retained(
+                    BytecodeSchedulerError::UnsupportedChild,
+                    child_result,
+                ),
+                self,
+            ));
+        };
+        let parent_heap = blocked
+            .parent_heap
+            .as_mut()
+            .map(ChildHeapCarrier::heap_mut)
+            .unwrap_or(fallback_heap);
+        let child_heap = self
+            .active_heap
+            .as_mut()
+            .expect("a child completion owns its active heap carrier");
+        let outcome = match finish.finish(child_result, child_heap, parent_heap, budget) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.blocked
+                    .last_mut()
+                    .expect("the blocked parent remains installed")
+                    .finish = Some(finish);
+                return Err((error, self));
+            }
+        };
+
+        drop(finish);
+        let BlockedUnit {
+            parent,
+            resume,
+            owner_lease,
+            parent_heap,
+            finish: _,
+        } = self
+            .blocked
+            .pop()
+            .expect("the blocked parent remains installed");
+        self.active = parent;
+        self.active_heap = parent_heap;
+        let completion = TrampolineCompletion::ResumeParent(ParentResume {
+            trampoline: self,
+            resume,
+            outcome,
+        });
+        drop(owner_lease);
+        Ok(completion)
+    }
+
     pub fn complete_active<O>(mut self, outcome: O) -> TrampolineCompletion<U, R, O> {
         if let Some(BlockedUnit {
             parent,
             resume,
             owner_lease,
             parent_heap,
+            ..
         }) = self.blocked.pop()
         {
             self.active = parent;
@@ -393,7 +609,7 @@ impl<U, R> FlatTrampoline<U, R> {
     }
 }
 
-impl<U, R> VmRootSource for FlatTrampoline<U, R>
+impl<U: BytecodeUnit, R> VmRootSource for FlatTrampoline<U, R>
 where
     U: VmRootSource,
 {
@@ -411,20 +627,20 @@ where
 
 /// Result of completing exactly one active scheduler unit.
 #[derive(Debug)]
-pub enum TrampolineCompletion<U, R, O> {
+pub enum TrampolineCompletion<U: BytecodeUnit, R, O> {
     ResumeParent(ParentResume<U, R, O>),
     RootComplete(O),
 }
 
 /// Typed continuation and outcome to inject into the restored parent unit.
 #[derive(Debug)]
-pub struct ParentResume<U, R, O> {
+pub struct ParentResume<U: BytecodeUnit, R, O> {
     trampoline: FlatTrampoline<U, R>,
     resume: R,
     outcome: O,
 }
 
-impl<U, R, O> ParentResume<U, R, O> {
+impl<U: BytecodeUnit, R, O> ParentResume<U, R, O> {
     pub fn trampoline(&self) -> &FlatTrampoline<U, R> {
         &self.trampoline
     }
@@ -444,14 +660,14 @@ impl<U, R, O> ParentResume<U, R, O> {
 /// one runnable owner for an invocation chain.
 #[must_use = "a suspended trampoline must be resumed or terminated"]
 #[derive(Debug)]
-pub struct SuspendedTrampoline<U, R> {
+pub struct SuspendedTrampoline<U: BytecodeUnit, R> {
     active: U,
     active_heap: Option<ChildHeapCarrier>,
     blocked: Vec<BlockedUnit<U, R>>,
     child_owners: ChildOwnerRegistration,
 }
 
-impl<U, R> SuspendedTrampoline<U, R> {
+impl<U: BytecodeUnit, R> SuspendedTrampoline<U, R> {
     pub fn blocked_depth(&self) -> usize {
         self.blocked.len()
     }
@@ -470,7 +686,7 @@ impl<U, R> SuspendedTrampoline<U, R> {
     }
 }
 
-impl<U, R> VmRootSource for SuspendedTrampoline<U, R>
+impl<U: BytecodeUnit, R> VmRootSource for SuspendedTrampoline<U, R>
 where
     U: VmRootSource,
 {
@@ -488,10 +704,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        num::NonZeroU64,
-        sync::Arc,
-    };
+    use std::{num::NonZeroU64, sync::Arc};
 
     use skiff_runtime_model::{
         memory_ledger::{MemoryLease, MemoryLeaseHost, MemoryLeaseToken},
@@ -501,9 +714,48 @@ mod tests {
     };
 
     use super::{ChildHeapCarrier, EnterChildError, FlatTrampoline, TrampolineCompletion};
+    use crate::bytecode::{
+        BytecodeControl, BytecodeResumeFailure, BytecodeUnit, BytecodeUnitControl,
+    };
     use crate::owner_inventory::{
         OwnerCreationErrorKind, OwnerDomain, RequestExecutionOwnerInventory,
     };
+    use skiff_runtime_vm::VmBudget;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct TestUnit<T>(T);
+
+    impl<T> VmRootSource for TestUnit<T> {
+        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    impl<T> BytecodeUnit for TestUnit<T> {
+        type ResumeToken = ();
+        type ResumeOutcome = ();
+        type RootResult = ();
+        type ChildInvocation = ();
+        type AdapterInvocation = ();
+        type StreamItem = ();
+        type PendingOperation = ();
+
+        fn run_segment(
+            &mut self,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> BytecodeUnitControl<Self> {
+            BytecodeControl::Complete(())
+        }
+
+        fn resume(
+            &mut self,
+            _token: Self::ResumeToken,
+            _outcome: Self::ResumeOutcome,
+        ) -> Result<(), BytecodeResumeFailure<Self::ResumeToken, Self::ResumeOutcome>> {
+            Ok(())
+        }
+    }
 
     #[derive(Default)]
     struct TestHeap;
@@ -601,7 +853,11 @@ mod tests {
         let mut roots = CollectRoots(Vec::new());
         heap.visit_roots(&mut roots).unwrap();
         assert_eq!(
-            roots.0.iter().map(ValueSlot::as_integer).collect::<Vec<_>>(),
+            roots
+                .0
+                .iter()
+                .map(ValueSlot::as_integer)
+                .collect::<Vec<_>>(),
             vec![Some(7)]
         );
 
@@ -617,21 +873,41 @@ mod tests {
         let inventory = RequestExecutionOwnerInventory::open();
         let (registrations, _freeze) = inventory.into_parts();
         let mut trampoline = FlatTrampoline::with_child_heap(
-            "root",
+            TestUnit("root"),
             carrier(1, owner_lease(), 8),
             registrations.child(),
         );
         trampoline
-            .enter_child_with_heap("child", "resume-root", carrier(2, owner_lease(), 12))
+            .enter_child_with_heap(
+                TestUnit("child"),
+                "resume-root",
+                carrier(2, owner_lease(), 12),
+            )
             .unwrap();
 
-        assert_eq!(trampoline.active(), &"child");
+        assert_eq!(trampoline.active(), &TestUnit("child"));
         assert_eq!(trampoline.active_heap().unwrap().domain().get(), 2);
-        assert_eq!(trampoline.blocked[0].parent_heap.as_ref().unwrap().domain().get(), 1);
+        assert_eq!(
+            trampoline.blocked[0]
+                .parent_heap
+                .as_ref()
+                .unwrap()
+                .domain()
+                .get(),
+            1
+        );
 
         let suspended = trampoline.suspend();
         assert_eq!(suspended.active_heap().unwrap().domain().get(), 2);
-        assert_eq!(suspended.blocked[0].parent_heap.as_ref().unwrap().domain().get(), 1);
+        assert_eq!(
+            suspended.blocked[0]
+                .parent_heap
+                .as_ref()
+                .unwrap()
+                .domain()
+                .get(),
+            1
+        );
 
         let mut resumed = suspended.resume();
         assert_eq!(resumed.active_heap().unwrap().domain().get(), 2);
@@ -642,7 +918,7 @@ mod tests {
         let (restored, resume, outcome) = resume.into_parts();
         assert_eq!(resume, "resume-root");
         assert_eq!(outcome, ());
-        assert_eq!(restored.active(), &"root");
+        assert_eq!(restored.active(), &TestUnit("root"));
         assert_eq!(restored.active_heap().unwrap().domain().get(), 1);
     }
 
@@ -651,10 +927,10 @@ mod tests {
         const DEPTH: usize = 100_000;
         let inventory = RequestExecutionOwnerInventory::open();
         let (registrations, freeze) = inventory.into_parts();
-        let mut trampoline = FlatTrampoline::new(0usize, registrations.child());
+        let mut trampoline = FlatTrampoline::new(TestUnit(0usize), registrations.child());
 
         for child in 1..=DEPTH {
-            trampoline.enter_child(child, child).unwrap();
+            trampoline.enter_child(TestUnit(child), child).unwrap();
         }
         assert_eq!(trampoline.blocked_depth(), DEPTH);
 
@@ -666,7 +942,7 @@ mod tests {
             let (next, resume, ()) = resume.into_parts();
             assert_eq!(resume, expected_parent + 1);
             trampoline = next;
-            assert_eq!(*trampoline.active(), expected_parent);
+            assert_eq!(trampoline.active().0, expected_parent);
         }
 
         assert!(matches!(
@@ -682,8 +958,10 @@ mod tests {
     fn suspension_moves_the_whole_chain_once() {
         let inventory = RequestExecutionOwnerInventory::open();
         let (registrations, freeze) = inventory.into_parts();
-        let mut trampoline = FlatTrampoline::new("root", registrations.child());
-        trampoline.enter_child("child", "resume-root").unwrap();
+        let mut trampoline = FlatTrampoline::new(TestUnit("root"), registrations.child());
+        trampoline
+            .enter_child(TestUnit("child"), "resume-root")
+            .unwrap();
 
         let suspended = trampoline.suspend();
         assert_eq!(suspended.blocked_depth(), 1);
@@ -691,7 +969,7 @@ mod tests {
         assert_eq!(snapshot.child.current, 1);
         assert!(snapshot.child.ever_created);
         let resumed = suspended.resume();
-        assert_eq!(resumed.active(), &"child");
+        assert_eq!(resumed.active(), &TestUnit("child"));
         assert_eq!(resumed.blocked_depth(), 1);
     }
 
@@ -699,16 +977,16 @@ mod tests {
     fn frozen_inventory_rejects_child_without_installing_a_blocked_unit() {
         let inventory = RequestExecutionOwnerInventory::open();
         let (registrations, freeze) = inventory.into_parts();
-        let mut trampoline = FlatTrampoline::new("root", registrations.child());
+        let mut trampoline = FlatTrampoline::new(TestUnit("root"), registrations.child());
         let snapshot = freeze.freeze();
 
-        let error = match trampoline.enter_child("child", "resume-root") {
+        let error = match trampoline.enter_child(TestUnit("child"), "resume-root") {
             Err(EnterChildError::OwnerCreation(error)) => error,
             other => panic!("expected an owner creation rejection, got {other:?}"),
         };
         assert_eq!(error.domain(), OwnerDomain::Child);
         assert_eq!(error.kind(), OwnerCreationErrorKind::InventoryFrozen);
-        assert_eq!(trampoline.active(), &"root");
+        assert_eq!(trampoline.active(), &TestUnit("root"));
         assert_eq!(trampoline.blocked_depth(), 0);
         assert_eq!(snapshot.child.current, 0);
         assert!(!snapshot.child.ever_created);

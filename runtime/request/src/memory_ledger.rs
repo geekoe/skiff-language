@@ -169,9 +169,10 @@ impl RequestMemoryLedger {
                 requested: amount,
             });
         }
-        let reserved = state.reserved.checked_add(amount).expect(
-            "current total and amount fit, so reserved plus amount must fit",
-        );
+        let reserved = state
+            .reserved
+            .checked_add(amount)
+            .expect("current total and amount fit, so reserved plus amount must fit");
         let token = match state.next_token.checked_add(1) {
             Some(next) => {
                 let token = MemoryLeaseToken::new(
@@ -199,13 +200,14 @@ impl RequestMemoryLedger {
     /// Releases a directly accounted committed amount.
     pub fn release(&self, amount: usize) -> Result<(), MemoryLedgerError> {
         let mut state = self.lock();
-        let committed = state
-            .committed
-            .checked_sub(amount)
-            .ok_or(MemoryLedgerError::ReleaseUnderflow {
-                committed: state.committed,
-                amount,
-            })?;
+        let committed =
+            state
+                .committed
+                .checked_sub(amount)
+                .ok_or(MemoryLedgerError::ReleaseUnderflow {
+                    committed: state.committed,
+                    amount,
+                })?;
         state.committed = committed;
         Ok(())
     }
@@ -226,11 +228,12 @@ impl RequestMemoryLedger {
                 return Err(MemoryLedgerError::Terminal);
             }
             let raw_domain = state.next_domain;
-            let next_domain = state.next_domain.checked_add(1).ok_or(
-                MemoryLedgerError::DomainSpaceExhausted,
-            )?;
-            let domain = HeapDomainId::try_new(raw_domain)
+            let next_domain = state
+                .next_domain
+                .checked_add(1)
                 .ok_or(MemoryLedgerError::DomainSpaceExhausted)?;
+            let domain =
+                HeapDomainId::try_new(raw_domain).ok_or(MemoryLedgerError::DomainSpaceExhausted)?;
             let epoch = HeapEpoch::new(state.next_epoch);
             state.next_domain = next_domain;
             state.next_epoch = state

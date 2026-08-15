@@ -4,18 +4,20 @@ use std::sync::{
 };
 
 use skiff_runtime_model::{
-    vm_heap::{VmHeap, VmHeapError},
+    memory_ledger::{MemoryLease, MemoryLeaseHost, MemoryLeaseToken},
+    vm_heap::{HeapDomainId, HeapEpoch, VmHeap, VmHeapError},
     vm_root::{VmRootSource, VmRootVisitor},
     vm_value::ValueSlot,
 };
 use skiff_runtime_scheduler::{
-    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildStart, BytecodeControl,
-    BytecodeHandoff, BytecodeParkFailure, BytecodeParkRequest, BytecodePortFailure,
-    BytecodeResumeFailure, BytecodeSchedulerError, BytecodeSchedulerOutcome,
+    BytecodeAdapterHandoff, BytecodeChildExecutor, BytecodeChildHandoff, BytecodeChildStart,
+    BytecodeControl, BytecodeHandoff, BytecodeParkFailure, BytecodeParkRequest,
+    BytecodePortFailure, BytecodeResumeFailure, BytecodeSchedulerError, BytecodeSchedulerOutcome,
     BytecodeSchedulerPorts, BytecodeStreamHandoff, BytecodeStreamSupervisor, BytecodeUnit,
-    BytecodeUnitControl, PendingOwnerDraft, RequestExecutionContext,
+    BytecodeUnitControl, ChildFinish, ChildFinishError, PendingOwnerDraft, RequestExecutionContext,
 };
 use skiff_runtime_vm::{VmBudget, VmBudgetClosed, VmSemanticCharge};
+use std::num::NonZeroU64;
 
 struct NoopHeap;
 
@@ -54,6 +56,41 @@ impl VmBudget for NoopBudget {
 
     fn charge_semantic(&mut self, _charge: VmSemanticCharge<'_>) -> Result<(), VmBudgetClosed> {
         Ok(())
+    }
+}
+
+struct TestMemoryHost;
+
+impl MemoryLeaseHost for TestMemoryHost {
+    fn release_lease(&self, _token: MemoryLeaseToken, _amount: usize) {}
+}
+
+fn test_child_heap() -> skiff_runtime_scheduler::ChildHeapCarrier {
+    let context = RequestExecutionContext::<ChainUnit>::create(BytecodeSchedulerPorts::default());
+    skiff_runtime_scheduler::ChildHeapCarrier::new(
+        Box::new(NoopHeap),
+        HeapDomainId::try_new(1).unwrap(),
+        HeapEpoch::new(0),
+        MemoryLease::new(
+            Arc::new(TestMemoryHost),
+            MemoryLeaseToken::new(NonZeroU64::new(1).unwrap()),
+            1,
+        ),
+        context.child_heap_registration().mint_lease().unwrap(),
+    )
+}
+
+struct ChainFinish;
+
+impl ChildFinish<ChainUnit> for ChainFinish {
+    fn finish(
+        &self,
+        child_result: usize,
+        _child_heap: &mut skiff_runtime_scheduler::ChildHeapCarrier,
+        _parent_heap: &mut dyn VmHeap,
+        _budget: &mut dyn VmBudget,
+    ) -> Result<usize, ChildFinishError<ChainUnit>> {
+        Ok(child_result)
     }
 }
 
@@ -131,12 +168,14 @@ impl BytecodeChildExecutor<ChainUnit> for ChainExecutor {
         invocation: usize,
         _heap: &mut dyn VmHeap,
         _budget: &mut dyn VmBudget,
-    ) -> Result<BytecodeChildStart<ChainUnit>, BytecodeSchedulerError> {
+    ) -> Result<BytecodeChildHandoff<ChainUnit>, BytecodePortFailure<usize, usize>> {
         self.starts.fetch_add(1, Ordering::SeqCst);
-        Ok(BytecodeChildStart {
+        Ok(BytecodeChildHandoff::Ready(BytecodeChildStart {
             unit: ChainUnit::new(invocation, invocation, Arc::clone(&self.resumes)),
             resume: invocation,
-        })
+            child_heap: test_child_heap(),
+            finish: Box::new(ChainFinish),
+        }))
     }
 
     fn execute_adapter(
@@ -157,8 +196,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn non_stream_next_child_fails_closed_without_calling_phase_6_executor() {
-        const DEPTH: usize = 20_000;
+    fn non_stream_next_child_enters_and_finishes_through_phase_6_executor() {
+        const DEPTH: usize = 64;
 
         let resumes = Arc::new(AtomicUsize::new(0));
         let executor = Arc::new(ChainExecutor::new(Arc::clone(&resumes)));
@@ -172,15 +211,11 @@ mod tests {
         context.install_root(root);
         let (outcome, snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
 
-        let failure = outcome.unwrap_err();
-        assert!(matches!(
-            failure.reason(),
-            BytecodeSchedulerError::UnsupportedChild
-        ));
-        assert_eq!(executor.starts.load(Ordering::SeqCst), 0);
-        assert_eq!(resumes.load(Ordering::SeqCst), 0);
+        assert!(matches!(outcome, Ok(BytecodeSchedulerOutcome::Complete(0))));
+        assert_eq!(executor.starts.load(Ordering::SeqCst), DEPTH);
+        assert_eq!(resumes.load(Ordering::SeqCst), DEPTH);
         assert_eq!(snapshot.child.current, 0);
-        assert!(!snapshot.child.ever_created);
+        assert!(snapshot.child.ever_created);
     }
 
     type StreamResult = Result<usize, &'static str>;
@@ -488,8 +523,12 @@ mod tests {
             _invocation: DropProbe,
             _heap: &mut dyn VmHeap,
             _budget: &mut dyn VmBudget,
-        ) -> Result<BytecodeChildStart<OwnerProbeUnit>, BytecodeSchedulerError> {
-            panic!("a Phase 5 scheduler must not call the non-StreamNext child port")
+        ) -> Result<BytecodeChildHandoff<OwnerProbeUnit>, BytecodePortFailure<DropProbe, DropProbe>>
+        {
+            Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::UnsupportedChild,
+                _invocation,
+            ))
         }
 
         fn execute_adapter(
@@ -835,8 +874,12 @@ mod tests {
             _invocation: NextInvocation,
             _heap: &mut dyn VmHeap,
             _budget: &mut dyn VmBudget,
-        ) -> Result<BytecodeChildStart<NextUnit>, BytecodeSchedulerError> {
-            Err(BytecodeSchedulerError::UnsupportedChild)
+        ) -> Result<BytecodeChildHandoff<NextUnit>, BytecodePortFailure<NextInvocation, NextResume>>
+        {
+            Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::UnsupportedChild,
+                _invocation,
+            ))
         }
 
         fn execute_adapter(

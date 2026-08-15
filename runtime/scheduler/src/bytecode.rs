@@ -14,8 +14,8 @@ use skiff_runtime_vm::{
 use crate::{
     owner_inventory::{ChildOwnerRegistration, OwnerCreationError},
     pending::{MappedPendingWakeGuard, PendingResumeFailure},
-    ClaimedPendingWakeGuard, EnterChildError, FlatTrampoline, PendingOwnerDraft, PendingWake,
-    RequestResourceRootPin, SuspendedTrampoline,
+    ChildHeapCarrier, ClaimedPendingWakeGuard, EnterChildError, FlatTrampoline, PendingOwnerDraft,
+    PendingWake, RequestResourceRootPin, SuspendedTrampoline, TrampolineCompletion,
 };
 
 /// Failure modes owned by the bytecode scheduler.
@@ -479,11 +479,97 @@ pub type BytecodeUnitControl<U> = BytecodeControl<
     <U as BytecodeUnit>::PendingOperation,
 >;
 
-/// A child unit and the unique continuation that restores its parent.
-#[derive(Debug)]
+/// Exact child boundary continuation kept with the blocked parent.
+///
+/// The implementation materializes a completed child result into the parent
+/// heap, releases child-owned staging/terminal roots, and returns the exact
+/// parent resume outcome.
+pub trait ChildFinish<U: BytecodeUnit>: Send {
+    fn finish(
+        &self,
+        child_result: U::RootResult,
+        child_heap: &mut ChildHeapCarrier,
+        parent_heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> Result<U::ResumeOutcome, ChildFinishError<U>>;
+}
+
+/// Owner-bearing failure from one child boundary finish.
+#[must_use = "a child finish error must retain its still-owned child result"]
+pub enum ChildFinishError<U: BytecodeUnit> {
+    /// The boundary consumed or dropped the child result before failing.
+    Failure(BytecodeSchedulerError),
+    /// The child result was not consumed and remains live on the child heap.
+    ResultRetained {
+        reason: BytecodeSchedulerError,
+        result: U::RootResult,
+    },
+}
+
+impl<U: BytecodeUnit> ChildFinishError<U> {
+    pub fn failure(reason: BytecodeSchedulerError) -> Self {
+        Self::Failure(reason)
+    }
+
+    pub fn result_retained(reason: BytecodeSchedulerError, result: U::RootResult) -> Self {
+        Self::ResultRetained { reason, result }
+    }
+
+    pub fn reason(&self) -> &BytecodeSchedulerError {
+        match self {
+            Self::Failure(reason) | Self::ResultRetained { reason, .. } => reason,
+        }
+    }
+}
+
+impl<U: BytecodeUnit> fmt::Debug for ChildFinishError<U> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ChildFinishError")
+            .field("reason", self.reason())
+            .finish()
+    }
+}
+
+impl<U: BytecodeUnit> fmt::Display for ChildFinishError<U> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.reason().fmt(formatter)
+    }
+}
+
+impl<U: BytecodeUnit> std::error::Error for ChildFinishError<U> {}
+
+/// A child unit, its parent continuation, its own heap carrier and its exact
+/// finish continuation.
 pub struct BytecodeChildStart<U: BytecodeUnit> {
     pub unit: U,
     pub resume: U::ResumeToken,
+    pub child_heap: ChildHeapCarrier,
+    pub finish: Box<dyn ChildFinish<U>>,
+}
+
+impl<U: BytecodeUnit> fmt::Debug for BytecodeChildStart<U> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BytecodeChildStart")
+            .field("child_heap", &self.child_heap)
+            .finish_non_exhaustive()
+    }
+}
+
+/// One completed child-executor handoff.
+pub enum BytecodeChildHandoff<U: BytecodeUnit> {
+    Ready(BytecodeChildStart<U>),
+    Pending(U::PendingOperation),
+}
+
+impl<U: BytecodeUnit> fmt::Debug for BytecodeChildHandoff<U> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Ready(_) => formatter.write_str("Ready(..)"),
+            Self::Pending(_) => formatter.write_str("Pending(..)"),
+        }
+    }
 }
 
 /// One completed handoff plus the continuation that resumes the active unit.
@@ -611,7 +697,21 @@ pub trait BytecodeChildExecutor<U: BytecodeUnit>: Send + Sync + 'static {
         invocation: U::ChildInvocation,
         heap: &mut dyn VmHeap,
         budget: &mut dyn VmBudget,
-    ) -> Result<BytecodeChildStart<U>, BytecodeSchedulerError>;
+    ) -> Result<BytecodeChildHandoff<U>, BytecodePortFailure<U::ChildInvocation, U::ResumeToken>>;
+
+    /// Publishes an actual-`Pending` operation produced by
+    /// [`Self::execute_child`].
+    ///
+    /// The default reuses the adapter park port so implementors only need one
+    /// publication path for scheduler-owned pending operations.
+    fn park_child(
+        &self,
+        request: BytecodeParkRequest<U>,
+        heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> Result<(), BytecodeParkFailure<U>> {
+        self.park_adapter(request, heap, budget)
+    }
 
     fn execute_adapter(
         &self,
@@ -760,6 +860,7 @@ impl<U: BytecodeUnit> fmt::Debug for BytecodeSchedulerOutcome<U> {
 enum BytecodeSchedulerRetainedOwner<U: BytecodeUnit> {
     None,
     Complete(U::RootResult),
+    ChildStart(BytecodeChildStart<U>),
     ChildInput(U::ChildInvocation),
     AdapterInput(U::AdapterInvocation),
     StreamInput(U::StreamItem),
@@ -958,6 +1059,10 @@ impl VmRootSource for BytecodeSchedulerFailureOwner<VmFiber> {
                     BytecodeSchedulerRetainedOwner::Complete(completion) => {
                         completion.visit_roots(visitor)?;
                     }
+                    BytecodeSchedulerRetainedOwner::ChildStart(start) => {
+                        start.unit.visit_roots(visitor)?;
+                        start.child_heap.visit_roots(visitor)?;
+                    }
                     BytecodeSchedulerRetainedOwner::ChildInput(invocation) => {
                         invocation.visit_roots(visitor)?;
                     }
@@ -998,6 +1103,10 @@ impl VmRootSource for BytecodeSchedulerFailureOwner<VmFiber> {
                 | BytecodeSchedulerRetainedOwner::PortContinuation(_) => {}
                 BytecodeSchedulerRetainedOwner::Complete(completion) => {
                     completion.visit_roots(visitor)?;
+                }
+                BytecodeSchedulerRetainedOwner::ChildStart(start) => {
+                    start.unit.visit_roots(visitor)?;
+                    start.child_heap.visit_roots(visitor)?;
                 }
                 BytecodeSchedulerRetainedOwner::ChildInput(invocation) => {
                     invocation.visit_roots(visitor)?;
@@ -1205,6 +1314,20 @@ where
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_with_child_heap(
+        root: U,
+        active_heap: ChildHeapCarrier,
+        ports: BytecodeSchedulerPorts<U>,
+        child_owners: ChildOwnerRegistration,
+    ) -> Self {
+        Self {
+            trampoline: FlatTrampoline::with_child_heap(root, active_heap, child_owners),
+            ports,
+            resource_roots: None,
+        }
+    }
+
     pub(crate) fn new_with_resource_roots(
         root: U,
         ports: BytecodeSchedulerPorts<U>,
@@ -1273,6 +1396,18 @@ where
                 reason,
                 BytecodeSchedulerRetainedOwner::ResumeRejected { resume, outcome },
             ),
+        }
+    }
+
+    fn with_child_finish_failure(
+        self,
+        failure: ChildFinishError<U>,
+    ) -> BytecodeSchedulerFailure<U> {
+        match failure {
+            ChildFinishError::Failure(reason) => BytecodeSchedulerFailure::scheduler(reason, self),
+            ChildFinishError::ResultRetained { reason, result } => {
+                self.with_retained_failure(reason, BytecodeSchedulerRetainedOwner::Complete(result))
+            }
         }
     }
 
@@ -1369,16 +1504,45 @@ where
         budget: &mut dyn VmBudget,
     ) -> Result<BytecodeSchedulerOutcome<U>, BytecodeSchedulerFailure<U>> {
         loop {
-            let control = self.trampoline.active_mut().run_segment(heap, budget);
+            let control = self.trampoline.run_active_segment(heap, budget);
             match control {
                 BytecodeControl::Continue => {}
                 BytecodeControl::Complete(result) => {
                     let depth = self.trampoline.blocked_depth();
                     if depth != 0 {
-                        return Err(self.with_retained_failure(
-                            BytecodeSchedulerError::UnsupportedChild,
-                            BytecodeSchedulerRetainedOwner::Complete(result),
-                        ));
+                        let Self {
+                            trampoline,
+                            ports,
+                            resource_roots,
+                        } = self;
+                        match trampoline.complete_active_child(result, budget, heap) {
+                            Ok(TrampolineCompletion::ResumeParent(resume)) => {
+                                let (trampoline, resume, outcome) = resume.into_parts();
+                                let mut scheduler = BytecodeScheduler {
+                                    trampoline,
+                                    ports,
+                                    resource_roots,
+                                };
+                                if let Err(failure) =
+                                    scheduler.trampoline.active_mut().resume(resume, outcome)
+                                {
+                                    return Err(scheduler.with_resume_failure(failure));
+                                }
+                                self = scheduler;
+                            }
+                            Ok(TrampolineCompletion::RootComplete(_)) => {
+                                unreachable!("child completion restores a blocked parent")
+                            }
+                            Err((failure, trampoline)) => {
+                                let scheduler = BytecodeScheduler {
+                                    trampoline,
+                                    ports,
+                                    resource_roots,
+                                };
+                                return Err(scheduler.with_child_finish_failure(failure));
+                            }
+                        }
+                        continue;
                     }
                     if let Some(supervisor) = self.ports.stream_supervisor.clone() {
                         if let Err(reason) = supervisor.finish_stream(depth, &result) {
@@ -1392,10 +1556,55 @@ where
                 }
                 BytecodeControl::EnterChild(invocation) => {
                     if !U::is_stream_next_child(&invocation) {
-                        return Err(self.with_retained_failure(
-                            BytecodeSchedulerError::UnsupportedChild,
-                            BytecodeSchedulerRetainedOwner::ChildInput(invocation),
-                        ));
+                        let Some(executor) = self.ports.child_executor.clone() else {
+                            return Err(self.with_retained_failure(
+                                BytecodeSchedulerError::UnsupportedChild,
+                                BytecodeSchedulerRetainedOwner::ChildInput(invocation),
+                            ));
+                        };
+                        let active_heap: &mut dyn VmHeap = self
+                            .trampoline
+                            .active_heap_mut()
+                            .map(ChildHeapCarrier::heap_mut)
+                            .unwrap_or(heap);
+                        let handoff = match executor.execute_child(invocation, active_heap, budget)
+                        {
+                            Ok(handoff) => handoff,
+                            Err(failure) => return Err(self.with_child_port_failure(failure)),
+                        };
+                        match handoff {
+                            BytecodeChildHandoff::Ready(start) => {
+                                if let Err(error) = self.trampoline.enter_child_with_finish(
+                                    start.unit,
+                                    start.resume,
+                                    start.child_heap,
+                                    start.finish,
+                                ) {
+                                    let (error, unit, resume, child_heap, finish) =
+                                        error.into_parts();
+                                    return Err(self.with_retained_failure(
+                                        error.into(),
+                                        BytecodeSchedulerRetainedOwner::ChildStart(
+                                            BytecodeChildStart {
+                                                unit,
+                                                resume,
+                                                child_heap,
+                                                finish,
+                                            },
+                                        ),
+                                    ));
+                                }
+                            }
+                            BytecodeChildHandoff::Pending(operation) => {
+                                let (request, ports, resource_roots) =
+                                    self.into_park_parts(operation);
+                                if let Err(failure) = executor.park_child(request, heap, budget) {
+                                    return Err(Self::failed_park(failure, ports, resource_roots));
+                                }
+                                return Ok(BytecodeSchedulerOutcome::Parked);
+                            }
+                        }
+                        continue;
                     }
                     let Some(executor) = self.ports.child_executor.clone() else {
                         return Err(self.with_retained_failure(
@@ -1674,13 +1883,15 @@ impl BytecodeUnit for VmFiber {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroU64;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
     };
 
     use skiff_runtime_model::{
-        vm_heap::{VmHeap, VmHeapError, VmHeapOperation},
+        memory_ledger::{MemoryLease, MemoryLeaseHost, MemoryLeaseToken},
+        vm_heap::{HeapDomainId, HeapEpoch, VmHeap, VmHeapError, VmHeapOperation},
         vm_root::{VmRootSource, VmRootVisitor},
         vm_value::ValueSlot,
     };
@@ -1705,6 +1916,33 @@ mod tests {
     fn child_registration() -> ChildOwnerRegistration {
         let (registrations, _freeze) = RequestExecutionOwnerInventory::open().into_parts();
         registrations.child()
+    }
+
+    struct TestMemoryHost(Arc<AtomicUsize>);
+
+    impl MemoryLeaseHost for TestMemoryHost {
+        fn release_lease(&self, _token: MemoryLeaseToken, amount: usize) {
+            self.0.fetch_add(amount, Ordering::SeqCst);
+        }
+    }
+
+    fn test_child_heap_with_release(
+        amount: usize,
+        released: Arc<AtomicUsize>,
+        domain: u64,
+    ) -> ChildHeapCarrier {
+        let (registrations, _freeze) = RequestExecutionOwnerInventory::open().into_parts();
+        ChildHeapCarrier::new(
+            Box::new(NoopHeap),
+            HeapDomainId::try_new(domain).unwrap(),
+            HeapEpoch::new(0),
+            MemoryLease::new(
+                Arc::new(TestMemoryHost(released)),
+                MemoryLeaseToken::new(NonZeroU64::new(1).unwrap()),
+                amount,
+            ),
+            registrations.child_heap().mint_lease().unwrap(),
+        )
     }
 
     struct NoopHeap;
@@ -1885,6 +2123,102 @@ mod tests {
 
     impl VmRootSource for TestResumeOutcome {
         fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    struct TestChildFinish;
+
+    impl ChildFinish<TestUnit> for TestChildFinish {
+        fn finish(
+            &self,
+            child_result: usize,
+            _child_heap: &mut ChildHeapCarrier,
+            _parent_heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<TestResumeOutcome, ChildFinishError<TestUnit>> {
+            Ok(TestResumeOutcome(child_result))
+        }
+    }
+
+    struct SyncChildExecutor {
+        child_heap: Arc<Mutex<Option<ChildHeapCarrier>>>,
+        child_unit: Arc<Mutex<Option<TestUnit>>>,
+    }
+
+    impl BytecodeChildExecutor<TestUnit> for SyncChildExecutor {
+        fn execute_child(
+            &self,
+            invocation: usize,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<BytecodeChildHandoff<TestUnit>, BytecodePortFailure<usize, usize>> {
+            let child_heap = self
+                .child_heap
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+                .expect("sync child executor starts exactly once");
+            Ok(BytecodeChildHandoff::Ready(BytecodeChildStart {
+                unit: self
+                    .child_unit
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                    .expect("sync child executor starts exactly once"),
+                resume: invocation,
+                child_heap,
+                finish: Box::new(TestChildFinish),
+            }))
+        }
+
+        fn execute_adapter(
+            &self,
+            invocation: usize,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<BytecodeAdapterHandoff<TestUnit>, BytecodePortFailure<usize, usize>> {
+            Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::UnsupportedAdapter,
+                invocation,
+            ))
+        }
+    }
+
+    struct ChildPendingExecutor {
+        parked: Mutex<Option<(usize, TestSuspended)>>,
+    }
+
+    impl BytecodeChildExecutor<TestUnit> for ChildPendingExecutor {
+        fn execute_child(
+            &self,
+            _invocation: usize,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<BytecodeChildHandoff<TestUnit>, BytecodePortFailure<usize, usize>> {
+            Ok(BytecodeChildHandoff::Pending(7))
+        }
+
+        fn execute_adapter(
+            &self,
+            invocation: usize,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<BytecodeAdapterHandoff<TestUnit>, BytecodePortFailure<usize, usize>> {
+            Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::UnsupportedAdapter,
+                invocation,
+            ))
+        }
+
+        fn park_adapter(
+            &self,
+            request: BytecodeParkRequest<TestUnit>,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<(), BytecodeParkFailure<TestUnit>> {
+            let (operation, suspended) = request.into_parts();
+            *self.parked.lock().unwrap() = Some((operation, suspended));
             Ok(())
         }
     }
@@ -2299,14 +2633,13 @@ mod tests {
             invocation: usize,
             _heap: &mut dyn VmHeap,
             _budget: &mut dyn VmBudget,
-        ) -> Result<BytecodeChildStart<ResumeThenChildUnit>, BytecodeSchedulerError> {
+        ) -> Result<BytecodeChildHandoff<ResumeThenChildUnit>, BytecodePortFailure<usize, usize>>
+        {
             self.0.fetch_add(1, Ordering::SeqCst);
-            Ok(BytecodeChildStart {
-                unit: ResumeThenChildUnit {
-                    state: ResumeThenChildState::Complete,
-                },
-                resume: invocation,
-            })
+            Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::UnsupportedChild,
+                invocation,
+            ))
         }
 
         fn execute_adapter(
@@ -2395,8 +2728,12 @@ mod tests {
             _invocation: (),
             _heap: &mut dyn VmHeap,
             _budget: &mut dyn VmBudget,
-        ) -> Result<BytecodeChildStart<PendingStreamNextUnit>, BytecodeSchedulerError> {
-            Err(BytecodeSchedulerError::UnsupportedChild)
+        ) -> Result<BytecodeChildHandoff<PendingStreamNextUnit>, BytecodePortFailure<(), usize>>
+        {
+            Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::UnsupportedChild,
+                (),
+            ))
         }
 
         fn execute_adapter(
@@ -2870,7 +3207,232 @@ mod tests {
     }
 
     #[test]
-    fn non_stream_next_child_fails_closed_and_returns_invocation() {
+    fn sync_child_enters_finishes_and_releases_child_heap() {
+        let inventory = RequestExecutionOwnerInventory::open();
+        let (registrations, freeze) = inventory.into_parts();
+        let released = Arc::new(AtomicUsize::new(0));
+        let root_heap = test_child_heap_with_release(8, Arc::clone(&released), 1);
+        let executor = Arc::new(SyncChildExecutor {
+            child_heap: Arc::new(Mutex::new(Some(test_child_heap_with_release(
+                16,
+                Arc::clone(&released),
+                2,
+            )))),
+            child_unit: Arc::new(Mutex::new(Some(TestUnit {
+                control: Some(TestControl::Complete(9)),
+                resumed: None,
+                finish_after_resume: None,
+            }))),
+        });
+        let ports = BytecodeSchedulerPorts {
+            child_executor: Some(executor.clone() as Arc<dyn BytecodeChildExecutor<TestUnit>>),
+            stream_supervisor: None,
+        };
+        let scheduler = BytecodeScheduler::new_with_child_heap(
+            TestUnit {
+                control: Some(TestControl::EnterChild(0)),
+                resumed: None,
+                finish_after_resume: Some(7),
+            },
+            root_heap,
+            ports,
+            registrations.child(),
+        );
+
+        let outcome = scheduler.run(&mut NoopHeap, &mut NoopBudget).unwrap();
+        assert!(matches!(outcome, BytecodeSchedulerOutcome::Complete(7)));
+        assert_eq!(released.load(Ordering::SeqCst), 24);
+        let snapshot = freeze.freeze();
+        assert_eq!(snapshot.child.current, 0);
+        assert!(snapshot.child.ever_created);
+    }
+
+    #[test]
+    fn frozen_child_entry_retains_the_ready_child_bundle() {
+        let inventory = RequestExecutionOwnerInventory::open();
+        let (registrations, freeze) = inventory.into_parts();
+        let released = Arc::new(AtomicUsize::new(0));
+        let root_heap = test_child_heap_with_release(8, Arc::clone(&released), 1);
+        let executor = Arc::new(SyncChildExecutor {
+            child_heap: Arc::new(Mutex::new(Some(test_child_heap_with_release(
+                16,
+                Arc::clone(&released),
+                2,
+            )))),
+            child_unit: Arc::new(Mutex::new(Some(TestUnit {
+                control: Some(TestControl::Complete(9)),
+                resumed: None,
+                finish_after_resume: None,
+            }))),
+        });
+        let ports = BytecodeSchedulerPorts {
+            child_executor: Some(executor.clone() as Arc<dyn BytecodeChildExecutor<TestUnit>>),
+            stream_supervisor: None,
+        };
+        let scheduler = BytecodeScheduler::new_with_child_heap(
+            TestUnit {
+                control: Some(TestControl::EnterChild(0)),
+                resumed: None,
+                finish_after_resume: None,
+            },
+            root_heap,
+            ports,
+            registrations.child(),
+        );
+        let snapshot = freeze.freeze();
+
+        let failure = scheduler.run(&mut NoopHeap, &mut NoopBudget).unwrap_err();
+        assert!(matches!(
+            failure.reason(),
+            BytecodeSchedulerError::ChildOwnerCreation(_)
+        ));
+        assert_eq!(released.load(Ordering::SeqCst), 0);
+        let (_, owner) = failure.into_parts();
+        drop(owner);
+        assert_eq!(released.load(Ordering::SeqCst), 24);
+        assert_eq!(snapshot.child.current, 0);
+        assert!(!snapshot.child.ever_created);
+    }
+
+    #[test]
+    fn child_executor_pending_parks_parent_chain_through_registry() {
+        let inventory = RequestExecutionOwnerInventory::open();
+        let (mut registrations, freeze) = inventory.into_parts();
+        let released = Arc::new(AtomicUsize::new(0));
+        let root_heap = test_child_heap_with_release(8, Arc::clone(&released), 1);
+        let executor = Arc::new(ChildPendingExecutor {
+            parked: Mutex::new(None),
+        });
+        let ports = BytecodeSchedulerPorts {
+            child_executor: Some(executor.clone() as Arc<dyn BytecodeChildExecutor<TestUnit>>),
+            stream_supervisor: None,
+        };
+        let scheduler = BytecodeScheduler::new_with_child_heap(
+            TestUnit {
+                control: Some(TestControl::EnterChild(0)),
+                resumed: None,
+                finish_after_resume: Some(42),
+            },
+            root_heap,
+            ports,
+            registrations.child(),
+        );
+
+        let outcome = scheduler.run(&mut NoopHeap, &mut NoopBudget).unwrap();
+        assert!(matches!(outcome, BytecodeSchedulerOutcome::Parked));
+        let (operation, suspended) = executor.parked.lock().unwrap().take().unwrap();
+        assert_eq!(operation, 7);
+        assert_eq!(suspended.active_heap().unwrap().domain().get(), 1);
+        assert_eq!(suspended.blocked_depth(), 0);
+
+        let registry = PendingRegistry::<usize, TestSuspended, TestResumeOutcome>::new(
+            registrations.take_pending().unwrap(),
+        );
+        let completion = registry.begin(RootEscrow::empty()).unwrap();
+        let queue = Arc::new(TestWakeQueue(Mutex::new(Vec::new())));
+        let wake_queue: Arc<dyn PendingWakeQueue<usize, TestSuspended, TestResumeOutcome>> =
+            queue.clone();
+        registry
+            .publish(
+                completion.ticket(),
+                PendingOwnerDraft::new(operation, suspended),
+                wake_queue,
+            )
+            .unwrap();
+        assert!(matches!(
+            completion.complete(TestResumeOutcome(0)),
+            SettleDisposition::Enqueued
+        ));
+        let wake = queue.0.lock().unwrap().pop().unwrap();
+        let scheduler = BytecodeScheduler::<TestUnit>::resume_from_pending_wake(
+            wake,
+            BytecodeSchedulerPorts::default(),
+        )
+        .unwrap();
+        let outcome = scheduler.run(&mut NoopHeap, &mut NoopBudget).unwrap();
+        assert!(matches!(outcome, BytecodeSchedulerOutcome::Complete(42)));
+        assert_eq!(released.load(Ordering::SeqCst), 8);
+        let snapshot = freeze.freeze();
+        assert_eq!(snapshot.child.current, 0);
+        assert!(!snapshot.child.ever_created);
+    }
+
+    #[test]
+    fn actual_pending_child_retains_active_and_blocked_heap_carriers() {
+        let inventory = RequestExecutionOwnerInventory::open();
+        let (mut registrations, freeze) = inventory.into_parts();
+        let released = Arc::new(AtomicUsize::new(0));
+        let root_heap = test_child_heap_with_release(8, Arc::clone(&released), 1);
+        let executor = Arc::new(SyncChildExecutor {
+            child_heap: Arc::new(Mutex::new(Some(test_child_heap_with_release(
+                16,
+                Arc::clone(&released),
+                2,
+            )))),
+            child_unit: Arc::new(Mutex::new(Some(TestUnit::parked(7)))),
+        });
+        let supervisor = Arc::new(TestStreamSupervisor {
+            parked: Mutex::new(None),
+            emitted: Mutex::new(Vec::new()),
+        });
+        let ports = BytecodeSchedulerPorts {
+            child_executor: Some(executor.clone() as Arc<dyn BytecodeChildExecutor<TestUnit>>),
+            stream_supervisor: Some(
+                supervisor.clone() as Arc<dyn BytecodeStreamSupervisor<TestUnit>>
+            ),
+        };
+        let scheduler = BytecodeScheduler::new_with_child_heap(
+            TestUnit {
+                control: Some(TestControl::EnterChild(0)),
+                resumed: None,
+                finish_after_resume: None,
+            },
+            root_heap,
+            ports,
+            registrations.child(),
+        );
+
+        let outcome = scheduler.run(&mut NoopHeap, &mut NoopBudget).unwrap();
+        assert!(matches!(outcome, BytecodeSchedulerOutcome::Parked));
+        let (operation, suspended) = supervisor.parked.lock().unwrap().take().unwrap();
+        assert_eq!(operation, 7);
+        assert_eq!(suspended.active_heap().unwrap().domain().get(), 2);
+        assert_eq!(suspended.blocked_depth(), 1);
+
+        let registry = PendingRegistry::<usize, TestSuspended, TestResumeOutcome>::new(
+            registrations.take_pending().unwrap(),
+        );
+        let completion = registry.begin(RootEscrow::empty()).unwrap();
+        let queue = Arc::new(TestWakeQueue(Mutex::new(Vec::new())));
+        let wake_queue: Arc<dyn PendingWakeQueue<usize, TestSuspended, TestResumeOutcome>> =
+            queue.clone();
+        registry
+            .publish(
+                completion.ticket(),
+                PendingOwnerDraft::new(operation, suspended),
+                wake_queue,
+            )
+            .unwrap();
+        assert!(matches!(
+            completion.complete(TestResumeOutcome(0)),
+            SettleDisposition::Enqueued
+        ));
+        let wake = queue.0.lock().unwrap().pop().unwrap();
+        let scheduler = BytecodeScheduler::<TestUnit>::resume_from_pending_wake(
+            wake,
+            BytecodeSchedulerPorts::default(),
+        )
+        .unwrap();
+        let outcome = scheduler.run(&mut NoopHeap, &mut NoopBudget).unwrap();
+        assert!(matches!(outcome, BytecodeSchedulerOutcome::Complete(0)));
+        assert_eq!(released.load(Ordering::SeqCst), 24);
+        let snapshot = freeze.freeze();
+        assert_eq!(snapshot.child.current, 0);
+        assert!(snapshot.child.ever_created);
+    }
+
+    #[test]
+    fn non_stream_next_child_reaches_executor_and_returns_invocation() {
         let executor = Arc::new(ResumeThenChildExecutor(AtomicUsize::new(0)));
         let supervisor = Arc::new(ResumeThenChildSupervisor(Mutex::new(None)));
         let ports = BytecodeSchedulerPorts {
@@ -2935,7 +3497,7 @@ mod tests {
             panic!("expected the rejected child invocation owner")
         };
         assert_eq!(invocation, 0);
-        assert_eq!(executor.0.load(Ordering::SeqCst), 0);
+        assert_eq!(executor.0.load(Ordering::SeqCst), 1);
         assert_eq!(snapshot.child.current, 0);
     }
 
@@ -2993,6 +3555,71 @@ mod tests {
             outcome,
             BytecodeSchedulerOutcome::Complete(PendingStreamOutcome::End)
         ));
+    }
+
+    #[test]
+    fn stream_next_pending_retains_active_child_heap_carrier() {
+        let inventory = RequestExecutionOwnerInventory::open();
+        let (mut registrations, freeze) = inventory.into_parts();
+        let released = Arc::new(AtomicUsize::new(0));
+        let root_heap = test_child_heap_with_release(8, Arc::clone(&released), 1);
+        let executor = Arc::new(PendingStreamExecutor(Mutex::new(None)));
+        let ports = BytecodeSchedulerPorts {
+            child_executor: Some(
+                executor.clone() as Arc<dyn BytecodeChildExecutor<PendingStreamNextUnit>>
+            ),
+            stream_supervisor: None,
+        };
+        let scheduler = BytecodeScheduler::new_with_child_heap(
+            PendingStreamNextUnit {
+                entered: false,
+                resumed: None,
+            },
+            root_heap,
+            ports,
+            registrations.child(),
+        );
+
+        let outcome = scheduler.run(&mut NoopHeap, &mut NoopBudget).unwrap();
+        assert!(matches!(outcome, BytecodeSchedulerOutcome::Parked));
+        let (operation, suspended) = executor.0.lock().unwrap().take().unwrap();
+        assert_eq!(operation, 13);
+        assert_eq!(suspended.active_heap().unwrap().domain().get(), 1);
+
+        let registry = PendingRegistry::<usize, PendingStreamSuspended, PendingStreamOutcome>::new(
+            registrations.take_pending().unwrap(),
+        );
+        let completion = registry.begin(RootEscrow::empty()).unwrap();
+        let queue = Arc::new(PendingStreamQueue(Mutex::new(Vec::new())));
+        let wake_queue: Arc<
+            dyn PendingWakeQueue<usize, PendingStreamSuspended, PendingStreamOutcome>,
+        > = queue.clone();
+        registry
+            .publish(
+                completion.ticket(),
+                PendingOwnerDraft::new(operation, suspended),
+                wake_queue,
+            )
+            .unwrap();
+        assert!(matches!(
+            completion.complete(PendingStreamOutcome::End),
+            SettleDisposition::Enqueued
+        ));
+        let wake = queue.0.lock().unwrap().pop().unwrap();
+        let scheduler = BytecodeScheduler::<PendingStreamNextUnit>::resume_from_pending_wake(
+            wake,
+            BytecodeSchedulerPorts::default(),
+        )
+        .unwrap();
+        let outcome = scheduler.run(&mut NoopHeap, &mut NoopBudget).unwrap();
+        assert!(matches!(
+            outcome,
+            BytecodeSchedulerOutcome::Complete(PendingStreamOutcome::End)
+        ));
+        assert_eq!(released.load(Ordering::SeqCst), 8);
+        let snapshot = freeze.freeze();
+        assert_eq!(snapshot.child.current, 0);
+        assert!(!snapshot.child.ever_created);
     }
 
     #[test]
@@ -3064,8 +3691,12 @@ mod tests {
                 _invocation: usize,
                 _heap: &mut dyn VmHeap,
                 _budget: &mut dyn VmBudget,
-            ) -> Result<BytecodeChildStart<TestUnit>, BytecodeSchedulerError> {
-                Err(BytecodeSchedulerError::UnsupportedChild)
+            ) -> Result<BytecodeChildHandoff<TestUnit>, BytecodePortFailure<usize, usize>>
+            {
+                Err(BytecodePortFailure::input(
+                    BytecodeSchedulerError::UnsupportedChild,
+                    _invocation,
+                ))
             }
 
             fn execute_adapter(
