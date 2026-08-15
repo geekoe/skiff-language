@@ -110,6 +110,9 @@ pub fn build_capability(capability: Capability, negative: bool, prefix: &str) ->
     if capability == Capability::Service && !negative {
         return build_service_positive(&repository, prefix);
     }
+    if capability == Capability::Callback && !negative {
+        return build_callback_positive(&repository, prefix);
+    }
     let fixture = repository.join(capability.path(negative));
     let root = TempRoot::new(prefix);
     let root_path = root.path().to_path_buf();
@@ -157,6 +160,41 @@ fn build_service_positive(repository: &Path, prefix: &str) -> BuildOutcome {
     let mut outcome = build_single_into(
         &consumer,
         "test.skiff/bytecode-vm-phase-6-service",
+        "1.0.0",
+        root.path(),
+    );
+    if let BuildOutcome::Published(fixture) = &mut outcome {
+        fixture._root = root;
+    }
+    outcome
+}
+
+fn build_callback_positive(repository: &Path, prefix: &str) -> BuildOutcome {
+    let root = TempRoot::new(prefix);
+    let sources = CompilerPlatformSources::new(repository).expect("open compiler platform sources");
+    seed_official_std_package(&sources, root.path()).expect("seed production std package");
+    let provider =
+        repository.join("runtime/host/tests/fixtures/bytecode-vm-phase-6/callback-provider");
+    match build_single_into(
+        &provider,
+        "example.com/phase-6-callback-provider",
+        "1.0.0",
+        root.path(),
+    ) {
+        BuildOutcome::Published(_) => {}
+        BuildOutcome::Rejected { error_chain, .. } => {
+            return BuildOutcome::Rejected {
+                error_chain,
+                package_pointer_absent: false,
+                release_pointer_absent: false,
+            }
+        }
+    }
+    let consumer =
+        repository.join("runtime/host/tests/fixtures/bytecode-vm-phase-6/callback-positive");
+    let mut outcome = build_single_into(
+        &consumer,
+        "test.skiff/bytecode-vm-phase-6-callback",
         "1.0.0",
         root.path(),
     );

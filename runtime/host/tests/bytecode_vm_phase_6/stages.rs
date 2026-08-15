@@ -54,6 +54,28 @@ pub fn assert_interface_local_named_rejected(directory: &str, package_id: &str, 
     }
 }
 
+pub fn assert_callback_negative_rejected(prefix: &str) {
+    match build_capability(Capability::Callback, true, prefix) {
+        BuildOutcome::Rejected {
+            package_pointer_absent,
+            release_pointer_absent,
+            ..
+        } => {
+            assert!(
+                package_pointer_absent,
+                "disabled callback surface wrote a package pointer"
+            );
+            assert!(
+                release_pointer_absent,
+                "disabled callback surface wrote a release pointer"
+            );
+        }
+        BuildOutcome::Published(_) => {
+            panic!("disabled callback surface published an executable image")
+        }
+    }
+}
+
 pub fn admitted_artifact(capability: Capability, prefix: &str) -> Arc<ValidatedBytecodeArtifact> {
     let fixture = published_positive(capability, prefix);
     fixture.bytecode()

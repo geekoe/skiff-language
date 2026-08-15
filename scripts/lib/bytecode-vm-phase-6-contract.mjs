@@ -66,6 +66,7 @@ const HOST_MATRIX_TESTS = 6;
 const ROUTER_MATRIX_TESTS = 6;
 const CONTAINMENT_TESTS = 2;
 const KERNEL_TESTS = 6;
+const CALLBACK_MATRIX_TESTS = 7;
 
 export function phase6ScenarioSpecs(root) {
   return Object.freeze([
@@ -80,7 +81,7 @@ export function phase6ScenarioSpecs(root) {
       ['I6L', 'F6', 'K6']),
     hostSuite(root, 'p6-interface-remote-matrix', 'interface_remote_', HOST_MATRIX_TESTS,
       ['I6R', 'S6', 'F6', 'X6']),
-    hostSuite(root, 'p6-callback-matrix', 'callback_', HOST_MATRIX_TESTS,
+    hostSuite(root, 'p6-callback-matrix', 'callback_', CALLBACK_MATRIX_TESTS,
       ['C6', 'F6', 'K6', 'X6']),
     hostSuite(root, 'p6-recoverable-matrix', 'recoverable_', 8,
       ['R6', 'F6', 'K6']),

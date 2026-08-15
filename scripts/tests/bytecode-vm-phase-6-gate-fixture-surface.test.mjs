@@ -58,13 +58,17 @@ test('positive fixtures drive real Phase 6 source semantics, not test seams', as
   const service = await sources.service;
   const interfaceFixture = await sources.interface;
   const callback = await sources.callback;
+  const callbackProvider = await readFile(fixture('callback-provider'), 'utf8');
   const recoverable = await sources.recoverable;
   const db = await sources.db;
   const task = await sources.task;
   const actor = await sources.actor;
   assert.match(service, /payments\/echo\(/);
   assert.match(interfaceFixture, / as [A-Za-z0-9_./]+/);
-  assert.match(callback, /fn\(/);
+  assert.match(callback, /payments\.Handler/);
+  assert.match(callback, /payments\/invoke/);
+  assert.doesNotMatch(callback, /fn\(/);
+  assert.match(callbackProvider, /function invoke\(handler: any Handler/);
   assert.match(recoverable, /db transaction|db object/);
   assert.match(db, /db transaction/);
   assert.match(task, /dispatch /);
@@ -116,7 +120,7 @@ test('J2 focused fixtures use unary owner-internal production paths', async () =
   assert.match(localHttp, /path: \/phase-6\/interface-local\n/);
   assert.match(
     hostChain,
-    /Capability::Service\s*\|\s*Capability::InterfaceLocal\s*\|\s*Capability::Recoverable\s*\|\s*Capability::Db\s*\|\s*Capability::Task\s*\|\s*Capability::Actor/,
+    /Capability::Service\s*\|\s*Capability::InterfaceLocal\s*\|\s*Capability::Recoverable\s*\|\s*Capability::Db\s*\|\s*Capability::Task\s*\|\s*Capability::Callback\s*\|\s*Capability::Actor/,
   );
   assert.match(hostChain, /let mode = if unary_json \{ "unary" \}/);
   assert.match(hostChain, /let body = if unary_json \{\s*b"7"\.as_slice\(\)/);
@@ -146,7 +150,7 @@ test('Rust matrices expose every registered prefix with the exact expected red c
     ['service_', 6],
     ['interface_local_', 12],
     ['interface_remote_', 6],
-    ['callback_', 6],
+    ['callback_', 7],
     ['recoverable_', 8],
     ['db_', 6],
     ['task_', 6],

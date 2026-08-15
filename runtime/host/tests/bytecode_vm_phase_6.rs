@@ -206,6 +206,12 @@ mod tests {
         callback_s5,
         callback_s6
     );
+
+    #[test]
+    fn callback_negative_rejected() {
+        stages::assert_callback_negative_rejected("callback-negative");
+    }
+
     capability_matrix!(
         Capability::Recoverable,
         "recoverable-s1",

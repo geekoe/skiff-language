@@ -1,12 +1,22 @@
-function invoke(value: string, handler: fn(value: string) -> string) -> string {
-  return handler(value)
+interface Handler {
+  function handle(self: Self, value: number) -> number
 }
 
-function upper(value: string) -> string {
-  return value.concat("-bad")
+type HandlerImpl implements Handler {
+  offset: number,
+}
+
+impl HandlerImpl {
+  function handle(value: number) -> number {
+    return value + self.offset
+  }
+}
+
+function invoke(handler: any Handler, value: number) -> number {
+  return handler.handle(value)
 }
 
 function run(seed: number) -> number {
-  invoke("bad", upper)
-  return seed
+  final handler = HandlerImpl { offset: 1 } as Handler
+  return invoke(handler, seed)
 }

@@ -1,1 +1,2 @@
 id: test.skiff/bytecode-vm-phase-6-callback-negative
+serviceCalls: [invoke]

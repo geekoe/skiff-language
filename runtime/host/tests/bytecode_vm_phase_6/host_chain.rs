@@ -66,6 +66,7 @@ async fn drive(capability: Capability, prefix: &str) -> HostResponse {
             | Capability::Recoverable
             | Capability::Db
             | Capability::Task
+            | Capability::Callback
             | Capability::Actor
     );
     let mode = if unary_json { "unary" } else { "serverStream" };

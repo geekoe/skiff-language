@@ -1,17 +1,14 @@
-import std
-
-function invoke(value: string, handler: fn(value: string) -> string) -> string {
-  return handler(value)
+type HandlerImpl implements payments.Handler {
+  offset: number,
 }
 
-function upper(value: string) -> string {
-  return value.concat("-callback")
+impl HandlerImpl {
+  function handle(value: number) -> number {
+    return value + self.offset
+  }
 }
 
-function run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
-  final value = invoke("callback", upper)
-  emit({ tag: "start", status: 200, headers: [] })
-  emit({ tag: "chunk", value: bytes.fromUtf8(value) })
-  emit({ tag: "end" })
-  return null
+function run(seed: number) -> number {
+  final handler = HandlerImpl { offset: 1 } as payments.Handler
+  return payments/invoke(handler, seed)
 }

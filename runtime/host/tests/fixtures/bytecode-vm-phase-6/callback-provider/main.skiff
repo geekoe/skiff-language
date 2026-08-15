@@ -1,0 +1,7 @@
+interface Handler {
+  function handle(self: Self, value: number) -> number
+}
+
+function invoke(handler: any Handler, value: number) -> number {
+  return handler.handle(value)
+}
