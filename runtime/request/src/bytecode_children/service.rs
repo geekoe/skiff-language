@@ -6,7 +6,8 @@ use std::sync::{
 };
 
 use skiff_runtime_boundary::vm_materialize::{
-    linked_type_for_contract, materialize_linked_value, release_boundary_source,
+    linked_callback_type_for_contract, linked_type_for_contract, materialize_linked_value,
+    release_boundary_source,
 };
 use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_model::{
@@ -138,13 +139,31 @@ pub(crate) fn execute_service_child(
         .enumerate()
     {
         let caller_type = value.caller_type();
-        if source
-            .compact_type_tag()
-            .is_some_and(|tag| tag.type_index() != caller_type.get())
+        let is_callback_capability = matches!(
+            value.value_plan(),
+            skiff_artifact_model::BoundaryValuePlan::Linkable {
+                carrier: skiff_artifact_model::BoundaryValueCarrier::CallbackCapability,
+                ..
+            }
+        );
+        if !is_callback_capability
+            && source
+                .compact_type_tag()
+                .is_some_and(|tag| tag.type_index() != caller_type.get())
         {
             return Err(BytecodePortFailure::input(
                 BytecodeSchedulerError::Port(format!(
                     "service argument {index} does not carry the linked caller type tag"
+                )),
+                invocation,
+            ));
+        }
+        if is_callback_capability {
+            return Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::Port(format!(
+                    "callback argument {index} materialization requires C6 callback hook and F6 \
+                     linked callback execution facts; X6 resolved the provider boundary type but \
+                     the VM callback carrier projection is not installed"
                 )),
                 invocation,
             ));
@@ -235,14 +254,35 @@ fn validate_boundary_types(
         .zip(provider_signature.parameter_types())
         .enumerate()
     {
-        let Some(linked) = linked_type_for_contract(provider_image, plan.contract_type()) else {
+        let Some(linked) = linked_type_for_contract(provider_image, plan.contract_type())
+            .or_else(|| linked_callback_type_for_contract(provider_image, plan.contract_type()))
+        else {
+            let provider_type_ref = provider_image
+                .types()
+                .get(provider_type.get() as usize)
+                .map(skiff_runtime_linked_bytecode::LinkedTypeEntry::type_ref);
             return Err(BytecodeSchedulerError::Port(format!(
-                "provider image lacks the linked service boundary type for argument {index}"
+                "provider image lacks the linked service boundary type for argument {index}: \
+                 contract type {contract_type:?}, provider parameter type {provider_type:?}, \
+                 provider type ref {provider_type_ref:?}",
+                contract_type = plan.contract_type(),
+                provider_type = provider_type
             )));
         };
-        if linked != *provider_type {
+        let linked_type_ref = provider_image
+            .types()
+            .get(linked.get() as usize)
+            .map(skiff_runtime_linked_bytecode::LinkedTypeEntry::type_ref);
+        let provider_type_ref = provider_image
+            .types()
+            .get(provider_type.get() as usize)
+            .map(skiff_runtime_linked_bytecode::LinkedTypeEntry::type_ref);
+        if linked_type_ref != provider_type_ref {
             return Err(BytecodeSchedulerError::Port(format!(
-                "provider parameter {index} type differs from the linked service boundary plan"
+                "provider parameter {index} type differs from the linked service boundary plan: \
+                 contract type {contract_type:?}, linked type {linked:?} ({linked_type_ref:?}), \
+                 provider type {provider_type:?} ({provider_type_ref:?})",
+                contract_type = plan.contract_type()
             )));
         }
     }
@@ -257,9 +297,20 @@ fn validate_boundary_types(
                 "provider image lacks the linked service boundary type for result {index}"
             )));
         };
-        if linked != *provider_type {
+        let linked_type_ref = provider_image
+            .types()
+            .get(linked.get() as usize)
+            .map(skiff_runtime_linked_bytecode::LinkedTypeEntry::type_ref);
+        let provider_type_ref = provider_image
+            .types()
+            .get(provider_type.get() as usize)
+            .map(skiff_runtime_linked_bytecode::LinkedTypeEntry::type_ref);
+        if linked_type_ref != provider_type_ref {
             return Err(BytecodeSchedulerError::Port(format!(
-                "provider result {index} type differs from the linked service boundary plan"
+                "provider result {index} type differs from the linked service boundary plan: \
+                 contract type {contract_type:?}, linked type {linked:?} ({linked_type_ref:?}), \
+                 provider type {provider_type:?} ({provider_type_ref:?})",
+                contract_type = plan.contract_type()
             )));
         }
     }

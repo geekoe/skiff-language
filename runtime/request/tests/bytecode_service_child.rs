@@ -10,12 +10,14 @@ mod tests {
     };
 
     use skiff_artifact_model::{
-        PackageBuildId, ServiceContractRef, ServiceProtocolIdentity, ServiceRequirementKey,
+        ContractTypeRef, PackageBuildId, PackageSchemaTypeId, ServiceContractRef,
+        ServiceProtocolIdentity, ServiceRequirementKey, TypeRefIr,
     };
     use skiff_compiler::{
         authoring::{build_authoring_object, seed_official_std_package, AuthoringObject},
         CompilerPlatformSources,
     };
+    use skiff_runtime_boundary::vm_materialize::linked_callback_type_for_contract;
     use skiff_runtime_deployment_image::ServiceDependencySlot;
     use skiff_runtime_linker::{
         link_deployment_execution_image, DeploymentExecutionImage, LinkLimits,
@@ -30,6 +32,7 @@ mod tests {
 
     static NEXT_PROVIDER_TEMP: AtomicU64 = AtomicU64::new(0);
     static PROVIDER_IMAGE: OnceLock<Arc<DeploymentExecutionImage>> = OnceLock::new();
+    static CALLBACK_PROVIDER_IMAGE: OnceLock<Arc<DeploymentExecutionImage>> = OnceLock::new();
 
     fn provider_image() -> Arc<DeploymentExecutionImage> {
         Arc::clone(PROVIDER_IMAGE.get_or_init(|| {
@@ -75,6 +78,55 @@ mod tests {
             let image = Arc::new(
                 link_deployment_execution_image(hydrated, &provider_link_limits())
                     .expect("link provider fixture image"),
+            );
+            fs::remove_dir_all(&artifact_root).unwrap();
+            image
+        }))
+    }
+
+    fn callback_provider_image() -> Arc<DeploymentExecutionImage> {
+        Arc::clone(CALLBACK_PROVIDER_IMAGE.get_or_init(|| {
+            let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .and_then(Path::parent)
+                .expect("request crate must be under the repository root")
+                .to_path_buf();
+            let fixture_root = repository_root
+                .join("runtime/host/tests/fixtures/bytecode-vm-phase-6/callback-provider");
+            let artifact_root = std::env::temp_dir().join(format!(
+                "skiff-request-callback-provider-{}-{}",
+                std::process::id(),
+                NEXT_PROVIDER_TEMP.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(&artifact_root).unwrap();
+            let sources = CompilerPlatformSources::new(&repository_root)
+                .expect("open repository platform sources");
+            seed_official_std_package(&sources, &artifact_root)
+                .expect("seed canonical std into callback provider fixture store");
+            let receipt = build_authoring_object(
+                &sources,
+                AuthoringObject::Package,
+                &fixture_root,
+                &artifact_root,
+                "skiff-test",
+                true,
+            )
+            .expect("callback provider fixture publishes through production authoring");
+            let deployment = serde_json::from_value(
+                receipt
+                    .pointer("/serviceDeploymentReceipt/deployment")
+                    .cloned()
+                    .expect("callback provider authoring receipt carries deployment"),
+            )
+            .expect("callback provider deployment receipt remains typed");
+            let resolver = FilesystemDeploymentBytecodeContentResolver::open(&artifact_root)
+                .expect("open callback provider fixture store");
+            let hydrated = DeploymentBytecodeLoader::new(&resolver)
+                .load(&deployment)
+                .expect("load callback provider fixture closure");
+            let image = Arc::new(
+                link_deployment_execution_image(hydrated, &provider_link_limits())
+                    .expect("link callback provider fixture image"),
             );
             fs::remove_dir_all(&artifact_root).unwrap();
             image
@@ -324,5 +376,51 @@ mod tests {
             )
             .expect("present provider resolver must succeed");
         assert!(Arc::ptr_eq(&image, &resolved));
+    }
+
+    #[test]
+    fn callback_provider_boundary_type_resolves_to_the_linked_signature_row() {
+        let image = callback_provider_image();
+        let operation = skiff_artifact_identity::contract_operation_id(
+            "example.com/phase-6-callback-provider",
+            "1.0.0",
+            "invoke",
+        )
+        .unwrap();
+        let entry = image
+            .operation_entry(&operation)
+            .expect("callback provider links its service operation");
+        let provider_type = entry.signature().parameter_types()[0];
+        let TypeRefIr::AnyInterface { interface } =
+            image.types()[provider_type.get() as usize].type_ref()
+        else {
+            panic!("callback provider argument 0 must be an AnyInterface row");
+        };
+        let value: serde_json::Value =
+            serde_json::from_str(&interface.interface_abi_id).expect("provider ABI JSON is valid");
+        let package_id = value
+            .pointer("/symbol/package/packageId")
+            .and_then(serde_json::Value::as_str)
+            .expect("provider ABI JSON carries the package id");
+        let symbol_path = value
+            .pointer("/symbol/symbolPath")
+            .and_then(serde_json::Value::as_str)
+            .expect("provider ABI JSON carries the symbol path");
+        let stable_schema_key = symbol_path
+            .rsplit('.')
+            .next()
+            .expect("provider symbol path has an interface key");
+        let contract_type = ContractTypeRef::AnyInterface {
+            interface: Box::new(ContractTypeRef::package_schema(
+                package_id,
+                stable_schema_key,
+                PackageSchemaTypeId::new("contract:test"),
+            )),
+            arguments: Vec::new(),
+        };
+
+        let resolved = linked_callback_type_for_contract(&image, &contract_type)
+            .expect("callback provider must resolve its linked callback carrier type");
+        assert_eq!(resolved, provider_type);
     }
 }

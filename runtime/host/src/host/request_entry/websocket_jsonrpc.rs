@@ -19,7 +19,8 @@ use tracing::error;
 use super::{
     assembly::bytecode_request_execution_handles,
     assembly_wire::{
-        production_bytecode_request_child_composition, AdmittedBytecodeWebSocketJsonRpcRequest,
+        production_bytecode_request_child_composition, request_activation_identity,
+        AdmittedBytecodeWebSocketJsonRpcRequest,
     },
 };
 use crate::{
@@ -97,6 +98,12 @@ impl RuntimeHost {
             db_source.as_ref(),
             &request_envelope.request_id,
             sender.clone(),
+            request_activation_identity(
+                header.routing.assembly_identity.as_ref(),
+                header.routing.assembly_generation,
+                &header.routing.deployment.deployment_revision,
+                &self.base_runtime_id,
+            ),
         );
         tokio::spawn(async move {
             let request_runner::DrivenBytecodeRequest {

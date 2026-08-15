@@ -160,7 +160,10 @@ pub(crate) fn task_child_failure_reason(
     match task_target_by_dispatch_index(image, index) {
         None => "task dispatch table row is absent".to_string(),
         Some(_target) if !composition.is_available() => {
-            "task child requires exact host activation identity, caller request id and runtime id; the current bytecode request has none"
+            "task child requires exact host activation identity, caller request id and runtime id; \
+             the current bytecode request has none (activation identity requires routing \
+             assembly_identity + assembly_generation, deployment deployment_revision, and host \
+             runtime_replica_id)"
                 .to_string()
         }
         Some(target) => match task_timing_control(target) {
@@ -513,7 +516,28 @@ mod tests {
         assert_eq!(message.request.timing, TaskSubmitTimingControl::Immediate);
         assert_eq!(message.payload, b"exact-payload");
         assert_eq!(message.caller_kind, TaskCallerKind::Request);
+        assert_eq!(message.request.activation_identity, activation());
         assert!(message.request.actor_method.is_none());
+    }
+
+    #[test]
+    fn task_child_failure_reason_reports_exact_activation_identity_seam() {
+        let image = task_image();
+        let target = image
+            .task_targets()
+            .next()
+            .expect("task fixture links a task dispatch row")
+            .clone();
+        let reason = task_child_failure_reason(
+            &image,
+            TaskDispatchIndex::from_task_target_index(target.index())
+                .expect("linked task target maps to a dispatch index"),
+            &BytecodeTaskChildComposition::default(),
+        );
+        assert!(reason.contains("assembly_identity"));
+        assert!(reason.contains("assembly_generation"));
+        assert!(reason.contains("deployment_revision"));
+        assert!(reason.contains("runtime_replica_id"));
     }
 
     #[test]

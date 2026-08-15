@@ -11,7 +11,7 @@ use skiff_runtime_boundary::recoverable::FailClosedRecoverableBehaviorHooks;
 use skiff_runtime_boundary::service_linkable::ServiceLinkableCapabilityHooks;
 use skiff_runtime_boundary::value::{bytes_payload, bytes_value};
 use skiff_runtime_capability_context::{
-    CancellationToken, DbCapabilitySource, DbRecoverableRuntimeContext,
+    ActivationIdentityControl, CancellationToken, DbCapabilitySource, DbRecoverableRuntimeContext,
     DbRecoverableRuntimeExpectedPlans, HttpRuntimeOptions, OutboundControlMessage,
     OutboundRequestCancelSendError, OutboundRequestCancelSender, OutboundRequestRegistry,
     OutboundResponse, RequestCancelControl, RouterWriterMessage, TaskSubmitControlMessage,
@@ -506,6 +506,7 @@ pub(crate) fn bytecode_request_child_composition(
     db_source: Option<&DbCapabilitySource>,
     request_id: &str,
     sender: mpsc::UnboundedSender<RouterWriterMessage>,
+    activation_identity: Option<ActivationIdentityControl>,
 ) -> BytecodeRequestChildComposition {
     let owner = image.owner();
     let deployment = owner.deployment();
@@ -524,7 +525,7 @@ pub(crate) fn bytecode_request_child_composition(
         )),
         caller_request_id: request_id.to_string(),
         runtime_id: host.base_runtime_id.clone(),
-        activation_identity: None,
+        activation_identity,
     };
     bytecode_request_child_composition_with_parts(host, db_child, request_id, task_child)
 }

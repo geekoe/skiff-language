@@ -2620,6 +2620,7 @@ dependencies = [
  "serde_json",
  "skiff-artifact-identity",
  "skiff-artifact-model",
+ "skiff-canonical-json",
  "skiff-runtime-linked-bytecode",
  "skiff-runtime-linker",
  "skiff-runtime-model",

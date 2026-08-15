@@ -1,8 +1,11 @@
 use std::sync::Arc;
 
-use skiff_artifact_model::{IngressProtocol, IngressSelector, ServiceDeploymentRef};
+use skiff_artifact_model::{
+    AssemblyIdentity, DeploymentRevision, IngressProtocol, IngressSelector, ServiceDeploymentRef,
+};
 use skiff_runtime_capability_context::{
-    DbCapabilitySource, DbProviderBuildInput, DbProviderConfig, ExecutionBudgetReason,
+    ActivationIdentityControl, DbCapabilitySource, DbProviderBuildInput, DbProviderConfig,
+    ExecutionBudgetReason,
 };
 use skiff_runtime_linker::{DeploymentExecutionEntry, DeploymentExecutionImage};
 use skiff_runtime_model::bytecode_execution_observation::{
@@ -553,10 +556,30 @@ pub(super) fn production_bytecode_request_child_composition(
     db_source: Option<&DbCapabilitySource>,
     request_id: &str,
     sender: mpsc::UnboundedSender<RouterWriterMessage>,
+    activation_identity: Option<ActivationIdentityControl>,
 ) -> BytecodeRequestChildComposition {
     crate::host::bytecode_capability_adapter::bytecode_request_child_composition(
-        host, image, db_source, request_id, sender,
+        host,
+        image,
+        db_source,
+        request_id,
+        sender,
+        activation_identity,
     )
+}
+
+pub(super) fn request_activation_identity(
+    assembly_identity: Option<&AssemblyIdentity>,
+    assembly_generation: Option<u64>,
+    deployment_revision: &DeploymentRevision,
+    runtime_replica_id: &str,
+) -> Option<ActivationIdentityControl> {
+    Some(ActivationIdentityControl {
+        assembly_identity: assembly_identity?.clone(),
+        generation: assembly_generation?,
+        runtime_replica_id: runtime_replica_id.to_string(),
+        deployment_revision: deployment_revision.clone(),
+    })
 }
 
 fn bytecode_required_error(deployment: &ServiceDeploymentRef) -> RuntimeError {
@@ -885,4 +908,44 @@ fn deadline_exceeded() -> RuntimeError {
         limit: None,
         elapsed_ms: 0.0,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_activation_identity_requires_exact_routing_facts() {
+        let assembly_identity = AssemblyIdentity::new(
+            "skiff-runtime-assembly-v3:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        );
+        let deployment_revision = DeploymentRevision::new("revision:request");
+        let identity = request_activation_identity(
+            Some(&assembly_identity),
+            Some(7),
+            &deployment_revision,
+            "runtime-1",
+        )
+        .expect("exact routing facts must project an activation identity");
+
+        assert_eq!(identity.assembly_identity, assembly_identity);
+        assert_eq!(identity.generation, 7);
+        assert_eq!(identity.runtime_replica_id, "runtime-1");
+        assert_eq!(identity.deployment_revision, deployment_revision);
+
+        assert!(
+            request_activation_identity(None, Some(7), &deployment_revision, "runtime-1").is_none(),
+            "missing routing assembly identity must fail closed"
+        );
+        assert!(
+            request_activation_identity(
+                Some(&assembly_identity),
+                None,
+                &deployment_revision,
+                "runtime-1"
+            )
+            .is_none(),
+            "missing routing assembly generation must fail closed"
+        );
+    }
 }

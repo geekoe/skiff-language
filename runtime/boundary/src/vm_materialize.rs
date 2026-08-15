@@ -7,9 +7,10 @@
 
 use std::collections::BTreeMap;
 
+use serde_json::Value;
 use skiff_artifact_model::{
     BoundaryTransfer, BoundaryValueCarrier, BoundaryValueEncoding, ContractLiteral,
-    ContractTypeRef, PackageRefIr, TypeRefIr,
+    ContractTypeRef, InterfaceInstantiationRef, PackageRefIr, PackageSymbolRef, TypeRefIr,
 };
 use skiff_runtime_linked_bytecode::{
     LinkedContainerLayoutKind, LinkedServiceBoundaryValue, LinkedShapeEntry, LinkedTypeEntry,
@@ -499,6 +500,36 @@ fn catch_identity_for_type(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skiff_artifact_model::PackageSchemaTypeId;
+
+    #[test]
+    fn callback_any_interface_maps_to_linked_interface_identity() {
+        let interface = ContractTypeRef::package_schema(
+            "example.com/phase-6-callback-provider",
+            "Handler",
+            PackageSchemaTypeId::new("contract:reader"),
+        );
+        let ty = ContractTypeRef::AnyInterface {
+            interface: Box::new(interface),
+            arguments: Vec::new(),
+        };
+
+        let linked = contract_type_to_type_ref(&ty)
+            .expect("callback AnyInterface must map to a linked type ref");
+        let TypeRefIr::AnyInterface { interface } = linked else {
+            panic!("callback AnyInterface must remain an AnyInterface row");
+        };
+        assert!(interface
+            .interface_abi_id
+            .contains("example.com/phase-6-callback-provider"));
+        assert!(interface.interface_abi_id.contains("Handler"));
+        assert!(interface.canonical_type_args.is_empty());
+    }
+}
+
 /// Compares the compiler-emitted transfer fact without consuming it.
 pub fn transfer_is_move(plan: &LinkedServiceBoundaryValue) -> bool {
     plan.transfer() == BoundaryTransfer::Move
@@ -524,6 +555,71 @@ pub fn linked_type_for_contract(
 ) -> Option<TypeIndex> {
     let ty = contract_type_to_type_ref(contract_type).ok()?;
     find_type_index_by_ref(image, &ty)
+}
+
+/// Resolves the exact provider-side callback carrier type when the contract's
+/// package-schema key does not carry the provider's package-symbol/ABI facts.
+///
+/// The provider signature is the linked authority for the operation; this
+/// lookup only accepts an `AnyInterface` row from the same package whose
+/// symbol path matches the contract interface. It never fabricates a type row.
+pub fn linked_callback_type_for_contract(
+    image: &DeploymentExecutionImage,
+    contract_type: &ContractTypeRef,
+) -> Option<TypeIndex> {
+    let ContractTypeRef::AnyInterface {
+        interface,
+        arguments,
+    } = contract_type
+    else {
+        return None;
+    };
+    let ContractTypeRef::PackageSchema {
+        package_id,
+        stable_schema_key,
+        ..
+    } = interface.as_ref()
+    else {
+        return None;
+    };
+    let canonical_type_args = arguments
+        .iter()
+        .map(contract_type_to_type_ref)
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    let mut matches = image.types().iter().filter_map(|entry| {
+        let TypeRefIr::AnyInterface { interface } = entry.type_ref() else {
+            return None;
+        };
+        if interface.canonical_type_args != canonical_type_args {
+            return None;
+        }
+        let Ok(value) = serde_json::from_str::<Value>(&interface.interface_abi_id) else {
+            return None;
+        };
+        let Some(symbol) = value.get("symbol") else {
+            return None;
+        };
+        let Some(actual_package_id) = symbol
+            .get("package")
+            .and_then(|package| package.get("packageId"))
+            .and_then(Value::as_str)
+        else {
+            return None;
+        };
+        let Some(actual_symbol_path) = symbol.get("symbolPath").and_then(Value::as_str) else {
+            return None;
+        };
+        let suffix = format!(".{stable_schema_key}");
+        (actual_package_id == package_id
+            && (actual_symbol_path == stable_schema_key || actual_symbol_path.ends_with(&suffix)))
+        .then_some(entry.index())
+    });
+    let resolved = matches.next()?;
+    if matches.next().is_some() {
+        return None;
+    }
+    Some(resolved)
 }
 
 fn contract_type_to_type_ref(ty: &ContractTypeRef) -> Result<TypeRefIr, VmMaterializeError> {
@@ -566,10 +662,54 @@ fn contract_type_to_type_ref(ty: &ContractTypeRef) -> Result<TypeRefIr, VmMateri
                 },
             }),
         },
-        ContractTypeRef::AnyInterface { .. } | ContractTypeRef::TypeParam { .. } => {
-            Err(VmMaterializeError::UnsupportedType {
-                message: format!("{ty:?}"),
+        ContractTypeRef::AnyInterface {
+            interface,
+            arguments,
+        } => {
+            let interface_ir = match interface.as_ref() {
+                ContractTypeRef::PackageSchema {
+                    package_id,
+                    stable_schema_key,
+                    ..
+                } => TypeRefIr::PackageSymbol {
+                    symbol: PackageSymbolRef {
+                        package: PackageRefIr::PackageId {
+                            package_id: package_id.clone(),
+                        },
+                        symbol_path: stable_schema_key.clone(),
+                        abi_expectation: None,
+                    },
+                },
+                other => contract_type_to_type_ref(other)?,
+            };
+            let interface_abi_id =
+                skiff_canonical_json::canonical_json_bytes(&interface_ir).map_err(|error| {
+                    VmMaterializeError::UnsupportedType {
+                        message: format!(
+                            "service boundary callback interface identity cannot be canonicalized: {error}"
+                        ),
+                    }
+                })?;
+            let interface_abi_id = String::from_utf8(interface_abi_id).map_err(|error| {
+                VmMaterializeError::UnsupportedType {
+                    message: format!(
+                        "service boundary callback interface identity is not UTF-8: {error}"
+                    ),
+                }
+            })?;
+            let canonical_type_args = arguments
+                .iter()
+                .map(contract_type_to_type_ref)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(TypeRefIr::AnyInterface {
+                interface: InterfaceInstantiationRef {
+                    interface_abi_id,
+                    canonical_type_args,
+                },
             })
         }
+        ContractTypeRef::TypeParam { name } => Err(VmMaterializeError::UnsupportedType {
+            message: format!("{name:?}"),
+        }),
     }
 }

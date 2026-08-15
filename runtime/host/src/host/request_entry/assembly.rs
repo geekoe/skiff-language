@@ -21,9 +21,9 @@ use tracing::error;
 
 use super::{
     assembly_wire::{
-        production_bytecode_request_child_composition, AdmittedBytecodeHttpRequest,
-        AdmittedBytecodeTaskRequest, AdmittedBytecodeWebSocketConnectRequest,
-        AdmittedBytecodeWebSocketConnectionClosedRequest,
+        production_bytecode_request_child_composition, request_activation_identity,
+        AdmittedBytecodeHttpRequest, AdmittedBytecodeTaskRequest,
+        AdmittedBytecodeWebSocketConnectRequest, AdmittedBytecodeWebSocketConnectionClosedRequest,
     },
     request_error_into_runtime_error, response_event_into_transport_message,
     response_into_transport_message,
@@ -119,6 +119,12 @@ impl RuntimeHost {
             db_source.as_ref(),
             &request_envelope.request_id,
             sender.clone(),
+            request_activation_identity(
+                header.routing.assembly_identity.as_ref(),
+                header.routing.assembly_generation,
+                &header.routing.deployment.deployment_revision,
+                &self.base_runtime_id,
+            ),
         );
         let child_composition_probe = child_composition.clone();
         tokio::spawn(async move {
@@ -212,6 +218,12 @@ impl RuntimeHost {
             db_source.as_ref(),
             &request_envelope.request_id,
             sender.clone(),
+            request_activation_identity(
+                header.routing.assembly_identity.as_ref(),
+                header.routing.assembly_generation,
+                &header.routing.deployment.deployment_revision,
+                &self.base_runtime_id,
+            ),
         );
         tokio::spawn(async move {
             let request_runner::DrivenBytecodeRequest {
@@ -329,6 +341,12 @@ impl RuntimeHost {
             db_source.as_ref(),
             &request_envelope.request_id,
             sender.clone(),
+            request_activation_identity(
+                header.routing.assembly_identity.as_ref(),
+                header.routing.assembly_generation,
+                &header.routing.deployment.deployment_revision,
+                &self.base_runtime_id,
+            ),
         );
         tokio::spawn(async move {
             let request_runner::DrivenBytecodeRequest {
@@ -418,6 +436,12 @@ impl RuntimeHost {
             db_source.as_ref(),
             &request_envelope.request_id,
             sender.clone(),
+            request_activation_identity(
+                header.routing.assembly_identity.as_ref(),
+                header.routing.assembly_generation,
+                &header.routing.deployment.deployment_revision,
+                &self.base_runtime_id,
+            ),
         );
         tokio::spawn(async move {
             let request_runner::DrivenBytecodeRequest {
