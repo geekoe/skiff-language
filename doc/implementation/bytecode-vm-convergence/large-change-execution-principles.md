@@ -33,7 +33,7 @@
 
 每个可执行 Phase 在派发生产代码或证明代码前，必须有一份精简、无内部矛盾的 Phase Contract。它只冻结：
 
-- exact baseline commit/tree 和适用的上游 acceptance receipt；
+- exact baseline commit/tree 和状态为`accepted`的上游result；旧receipt或`candidate-pass`不能单独充当baseline；
 - 本 Phase 的外部目标、accepted surface 和明确非目标；
 - 不得破坏的 authority、ownership、failure 和 lifecycle invariant；
 - 一个最小 VCP 的公开输入、production-shaped 边界和预期外部结果；
@@ -64,8 +64,10 @@ Phase Contract 可以来自 canonical architecture、用户决定和前一 Phase
                    rolling integration proof
                               |
                        frozen candidate
-                              |
-                   independent Acceptance
+                       /              \
+             semantic review    independent Acceptance
+                       \              /
+                         accepted result
 ```
 
 ### 3.1 Development Line
@@ -95,11 +97,13 @@ Proof Agent 不修改 production implementation 使测试通过，不用 test-on
 或硬编码 PASS 代替真实路径。开发线可以提供窄的 production observability，但 observation contract 由两条线
 共同消费，不能成为第二 execution authority。
 
-### 3.3 Acceptance 是证明线的末端，不与实现同时执行
+### 3.3 Acceptance 是证明线的末端，只在freeze后执行
 
 测试设计、harness 和 Gate 实现可以与 production code 并行；最终 Acceptance 只能在合流并冻结 candidate 后
 执行。Acceptance Agent 必须是没有写本 candidate production/test/Gate 的全新只读 owner。它运行 canonical
-Gate、核对 raw evidence 和 exact commit/tree，然后给出 `PASS` 或 `FAIL`。
+Gate、核对 raw evidence 和 exact commit/tree，然后给出 `PASS` 或 `FAIL`。Frozen-candidate semantic review与
+Acceptance可以在同一freeze后由不同只读owner并行；范围较大时semantic review也可按互斥主题并行读取，最后一次
+合并findings，避免一个问题一个问题串行发现。任一修复都会产生新candidate/epoch，两边旧verdict都不可复用。
 
 因此“开发线 + 测试验收线”指两个持续 workstream，不表示测试作者同时拥有最终验收 verdict。
 
@@ -265,7 +269,7 @@ VCP 可以比 whole-product E2E 小，但不能是单 crate 测试，也不能�
 6. Negative-capable：至少一个 malformed/unsupported/losing branch；
 7. Deterministic where possible：使用可控 clock/store/peer/host completion。
 
-允许注入测试 store、clock、网络 peer 或 fake host completion；不允许注入手工 verified image、linked target、
+允许注入测试 store、clock、网络 peer 或 fake host completion；不允许注入手工 image、linked target、
 VM fiber、内部 owner token 或绕过 production loader/linker/scheduler 的 test-only executor。
 
 Phase Contract 必须在两条线启动前定义 VCP 的入口、终点和预期结果；可执行 harness 由 Proof Line 从第一批
@@ -298,6 +302,14 @@ Phase Contract
 VCP 是 proof obligation，test/script 是 proof carrier，Gate 是 decision function。Gate 必须 fail closed：缺
 manifest、零场景、skip、命令未运行、dirty/stale candidate、tampered raw evidence 或跨 epoch 拼接都是 FAIL。
 
+每个Phase Gate必须导出一个transitive `phaseNWorkloadSpecs(root)`，组合上一Phase的workload specs，而不是嵌套
+旧Gate或接受旧receipt。组合必须保留每个spec的`testFormat`、lanes和已有`expectedTests`，并用candidate-owned
+显式catalog记录source/parent/origin chain；不得把嵌套id前缀当作provenance authority；
+本Phase所有`testFormat != null` workload声明positive `expectedTests`，继承spec若历史上缺字段则显式记录，不猜默认值。每个
+`cargo test` workload带且只带一次`--no-fail-fast`；composer可以幂等插入该orchestration flag，但不能改target/
+filter/harness args，build/fmt/clippy也不能带。outer runner捕获nonzero后仍执行并记录其它workload；zero/skip/
+todo/ignored/cancelled和未执行项均FAIL。这样一次Gate暴露全部已到达边界的问题，而不是把E2E变成串行问题探测器。
+
 一个 accepted Phase 的 VCP/negative/Gate assets 成为后续 Phase regression。修改 fixture、assertion、observability
 或 checker 会使相关 evidence epoch 失效。
 
@@ -310,8 +322,9 @@ manifest、零场景、skip、命令未运行、dirty/stale candidate、tampered
 完成两条线的 Phase Contract obligations 后冻结 exact commit/tree。冻结后任何 production/test/fixture/Gate/
 event/schema 变化都开始新 evidence epoch。
 
-Acceptance Agent 在 detached clean worktree 执行完整 Gate，核对 raw evidence 而非只看 exit code。`FAIL` 返回
-对应 Development/Proof owner；修复后重新 freeze，旧 verdict 不可复用。
+Acceptance Agent 在 detached clean worktree 执行完整 Gate，核对 raw evidence 而非只看 exit code；semantic
+review可在同一frozen candidate并行进行。`FAIL`返回对应Development/Proof owner；修复后重新freeze，旧review、
+verdict和receipt不可复用。只有两项均PASS，result status才可写`accepted`。
 
 ## 9. Worktree 规则
 

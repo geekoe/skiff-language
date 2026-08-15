@@ -1,6 +1,6 @@
 # Bytecode VM 架构收敛重构总计划
 
-> Status: project plan; Phase 0/1/2/3/4/5 accepted
+> Status: project plan; Phase 0/1/2/3/4/5 accepted; Phase 6 active
 >
 > Created: 2026-08-12
 >
@@ -96,7 +96,7 @@ crate 只负责 write-set 隔离，不再提供完成语义。
 | VM-04/12/13：Pending、root graph、session/request lifetime | Phase 4 | 禁止新增 async lane |
 | VM-04/05：HTTP、ResourceRef、stream ownership/backpressure | Phase 5 | containment 或 disabled |
 | VM-08/09/10：task/cross-owner heap、materialization、handle provenance | Phase 6 | 分 lane disabled |
-| VM-14：fuel、memory、hot-path bound | Phase 1 建基础，Phase 7 完整收口 | 不宣称有统一预算保证 |
+| VM-14：fuel、memory、hot-path bound | Phase 1 raw fuel；Phase 6统一memory ledger；Phase 7最终组合门禁 | 不宣称有统一预算保证 |
 
 Phase 0 必须用当前代码证据校正这张初始分配表；只有具体事实不清楚时才派 Clarification task。发现某项是
 更早 Phase 的前置条件时，只能前移或缩小支持面，不能把错误可达路径留给最终 Gate。
@@ -111,7 +111,7 @@ source-owned semantic facts
   -> relocatable artifact
   -> bounded structural decode and validation
   -> exact deployment linker
-  -> immutable ExecutableBytecodeImage
+  -> immutable DeploymentExecutionImage
   -> synchronous VM core
   -> scheduler / typed effect adapter when actually needed
   -> request boundary result
@@ -185,7 +185,8 @@ Phase Contract
   -> Proof Line: tests / fixtures / scripts / observability
   -> VCP evidence manifest
   -> Phase Gate 聚合 VCP + focused + negative + structural + regression evidence
-  -> independent acceptance verdict
+  -> (frozen semantic review || independent Acceptance)
+  -> accepted result
 ```
 
 VCP 和 Gate 都必须可执行。Phase 0 要为 Phase 1 决定一个注册在仓库验证图中的 canonical selector；它必须
@@ -206,18 +207,19 @@ fail-closed companion、production seam 约束和不得伪造的事实；Proof L
 - malformed/unsupported/race/cancel/drop 等 negative/lifecycle matrix；
 - no-fallback/no-bypass/no-second-authority structural checks；
 - 本 Phase 声明涉及的 budget/performance checks；
-- 与此前 accepted capability 的 regression selector。
+- 与此前 accepted capability 的 transitive regression workloads。
 
 具体规则见[原则文档 §7](./large-change-execution-principles.md#7-vcp测试与-gate)。
 
-每个 accepted Phase 的 VCP 和 negative matrix 会成为后续 Phase 的永久 regression selector。测试覆盖按
-semantic support surface 累计，不按 crate 测试数量统计；同一 scenario 只有一个 canonical owner，避免
-重复 fixture 掩盖真实 transition 缺口。
+每个 accepted Phase 的 VCP 和 negative matrix 会成为后续 Phase 的永久 workload specs，由下一Phase的单一
+transitive API直接组合；不嵌套旧selector/Gate，也不把旧receipt当新候选证据。测试覆盖按semantic support surface
+累计，不按 crate 测试数量统计；同一 scenario 只有一个 canonical owner，避免重复 fixture 掩盖真实 transition 缺口。
 
 ## 7. 初步 Phase DAG
 
-下面只冻结依赖方向、Phase 目标和初步 VCP。除 Phase 0 外，具体接口、task DAG 和命令均在前一 Phase
-接受后滚动细化；实际 Agent、branch、worktree 和派发顺序在执行每个 Phase 时由滚动 Execution Map 决定。
+下面只冻结依赖方向、Phase 目标和初步 VCP。后续Phase可以提前完成只读代码盘点和implementation-ready planning，
+但production dispatch只能在前一Phase accepted后，基于动态记录的exact baseline启动；实际Agent、branch、worktree
+和派发顺序由active Execution Map决定。
 执行中发现一个 Phase 无法形成单一 Semantic Closure 时，可以拆分 Phase，但不能绕过前置 acceptance。
 
 ### Phase 0 — Architecture reset and validation foundation
@@ -279,24 +281,31 @@ Router 侧 owner：Phase 5 的 stream VCP 与 Phase 7 的 whole-system 会触及
 
 ### Phase 6 — Cross-owner execution and managed-memory readiness
 
-闭合 child owner/heap/budget/boundary materialization，再按独立 lane 逐项开启 service、task、interface、callback
-和 Actor。完整 pending/root graph 通过后才能启用 request GC/compaction；必要时本 Phase 拆成 6A/6B。
+Active Contract：[`phases/phase-6-cross-owner-execution.md`](./phases/phase-6-cross-owner-execution.md)；active
+Execution Map：[`tasks/phase-6-execution-map.md`](./tasks/phase-6-execution-map.md)。Phase 6已从Phase 5 accepted
+exact clean baseline激活；A0按该候选动态读取schema/ISA与真实compiler artifact identity，本计划不固定版本数字。
 
-初步 VCP：caller 和 provider 使用不同 exact owner/heap，经 production child trampoline 传参、返回和普通
-throw；证明无 raw handle 穿越、parent 同步恢复和 Pending chain root 完整。
+Phase 6闭合compiler-owned cross-owner facts、single atomic `DeploymentExecutionImage`、child owner/heap/root/shared
+request budget、统一memory ledger与事务化typed boundary materialization。不存在独立verifier stage/API/facts或linker
+semantic reconstruction。
 
-拆分标准（提前定死）：6A = cross-owner heap + boundary materialization + 第一个 lane（service）的 VCP；
-6B = 其余 task/interface/callback/Actor 按 per-lane gate 逐个开启；request GC/compaction 只在完整 root graph
-闭合后开。统一 memory ledger 归本 Phase；此前的每个 heap/lifecycle 改动必须保持 per-request 内存上限可观测
-（沿用 Phase 1 raw fuel 的先例）。
+执行DAG固定为facts/image与kernel并行，service-first；随后local interface与DB/recoverable并行，再并行推进remote
+interface、same-Runtime callback、durable function task和Actor，最后闭合durable Actor-method task。每个capability
+有独立S1–S6/full-chain/negative Gate；尚未accepted的surface在唯一门fail closed。cross-Runtime callback、
+cross-service behavior envelope、request GC/Actor compaction和`concurrent`保持disabled/deferred。
+
+VCP：caller/provider使用不同exact owner/heap，经production compiler→artifact→atomic image→flat child trampoline→
+request/host（需要时Router/TaskStore/Actor owner）传参、返回和ordinary throw；证明无raw handle穿越、sync child不park、
+actual Pending chain roots完整、单一fuel/deadline/cancel authority、memory reserve/release和terminal cleanup exact。
 
 ### Phase 7 — Whole-system closure, budget and final acceptance
 
 这不是 cutover。旧 evaluator 已删除，production 已是 bytecode-only。Phase 7 只完成统一 memory/fuel/hot-path
 门禁、observability、支持面清单和 whole-system acceptance；不能首次实现新的语言或 boundary 语义。
 
-某个 whole-system scenario 暴露语义缺口时，重开原 owner Phase。最终 VCP matrix 组合此前 accepted receipts，
-再运行真实 HTTP/service/stream/task/Actor 中实际声明支持的场景。
+某个 whole-system scenario 暴露语义缺口时，重开原 owner Phase。最终 VCP matrix直接组合此前accepted Phase的
+workload specs并在Phase 7 exact candidate上重跑，不嵌套旧Gate或复用旧receipt；另运行真实HTTP/service/stream/
+task/Actor中实际声明支持的场景。
 
 ## 8. Phase 内核心流程
 
@@ -339,12 +348,15 @@ Phase plan 只冻结角色分离、write set 和验收约束；实际 Agent、wo
 | Phase 3 | accepted; [`results/phase-3.md`](./results/phase-3.md) |
 | Phase 4 | accepted; [`results/phase-4.md`](./results/phase-4.md) |
 | Phase 5 | accepted; [`results/phase-5.md`](./results/phase-5.md) |
-| Phase 6–7 | outline only; not implementation-ready |
+| Phase 6 | active; [`Contract`](./phases/phase-6-cross-owner-execution.md) + [`MAP`](./tasks/phase-6-execution-map.md) |
+| Phase 7 | outline only in this branch；不能在Phase 6前实现语义 |
 
 Phase 0/1/2/3/4/5 均已由独立 Acceptance Agent 在 exact detached candidate 上通过 canonical Gate，且各 result
 commit 已合入 `main`（`results/phase-*.md` 记录 accepted candidate、merge commit/tree 与独立 Acceptance
-receipt）。Phase 5 的 architecture/decision 文档不设独立 review/PASS 开码门禁；最终已对 frozen
-implementation candidate 做 semantic review 与 Acceptance。Phase 6–7 仍未授权 production implementation。
+receipt）。Phase 6 从 Phase 5 accepted main baseline `094215c624712c257aa9455fc499cc6fb3657a9e`
+（tree `ec44479d88aca83f94038f84cf8a9c38f3693ba8`）激活；exact activation evidence由
+[`tasks/phase-6-execution-map.md`](./tasks/phase-6-execution-map.md) A0记录。Phase 7不能首次补Phase 6的
+boundary/DB/recoverable/memory/GC语义。
 
 **稳定 dev env 运营注意**：本机常驻 dev 进程（router/runtime/各 client）仍在运行旧二进制，`main` 上
 Phase 1–3 的 admission 收紧只影响**下一次重建并重启**。真实业务服务（aihub/registry/agine 的 string/stream/
