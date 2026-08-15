@@ -17,6 +17,7 @@ use skiff_artifact_model::{
     PackageCallableId,
 };
 use skiff_router::dispatch::{RequestDispatcher, RuntimeDispatcherOptions};
+use skiff_router::release::ReleaseResolver;
 use skiff_router::session::demux::InboundFrameSink;
 use skiff_router::session::identity::RuntimeSessionEpoch;
 use skiff_router::supervisor::actor::{assemble_actor_components, ActorComponents};
@@ -25,8 +26,8 @@ use skiff_router::supervisor::session_ports::SessionHandle;
 use skiff_router::supervisor::ws::WsSessionWriter;
 use skiff_router::task::{
     DurableTaskControl, DurableTaskFrameSink, FirstAdmissionOutcome, NoopActorAttemptTerminalSink,
-    NoopTaskSubmitParentResolver, RouterTaskAttemptAdmission, TaskActorOwnerPort,
-    TaskControlCounters, TaskExecutionImageSource, TaskSubmitParentResolver,
+    NoopTaskSubmitParentResolver, ReleaseTaskExecutionImageSource, RouterTaskAttemptAdmission,
+    TaskActorOwnerPort, TaskControlCounters, TaskExecutionImageSource, TaskSubmitParentResolver,
 };
 use skiff_router::telemetry::{NoopTaskTelemetrySink, TaskTelemetrySink};
 use skiff_router::ws::Clock;
@@ -46,14 +47,16 @@ use skiff_runtime_transport::protocol::{
     RUNTIME_FRAME_SCHEMA_VERSION,
 };
 use skiff_task_control::model::{
-    DetachedCallTarget, DurableDuration, DurableUtcTimestamp, RecoverablePayload, ServiceOwner,
-    TaskExecutionImageRef, TaskId, TaskOutcome, TaskRecord, TaskState, TaskStatusKind,
-    TaskTerminal, TaskTestCaseAuthority, TaskTraceContext,
+    DetachedCallTarget, DurableDuration, DurableUtcTimestamp, LeaseId, RecoverablePayload,
+    ServiceOwner, TaskExecutionImageRef, TaskId, TaskOutcome, TaskRecord, TaskState,
+    TaskStatusKind, TaskTerminal, TaskTestCaseAuthority, TaskTraceContext,
 };
 use skiff_task_control::scheduler::{
     AdmissionDecision, AttemptAdmission, RetryBackoffPolicy, Scheduler, SchedulerConfig,
 };
-use skiff_task_control::store::{ClaimInput, DueScanInput, SettleInput, StatusInput, TaskStore};
+use skiff_task_control::store::{
+    ClaimInput, DueScanInput, LeaseRecoveryInput, RenewInput, SettleInput, StatusInput, TaskStore,
+};
 use skiff_task_control::MemoryTaskStore;
 use skiff_task_control::TaskStoreError;
 use tokio::sync::watch;
@@ -83,6 +86,12 @@ impl TestClock {
 impl Clock for TestClock {
     fn now_ms(&self) -> u64 {
         self.now_ms.load(Ordering::SeqCst)
+    }
+}
+
+impl skiff_task_control::clock::TaskClock for TestClock {
+    fn now_millis(&self) -> i64 {
+        self.now_ms.load(Ordering::SeqCst) as i64
     }
 }
 
@@ -212,6 +221,33 @@ impl TaskExecutionImageSource for FakeImageSource {
 
     fn contains_deployment(&self, deployment: &skiff_artifact_model::ServiceDeploymentRef) -> bool {
         &self.image.deployment == deployment
+    }
+}
+
+#[derive(Debug, Clone)]
+struct StaticReleaseResolver {
+    deployment: skiff_artifact_model::ServiceDeploymentRef,
+}
+
+impl ReleaseResolver for StaticReleaseResolver {
+    fn resolve(
+        &self,
+        _profile: &str,
+        service_id: &str,
+        version: &str,
+    ) -> Result<Option<skiff_artifact_model::ServiceDeploymentRef>, String> {
+        if service_id == self.deployment.service_id && version == self.deployment.contract_version {
+            Ok(Some(self.deployment.clone()))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn all_deployments(
+        &self,
+        _profile: &str,
+    ) -> Result<Vec<skiff_artifact_model::ServiceDeploymentRef>, String> {
+        Ok(vec![self.deployment.clone()])
     }
 }
 
@@ -544,6 +580,15 @@ fn corpus_image() -> TaskExecutionImageRef {
     }
 }
 
+fn phase6_image() -> TaskExecutionImageRef {
+    let mut image = corpus_image();
+    image.deployment.deployment_artifact_identity = DeploymentArtifactIdentity::new(format!(
+        "skiff-deployment-artifact-v6:sha256:{}",
+        "a".repeat(64)
+    ));
+    image
+}
+
 fn record(
     task_id: &str,
     execution: TaskExecutionImageRef,
@@ -828,9 +873,11 @@ fn control_rig() -> ControlRig {
 }
 
 fn control_rig_with_sessions(sessions: Vec<dispatch_harness::SessionState>) -> ControlRig {
-    let store = Arc::new(MemoryTaskStore::new()) as Arc<dyn TaskStore>;
     let clock = Arc::new(TestClock::default());
     clock.now_ms.store(1_700_000_000_000, Ordering::SeqCst);
+    let store = Arc::new(MemoryTaskStore::with_clock(
+        Arc::clone(&clock) as Arc<dyn skiff_task_control::clock::TaskClock>
+    )) as Arc<dyn TaskStore>;
     let deferred_scheduler: Arc<Mutex<Option<Arc<Scheduler>>>> = Arc::new(Mutex::new(None));
     let deferred_dispatcher: Arc<Mutex<Option<Arc<RequestDispatcher>>>> =
         Arc::new(Mutex::new(None));
@@ -865,7 +912,7 @@ fn control_rig_with_sessions(sessions: Vec<dispatch_harness::SessionState>) -> C
     let scheduler = Arc::new(Scheduler::new(
         Arc::clone(&store),
         Arc::clone(&admission) as Arc<dyn AttemptAdmission>,
-        Arc::new(skiff_task_control::SystemClock),
+        Arc::clone(&clock) as Arc<dyn skiff_task_control::clock::TaskClock>,
         SchedulerConfig::default(),
         RetryBackoffPolicy::default(),
     ));
@@ -965,6 +1012,16 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].task_id.as_str(), TASK_ID);
         assert_eq!(records[0].state, TaskState::Scheduled);
+        assert_eq!(
+            records[0].payload.as_bytes(),
+            &[1, 2, 3],
+            "durable submit must freeze the exact encoded task payload"
+        );
+        assert_eq!(
+            records[0].execution.deployment,
+            corpus_image().deployment,
+            "durable submit must freeze the exact image resolved from the release pointer"
+        );
         assert_eq!(
             records[0].test_case, None,
             "ordinary production submissions must not carry test-case authority"
@@ -1998,6 +2055,382 @@ mod tests {
         assert_eq!(counters.status_expired.load(Ordering::Relaxed), 1);
         assert_eq!(counters.status_not_found.load(Ordering::Relaxed), 0);
         assert_eq!(counters.status_unavailable.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn release_image_source_freezes_exact_requested_build() {
+        let image = phase6_image();
+        let source = ReleaseTaskExecutionImageSource::new(
+            "prod".to_string(),
+            Arc::new(StaticReleaseResolver {
+                deployment: image.deployment.clone(),
+            }),
+        );
+        let mut header = submit_header(Some("task-exact"), TaskTargetKind::Function, None);
+        header.build_id = Some(
+            image
+                .deployment
+                .deployment_artifact_identity
+                .as_str()
+                .to_string(),
+        );
+
+        let resolved = source
+            .resolve(&header)
+            .expect("matching caller build must resolve");
+        assert_eq!(resolved.deployment, image.deployment);
+        assert_eq!(resolved.target_profile, "prod");
+        assert_eq!(resolved.package_version, "1.0.0");
+    }
+
+    #[test]
+    fn release_image_source_rejects_drifted_requested_build() {
+        let image = phase6_image();
+        let source = ReleaseTaskExecutionImageSource::new(
+            "prod".to_string(),
+            Arc::new(StaticReleaseResolver {
+                deployment: image.deployment.clone(),
+            }),
+        );
+        let mut header = submit_header(Some("task-drift"), TaskTargetKind::Function, None);
+        header.build_id = Some(format!(
+            "skiff-deployment-artifact-v6:sha256:{}",
+            "b".repeat(64)
+        ));
+
+        assert!(
+            source.resolve(&header).is_none(),
+            "a caller that names a different build must not be resolved to the current pointer"
+        );
+        assert!(
+            source.contains_deployment(&image.deployment),
+            "the current exact deployment remains published even when the caller build drifts"
+        );
+    }
+
+    #[tokio::test]
+    async fn task_store_lifecycle_accept_claim_lease_fence_retry_late_duplicate() {
+        let clock = Arc::new(TestClock::default());
+        clock.now_ms.store(1_700_000_000_000, Ordering::SeqCst);
+        let store = MemoryTaskStore::with_clock(
+            Arc::clone(&clock) as Arc<dyn skiff_task_control::clock::TaskClock>
+        );
+        let now = store.now().await.expect("store now");
+        let original = record("lifecycle-1", phase6_image(), now, TaskState::Scheduled);
+        let accepted = store.create(original.clone()).await.expect("first create");
+        let duplicate = store.create(original).await.expect("duplicate create");
+        assert_eq!(accepted, duplicate, "TaskId create must stay idempotent");
+
+        let due = store
+            .scan_due(DueScanInput { limit: 10 })
+            .await
+            .expect("scan due");
+        assert!(
+            due.iter()
+                .any(|record| record.task_id.as_str() == "lifecycle-1"),
+            "accepted task must become claimable after due"
+        );
+        let claimed = match store
+            .claim(ClaimInput {
+                task_id: TaskId::new("lifecycle-1"),
+                owner: "scheduler-a".to_string(),
+                lease_expiry: now.checked_add_millis(60_000).expect("expiry"),
+                image_activatable: true,
+            })
+            .await
+            .expect("claim")
+        {
+            skiff_task_control::store::ClaimOutcome::Claimed(record) => record,
+            other => panic!("claim failed: {other:?}"),
+        };
+        assert_eq!(claimed.state, TaskState::Leased);
+        assert_eq!(claimed.attempt_generation, 1);
+        let lease = claimed.active_lease.as_ref().expect("active lease").clone();
+        let new_expiry = now.checked_add_millis(120_000).expect("new expiry");
+        assert!(
+            matches!(
+                store
+                    .renew(RenewInput {
+                        task_id: TaskId::new("lifecycle-1"),
+                        lease_id: LeaseId::new("stale-lease"),
+                        new_expiry,
+                    })
+                    .await
+                    .expect("stale renew"),
+                skiff_task_control::store::RenewOutcome::Rejected(
+                    skiff_task_control::store::RenewRejection::StaleLease
+                )
+            ),
+            "a stale lease id must not renew the task"
+        );
+        let renewed = match store
+            .renew(RenewInput {
+                task_id: TaskId::new("lifecycle-1"),
+                lease_id: lease.lease_id.clone(),
+                new_expiry,
+            })
+            .await
+            .expect("renew")
+        {
+            skiff_task_control::store::RenewOutcome::Renewed(record) => record,
+            other => panic!("renew failed: {other:?}"),
+        };
+        assert_eq!(
+            renewed.active_lease.as_ref().expect("renewed lease").expiry,
+            new_expiry
+        );
+
+        let terminal = TaskTerminal {
+            settled_at: now,
+            outcome: TaskOutcome::Succeeded,
+        };
+        let settled = store
+            .settle(SettleInput {
+                task_id: TaskId::new("lifecycle-1"),
+                lease_id: lease.lease_id.clone(),
+                terminal: terminal.clone(),
+            })
+            .await
+            .expect("settle");
+        assert!(
+            matches!(
+                settled,
+                skiff_task_control::store::SettleOutcome::Settled(_)
+            ),
+            "first valid settlement must win"
+        );
+        let late = store
+            .settle(SettleInput {
+                task_id: TaskId::new("lifecycle-1"),
+                lease_id: lease.lease_id,
+                terminal,
+            })
+            .await
+            .expect("late settle");
+        assert!(
+            matches!(
+                late,
+                skiff_task_control::store::SettleOutcome::AlreadySettled(_)
+            ),
+            "duplicate/late settlement of the exact same outcome must be idempotent"
+        );
+        assert!(
+            matches!(
+                store
+                    .recover_expired_lease(LeaseRecoveryInput {
+                        task_id: TaskId::new("lifecycle-1"),
+                        retry_not_before: now,
+                    })
+                    .await
+                    .expect("recover terminal"),
+                skiff_task_control::store::LeaseRecoveryOutcome::Terminal
+            ),
+            "terminal tasks must never reopen"
+        );
+
+        store
+            .create(record(
+                "lifecycle-2",
+                phase6_image(),
+                store.now().await.expect("now"),
+                TaskState::Scheduled,
+            ))
+            .await
+            .expect("create retry task");
+        store
+            .scan_due(DueScanInput { limit: 10 })
+            .await
+            .expect("scan retry task");
+        let first_retry = match store
+            .claim(ClaimInput {
+                task_id: TaskId::new("lifecycle-2"),
+                owner: "scheduler-a".to_string(),
+                lease_expiry: store
+                    .now()
+                    .await
+                    .expect("now")
+                    .checked_add_millis(2_000)
+                    .expect("short lease"),
+                image_activatable: true,
+            })
+            .await
+            .expect("claim retry")
+        {
+            skiff_task_control::store::ClaimOutcome::Claimed(record) => record,
+            other => panic!("retry claim failed: {other:?}"),
+        };
+        let old_lease = first_retry
+            .active_lease
+            .as_ref()
+            .expect("old lease")
+            .lease_id
+            .clone();
+        clock.advance(2_100);
+        let now = store.now().await.expect("advanced now");
+        assert!(
+            matches!(
+                store
+                    .recover_expired_lease(LeaseRecoveryInput {
+                        task_id: TaskId::new("lifecycle-2"),
+                        retry_not_before: now,
+                    })
+                    .await
+                    .expect("recover expired"),
+                skiff_task_control::store::LeaseRecoveryOutcome::Recovered(_)
+            ),
+            "expired lease recovery must return the task to ready"
+        );
+        let second_retry = match store
+            .claim(ClaimInput {
+                task_id: TaskId::new("lifecycle-2"),
+                owner: "scheduler-b".to_string(),
+                lease_expiry: store
+                    .now()
+                    .await
+                    .expect("now")
+                    .checked_add_millis(60_000)
+                    .expect("new lease"),
+                image_activatable: true,
+            })
+            .await
+            .expect("reclaim")
+        {
+            skiff_task_control::store::ClaimOutcome::Claimed(record) => record,
+            other => panic!("reclaim failed: {other:?}"),
+        };
+        assert_eq!(second_retry.attempt_generation, 2);
+        let new_lease = second_retry
+            .active_lease
+            .as_ref()
+            .expect("new lease")
+            .lease_id
+            .clone();
+        assert_ne!(old_lease, new_lease, "retry must mint a fresh fence");
+        assert!(
+            matches!(
+                store
+                    .settle(SettleInput {
+                        task_id: TaskId::new("lifecycle-2"),
+                        lease_id: old_lease,
+                        terminal: TaskTerminal {
+                            settled_at: now,
+                            outcome: TaskOutcome::Succeeded,
+                        },
+                    })
+                    .await
+                    .expect("late old settle"),
+                skiff_task_control::store::SettleOutcome::StaleLease
+            ),
+            "a late attempt with the old lease must lose to the new lease fence"
+        );
+    }
+
+    #[tokio::test]
+    async fn fresh_attempt_after_lease_recovery_uses_new_lease_and_request() {
+        let rig = control_rig();
+        let now = rig.store.now().await.expect("now");
+        rig.store
+            .create(record(TASK_ID, corpus_image(), now, TaskState::Scheduled))
+            .await
+            .expect("create");
+        let first = claim_ready(rig.store.as_ref(), TASK_ID).await;
+        let first_attempt = first
+            .active_lease
+            .as_ref()
+            .expect("first lease")
+            .attempt_id
+            .clone();
+        let first_lease = first
+            .active_lease
+            .as_ref()
+            .expect("first lease")
+            .lease_id
+            .clone();
+        assert_eq!(
+            rig.admission.admit(&first).await,
+            AdmissionDecision::Accepted
+        );
+        assert_eq!(rig.peer.record.lock().unwrap().attempts.len(), 1);
+
+        rig.clock.advance(61_000);
+        let now = rig.store.now().await.expect("advanced now");
+        assert!(
+            matches!(
+                rig.store
+                    .recover_expired_lease(LeaseRecoveryInput {
+                        task_id: TaskId::new(TASK_ID),
+                        retry_not_before: now,
+                    })
+                    .await
+                    .expect("recover"),
+                skiff_task_control::store::LeaseRecoveryOutcome::Recovered(_)
+            ),
+            "expired attempt lease must recover"
+        );
+        let second = claim_ready(rig.store.as_ref(), TASK_ID).await;
+        let second_attempt = second
+            .active_lease
+            .as_ref()
+            .expect("second lease")
+            .attempt_id
+            .clone();
+        let second_lease = second
+            .active_lease
+            .as_ref()
+            .expect("second lease")
+            .lease_id
+            .clone();
+        assert_eq!(second.attempt_generation, 2);
+        assert_ne!(first_attempt, second_attempt);
+        assert_ne!(first_lease, second_lease);
+
+        assert_eq!(
+            rig.admission.admit(&second).await,
+            AdmissionDecision::Accepted
+        );
+        let peer = rig.peer.record.lock().unwrap();
+        assert_eq!(peer.attempts.len(), 2);
+        let header = &peer.attempt_headers[1];
+        let task_attempt = header
+            .task_attempt
+            .as_ref()
+            .expect("fresh task request must carry taskAttempt");
+        assert_eq!(task_attempt.attempt_id, second_attempt.as_str());
+        assert_eq!(task_attempt.lease_id, second_lease.as_str());
+        rig.worker.abort();
+    }
+
+    #[tokio::test]
+    async fn accepted_task_result_settles_independently_of_parent_authority() {
+        let rig = control_rig();
+        let now = rig.store.now().await.expect("now");
+        rig.store
+            .create(record(TASK_ID, corpus_image(), now, TaskState::Scheduled))
+            .await
+            .expect("create");
+        let mut claimed = claim_ready(rig.store.as_ref(), TASK_ID).await;
+        claimed.test_case = Some(TaskTestCaseAuthority {
+            test_case_capability: "test-case:cap-1".to_string(),
+            parent_request_id: "parent-request".to_string(),
+            origin_runtime_id: "runtime-a".to_string(),
+            origin_connection_generation: 1,
+        });
+        assert_eq!(
+            rig.admission.admit(&claimed).await,
+            AdmissionDecision::Accepted
+        );
+        let request_id = rig.peer.record.lock().unwrap().attempts[0].clone();
+        let _ = rig.dispatcher.on_frame(
+            &rig.session,
+            skiff_router::dispatch::RuntimeResponseFrame::End {
+                request_id,
+                payload_present: false,
+                payload: Vec::new(),
+            },
+        );
+        wait_for_status(rig.store.as_ref(), TASK_ID, TaskStatusKind::Succeeded).await;
+        assert_eq!(rig.control.pending_attempt_count(), 0);
+        rig.worker.abort();
     }
 }
 

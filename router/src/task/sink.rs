@@ -108,11 +108,28 @@ impl ReleaseTaskExecutionImageSource {
             deployment,
         })
     }
+
+    /// Resolves the release pointer and verifies the caller-supplied exact
+    /// deployment build when the Runtime sent one. A mismatch is fail-closed:
+    /// the durable record must freeze the exact image the caller is running,
+    /// never a newer pointer that happened to be published after submission.
+    fn resolve_exact(
+        &self,
+        header: &TaskSubmitRequestFrameHeaderV2,
+    ) -> Option<TaskExecutionImageRef> {
+        let image = self.resolve_deployment(&header.service_id, &header.service_version)?;
+        if let Some(requested_build_id) = header.build_id.as_deref() {
+            if image.deployment.deployment_artifact_identity.as_str() != requested_build_id {
+                return None;
+            }
+        }
+        Some(image)
+    }
 }
 
 impl TaskExecutionImageSource for ReleaseTaskExecutionImageSource {
     fn resolve(&self, header: &TaskSubmitRequestFrameHeaderV2) -> Option<TaskExecutionImageRef> {
-        self.resolve_deployment(&header.service_id, &header.service_version)
+        self.resolve_exact(header)
     }
 
     fn contains_service(&self, service_id: &str) -> bool {
