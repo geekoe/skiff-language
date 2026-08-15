@@ -1,4 +1,11 @@
 use super::*;
+use crate::VmOwnedValues;
+
+use skiff_artifact_model::bytecode::dto::DbOperationKind;
+use skiff_artifact_model::{
+    FileIrRef, PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity,
+};
+use skiff_runtime_linked_bytecode::{LinkedDbObjectTargetId, LinkedDbOperation};
 
 #[test]
 fn operand_push_preflight_failure_never_partially_installs_or_advances_height() {
@@ -1570,6 +1577,74 @@ fn no_intrinsic_effects() -> CallableMayEffects {
     }
 }
 
+fn db_operation_facts(
+    result_type: TypeIndex,
+    result_plan: LinkedValueTransferPlan,
+) -> LinkedDbOperation {
+    LinkedDbOperation::new(
+        LinkedDbObjectTargetId::new(
+            PackageArtifactRef {
+                package_id: "test.skiff/db".to_string(),
+                package_version: "1.0.0".to_string(),
+                package_build_id: PackageBuildId::new("build:db"),
+                package_local_abi_identity: PackageLocalAbiIdentity::new("abi:db"),
+            },
+            FileIrRef::new("file:db", "main.skiff"),
+            0,
+        ),
+        "Doc",
+        DbOperationKind::Insert,
+        result_plan.clone(),
+        result_type,
+        result_plan,
+    )
+    .expect("linked DB operation facts remain valid")
+}
+
+fn supported_db_type_plan(
+    image: &DeploymentExecutionImage,
+) -> Option<(TypeIndex, LinkedValueTransferPlan)> {
+    image.types().iter().find_map(|entry| {
+        let plan = entry.plan().clone();
+        let scalar_number = matches!(
+            entry.type_ref(),
+            TypeRefIr::Builtin { name, args } if name == "number" && args.is_empty()
+        );
+        if scalar_number && LifecycleExecutor::supports_release(&plan) {
+            Some((entry.index(), plan))
+        } else {
+            None
+        }
+    })
+}
+
+fn db_intrinsic_target(operation: &LinkedDbOperation) -> LinkedIntrinsicTarget {
+    let parameter_plan = operation.parameter_plan().clone();
+    LinkedIntrinsicTarget::new(
+        IntrinsicIndex::new(0),
+        LinkedIntrinsicKind::Static(
+            skiff_runtime_linked_bytecode::LinkedStaticIntrinsicTarget::new(
+                skiff_runtime_linked_bytecode::LinkedIntrinsicCanonicalKey::parse(
+                    "std.db.operation",
+                )
+                .expect("DB intrinsic canonical key is valid"),
+                1,
+            )
+            .expect("DB intrinsic signature version is valid"),
+        ),
+        LinkedNativeCallableSignature::new(
+            Box::new([operation.result_type()]),
+            Box::new([ParamModeIr::Value]),
+            Box::new([parameter_plan]),
+            Box::new([operation.result_type()]),
+            Box::new([operation.result_plan().clone()]),
+            no_intrinsic_effects(),
+        )
+        .expect("DB intrinsic signature remains structurally valid"),
+    )
+    .with_db_operation(operation.clone())
+}
+
 #[test]
 fn legacy_array_push_intrinsic_executor_fails_before_mutation_with_both_operands_rooted() {
     let fixture = ObservationFixture::build(
@@ -1649,4 +1724,179 @@ fn legacy_array_push_intrinsic_executor_fails_before_mutation_with_both_operands
         .0
         .contains(&array.as_request_heap_ref().unwrap().get()));
     assert!(roots.0.contains(&item.as_request_heap_ref().unwrap().get()));
+}
+
+#[test]
+fn linked_db_intrinsic_hands_off_flat_child_with_exact_plans() {
+    let fixture = ObservationFixture::build(
+        "example.com/fiber-db-intrinsic-child",
+        "function run() -> number { return 1 }",
+    );
+    let observer = BytecodeExecutionObserver::new(
+        Arc::new(RecordingSink::default()),
+        observation_correlation(),
+    );
+    let mut fiber = fixture.start(vm_limits(), observer, Box::<[ValueSlot]>::default());
+    let mut heap = IntrinsicDispatchHeap::default();
+    let (result_type, result_plan) = supported_db_type_plan(&fixture.image)
+        .expect("observation fixture has a supported linked type plan");
+    let argument = ValueSlot::number(1.0);
+    fiber.push_operand(argument).unwrap();
+
+    let operation = db_operation_facts(result_type, result_plan);
+    let target = db_intrinsic_target(&operation);
+    let frame = fiber.current_frame().unwrap().clone();
+    let mut executor = LifecycleExecutor::new(&mut heap);
+    let outcome = fiber
+        .execute_resolved_intrinsic(
+            &mut executor,
+            frame.function(),
+            frame.instruction(),
+            &target,
+            1,
+            1,
+        )
+        .expect("linked DB intrinsic must hand off to the flat child lifecycle");
+    drop(executor);
+
+    let DispatchOutcome::Handoff(VmControl::EnterChild(invocation)) = outcome else {
+        panic!("linked DB intrinsic must produce a flat child handoff");
+    };
+    assert_eq!(invocation.target(), ChildTarget::Db(IntrinsicIndex::new(0)));
+    assert!(invocation.arguments().values() == &[argument]);
+    assert_eq!(invocation.resume().expected_result_count(), 1);
+    assert!(matches!(fiber.state, VmFiberState::BlockedOnChild));
+    assert_eq!(fiber.current_frame().unwrap().operand_height(), 0);
+
+    let (_, arguments, _, resume) = invocation.into_parts();
+    arguments
+        .into_terminal_escrow()
+        .release_all(&mut heap)
+        .expect("DB intrinsic argument release uses its exact plan");
+    let result = ValueSlot::number(2.0);
+    let owned =
+        VmOwnedValues::try_from_db_intrinsic_resume(&resume, Box::new([result]), &operation)
+            .expect("linked DB result plan binds to the intrinsic resume token");
+    fiber
+        .resume(resume, ResumeOutcome::Values(owned))
+        .expect("linked DB intrinsic resumes through the same flat lifecycle");
+    assert!(matches!(fiber.state, VmFiberState::Runnable));
+}
+
+#[test]
+fn linked_db_intrinsic_result_plan_mismatch_fails_before_argument_move() {
+    let fixture = ObservationFixture::build(
+        "example.com/fiber-db-intrinsic-plan-mismatch",
+        "function run() -> number { return 1 }",
+    );
+    let observer = BytecodeExecutionObserver::new(
+        Arc::new(RecordingSink::default()),
+        observation_correlation(),
+    );
+    let mut fiber = fixture.start(vm_limits(), observer, Box::<[ValueSlot]>::default());
+    let mut heap = IntrinsicDispatchHeap::default();
+    let (result_type, result_plan) = supported_db_type_plan(&fixture.image)
+        .expect("observation fixture has a supported linked type plan");
+    let argument = ValueSlot::number(1.0);
+    fiber.push_operand(argument).unwrap();
+
+    let operation = db_operation_facts(result_type, result_plan);
+    let mut target = db_intrinsic_target(&operation);
+    let moved_only = LinkedValueTransferPlan::MoveOnly {
+        drop: LinkedValueDropPlan::Trivial,
+    };
+    let signature = LinkedNativeCallableSignature::new(
+        Box::new([result_type]),
+        Box::new([ParamModeIr::Value]),
+        Box::new([operation.parameter_plan().clone()]),
+        Box::new([result_type]),
+        Box::new([moved_only]),
+        no_intrinsic_effects(),
+    )
+    .expect("mismatched DB intrinsic signature remains structurally valid");
+    target = LinkedIntrinsicTarget::new(target.index(), target.kind().clone(), signature)
+        .with_db_operation(operation);
+    let frame = fiber.current_frame().unwrap().clone();
+    let mut executor = LifecycleExecutor::new(&mut heap);
+    let error = match fiber.execute_resolved_intrinsic(
+        &mut executor,
+        frame.function(),
+        frame.instruction(),
+        &target,
+        1,
+        1,
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("a DB intrinsic with a mismatched result plan must fail closed"),
+    };
+    drop(executor);
+
+    assert!(matches!(
+        error,
+        VmError::FullValueLifecyclePlanUnavailable {
+            opcode: Opcode::InvokeIntrinsic,
+            ..
+        }
+    ));
+    assert_eq!(fiber.current_frame().unwrap().operand_height(), 1);
+    let operand_base = fiber.current_frame().unwrap().operand_base();
+    assert!(fiber.values[operand_base] == argument);
+    assert!(fiber.live_values[operand_base]);
+}
+
+#[test]
+fn linked_db_intrinsic_result_escrow_releases_exact_owner() {
+    let fixture = ObservationFixture::build(
+        "example.com/fiber-db-intrinsic-cleanup",
+        "function run() -> number { return 1 }",
+    );
+    let observer = BytecodeExecutionObserver::new(
+        Arc::new(RecordingSink::default()),
+        observation_correlation(),
+    );
+    let mut fiber = fixture.start(vm_limits(), observer, Box::<[ValueSlot]>::default());
+    let mut heap = IntrinsicDispatchHeap::default();
+    let (result_type, result_plan) = supported_db_type_plan(&fixture.image)
+        .expect("observation fixture has a supported linked type plan");
+    let argument = ValueSlot::number(1.0);
+    fiber.push_operand(argument).unwrap();
+
+    let operation = db_operation_facts(result_type, result_plan);
+    let target = db_intrinsic_target(&operation);
+    let frame = fiber.current_frame().unwrap().clone();
+    let mut executor = LifecycleExecutor::new(&mut heap);
+    let outcome = fiber
+        .execute_resolved_intrinsic(
+            &mut executor,
+            frame.function(),
+            frame.instruction(),
+            &target,
+            1,
+            1,
+        )
+        .expect("linked DB intrinsic hands off for cleanup");
+    drop(executor);
+
+    let DispatchOutcome::Handoff(VmControl::EnterChild(invocation)) = outcome else {
+        panic!("linked DB intrinsic must produce a flat child handoff");
+    };
+    let (_, arguments, _, resume) = invocation.into_parts();
+    arguments
+        .into_terminal_escrow()
+        .release_all(&mut heap)
+        .expect("DB intrinsic argument release uses its exact plan");
+    let result = ValueSlot::number(2.0);
+    let owned =
+        VmOwnedValues::try_from_db_intrinsic_resume(&resume, Box::new([result]), &operation)
+            .expect("linked DB result plan binds before cleanup");
+    owned
+        .into_terminal_escrow()
+        .release_all(&mut heap)
+        .expect("linked DB result cleanup releases through the exact plan");
+    assert!(
+        heap.entries.is_empty(),
+        "DB cleanup left {:?}",
+        heap.debug_inventory()
+    );
+    assert!(matches!(fiber.state, VmFiberState::BlockedOnChild));
 }

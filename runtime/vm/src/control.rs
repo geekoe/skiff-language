@@ -3,7 +3,7 @@ use std::{fmt, num::NonZeroU64, sync::Arc};
 use skiff_artifact_model::Opcode;
 use skiff_runtime_linked_bytecode::{
     ActorMethodIndex, FunctionIndex, HostEffectAdapterIndex, InstructionIndex, InterfaceTableIndex,
-    LinkedValueTransferPlan, ResumeSiteIndex, ServiceOperationIndex, ShapeIndex,
+    IntrinsicIndex, LinkedValueTransferPlan, ResumeSiteIndex, ServiceOperationIndex, ShapeIndex,
     SyntheticCallbackIndex, TypeIndex,
 };
 use skiff_runtime_linker::DeploymentExecutionImage;
@@ -329,6 +329,7 @@ pub enum ChildTarget {
         table: InterfaceTableIndex,
         method_ordinal: u32,
     },
+    Db(IntrinsicIndex),
     Callback(SyntheticCallbackIndex),
     StreamNext,
 }

@@ -49,6 +49,12 @@ pub(super) struct InstructionAdvanceReservation {
     next_instruction: InstructionIndex,
 }
 
+impl InstructionAdvanceReservation {
+    pub(super) const fn next_instruction(&self) -> InstructionIndex {
+        self.next_instruction
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct StoreSlotReservation {
     frame_ordinal: usize,

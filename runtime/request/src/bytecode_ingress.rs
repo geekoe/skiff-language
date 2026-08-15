@@ -13,8 +13,9 @@ use skiff_artifact_model::{
 use skiff_runtime_boundary::http::HttpBoundaryNameValue;
 use skiff_runtime_capability_context::{CancellationToken, ExecutionBudgetReason};
 use skiff_runtime_linked_bytecode::{
-    LinkedNativeCallableSignature, LinkedRepresentationCarrier, LinkedResumeResultMaterialization,
-    LinkedShapeEntry, LinkedValueDropPlan, LinkedValueTransferPlan, TypeIndex,
+    LinkedDbOperation, LinkedNativeCallableSignature, LinkedRepresentationCarrier,
+    LinkedResumeResultMaterialization, LinkedShapeEntry, LinkedValueDropPlan,
+    LinkedValueTransferPlan, TypeIndex,
 };
 use skiff_runtime_linker::{DeploymentExecutionEntry, DeploymentExecutionImage};
 use skiff_runtime_model::{
@@ -23,6 +24,7 @@ use skiff_runtime_model::{
     },
     error::RuntimeErrorPayload,
     request_heap::RequestHeapLimits,
+    runtime_value::RuntimeValue,
     service_error::ErrorCorrelation,
     vm_heap::{VmContainerShape, VmHeap, VmHeapError, VmHeapOperation, VmRecordField},
     vm_root::{VmRootSource, VmRootVisitor},
@@ -39,13 +41,14 @@ use skiff_runtime_scheduler::{
     BytecodeParkFailure, BytecodeParkRequest, BytecodePortFailure, BytecodeScheduler,
     BytecodeSchedulerError, BytecodeSchedulerFailure, BytecodeSchedulerFailureOwner,
     BytecodeSchedulerOutcome, BytecodeSchedulerPorts, BytecodeStreamHandoff,
-    BytecodeStreamSupervisor, ClaimedPendingWakeGuard, CompletionHandle, PendingRegistry,
-    PendingWake, PendingWakeQueue, RequestByteStreamFailure, RequestExecutionContext,
-    RequestResourceFinishReason, RequestResourceHandle, RequestResourceTable,
-    RequestResourceTermination, RequestServerStreamReservation, RootEscrow, SuspendedTrampoline,
+    BytecodeStreamSupervisor, ChildHeapCarrier, ClaimedPendingWakeGuard, CompletionHandle,
+    PendingRegistry, PendingWake, PendingWakeQueue, RequestByteStreamFailure,
+    RequestExecutionContext, RequestResourceFinishReason, RequestResourceHandle,
+    RequestResourceTable, RequestResourceTermination, RequestServerStreamReservation, RootEscrow,
+    SuspendedTrampoline,
 };
 use skiff_runtime_vm::{
-    AdapterInvocation, ChildInvocation, PendingOperation, ResumeOutcome, Vm, VmBudget,
+    AdapterInvocation, ChildInvocation, ChildTarget, PendingOperation, ResumeOutcome, Vm, VmBudget,
     VmBudgetClosed, VmBudgetTerminal, VmCompletion, VmError, VmFiber, VmHostEffectArguments,
     VmHostEffectArgumentsReleaseError, VmInternalTerminal, VmLimits, VmOwnedValues, VmResumeToken,
     VmTerminalCause, VmTerminalEscrow,
@@ -53,7 +56,8 @@ use skiff_runtime_vm::{
 
 use crate::{
     bytecode_children::{
-        execute_interface_child, execute_service_child, BytecodeChildHeapFactory,
+        execute_interface_child, execute_service_child, linked_db_target,
+        materialize_db_result_to_vm, require_db_operation, BytecodeChildHeapFactory,
         BytecodeChildLane, BytecodeRequestChildComposition, RequestChildHeapFactory,
     },
     bytecode_host_effects::{
@@ -500,6 +504,11 @@ pub(super) enum RequestPendingOutcome {
         reservation: RequestServerStreamReservation,
         result: Result<(), BytecodeServerStreamWriteFailure>,
     },
+    Db {
+        operation: LinkedDbOperation,
+        child_heap: ChildHeapCarrier,
+        result: Result<RuntimeValue, String>,
+    },
 }
 
 impl VmRootSource for RequestPendingOutcome {
@@ -510,6 +519,7 @@ impl VmRootSource for RequestPendingOutcome {
             | Self::HttpStream { .. }
             | Self::StreamNext { .. }
             | Self::ServerStreamFlush { .. } => Ok(()),
+            Self::Db { child_heap, .. } => child_heap.visit_roots(visitor),
         }
     }
 }
@@ -976,6 +986,224 @@ impl BytecodeHostExecutor {
     ) -> BytecodeAdapterHandoff<VmFiber> {
         BytecodeAdapterHandoff::Ready(BytecodeHandoff { resume, outcome })
     }
+
+    fn execute_db_child(
+        &self,
+        invocation: ChildInvocation,
+        heap: &mut dyn VmHeap,
+        _budget: &mut dyn VmBudget,
+    ) -> Result<BytecodeChildHandoff<VmFiber>, BytecodePortFailure<ChildInvocation, VmResumeToken>>
+    {
+        let ChildTarget::Db(index) = invocation.target() else {
+            return Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::UnsupportedChild,
+                invocation,
+            ));
+        };
+        let image = Arc::clone(invocation.resume().image());
+        let operation = match image
+            .intrinsics()
+            .get(usize::try_from(index.get()).unwrap_or(usize::MAX))
+            .filter(|row| row.index() == index)
+            .and_then(|row| row.db_operation().cloned())
+        {
+            Some(operation) => operation,
+            None => {
+                return Err(BytecodePortFailure::input(
+                    BytecodeSchedulerError::Port(
+                        "DB intrinsic table row is absent or has no linked operation".to_string(),
+                    ),
+                    invocation,
+                ));
+            }
+        };
+        if let Err(message) = require_db_operation(&operation) {
+            return Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::Port(message),
+                invocation,
+            ));
+        }
+        if invocation.arguments().values().len() != 1 || invocation.stream_endpoint().is_some() {
+            return Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::Port(
+                    "DB intrinsic child must carry exactly one argument and no stream endpoint"
+                        .to_string(),
+                ),
+                invocation,
+            ));
+        }
+        let mut db_composition = self.child_composition.db_child.clone();
+        if db_composition.exact_target.is_none() {
+            db_composition.exact_target = Some(linked_db_target(&operation));
+        }
+        if !db_composition.is_available() {
+            return Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::Port(
+                    "DB intrinsic child composition is not available; exact target, capability or recoverable context is missing"
+                        .to_string(),
+                ),
+                invocation,
+            ));
+        }
+        let caller_vm = match heap
+            .as_any()
+            .and_then(|heap| heap.downcast_ref::<RequestVmHeap>())
+        {
+            Some(heap) => heap,
+            None => {
+                return Err(BytecodePortFailure::input(
+                    BytecodeSchedulerError::Port(
+                        "DB intrinsic caller heap is not a request VM heap".to_string(),
+                    ),
+                    invocation,
+                ));
+            }
+        };
+        let argument = invocation.arguments().values()[0];
+        let argument_runtime = match caller_vm.runtime_value_for_slot(&argument) {
+            Ok(value) => value,
+            Err(error) => {
+                return Err(BytecodePortFailure::input(
+                    BytecodeSchedulerError::Vm(VmError::Heap(error)),
+                    invocation,
+                ));
+            }
+        };
+        let mut child_heap = match self.child_heap_factory.create_child_heap(
+            image.owner(),
+            self.child_composition.heap_limits.clone(),
+            self.runtime.resources.clone(),
+            Arc::clone(&self.child_composition.memory_ledger),
+        ) {
+            Ok(heap) => heap,
+            Err(error) => {
+                return Err(BytecodePortFailure::input(
+                    BytecodeSchedulerError::Port(format!("DB child heap creation failed: {error}")),
+                    invocation,
+                ));
+            }
+        };
+        let child_runtime = {
+            let child_vm = match child_heap
+                .heap_mut()
+                .as_any_mut()
+                .and_then(|heap| heap.downcast_mut::<RequestVmHeap>())
+            {
+                Some(heap) => heap,
+                None => {
+                    return Err(BytecodePortFailure::input(
+                        BytecodeSchedulerError::Port(
+                            "DB child heap is not a request VM heap".to_string(),
+                        ),
+                        invocation,
+                    ));
+                }
+            };
+            match skiff_runtime_model::request_heap::deep_clone_runtime_value_between_heaps(
+                caller_vm.request_heap(),
+                child_vm.request_heap_mut(),
+                &argument_runtime,
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    return Err(BytecodePortFailure::input(
+                        BytecodeSchedulerError::Port(format!(
+                            "DB argument materialization failed: {error}"
+                        )),
+                        invocation,
+                    ));
+                }
+            }
+        };
+
+        let (_target, arguments, _endpoint, resume) = invocation.into_parts();
+        let mut argument_escrow = arguments.into_terminal_escrow();
+        if let Err(error) = argument_escrow.release_all(heap) {
+            return Err(BytecodePortFailure::continuation(
+                BytecodeSchedulerError::Vm(error),
+                resume,
+            ));
+        }
+
+        let ledger = Arc::clone(&self.child_composition.memory_ledger);
+        let future = async move {
+            let result = async {
+                let mut session = match db_composition.begin_transaction(ledger.as_ref()).await {
+                    Ok(session) => session,
+                    Err(error) => return Err(format!("DB transaction begin failed: {error}")),
+                };
+                let prepared = {
+                    let child_vm = match child_heap
+                        .heap_mut()
+                        .as_any_mut()
+                        .and_then(|heap| heap.downcast_mut::<RequestVmHeap>())
+                    {
+                        Some(heap) => heap,
+                        None => {
+                            return Err("DB child heap is not a request VM heap".to_string());
+                        }
+                    };
+                    match session.prepared_create(child_vm.request_heap_mut(), &child_runtime) {
+                        Ok(prepared) => prepared,
+                        Err(error) => {
+                            session.abort().await;
+                            return Err(format!("DB create preparation failed: {error}"));
+                        }
+                    }
+                };
+                let finalizer = match prepared.into_wait().await {
+                    Ok(finalizer) => finalizer,
+                    Err(error) => {
+                        session.abort().await;
+                        return Err(format!("DB create wait failed: {error}"));
+                    }
+                };
+                let created = {
+                    let child_vm = match child_heap
+                        .heap_mut()
+                        .as_any_mut()
+                        .and_then(|heap| heap.downcast_mut::<RequestVmHeap>())
+                    {
+                        Some(heap) => heap,
+                        None => {
+                            return Err("DB child heap is not a request VM heap".to_string());
+                        }
+                    };
+                    match finalizer.finalize(child_vm.request_heap_mut()) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            session.abort().await;
+                            return Err(format!("DB create finalization failed: {error}"));
+                        }
+                    }
+                };
+                if let Err(error) = session.commit().await {
+                    session.abort().await;
+                    return Err(format!("DB commit failed: {error}"));
+                }
+                Ok(created)
+            }
+            .await;
+            (result, child_heap)
+        };
+
+        self.runtime
+            .begin_pending(
+                resume,
+                Box::pin(future),
+                false,
+                move |(result, child_heap)| RequestPendingOutcome::Db {
+                    operation,
+                    child_heap,
+                    result,
+                },
+            )
+            .map(BytecodeChildHandoff::Pending)
+            .map_err(|failure| {
+                let (reason, resume) = failure.into_parts();
+                BytecodePortFailure::continuation(reason, resume)
+            })
+    }
 }
 
 impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
@@ -1009,6 +1237,7 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                 self.observer.clone(),
                 vm_limits(),
             ),
+            BytecodeChildLane::Db => self.execute_db_child(invocation, heap, budget),
             BytecodeChildLane::Disabled => Err(BytecodePortFailure::input(
                 BytecodeSchedulerError::UnsupportedChild,
                 invocation,
@@ -2578,6 +2807,96 @@ fn materialize_request_pending_outcome(
             reservation,
             result,
         } => materialize_server_stream_flush_outcome(resources, reservation, result),
+        RequestPendingOutcome::Db {
+            operation,
+            child_heap,
+            result,
+        } => materialize_db_pending_outcome(
+            resume,
+            operation,
+            child_heap,
+            result,
+            terminal_escrows,
+            heap,
+        ),
+    }
+}
+
+fn materialize_db_pending_outcome(
+    resume: &VmResumeToken,
+    operation: LinkedDbOperation,
+    mut child_heap: ChildHeapCarrier,
+    result: Result<RuntimeValue, String>,
+    terminal_escrows: &Mutex<Vec<VmTerminalEscrow>>,
+    heap: &mut dyn VmHeap,
+) -> ResumeOutcome {
+    let parent = match heap
+        .as_any_mut()
+        .and_then(|heap| heap.downcast_mut::<RequestVmHeap>())
+    {
+        Some(parent) => parent,
+        None => {
+            return ResumeOutcome::Failure(VmError::HostEffectFailure(RuntimeErrorPayload {
+                code: "DbOperationFailed".to_string(),
+                message: "DB intrinsic result requires a request VM heap".to_string(),
+                status: None,
+                details: None,
+            }));
+        }
+    };
+    let value = match result {
+        Ok(value) => value,
+        Err(message) => {
+            return ResumeOutcome::Failure(VmError::HostEffectFailure(RuntimeErrorPayload {
+                code: "DbOperationFailed".to_string(),
+                message,
+                status: None,
+                details: None,
+            }));
+        }
+    };
+    let child_vm = match child_heap
+        .heap_mut()
+        .as_any_mut()
+        .and_then(|heap| heap.downcast_mut::<RequestVmHeap>())
+    {
+        Some(child_vm) => child_vm,
+        None => {
+            return ResumeOutcome::Failure(VmError::HostEffectFailure(RuntimeErrorPayload {
+                code: "DbOperationFailed".to_string(),
+                message: "DB intrinsic child heap is not a request VM heap".to_string(),
+                status: None,
+                details: None,
+            }));
+        }
+    };
+    let slot = match materialize_db_result_to_vm(
+        parent,
+        child_vm.request_heap(),
+        resume.image(),
+        &value,
+        &operation,
+    ) {
+        Ok(slot) => slot,
+        Err(message) => {
+            return ResumeOutcome::Failure(VmError::HostEffectFailure(RuntimeErrorPayload {
+                code: "DbOperationFailed".to_string(),
+                message,
+                status: None,
+                details: None,
+            }));
+        }
+    };
+    match VmOwnedValues::try_from_db_intrinsic_resume(resume, Box::new([slot]), &operation) {
+        Ok(values) => ResumeOutcome::Values(values),
+        Err(rejected) => {
+            let (error, escrow) = rejected.into_terminal_escrow();
+            terminal_escrows
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(escrow);
+            ResumeOutcome::Failure(error)
+        }
     }
 }
 

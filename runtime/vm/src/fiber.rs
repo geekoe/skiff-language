@@ -3586,6 +3586,15 @@ impl VmFiber {
                 });
             }
         }
+        if intrinsic.db_operation().is_some() {
+            return self.execute_db_intrinsic_child(
+                function,
+                instruction,
+                intrinsic,
+                arg_count,
+                result_count,
+            );
+        }
         if result_count != 1 {
             return Err(VmError::FullValueLifecyclePlanUnavailable {
                 function,
@@ -3634,6 +3643,78 @@ impl VmFiber {
         };
         self.commit_intrinsic_result(reservation, result);
         Ok(DispatchOutcome::Continue)
+    }
+
+    fn execute_db_intrinsic_child(
+        &mut self,
+        function: FunctionIndex,
+        instruction: InstructionIndex,
+        intrinsic: &skiff_runtime_linked_bytecode::LinkedIntrinsicTarget,
+        arg_count: usize,
+        result_count: usize,
+    ) -> Result<DispatchOutcome, VmError> {
+        let operation = intrinsic.db_operation().cloned().ok_or_else(|| {
+            VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::InvokeIntrinsic,
+            }
+        })?;
+        if arg_count != 1 || result_count != 1 {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::InvokeIntrinsic,
+            });
+        }
+        let signature = intrinsic.signature();
+        if signature.parameter_plans().len() != 1
+            || signature.result_types().len() != 1
+            || signature.result_plans().len() != 1
+            || signature.parameter_plans()[0] != *operation.parameter_plan()
+            || signature.result_types()[0] != operation.result_type()
+            || signature.result_plans()[0] != *operation.result_plan()
+        {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::InvokeIntrinsic,
+            });
+        }
+        let arguments = self.pop_operands(arg_count, false)?;
+        let argument_plans = signature.parameter_plans().to_vec();
+        let expected_stack_height =
+            self.current_frame()?
+                .operand_height()
+                .try_into()
+                .map_err(|_| VmError::VerifiedEntryInvariant {
+                    invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+                })?;
+        let frame = self.current_frame()?.clone();
+        let advance = self.reserve_instruction_advance(&frame, function, instruction)?;
+        let target = ChildTarget::Db(intrinsic.index());
+        let token = self.mint_resume(
+            function,
+            instruction,
+            VmResumeAuthority::Child(target),
+            ResumeSiteIndex::new(0),
+            advance.next_instruction(),
+            None,
+            expected_stack_height,
+            result_count as u32,
+        )?;
+        let invocation = ChildInvocation::new(
+            target,
+            VmOwnedValues::new_exact(
+                Arc::clone(self.entry.image()),
+                arguments.into_boxed_slice(),
+                argument_plans.into_boxed_slice(),
+            ),
+            token,
+        )
+        .map_err(|_| VmError::ResumeTokenMismatch)?;
+        self.state = VmFiberState::BlockedOnChild;
+        Ok(DispatchOutcome::Handoff(VmControl::EnterChild(invocation)))
     }
 
     fn read_borrowing_intrinsic_result(

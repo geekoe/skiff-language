@@ -183,6 +183,16 @@ impl RequestVmHeap {
         &mut self.heap
     }
 
+    /// Projects one live VM slot to its request-owned logical runtime value.
+    ///
+    /// This is the K6 DB-intrinsic bridge from the checked VM heap into the
+    /// D6R prepared DB leaf. It does not infer a type or plan; the slot must
+    /// already be live in this exact request heap.
+    pub fn runtime_value_for_slot(&self, value: &ValueSlot) -> Result<RuntimeValue, VmHeapError> {
+        self.runtime_carrier_for_slot(value, VmHeapOperation::ValidateLive)
+            .map(|carrier| carrier.into_value())
+    }
+
     /// Recovers the exact linked local interface table stored in a carrier.
     ///
     /// This is the checked seam for the local-interface child leaf: the
@@ -1059,6 +1069,14 @@ impl RequestVmHeap {
 }
 
 impl VmHeap for RequestVmHeap {
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn admit_resource_ref(
         &mut self,
         route: VmHandle,

@@ -3,7 +3,7 @@ use std::{fmt, sync::Arc};
 use skiff_artifact_model::{InstructionSourceSite, Opcode, TypeRefIr};
 use skiff_runtime_deployment_image::DeploymentOwnerIdentity;
 use skiff_runtime_linked_bytecode::{
-    FunctionIndex, InstructionIndex, LinkedValueTransferPlan, TypeIndex,
+    FunctionIndex, InstructionIndex, LinkedDbOperation, LinkedValueTransferPlan, TypeIndex,
 };
 use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_model::{
@@ -16,7 +16,8 @@ use skiff_runtime_model::{
 use crate::{
     admission::is_discardable_root,
     control::{
-        visit_values, visit_vm_error, ResumeOutcome, VmResumeBinding, VmResumeKind, VmResumeToken,
+        visit_values, visit_vm_error, ChildTarget, ResumeOutcome, VmResumeAuthority,
+        VmResumeBinding, VmResumeKind, VmResumeToken,
     },
     fiber::runtime_leaf_catch_identity,
     lifecycle::LifecycleExecutor,
@@ -131,6 +132,51 @@ impl VmOwnedValues {
         }
         let plans = site.result_plans().to_vec().into_boxed_slice();
         let mut owned = Self::new_exact(image, values, plans);
+        owned.resume_binding = Some(Arc::clone(resume.binding()));
+        Ok(owned)
+    }
+
+    /// Binds one DB intrinsic result to the exact continuation minted by the
+    /// VM for the linked DB operation.
+    ///
+    /// The intrinsic opcode carries no image resume-site row, so this is the
+    /// checked DB-specific binder. It still validates the caller image, the
+    /// exact operation result type/plan, the value tag, and the same private
+    /// binding pointer before any value can be delivered to the fiber.
+    pub fn try_from_db_intrinsic_resume(
+        resume: &VmResumeToken,
+        values: Box<[ValueSlot]>,
+        operation: &LinkedDbOperation,
+    ) -> Result<Self, VmOwnedValuesRejected> {
+        let image = Arc::clone(resume.image());
+        if !matches!(
+            resume.authority(),
+            VmResumeAuthority::Child(ChildTarget::Db(_))
+        ) || resume.expected_result_count() != 1
+            || values.len() != 1
+        {
+            return Err(VmOwnedValuesRejected::new(
+                image,
+                VmError::ResumeTokenMismatch,
+                values,
+            ));
+        }
+        let result_type = operation.result_type();
+        let result_plan = operation.result_plan();
+        if image.type_plan(result_type) != Some(result_plan)
+            || !resume_value_matches(&image, &values[0], result_type, result_plan)
+        {
+            return Err(VmOwnedValuesRejected::new(
+                image,
+                VmError::FullValueLifecyclePlanUnavailable {
+                    function: resume.function(),
+                    instruction: resume.instruction(),
+                    opcode: Opcode::InvokeIntrinsic,
+                },
+                values,
+            ));
+        }
+        let mut owned = Self::new_exact(image, values, Box::new([result_plan.clone()]));
         owned.resume_binding = Some(Arc::clone(resume.binding()));
         Ok(owned)
     }

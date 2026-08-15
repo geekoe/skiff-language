@@ -392,6 +392,19 @@ pub enum VmHeapError {
 /// absence is represented only by an immediate [`ValueSlot`], never by a tag
 /// sentinel.
 pub trait VmHeap {
+    /// Optional concrete-heap projection for request-owned DB child
+    /// composition. The VM core never uses this; only the request boundary can
+    /// downcast a heap it already owns.
+    fn as_any(&self) -> Option<&dyn Any> {
+        None
+    }
+
+    /// Mutable concrete-heap projection for the request-owned DB child
+    /// boundary. The VM core never uses this.
+    fn as_any_mut(&mut self) -> Option<&mut dyn Any> {
+        None
+    }
+
     /// Validates metadata and the liveness/domain of any referenced handle.
     fn validate_live(&self, value: &ValueSlot) -> Result<(), VmHeapError>;
 

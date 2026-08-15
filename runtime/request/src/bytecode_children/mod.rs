@@ -1,10 +1,10 @@
 //! X6 child mux for flat-scheduler bytecode children.
 //!
-//! Service and local interface are the accepted J2 child lanes. DB is
-//! registered as composition only until F6/K6 provide the VM DB child/effect
-//! vocabulary; remote interface, callback, task and actor remain fail-closed.
+//! Service, local interface and the K6 DB intrinsic child are the accepted J2
+//! child lanes. Remote interface, callback, task and actor remain fail-closed.
 
 mod db;
+mod db_intrinsic;
 mod interface;
 mod service;
 
@@ -29,6 +29,9 @@ use crate::{memory_ledger::MemoryLedgerError, vm_heap::RequestVmHeap, RequestMem
 pub use db::{
     BytecodeDbChildComposition, BytecodeDbChildError, DbObjectTargetId, DbTransactionSession,
 };
+pub(crate) use db_intrinsic::{
+    linked_db_target, materialize_db_result_to_vm, require_db_operation,
+};
 pub(crate) use interface::execute_interface_child;
 pub(crate) use service::execute_service_child;
 
@@ -39,6 +42,7 @@ pub(crate) use service::execute_service_child;
 pub(crate) enum BytecodeChildLane {
     Service,
     Interface,
+    Db,
     Disabled,
 }
 
@@ -47,6 +51,7 @@ impl BytecodeChildLane {
         match target {
             ChildTarget::Service(_) => Self::Service,
             ChildTarget::Interface { .. } => Self::Interface,
+            ChildTarget::Db(_) => Self::Db,
             ChildTarget::Actor(_) | ChildTarget::Callback(_) | ChildTarget::StreamNext => {
                 Self::Disabled
             }
@@ -275,7 +280,7 @@ pub(crate) fn service_operation_by_index(
 #[cfg(test)]
 mod tests {
     use skiff_runtime_linked_bytecode::{
-        ActorMethodIndex, InterfaceTableIndex, SyntheticCallbackIndex,
+        ActorMethodIndex, InterfaceTableIndex, IntrinsicIndex, SyntheticCallbackIndex,
     };
     use skiff_runtime_vm::ChildTarget;
 
@@ -294,6 +299,10 @@ mod tests {
                 method_ordinal: 0,
             }),
             BytecodeChildLane::Interface
+        );
+        assert_eq!(
+            BytecodeChildLane::for_target(ChildTarget::Db(IntrinsicIndex::new(0))),
+            BytecodeChildLane::Db
         );
         assert_eq!(
             BytecodeChildLane::for_target(ChildTarget::Actor(ActorMethodIndex::new(0))),
