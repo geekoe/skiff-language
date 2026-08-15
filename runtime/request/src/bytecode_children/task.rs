@@ -146,9 +146,28 @@ pub(crate) fn task_target_by_dispatch_index<'a>(
     image: &'a DeploymentExecutionImage,
     index: TaskDispatchIndex,
 ) -> Option<&'a LinkedTaskTarget> {
+    let target_index = index.task_target_index()?;
     image
         .task_targets()
-        .find(|target| target.index().get() == index.get())
+        .find(|target| target.index() == target_index)
+}
+
+pub(crate) fn task_child_failure_reason(
+    image: &DeploymentExecutionImage,
+    index: TaskDispatchIndex,
+    composition: &BytecodeTaskChildComposition,
+) -> String {
+    match task_target_by_dispatch_index(image, index) {
+        None => "task dispatch table row is absent".to_string(),
+        Some(_target) if !composition.is_available() => {
+            "task child requires exact host activation identity, caller request id and runtime id; the current bytecode request has none"
+                .to_string()
+        }
+        Some(target) => match task_timing_control(target) {
+            Err(error) => error.to_string(),
+            Ok(_) => task_required_fact().to_string(),
+        },
+    }
 }
 
 pub(crate) fn execute_task_child(
@@ -164,17 +183,7 @@ pub(crate) fn execute_task_child(
         ));
     };
     let image = invocation.resume().image();
-    let reason = match task_target_by_dispatch_index(image, index) {
-        None => "task dispatch table row is absent".to_string(),
-        Some(target) if !composition.is_available() => {
-            "task child requires exact host activation identity, caller request id and runtime id; the current bytecode request has none"
-                .to_string()
-        }
-        Some(target) => match task_timing_control(target) {
-            Err(error) => error.to_string(),
-            Ok(_) => task_required_fact().to_string(),
-        },
-    };
+    let reason = task_child_failure_reason(image, index, composition);
     Err(BytecodePortFailure::input(
         BytecodeSchedulerError::Port(reason),
         invocation,
@@ -248,17 +257,106 @@ pub(crate) fn task_submit_message_from_composition(
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+        sync::OnceLock,
+    };
+
     use serde_json::json;
     use skiff_artifact_model::{
         CallableEffectSummary, DeploymentArtifactIdentity, DeploymentRevision, ParamModeIr,
         ServiceDeploymentRef,
     };
+    use skiff_compiler::{
+        authoring::{build_authoring_object, seed_official_std_package, AuthoringObject},
+        CompilerPlatformSources,
+    };
     use skiff_runtime_linked_bytecode::{
         FunctionIndex, LinkedCallableSignature, LinkedValueDropPlan, LinkedValueTransferPlan,
         TaskTargetIndex, TypeIndex,
     };
+    use skiff_runtime_linker::{
+        link_deployment_execution_image, DeploymentExecutionImage, LinkLimits,
+    };
+    use skiff_runtime_loader::{
+        DeploymentBytecodeLoader, FilesystemDeploymentBytecodeContentResolver,
+    };
 
     use super::*;
+
+    fn task_image() -> std::sync::Arc<DeploymentExecutionImage> {
+        static IMAGE: OnceLock<std::sync::Arc<DeploymentExecutionImage>> = OnceLock::new();
+        std::sync::Arc::clone(IMAGE.get_or_init(|| {
+            let repository_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .and_then(Path::parent)
+                .expect("request crate must be under the repository root")
+                .to_path_buf();
+            let fixture_root = repository_root
+                .join("runtime/host/tests/fixtures/bytecode-vm-phase-6/task-positive");
+            let artifact_root = std::env::temp_dir().join(format!(
+                "skiff-request-task-child-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system clock must be after the Unix epoch")
+                    .as_nanos()
+            ));
+            fs::create_dir_all(&artifact_root).unwrap();
+            let sources = CompilerPlatformSources::new(&repository_root)
+                .expect("open repository platform sources");
+            seed_official_std_package(&sources, &artifact_root)
+                .expect("seed canonical std into task fixture store");
+            let receipt = build_authoring_object(
+                &sources,
+                AuthoringObject::Package,
+                &fixture_root,
+                &artifact_root,
+                "skiff-test",
+                true,
+            )
+            .expect("task fixture publishes through production authoring");
+            let deployment = serde_json::from_value(
+                receipt
+                    .pointer("/serviceDeploymentReceipt/deployment")
+                    .cloned()
+                    .expect("task authoring receipt carries deployment"),
+            )
+            .expect("task deployment receipt remains typed");
+            let resolver = FilesystemDeploymentBytecodeContentResolver::open(&artifact_root)
+                .expect("open task fixture store");
+            let hydrated = DeploymentBytecodeLoader::new(&resolver)
+                .load(&deployment)
+                .expect("load task fixture closure");
+            let image = std::sync::Arc::new(
+                link_deployment_execution_image(hydrated, &task_link_limits())
+                    .expect("link task fixture image"),
+            );
+            fs::remove_dir_all(&artifact_root).unwrap();
+            image
+        }))
+    }
+
+    fn task_link_limits() -> LinkLimits {
+        LinkLimits {
+            max_packages: u64::MAX,
+            max_root_specializations: u64::MAX,
+            max_specializations: u64::MAX,
+            max_code_words_per_function: u64::MAX,
+            max_total_code_words: u64::MAX,
+            max_relocations_per_function: u64::MAX,
+            max_total_relocations: u64::MAX,
+            max_image_table_entries: u64::MAX,
+            max_total_image_table_entries: u64::MAX,
+            max_total_function_table_entries: u64::MAX,
+            max_type_nesting_depth: u64::MAX,
+            max_expanded_type_nodes: u64::MAX,
+            max_expanded_type_bytes: u64::MAX,
+            max_constant_graph_nodes: u64::MAX,
+            max_constant_graph_edges: u64::MAX,
+        }
+    }
 
     fn deployment() -> ServiceDeploymentRef {
         ServiceDeploymentRef {
@@ -354,6 +452,39 @@ mod tests {
     }
 
     #[test]
+    fn task_dispatch_index_lookup_resolves_exact_linked_row() {
+        let image = task_image();
+        let target = image
+            .task_targets()
+            .next()
+            .expect("task fixture links a task dispatch row")
+            .clone();
+        let dispatch = TaskDispatchIndex::from_task_target_index(target.index())
+            .expect("linked task target maps to a dispatch index");
+
+        let found = task_target_by_dispatch_index(&image, dispatch)
+            .expect("linked task dispatch row must be found");
+        assert_eq!(found, &target);
+    }
+
+    #[test]
+    fn task_dispatch_index_missing_and_out_of_range_fail_closed() {
+        let image = task_image();
+        let composition = BytecodeTaskChildComposition::default();
+
+        assert!(
+            TaskDispatchIndex::try_new(0).is_none(),
+            "the reserved zero dispatch index is not constructible"
+        );
+        let out_of_range = TaskDispatchIndex::try_new(u32::MAX).expect("max is representable");
+        let reason = task_child_failure_reason(&image, out_of_range, &composition);
+        assert!(
+            reason.contains("task dispatch table row is absent"),
+            "an out-of-range dispatch index must fail closed: {reason}"
+        );
+    }
+
+    #[test]
     fn task_submit_message_preserves_exact_target_payload_timing_and_caller() {
         let message = task_submit_message_from_composition(
             &deployment(),
@@ -383,6 +514,42 @@ mod tests {
         assert_eq!(message.payload, b"exact-payload");
         assert_eq!(message.caller_kind, TaskCallerKind::Request);
         assert!(message.request.actor_method.is_none());
+    }
+
+    #[test]
+    fn task_submit_message_uses_linked_row_target_with_exact_payload() {
+        let image = task_image();
+        let target = image
+            .task_targets()
+            .next()
+            .expect("task fixture links a task dispatch row")
+            .clone();
+
+        let message = task_submit_message_from_composition(
+            image.owner().deployment(),
+            image.service_protocol_identity().as_str(),
+            &target,
+            b"exact-payload",
+            "rpc:task-child",
+            &composition(),
+        )
+        .expect("exact linked task facts must compose a fresh submit message");
+
+        assert_eq!(message.request.target, target.target_identity());
+        assert_eq!(
+            message.request.service_id,
+            image.owner().deployment().service_id
+        );
+        assert_eq!(
+            message.request.service_version,
+            image.owner().deployment().contract_version
+        );
+        assert_eq!(
+            message.request.service_protocol_identity,
+            image.service_protocol_identity().as_str()
+        );
+        assert_eq!(message.payload, b"exact-payload");
+        assert_eq!(message.request.timing, TaskSubmitTimingControl::Immediate);
     }
 
     #[test]
