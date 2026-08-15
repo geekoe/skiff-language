@@ -84,6 +84,7 @@ fn static_array_empty() -> IntrinsicReference {
             }],
             effects: entry.signature.effects.clone(),
         },
+        db_operation: None,
     }
 }
 
@@ -109,6 +110,7 @@ fn receiver_date_epoch() -> IntrinsicReference {
             result_plans: vec![trivial_plan()],
             effects: entry.signature.effects.clone(),
         },
+        db_operation: None,
     }
 }
 
@@ -140,6 +142,7 @@ fn receiver_string_concat() -> IntrinsicReference {
             result_plans: vec![string_plan()],
             effects: entry.signature.effects.clone(),
         },
+        db_operation: None,
     }
 }
 

@@ -52,7 +52,11 @@ impl TypeNormalizer<'_> {
             .implementation_links
             .types
             .iter()
-            .filter(|(_, export)| export.file.module_path == module_path && export.symbol == symbol)
+            .filter(|(_, export)| {
+                export.file.module_path == module_path
+                    && canonical_implementation_path(export).as_deref()
+                        == Some(expected_path.as_str())
+            })
             .collect::<Vec<_>>();
         let (path, export) = unique_canonical_export(
             &matches,

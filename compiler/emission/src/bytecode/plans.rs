@@ -270,6 +270,8 @@ fn collect_exact_type_plans(
                         ),
                     )?,
                     ExprIr::DbOperation { operation } => {
+                        let target_value = db_object_value_type(unit, &operation.target.type_ref);
+                        let result_value = db_object_value_type(unit, &operation.result_type);
                         register(
                             &operation.target.type_ref,
                             &format!(
@@ -278,9 +280,23 @@ fn collect_exact_type_plans(
                             ),
                         )?;
                         register(
+                            &target_value,
+                            &format!(
+                                "function `{function_key}` expression {} database target value",
+                                expression.index
+                            ),
+                        )?;
+                        register(
                             &operation.result_type,
                             &format!(
                                 "function `{function_key}` expression {} database result",
+                                expression.index
+                            ),
+                        )?;
+                        register(
+                            &result_value,
+                            &format!(
+                                "function `{function_key}` expression {} database result value",
                                 expression.index
                             ),
                         )?;
@@ -351,12 +367,24 @@ fn register_type_tree(
         {
             continue;
         }
+        let plan_ty = match &ty {
+            TypeRefIr::DbObjectSymbol { symbol } if symbol.module_path == module_path => unit
+                .type_table
+                .iter()
+                .enumerate()
+                .find(|(_, declaration)| declaration.name == symbol.symbol)
+                .map(|(type_index, _)| TypeRefIr::LocalType {
+                    type_index: type_index as u32,
+                })
+                .unwrap_or_else(|| ty.clone()),
+            _ => ty.clone(),
+        };
         let plan = exact_source_plan(
             plan_for,
             module_path,
             location,
             "type",
-            &ty,
+            &plan_ty,
             representation_carriers,
         )?;
         rows.push(TypeValueTransferPlan {
@@ -394,6 +422,19 @@ fn register_type_tree(
                     .get(&(package_id.clone(), symbol.symbol_path.clone()))
                     .map(|fields| fields.values().cloned().collect::<Vec<_>>())
             }
+            TypeRefIr::DbObjectSymbol { symbol } if symbol.module_path == module_path => unit
+                .type_table
+                .iter()
+                .find(|declaration| declaration.name == symbol.symbol)
+                .and_then(|declaration| match &declaration.descriptor {
+                    skiff_artifact_model::TypeDescriptorIr::Record { fields } => {
+                        Some(fields.values().cloned().collect::<Vec<_>>())
+                    }
+                    skiff_artifact_model::TypeDescriptorIr::Alias { target } => {
+                        Some(vec![target.clone()])
+                    }
+                    _ => None,
+                }),
             _ => None,
         };
         if let Some(fields) = fields {
@@ -477,6 +518,24 @@ fn direct_source_plan(
         construct: "exact source value-transfer plan",
         location: format!(" {location}: {message}"),
     })
+}
+
+fn db_object_value_type(unit: &MirUnit, ty: &TypeRefIr) -> TypeRefIr {
+    let TypeRefIr::DbObjectSymbol { symbol } = ty else {
+        return super::constants::qualify_local_types(&unit.module_path, ty);
+    };
+    if symbol.module_path != unit.module_path {
+        return ty.clone();
+    }
+    unit.type_table
+        .iter()
+        .enumerate()
+        .find(|(_, declaration)| declaration.name == symbol.symbol)
+        .map(|(type_index, _)| TypeRefIr::PublicationType {
+            module_path: symbol.module_path.clone(),
+            type_index: type_index as u32,
+        })
+        .unwrap_or_else(|| ty.clone())
 }
 
 fn unsupported_slot_type(function_key: &str, slot: &MirSlot) -> BytecodeEmissionError {

@@ -160,6 +160,7 @@ fn intrinsic_reference() -> IntrinsicReference {
             }],
             effects: entry.signature.effects.clone(),
         },
+        db_operation: None,
     }
 }
 

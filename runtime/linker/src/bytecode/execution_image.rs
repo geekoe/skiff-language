@@ -191,6 +191,15 @@ impl DeploymentExecutionImage {
         self.linked.intrinsics()
     }
 
+    pub fn db_operations(
+        &self,
+    ) -> impl Iterator<Item = &skiff_runtime_linked_bytecode::LinkedDbOperation> {
+        self.linked
+            .intrinsics()
+            .iter()
+            .filter_map(skiff_runtime_linked_bytecode::LinkedIntrinsicTarget::db_operation)
+    }
+
     pub fn interface_tables(&self) -> &[LinkedInterfaceTable] {
         self.linked.interface_tables()
     }

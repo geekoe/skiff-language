@@ -1544,7 +1544,7 @@ fn collect_intrinsic_contracts(
         else {
             continue;
         };
-        if intrinsic.signature.effects.may_pending() {
+        if intrinsic.signature.effects.may_pending() && intrinsic.db_operation.is_none() {
             return Err(table_error(
                 key,
                 format!(
@@ -1552,7 +1552,11 @@ fn collect_intrinsic_contracts(
                 ),
             ));
         }
-        let resume = IntrinsicResumeContract::Never;
+        let resume = if intrinsic.db_operation.is_some() {
+            IntrinsicResumeContract::Unavailable
+        } else {
+            IntrinsicResumeContract::Never
+        };
         let relocation_index =
             u32::try_from(relocation_index).map_err(|_| StructuralValidationError::Arithmetic {
                 context: format!("functions[{key}] intrinsic relocation index conversion"),
@@ -2246,6 +2250,31 @@ fn validate_relocation_facts(
                             key,
                             format!("{location} static intrinsic key/version must be non-zero"),
                         ));
+                    }
+                    if let Some(operation) = &intrinsic.db_operation {
+                        if canonical_key != "std.db.operation" {
+                            return Err(table_error(
+                                key,
+                                format!(
+                                    "{location} dbOperation is only valid for std.db.operation"
+                                ),
+                            ));
+                        }
+                        validate_db_operation_reference(
+                            &crate::bytecode::dto::HostEffectReference {
+                                target: crate::NativeTarget {
+                                    namespace: "std".to_string(),
+                                    symbol: "db".to_string(),
+                                    binding_key: Some("std.db.operation".to_string()),
+                                    metadata: std::collections::BTreeMap::new(),
+                                },
+                                signature: intrinsic.signature.clone(),
+                                db_operation: Some(operation.clone()),
+                            },
+                            pools,
+                            &location,
+                            operation,
+                        )?;
                     }
                 }
                 BytecodeIntrinsicRef::Receiver { op } => {

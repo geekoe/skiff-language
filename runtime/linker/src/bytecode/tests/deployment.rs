@@ -12,11 +12,12 @@ use skiff_artifact_identity::{
     PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX,
 };
 use skiff_artifact_model::{
-    contract_for_opcode, derive_bytecode_statement_manifest_identity,
-    BytecodeFunctionStatementManifest, ContractTypeRef, HostEffectExecutorIdentity,
-    InstructionSourceSite, Opcode, PendingContract, PrivilegedAffineCompositeIdentity,
-    ServiceDeploymentRef, SourcePosition, SourceSpanRef, StatementAttributionId, StatementContract,
-    StructuralValidationError, SyntheticInstructionSiteReason, TypeRefIr,
+    bytecode::dto::DbOperationKind, contract_for_opcode,
+    derive_bytecode_statement_manifest_identity, BytecodeFunctionStatementManifest,
+    ContractTypeRef, HostEffectExecutorIdentity, InstructionSourceSite, Opcode, PendingContract,
+    PrivilegedAffineCompositeIdentity, ServiceDeploymentRef, SourcePosition, SourceSpanRef,
+    StatementAttributionId, StatementContract, StructuralValidationError,
+    SyntheticInstructionSiteReason, TypeRefIr, ValueTransferPlanKind,
     PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
@@ -1498,6 +1499,29 @@ fn production_execution_image(fixture_relative: &str, label: &str) -> Deployment
     link_deployment_execution_image(hydrated, &super::generous_execution_limits()).unwrap_or_else(
         |error| panic!("production atomic image construction accepts {label}: {error}"),
     )
+}
+
+#[test]
+fn linked_image_carries_exact_db_object_target_facts() {
+    let image = production_execution_image(
+        "runtime/host/tests/fixtures/bytecode-vm-phase-6/db-positive",
+        "p6-db-facts",
+    );
+    let operations = image.db_operations().collect::<Vec<_>>();
+    assert_eq!(operations.len(), 1);
+    let operation = operations[0];
+    assert_eq!(operation.op(), DbOperationKind::Insert);
+    assert!(operation.type_name().ends_with("Doc"));
+    assert_eq!(operation.target_id().file_ir_ref().module_path, "main");
+    assert_eq!(operation.target_id().type_index(), 0);
+    assert_eq!(
+        operation.parameter_plan().kind(),
+        ValueTransferPlanKind::SnapshotShare
+    );
+    assert_eq!(
+        operation.result_plan().kind(),
+        ValueTransferPlanKind::SnapshotShare
+    );
 }
 
 fn production_hydrated_deployment(

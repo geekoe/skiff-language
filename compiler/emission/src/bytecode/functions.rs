@@ -1,18 +1,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use skiff_artifact_model::bytecode::dto::{DbOperandRole, DbOperationKind, DbOperationReference};
 use skiff_artifact_model::{
     bytecode::encode_instruction, bytecode::limits, contract_for_opcode, descriptor_for_opcode,
     AssignTargetIr, BoxSourceIr, BytecodeFunctionOrigin, BytecodeIntrinsicRef, BytecodeRelocation,
     BytecodeSpecialization, CallLoanLayout, CallTargetIr, CallableMayEffects, CatchMatcher,
-    ExceptionRegion, ExprIr, ExprRefIr, FrameLayout, FunctionTypeParamIr, HostEffectReference,
-    HostEffectSignature, InstructionSourceSite, InterfaceInstantiationRef,
-    InterfaceMethodSlotSignatureIr, InterfaceRequirementMethod, IntrinsicReference, LiteralIr,
-    LocalInterfaceMethod, LocalInterfaceRef, NativeTarget, Opcode, ParamModeIr, ParameterSlotDecl,
-    PatternIr, PrivilegedAffineFieldAccess, RelocatableBytecodeFunction, RemoteInterfaceMethod,
-    RemoteInterfaceRef, ResumeDescriptor, ResumeErrorMode, ResumeResultMaterialization,
-    ServiceBoundaryPlan, ServiceCallRef, SourceMapEntry, StatementAttributionId, StatementEntry,
-    SyntheticInstructionSiteReason, TrapFailureKind, TypeRefIr, ValueDropPlan, ValueTransferPlan,
-    WritablePathSegment,
+    DbBodyIr, DbOpKindIr, DbTargetIr, ExceptionRegion, ExprIr, ExprRefIr, FrameLayout,
+    FunctionTypeParamIr, HostEffectReference, HostEffectSignature, InstructionSourceSite,
+    InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr, InterfaceRequirementMethod,
+    IntrinsicReference, LiteralIr, LocalInterfaceMethod, LocalInterfaceRef, NativeTarget, Opcode,
+    ParamModeIr, ParameterSlotDecl, PatternIr, PrivilegedAffineFieldAccess,
+    RelocatableBytecodeFunction, RemoteInterfaceMethod, RemoteInterfaceRef, ResumeDescriptor,
+    ResumeErrorMode, ResumeResultMaterialization, ServiceBoundaryPlan, ServiceCallRef,
+    SourceMapEntry, StatementAttributionId, StatementEntry, SyntheticInstructionSiteReason,
+    TrapFailureKind, TypeRefIr, ValueDropPlan, ValueTransferPlan, WritablePathSegment,
 };
 use skiff_compiler_lowering::mir::{
     MirCallArgument, MirDirectCallFacts, MirEmissionAnchor, MirExpression, MirForInItemKind,
@@ -104,6 +105,7 @@ struct FunctionEmitter<'a> {
     value_block_body_blocks: BTreeSet<u32>,
     throw_source_sites: Vec<(usize, InstructionSourceSite)>,
     stream_source_sites: Vec<(usize, InstructionSourceSite)>,
+    generated_source_sites: Vec<(usize, InstructionSourceSite)>,
     operand_depth: usize,
 }
 
@@ -218,6 +220,7 @@ impl<'a> FunctionEmitter<'a> {
             value_block_body_blocks,
             throw_source_sites: Vec::new(),
             stream_source_sites: Vec::new(),
+            generated_source_sites: Vec::new(),
             operand_depth: 0,
         })
     }
@@ -519,14 +522,208 @@ impl<'a> FunctionEmitter<'a> {
 
     fn emit_db_operation(
         &mut self,
-        _expression: &MirExpression,
-        _operation: &skiff_artifact_model::DbOperationIr,
+        expression: &MirExpression,
+        operation: &skiff_artifact_model::DbOperationIr,
     ) -> Result<(), BytecodeEmissionError> {
-        Err(unsupported(
-            &self.key,
-            "DbOperation",
-            "DB execution has no admitted Phase 5 machine-carrier boundary",
-        ))
+        if operation.op != DbOpKindIr::Insert || operation.many {
+            return Err(unsupported(
+                &self.key,
+                "DbOperation",
+                "bytecode F6 facts currently admit single-object db insert only",
+            ));
+        }
+        if operation.selector.is_some()
+            || operation.query.is_some()
+            || operation.change.is_some()
+            || operation.projection.is_some()
+        {
+            return Err(unsupported(
+                &self.key,
+                "DbOperation",
+                "single-object db insert must not carry selector/query/change facts",
+            ));
+        }
+        let body = operation
+            .body
+            .as_ref()
+            .or(operation.insert_body.as_ref())
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "DbOperation",
+                    "single-object db insert has no object body",
+                )
+            })?;
+        let DbBodyIr::ObjectFields { fields } = body else {
+            return Err(unsupported(
+                &self.key,
+                "DbOperation",
+                "bytecode F6 facts currently admit object-field insert only",
+            ));
+        };
+        let target_type = self.db_object_publication_type(&operation.target.type_ref);
+        let construct_fields =
+            self.record_construct_fields(&operation.target.type_ref, fields, "db insert object")?;
+        let shape = self.image.intern_shape(
+            self.unit.module_path.as_str(),
+            &target_type,
+            &construct_fields,
+            &format!("db insert object shape in `{}`", self.key),
+        )?;
+        for name in construct_fields.keys() {
+            self.emit_expression(
+                *fields
+                    .get(name)
+                    .expect("record_construct_fields checked the field set"),
+            )?;
+        }
+        let field_count = u32::try_from(construct_fields.len())
+            .map_err(|_| arithmetic(&self.key, "db insert field count conversion"))?;
+        self.emit_op(Opcode::NewRecord, vec![shape, field_count])?;
+
+        let intrinsic = self.db_intrinsic_reference(operation, &target_type)?;
+        let relocation_index = u32::try_from(self.relocations.len())
+            .map_err(|_| arithmetic(&self.key, "db relocation index conversion"))?;
+        self.relocations
+            .push(BytecodeRelocation::IntrinsicRef { intrinsic });
+        let operands = vec![relocation_index, 1, 1];
+        let instruction = self.emit_op(Opcode::InvokeIntrinsic, operands)?;
+        self.generated_source_sites.push((
+            instruction,
+            InstructionSourceSite::Synthetic {
+                reason: SyntheticInstructionSiteReason::CompilerDesugaring,
+            },
+        ));
+        self.emit_number_constant(0)?;
+        let site_instruction = self.emit_op(Opcode::Pop, Vec::new())?;
+        for (index, event) in self.events.iter().enumerate() {
+            if matches!(
+                event.anchor,
+                MirEmissionAnchor::Expression {
+                    expression_index: anchored,
+                    ..
+                } if anchored == expression.index
+            ) {
+                self.event_mapping[index].get_or_insert(site_instruction);
+            }
+        }
+        self.map_call_event(expression.index);
+        Ok(())
+    }
+
+    fn db_intrinsic_reference(
+        &mut self,
+        operation: &skiff_artifact_model::DbOperationIr,
+        target_type: &TypeRefIr,
+    ) -> Result<IntrinsicReference, BytecodeEmissionError> {
+        let mut effects = skiff_artifact_model::host_effect_registry()
+            .entries()
+            .iter()
+            .find(|entry| entry.binding_key == "std.db.operation")
+            .map(|entry| entry.signature.effects.clone())
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "db operation",
+                    "std.db.operation is absent from the frozen host registry",
+                )
+            })?;
+        effects.may_pending = false;
+        effects.pending_effect_categories.clear();
+        let parameter_plan = self.image.exact_type_plan(
+            self.unit.module_path.as_str(),
+            target_type,
+            &format!("db insert parameter plan in `{}`", self.key),
+        )?;
+        let result_type = self.db_object_publication_type(&operation.result_type);
+        let result_plan = self.image.exact_type_plan(
+            self.unit.module_path.as_str(),
+            &result_type,
+            &format!("db insert result plan in `{}`", self.key),
+        )?;
+        let signature = HostEffectSignature {
+            parameter_types: vec![target_type.clone()],
+            parameter_modes: vec![ParamModeIr::Value],
+            parameter_plans: vec![parameter_plan.clone()],
+            result_types: vec![result_type.clone()],
+            result_plans: vec![result_plan.clone()],
+            effects,
+        };
+        for ty in signature
+            .parameter_types
+            .iter()
+            .chain(&signature.result_types)
+        {
+            self.image
+                .intern_type(self.unit.module_path.as_str(), ty, "db insert")?;
+        }
+        Ok(IntrinsicReference {
+            target: BytecodeIntrinsicRef::Static {
+                canonical_key: "std.db.operation".to_string(),
+                signature_version: 1,
+            },
+            signature,
+            db_operation: Some(Box::new(DbOperationReference {
+                op: DbOperationKind::Insert,
+                target: DbTargetIr {
+                    type_ref: target_type.clone(),
+                    type_name: operation.target.type_name.clone(),
+                },
+                operand_roles: vec![DbOperandRole::ObjectFields],
+                result_type,
+                result_plans: vec![result_plan],
+            })),
+        })
+    }
+
+    fn db_object_publication_type(&self, ty: &TypeRefIr) -> TypeRefIr {
+        let TypeRefIr::DbObjectSymbol { symbol } = ty else {
+            return super::constants::qualify_local_types(self.unit.module_path.as_str(), ty);
+        };
+        if symbol.module_path != self.unit.module_path {
+            return ty.clone();
+        }
+        self.unit
+            .type_table
+            .iter()
+            .enumerate()
+            .find(|(_, declaration)| declaration.name == symbol.symbol)
+            .map(|(type_index, _)| TypeRefIr::PublicationType {
+                module_path: symbol.module_path.clone(),
+                type_index: type_index as u32,
+            })
+            .unwrap_or_else(|| ty.clone())
+    }
+
+    fn emit_db_transaction(
+        &mut self,
+        expression: &MirExpression,
+        transaction: &skiff_artifact_model::DbTransactionIr,
+    ) -> Result<(), BytecodeEmissionError> {
+        let mut body_blocks = self
+            .function
+            .blocks
+            .iter()
+            .filter(|block| block.label == transaction.body);
+        let mut body_block = body_blocks.next().cloned().ok_or_else(|| {
+            unsupported(
+                &self.key,
+                "DbTransaction",
+                &format!("transaction body `{}` has no MIR block", transaction.body),
+            )
+        })?;
+        if body_blocks.next().is_some() {
+            return Err(unsupported(
+                &self.key,
+                "DbTransaction",
+                "transaction body maps to multiple MIR blocks",
+            ));
+        }
+        body_block.successors.clear();
+        self.emit_value_block_block(&body_block)?;
+        self.emit_expression(transaction.result)?;
+        self.map_completed_expression_events(expression.index)?;
+        Ok(())
     }
 
     fn emit_value_block_block(
@@ -1041,6 +1238,9 @@ impl<'a> FunctionEmitter<'a> {
             ExprIr::DbOperation { operation } => {
                 self.emit_db_operation(expression, operation)?;
             }
+            ExprIr::DbTransaction { transaction } => {
+                self.emit_db_transaction(expression, transaction)?;
+            }
             other => {
                 return Err(unsupported(
                     &self.key,
@@ -1073,6 +1273,18 @@ impl<'a> FunctionEmitter<'a> {
                 "expression is not a call",
             ));
         };
+        if matches!(&call.target, CallTargetIr::Builtin { op } if op == "db.transaction") {
+            if call.args.len() != 1 || !call.inout_args.is_empty() || !call.type_args.is_empty() {
+                return Err(unsupported(
+                    &self.key,
+                    "db transaction",
+                    "db transaction statement facts must carry exactly one body value",
+                ));
+            }
+            self.emit_expression(call.args[0])?;
+            self.map_call_event(expression.index);
+            return Ok(());
+        }
         if !call.inout_args.is_empty() {
             return Err(BytecodeEmissionError::InOutEmissionPending {
                 function_key: self.key.clone(),
@@ -1621,7 +1833,11 @@ impl<'a> FunctionEmitter<'a> {
             })?;
         let signature = self.call_signature(call, expression, effects)?;
         self.intern_signature_types(&signature, &format!("intrinsic `{canonical_key}`"))?;
-        Ok(IntrinsicReference { target, signature })
+        Ok(IntrinsicReference {
+            target,
+            signature,
+            db_operation: None,
+        })
     }
 
     fn receiver_intrinsic_reference(
@@ -1651,7 +1867,11 @@ impl<'a> FunctionEmitter<'a> {
             &signature,
             &format!("receiver intrinsic `{}`", op.canonical_key),
         )?;
-        Ok(IntrinsicReference { target, signature })
+        Ok(IntrinsicReference {
+            target,
+            signature,
+            db_operation: None,
+        })
     }
 
     fn normalize_host_signature_type(&self, ty: &TypeRefIr) -> TypeRefIr {
@@ -2075,6 +2295,7 @@ impl<'a> FunctionEmitter<'a> {
                             signature_version: 1,
                         },
                         signature,
+                        db_operation: None,
                     },
                 };
                 self.emit_pending_call(
@@ -4438,6 +4659,7 @@ impl<'a> FunctionEmitter<'a> {
             .throw_source_sites
             .iter()
             .chain(&self.stream_source_sites)
+            .chain(&self.generated_source_sites)
         {
             let start_pc = *pcs
                 .get(*instruction_index)
@@ -5135,6 +5357,16 @@ fn value_block_body_blocks(function: &MirFunction) -> Result<BTreeSet<u32>, Byte
     let mut bodies = BTreeSet::new();
     for fact in function.expression_blocks.values() {
         bodies.extend(value_block_body_ids(function, fact)?);
+    }
+    for expression in &function.expressions {
+        let ExprIr::DbTransaction { transaction } = &expression.expression else {
+            continue;
+        };
+        for block in &function.blocks {
+            if block.label == transaction.body {
+                bodies.insert(block.id);
+            }
+        }
     }
     Ok(bodies)
 }

@@ -54,10 +54,7 @@ impl TypeNormalizer<'_> {
                 )));
             }
             TypeRefIr::DbObjectSymbol { symbol } => {
-                return Err(self.error(format!(
-                    "DB object type {} has no package-owned bytecode identity",
-                    symbol.symbol_path()
-                )));
+                self.normalize_service_symbol(&symbol.module_path, &symbol.symbol)?
             }
             TypeRefIr::TypeParam { name } => {
                 return Err(self.error(format!(

@@ -2070,7 +2070,7 @@ mod tests {
             fields: BTreeMap::from([("value".to_string(), TypeRefIr::builtin("number"))]),
         };
         let operation = DbOperationIr {
-            op: DbOpKindIr::Insert,
+            op: DbOpKindIr::Update,
             many: false,
             target: DbTargetIr {
                 type_ref: record_ty.clone(),
@@ -2139,8 +2139,127 @@ mod tests {
                 construct: "DbOperation",
                 location,
             } if function_key == "db::insertItem"
-                && location == " DB execution has no admitted Phase 5 machine-carrier boundary"
+                && location == " bytecode F6 facts currently admit single-object db insert only"
         ));
+    }
+
+    #[test]
+    fn db_insert_emits_exact_intrinsic_facts_and_result_plan() {
+        let record_ty = TypeRefIr::Record {
+            fields: BTreeMap::from([
+                ("id".to_string(), TypeRefIr::builtin("string")),
+                ("value".to_string(), TypeRefIr::builtin("string")),
+            ]),
+        };
+        let operation = DbOperationIr {
+            op: DbOpKindIr::Insert,
+            many: false,
+            target: DbTargetIr {
+                type_ref: record_ty.clone(),
+                type_name: "Item".to_string(),
+            },
+            selector: None,
+            query: None,
+            projection: None,
+            body: Some(DbBodyIr::ObjectFields {
+                fields: BTreeMap::from([
+                    ("id".to_string(), expression(1)),
+                    ("value".to_string(), expression(2)),
+                ]),
+            }),
+            insert_body: None,
+            change: None,
+            result_type: record_ty.clone(),
+            source_span: None,
+        };
+        let expressions = vec![
+            MirExpression {
+                index: 0,
+                expression: ExprIr::DbOperation { operation },
+                ty: record_ty.clone(),
+                writable: None,
+                direct_call: None,
+                stream_result: None,
+                remote_interface: None,
+            },
+            MirExpression {
+                index: 1,
+                expression: ExprIr::Literal {
+                    value: LiteralIr::String {
+                        value: "item-id".to_string(),
+                    },
+                },
+                ty: TypeRefIr::builtin("string"),
+                writable: None,
+                direct_call: None,
+                stream_result: None,
+                remote_interface: None,
+            },
+            MirExpression {
+                index: 2,
+                expression: ExprIr::Literal {
+                    value: LiteralIr::String {
+                        value: "item-value".to_string(),
+                    },
+                },
+                ty: TypeRefIr::builtin("string"),
+                writable: None,
+                direct_call: None,
+                stream_result: None,
+                remote_interface: None,
+            },
+        ];
+        let function = function(
+            "db",
+            "insertItem",
+            record_ty.clone(),
+            Vec::new(),
+            expressions,
+            vec![MirBlock {
+                id: 0,
+                label: "entry".to_string(),
+                statements: one_return(expression(0)),
+                successors: Vec::new(),
+            }],
+            return_statements(0),
+            BTreeMap::new(),
+            Vec::new(),
+        );
+        let (unit, bundle) =
+            mir_and_bundle("db", Vec::new(), ExternalRefTable::default(), function);
+        let plans = plans(&unit);
+        let artifact = emit_bytecode_artifact(&[unit], &[bundle], &plans)
+            .expect("single-object db insert emits exact bytecode facts");
+        let function = artifact.image.functions.get("db::insertItem").unwrap();
+        let (intrinsic, operation) = function
+            .relocations
+            .iter()
+            .find_map(|relocation| match relocation {
+                BytecodeRelocation::IntrinsicRef { intrinsic } => intrinsic
+                    .db_operation
+                    .as_ref()
+                    .map(|operation| (intrinsic, operation)),
+                _ => None,
+            })
+            .expect("db insert emits an intrinsic DB operation fact");
+        assert_eq!(
+            operation.op,
+            skiff_artifact_model::bytecode::dto::DbOperationKind::Insert
+        );
+        assert_eq!(operation.target.type_name, "Item");
+        assert_eq!(operation.target.type_ref, record_ty);
+        assert_eq!(operation.result_type, record_ty);
+        assert_eq!(operation.result_plans.len(), 1);
+        assert_eq!(intrinsic.signature.parameter_types, vec![record_ty.clone()]);
+        assert_eq!(intrinsic.signature.result_types, vec![record_ty]);
+        assert_eq!(intrinsic.signature.result_plans, operation.result_plans);
+        assert_eq!(
+            intrinsic.target,
+            BytecodeIntrinsicRef::Static {
+                canonical_key: "std.db.operation".to_string(),
+                signature_version: 1,
+            }
+        );
     }
 
     #[test]

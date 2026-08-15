@@ -909,6 +909,8 @@ pub enum BytecodeIntrinsicRef {
 pub struct IntrinsicReference {
     pub target: BytecodeIntrinsicRef,
     pub signature: HostEffectSignature,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub db_operation: Option<Box<DbOperationReference>>,
 }
 
 /// Nominal record shape. The type identity participates in canonical pooling,

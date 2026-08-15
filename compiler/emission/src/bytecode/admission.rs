@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    AssignTargetIr, BinaryOpIr, BoxSourceIr, CallIr, CallTargetIr, CallableEffectSummary, ExprIr,
-    ExprRefIr, FunctionTypeParamIr, InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr,
-    LiteralIr, NamedUnionBranchIr, NativeTarget, ReceiverCallAbi, ServiceBoundaryPlan,
-    ServiceCallRef, StatementAttributionId, TypeDescriptorIr, TypeRefIr,
+    AssignTargetIr, BinaryOpIr, BoxSourceIr, CallIr, CallTargetIr, CallableEffectSummary, DbBodyIr,
+    DbOpKindIr, DbTargetIr, ExprIr, ExprRefIr, FunctionTypeParamIr, InterfaceInstantiationRef,
+    InterfaceMethodSlotSignatureIr, LiteralIr, NamedUnionBranchIr, NativeTarget, ReceiverCallAbi,
+    ServiceBoundaryPlan, ServiceCallRef, StatementAttributionId, TypeDescriptorIr, TypeRefIr,
 };
 use skiff_compiler_lowering::mir::{
     MirCallArgument, MirEmissionAnchor, MirExecutableKind, MirFunction, MirParamMode, MirSlotKind,
@@ -1768,6 +1768,8 @@ fn admit_expression_with_host_effects(
         && !registry_authorities
             .iter()
             .any(|authority| authority.admits(&expression.ty))
+        && !host_effects.is_db_expression(expression.index)
+        && !host_effects.is_db_body_expression(expression.index)
     {
         admit_type_with_discriminator_flag(
             units,
@@ -1829,6 +1831,9 @@ fn admit_expression_with_host_effects(
             }
             LiteralIr::String { .. } if local_interface_exact_face => None,
             LiteralIr::String { .. } if server_stream.admits_scalar_carrier(&expression.ty) => None,
+            LiteralIr::String { .. } if host_effects.is_db_body_expression(expression.index) => {
+                None
+            }
             LiteralIr::String { .. } => Some(Phase1UnsupportedCapability::ValueShape),
         },
         ExprIr::LoadSlot { slot } => {
@@ -1953,18 +1958,36 @@ fn admit_expression_with_host_effects(
         ExprIr::Timeout { .. } | ExprIr::ConcurrentValue { .. } => {
             Some(Phase1UnsupportedCapability::PendingEffect)
         }
-        ExprIr::DbOperation { .. }
-        | ExprIr::DbQuery { .. }
-        | ExprIr::DbTransaction { .. }
-        | ExprIr::DbLeaseClaim { .. }
-        | ExprIr::DbLeaseRead { .. } => Some(Phase1UnsupportedCapability::ServiceTarget),
+        ExprIr::DbOperation { operation } => {
+            admit_db_operation_facts(units, unit, function_key, operation)?;
+            None
+        }
+        ExprIr::DbQuery { query } => {
+            admit_db_target_facts(units, unit, function_key, &query.target)?;
+            None
+        }
+        ExprIr::DbTransaction { .. } => None,
+        ExprIr::DbLeaseClaim { claim } => {
+            admit_db_target_facts(units, unit, function_key, &claim.target)?;
+            None
+        }
+        ExprIr::DbLeaseRead { read } => {
+            admit_db_target_facts(units, unit, function_key, &read.target)?;
+            None
+        }
         ExprIr::Field { .. }
         | ExprIr::Index { .. }
         | ExprIr::Construct { .. }
         | ExprIr::ArrayLiteral { .. } => None,
-        ExprIr::RepresentationWrap { .. }
-        | ExprIr::MapLiteral { .. }
-        | ExprIr::ValueBlock { .. } => Some(Phase1UnsupportedCapability::ValueShape),
+        ExprIr::RepresentationWrap { .. } | ExprIr::MapLiteral { .. } => {
+            Some(Phase1UnsupportedCapability::ValueShape)
+        }
+        ExprIr::ValueBlock { .. }
+            if host_effects.admits_db_transaction_argument(expression.index) =>
+        {
+            None
+        }
+        ExprIr::ValueBlock { .. } => Some(Phase1UnsupportedCapability::ValueShape),
     };
     if let Some(capability) = capability {
         return Err(rejected_function(
@@ -1973,6 +1996,118 @@ fn admit_expression_with_host_effects(
             capability,
             &format!("expression {}", expression.index),
         ));
+    }
+    Ok(())
+}
+
+fn admit_db_operation_facts(
+    units: &[MirUnit],
+    unit: &MirUnit,
+    function_key: &str,
+    operation: &skiff_artifact_model::DbOperationIr,
+) -> Result<(), BytecodeEmissionError> {
+    if operation.op != DbOpKindIr::Insert || operation.many {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::ServiceTarget,
+            "bytecode F6 facts currently admit single-object db insert only",
+        ));
+    }
+    let body = operation
+        .body
+        .as_ref()
+        .or(operation.insert_body.as_ref())
+        .ok_or_else(|| {
+            rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::ServiceTarget,
+                "db insert has no object body",
+            )
+        })?;
+    if !matches!(body, DbBodyIr::ObjectFields { .. }) {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::ServiceTarget,
+            "bytecode F6 facts currently admit object-field insert only",
+        ));
+    }
+    admit_db_target_facts(units, unit, function_key, &operation.target)?;
+    if !matches!(operation.result_type, TypeRefIr::DbObjectSymbol { .. }) {
+        admit_type_with_local_facts(
+            units,
+            unit,
+            function_key,
+            &operation.result_type,
+            false,
+            &format!(
+                "db insert result type in module `{}` function `{function_key}`",
+                unit.module_path
+            ),
+            &LocalInterfaceFacts::empty(),
+        )?;
+    }
+    Ok(())
+}
+
+fn admit_db_target_facts(
+    units: &[MirUnit],
+    unit: &MirUnit,
+    function_key: &str,
+    target: &DbTargetIr,
+) -> Result<(), BytecodeEmissionError> {
+    if target.type_name.is_empty() {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::ServiceTarget,
+            "db target carries no diagnostic type name",
+        ));
+    }
+    if !matches!(
+        target.type_ref,
+        TypeRefIr::LocalType { .. }
+            | TypeRefIr::PublicationType { .. }
+            | TypeRefIr::DbObjectSymbol { .. }
+    ) {
+        return Err(rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::ServiceTarget,
+            &format!(
+                "db target is not owner-internal local bytecode type: {:?}",
+                target.type_ref
+            ),
+        ));
+    }
+    if let TypeRefIr::DbObjectSymbol { symbol } = &target.type_ref {
+        if symbol.module_path != unit.module_path {
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::ServiceTarget,
+                &format!(
+                    "db target module `{}` is not owner-internal to `{}`",
+                    symbol.module_path, unit.module_path
+                ),
+            ));
+        }
+    }
+    if !matches!(target.type_ref, TypeRefIr::DbObjectSymbol { .. }) {
+        admit_type_with_local_facts(
+            units,
+            unit,
+            function_key,
+            &target.type_ref,
+            false,
+            &format!(
+                "db target type in module `{}` function `{function_key}`",
+                unit.module_path
+            ),
+            &LocalInterfaceFacts::empty(),
+        )?;
     }
     Ok(())
 }
@@ -2056,6 +2191,22 @@ fn admit_call(
             ));
         }
         CallTargetIr::Native { target } => {
+            if target.binding_key.as_deref() == Some("std.db.operation") {
+                if host_effects.executor_for_call(expression.index).is_none()
+                    && !host_effects.has_db_calls()
+                {
+                    return Err(rejected_function(
+                        unit,
+                        function_key,
+                        Phase1UnsupportedCapability::HostTarget,
+                        &format!(
+                            "expression {} native db call lacks exact db facts",
+                            expression.index
+                        ),
+                    ));
+                }
+                return Ok(());
+            }
             if target.binding_key.as_deref() == Some(CANONICAL_DURATION_MILLISECONDS_BINDING_KEY) {
                 admit_duration_milliseconds_constructor(
                     unit,
@@ -2087,6 +2238,20 @@ fn admit_call(
                 || local_interface_tables
                     .exact_local_interface_string_length(unit, function, call) =>
         {
+            return Ok(());
+        }
+        CallTargetIr::Builtin { op } if op == "db.transaction" => {
+            if call.args.len() != 1 {
+                return Err(rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::PendingEffect,
+                    &format!(
+                        "expression {} db transaction must carry exactly one body value",
+                        expression.index
+                    ),
+                ));
+            }
             return Ok(());
         }
         CallTargetIr::Builtin { .. } | CallTargetIr::ReceiverBuiltin { .. } => {

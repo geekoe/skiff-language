@@ -906,6 +906,7 @@ fn valid_intrinsic() -> IntrinsicReference {
             }],
             effects: entry.signature.effects.clone(),
         },
+        db_operation: None,
     }
 }
 

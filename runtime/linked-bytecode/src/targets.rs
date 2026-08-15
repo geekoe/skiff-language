@@ -31,8 +31,8 @@ pub use interface::{
     LinkedRemoteInterfaceMethod, LinkedRemoteInterfaceTable,
 };
 pub use intrinsic::{
-    LinkedIntrinsicCanonicalKey, LinkedIntrinsicKind, LinkedIntrinsicTarget,
-    LinkedIntrinsicTargetError, LinkedStaticIntrinsicTarget,
+    LinkedDbObjectTargetId, LinkedDbOperation, LinkedIntrinsicCanonicalKey, LinkedIntrinsicKind,
+    LinkedIntrinsicTarget, LinkedIntrinsicTargetError, LinkedStaticIntrinsicTarget,
 };
 pub use local::{
     LinkedActorCreateTarget, LinkedActorImplementationRef, LinkedActorMethodTarget,

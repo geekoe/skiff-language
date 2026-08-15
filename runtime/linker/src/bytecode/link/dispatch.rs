@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use skiff_artifact_model::bytecode::dto::DbOperationReference;
 use skiff_artifact_model::{
     self, BoundaryDropPlan, BoundaryTransfer, BoundaryValueFact, BoundaryValuePlan,
     BytecodeIntrinsicRef, BytecodeRelocation, CallableEffectSummary,
@@ -1689,6 +1690,19 @@ impl DeploymentLinker<'_> {
                                 &function.function_key,
                                 indices,
                             )?;
+                            let db_operation = intrinsic
+                                .db_operation
+                                .as_ref()
+                                .map(|operation| {
+                                    self.link_db_operation(
+                                        package,
+                                        specialization,
+                                        operation,
+                                        type_linker,
+                                        &location,
+                                    )
+                                })
+                                .transpose()?;
                             // The F6 local-interface lane emits this exact
                             // static string.length row before the shared
                             // intrinsic registry admits receiver string ops.
@@ -1698,7 +1712,7 @@ impl DeploymentLinker<'_> {
                                 BytecodeIntrinsicRef::Static { canonical_key, .. }
                                     if canonical_key == "std.string.length"
                             );
-                            if !local_interface_string_length {
+                            if db_operation.is_none() && !local_interface_string_length {
                                 let mut resolver =
                                     DeploymentLifecycleResolver::new(self.deployment, package);
                                 let mut budget = ValueLifecyclePolicyBudget::new(
@@ -1755,18 +1769,33 @@ impl DeploymentLinker<'_> {
                                     format!("receiver:{}", op.canonical_key)
                                 }
                             };
+                            let intrinsic_key = db_operation.as_ref().map_or_else(
+                                || intrinsic_key.clone(),
+                                |operation| {
+                                    format!(
+                                        "{intrinsic_key}:{}:{}:{}:{}",
+                                        operation.target_id().package_artifact_ref().package_id,
+                                        operation.target_id().file_ir_ref().file_ir_identity,
+                                        operation.target_id().type_index(),
+                                        format!("{:?}", operation.op()),
+                                    )
+                                },
+                            );
                             if !seen_intrinsics.insert(intrinsic_key) {
                                 continue;
                             }
-                            intrinsics.push(
+                            let mut linked =
                                 skiff_runtime_linked_bytecode::LinkedIntrinsicTarget::new(
                                     skiff_runtime_linked_bytecode::IntrinsicIndex::new(
                                         intrinsics.len() as u32,
                                     ),
                                     kind,
                                     signature,
-                                ),
-                            );
+                                );
+                            if let Some(db_operation) = db_operation {
+                                linked = linked.with_db_operation(db_operation);
+                            }
+                            intrinsics.push(linked);
                         }
                         _ => {}
                     }
@@ -1774,6 +1803,163 @@ impl DeploymentLinker<'_> {
             }
         }
         Ok((host, intrinsics))
+    }
+
+    fn link_db_operation(
+        &self,
+        package: &HydratedBytecodePackage,
+        specialization: &SpecializationKey,
+        operation: &DbOperationReference,
+        type_linker: &mut TypeLinker<'_>,
+        location: &BytecodeLinkLocation,
+    ) -> Result<skiff_runtime_linked_bytecode::LinkedDbOperation, BytecodeLinkError> {
+        let target_id = self.resolve_db_object_target(package, operation, location)?;
+        let parameter_index = type_linker.intern_concrete_type(
+            package,
+            specialization,
+            &operation.target.type_ref,
+            &BTreeMap::new(),
+            location.clone(),
+        )?;
+        let parameter_plan = type_linker
+            .linked_type_plan(parameter_index)
+            .cloned()
+            .ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::FrameAndValueTransferPlan,
+                    location.clone(),
+                    format!(
+                        "db operation target type {} has no linked transfer plan",
+                        parameter_index.get()
+                    ),
+                )
+            })?;
+        let result_index = type_linker.intern_concrete_type(
+            package,
+            specialization,
+            &operation.result_type,
+            &BTreeMap::new(),
+            location.clone(),
+        )?;
+        let result_plan = type_linker
+            .linked_type_plan(result_index)
+            .cloned()
+            .ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::FrameAndValueTransferPlan,
+                    location.clone(),
+                    format!(
+                        "db operation result type {} has no linked transfer plan",
+                        result_index.get()
+                    ),
+                )
+            })?;
+        skiff_runtime_linked_bytecode::LinkedDbOperation::new(
+            target_id,
+            operation.target.type_name.clone(),
+            operation.op,
+            parameter_plan,
+            result_index,
+            result_plan,
+        )
+        .map_err(|error| {
+            unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                error.to_string(),
+            )
+        })
+    }
+
+    fn resolve_db_object_target(
+        &self,
+        caller: &HydratedBytecodePackage,
+        operation: &DbOperationReference,
+        location: &BytecodeLinkLocation,
+    ) -> Result<skiff_runtime_linked_bytecode::LinkedDbObjectTargetId, BytecodeLinkError> {
+        let normalized = normalize_type(
+            self.deployment,
+            caller,
+            &operation.target.type_ref,
+            location,
+        )
+        .map_err(|error| {
+            unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                format!("db target resolution failed: {error}"),
+            )
+        })?;
+        let TypeRefIr::PackageSymbol { symbol } = normalized else {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                "db target did not normalize to an exact package type".to_string(),
+            ));
+        };
+        let PackageRefIr::PackageId { package_id } = &symbol.package else {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                "db target normalized to a dependency alias instead of an exact package id"
+                    .to_string(),
+            ));
+        };
+        let mut owners = self
+            .deployment
+            .packages()
+            .values()
+            .filter(|package| package.reference().package_id == *package_id);
+        let owner = owners.next().ok_or_else(|| {
+            unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                format!("db target package {package_id:?} is absent from the closure"),
+            )
+        })?;
+        if owners.next().is_some() {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                format!("db target package {package_id:?} is ambiguous in the closure"),
+            ));
+        }
+        if owner.reference().package_build_id != caller.reference().package_build_id {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                format!(
+                    "db target {package_id:?} is not owner-internal to the caller build {}",
+                    caller.reference().package_build_id
+                ),
+            ));
+        }
+        let expected = symbol.symbol_path.as_str();
+        let mut exports = owner
+            .artifact()
+            .implementation_links
+            .types
+            .iter()
+            .filter(|(_, export)| canonical_export_path(export) == expected);
+        let (_, export) = exports.next().ok_or_else(|| {
+            unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                format!("db target type {expected:?} has no exact implementation link"),
+            )
+        })?;
+        if exports.any(|(_, candidate)| candidate != export) {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                format!("db target type {expected:?} has conflicting implementation links"),
+            ));
+        }
+        Ok(skiff_runtime_linked_bytecode::LinkedDbObjectTargetId::new(
+            owner.reference().clone(),
+            export.file.clone(),
+            export.type_index,
+        ))
     }
 
     pub(super) fn key_for_receiver_callable(
@@ -2746,5 +2932,14 @@ impl LinkedDispatchTables {
                 _ => false,
             })
             .map(|target| target.index())
+    }
+}
+
+fn canonical_export_path(export: &skiff_artifact_model::TypeExport) -> String {
+    let prefix = format!("{}.", export.file.module_path);
+    if export.symbol.starts_with(&prefix) {
+        export.symbol.clone()
+    } else {
+        format!("{}{}", prefix, export.symbol)
     }
 }

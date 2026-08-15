@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    host_effect_registry, CallIr, CallableMayEffects, CallableRegistryTypeExpression, ExprIr,
-    HostEffectExecutorIdentity, HostEffectReceiverSemantics, HostEffectRegistryEntry, NativeTarget,
-    NominalTypeRefBaseIr, PackageRefIr, PendingEffectCategory, PrivilegedAffineCompositeIdentity,
+    host_effect_registry, CallIr, CallableMayEffects, CallableRegistryTypeExpression, DbBodyIr,
+    DbChangeOpIr, DbOperationIr, DbPredicateIr, DbSelectorIr, ExprIr, HostEffectExecutorIdentity,
+    HostEffectReceiverSemantics, HostEffectRegistryEntry, NativeTarget, NominalTypeRefBaseIr,
+    PackageRefIr, PendingEffectCategory, PrivilegedAffineCompositeIdentity,
     PrivilegedAffineFieldAccess, TypeRefIr,
 };
 use skiff_compiler_lowering::mir::{MirForInBinding, MirForInItemKind, MirFunction, MirStmtKind};
@@ -129,6 +130,9 @@ impl RegistryValueAuthority {
 #[derive(Debug, Default)]
 pub(super) struct HostEffectAdmissions {
     calls: BTreeMap<u32, HostEffectExecutorIdentity>,
+    db_calls: BTreeSet<u32>,
+    db_transaction_arguments: BTreeSet<u32>,
+    db_body_expressions: BTreeSet<u32>,
     service_calls: BTreeSet<u32>,
     interface_calls: BTreeSet<u32>,
     expressions: BTreeMap<u32, Vec<RegistryValueAuthority>>,
@@ -147,9 +151,42 @@ impl HostEffectAdmissions {
     ) -> Result<Self, HostEffectAdmissionError> {
         let mut admissions = Self::default();
         for expression in &function.expressions {
+            if let ExprIr::DbOperation { .. }
+            | ExprIr::DbQuery { .. }
+            | ExprIr::DbTransaction { .. }
+            | ExprIr::DbLeaseClaim { .. }
+            | ExprIr::DbLeaseRead { .. } = &expression.expression
+            {
+                admissions.db_calls.insert(expression.index);
+                if let ExprIr::DbOperation { operation } = &expression.expression {
+                    collect_db_operation_children(operation, &mut admissions.db_body_expressions);
+                }
+                continue;
+            }
             let ExprIr::Call { call } = &expression.expression else {
                 continue;
             };
+            if matches!(
+                call.target,
+                skiff_artifact_model::CallTargetIr::Builtin { ref op }
+                    if op == "db.transaction"
+            ) {
+                admissions.db_calls.insert(expression.index);
+                if let Some(argument) = call.args.first() {
+                    admissions
+                        .db_transaction_arguments
+                        .insert(argument.expression);
+                }
+                continue;
+            }
+            if matches!(
+                call.target,
+                skiff_artifact_model::CallTargetIr::Native { ref target }
+                    if target.binding_key.as_deref() == Some("std.db.operation")
+            ) {
+                admissions.db_calls.insert(expression.index);
+                continue;
+            }
             if matches!(
                 call.target,
                 skiff_artifact_model::CallTargetIr::ServiceCall { .. }
@@ -631,6 +668,23 @@ impl HostEffectAdmissions {
         !self.interface_calls.is_empty()
     }
 
+    pub(super) fn has_db_calls(&self) -> bool {
+        !self.db_calls.is_empty()
+    }
+
+    pub(super) fn admits_db_transaction_argument(&self, expression_index: u32) -> bool {
+        self.db_transaction_arguments.contains(&expression_index)
+    }
+
+    pub(super) fn is_db_expression(&self, expression_index: u32) -> bool {
+        self.db_calls.contains(&expression_index)
+            || self.db_transaction_arguments.contains(&expression_index)
+    }
+
+    pub(super) fn is_db_body_expression(&self, expression_index: u32) -> bool {
+        self.db_body_expressions.contains(&expression_index)
+    }
+
     pub(super) fn validate_effect_coverage(
         &self,
         actual: &CallableMayEffects,
@@ -652,6 +706,9 @@ impl HostEffectAdmissions {
         }
         if !self.interface_calls.is_empty() {
             expected.insert(PendingEffectCategory::Unknown);
+        }
+        if !self.db_calls.is_empty() {
+            expected.insert(PendingEffectCategory::HostEffect);
         }
 
         let actual_categories = actual
@@ -707,6 +764,88 @@ fn exact_stream_loop_breaks(
         );
     }
     Ok(breaks)
+}
+
+fn collect_db_operation_children(operation: &DbOperationIr, out: &mut BTreeSet<u32>) {
+    if let Some(selector) = &operation.selector {
+        match selector {
+            DbSelectorIr::Key { value } => {
+                out.insert(value.expression);
+            }
+            DbSelectorIr::Query { query } => {
+                collect_db_query_children(query, out);
+            }
+        }
+    }
+    if let Some(query) = &operation.query {
+        collect_db_query_children(query, out);
+    }
+    for body in operation.body.iter().chain(operation.insert_body.iter()) {
+        match body {
+            DbBodyIr::ObjectFields { fields } => {
+                out.extend(fields.values().map(|value| value.expression));
+            }
+            DbBodyIr::Values { value } => {
+                out.insert(value.expression);
+            }
+        }
+    }
+    if let Some(change) = &operation.change {
+        for operation in &change.ops {
+            match operation {
+                DbChangeOpIr::Set { value, .. }
+                | DbChangeOpIr::Inc { value, .. }
+                | DbChangeOpIr::AddToSet { value, .. }
+                | DbChangeOpIr::Remove { value, .. } => {
+                    out.insert(value.expression);
+                }
+                DbChangeOpIr::Unset { .. } => {}
+            }
+        }
+    }
+}
+
+fn collect_db_query_children(query: &skiff_artifact_model::DbQueryIr, out: &mut BTreeSet<u32>) {
+    for predicate in &query.where_clauses {
+        collect_db_predicate_children(predicate, out);
+    }
+    for expression in [&query.limit, &query.offset, &query.after]
+        .into_iter()
+        .flatten()
+    {
+        out.insert(expression.expression);
+    }
+}
+
+fn collect_db_predicate_children(predicate: &DbPredicateIr, out: &mut BTreeSet<u32>) {
+    match predicate {
+        DbPredicateIr::Compare { value, .. } => {
+            out.insert(value.expression);
+        }
+        DbPredicateIr::Regex {
+            pattern, options, ..
+        } => {
+            out.insert(pattern.expression);
+            if let Some(options) = options {
+                out.insert(options.expression);
+            }
+        }
+        DbPredicateIr::And { predicates } | DbPredicateIr::Or { predicates } => {
+            for predicate in predicates {
+                collect_db_predicate_children(predicate, out);
+            }
+        }
+        DbPredicateIr::Not { predicate } => {
+            collect_db_predicate_children(predicate, out);
+        }
+        DbPredicateIr::Conditional {
+            condition,
+            predicate,
+        } => {
+            out.insert(condition.expression);
+            collect_db_predicate_children(predicate, out);
+        }
+    }
 }
 
 fn match_executable_call(

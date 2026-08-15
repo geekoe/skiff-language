@@ -1543,6 +1543,20 @@ fn validate_relocation(
         }
         BytecodeRelocation::IntrinsicRef { intrinsic } => {
             validate_host_signature(package, &intrinsic.signature, deployment, packages)?;
+            if let Some(operation) = &intrinsic.db_operation {
+                validate_type_ref(package, &operation.target.type_ref, deployment, packages)?;
+                validate_type_ref(package, &operation.result_type, deployment, packages)?;
+                for plan in &operation.result_plans {
+                    validate_plan(package, plan, deployment, packages)?;
+                }
+                if operation.target.type_name.is_empty() {
+                    return Err(manifest_mismatch(
+                        package.reference(),
+                        DeploymentBytecodeManifestKind::PackageReference,
+                        "db operation target.typeName must not be empty".to_string(),
+                    ));
+                }
+            }
         }
         BytecodeRelocation::TypeRef { ty } => {
             validate_type_ref(package, ty, deployment, packages)?;
@@ -2202,14 +2216,7 @@ fn validate_type_ref(
             );
         }
         TypeRefIr::DbObjectSymbol { symbol } => {
-            return manifest_error(
-                caller.reference(),
-                DeploymentBytecodeManifestKind::PackageReference,
-                format!(
-                    "bytecode DB object {} has no self-contained package manifest",
-                    symbol.symbol_path()
-                ),
-            );
+            validate_service_symbol_type(caller, symbol)?;
         }
         TypeRefIr::Literal { .. } | TypeRefIr::TypeParam { .. } => {}
     }
@@ -2319,12 +2326,14 @@ fn exact_service_symbol_type_export<'a>(
     artifact: &'a PackageArtifact,
     symbol: &skiff_artifact_model::ServiceSymbolRef,
 ) -> Result<&'a skiff_artifact_model::TypeExport, DeploymentBytecodeHydrationError> {
+    let expected = format!("{}.{}", symbol.module_path, symbol.symbol);
     let mut matches = artifact
         .implementation_links
         .types
         .values()
         .filter(|export| {
-            export.file.module_path == symbol.module_path && export.symbol == symbol.symbol
+            export.file.module_path == symbol.module_path
+                && canonical_export_path(export) == expected
         });
     let selected = matches.next().ok_or_else(|| {
         manifest_mismatch(
@@ -2357,6 +2366,15 @@ fn exact_service_symbol_type_export<'a>(
         );
     }
     Ok(selected)
+}
+
+fn canonical_export_path(export: &skiff_artifact_model::TypeExport) -> String {
+    let prefix = format!("{}.", export.file.module_path);
+    if export.symbol.starts_with(&prefix) {
+        export.symbol.clone()
+    } else {
+        format!("{}{}", prefix, export.symbol)
+    }
 }
 
 fn validate_package_schema_type(

@@ -643,6 +643,7 @@ fn authority_fixture() -> BytecodeArtifact {
             }],
             effects: entry.signature.effects.clone(),
         },
+        db_operation: None,
     };
     artifact
         .image

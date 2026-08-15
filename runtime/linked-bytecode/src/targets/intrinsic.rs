@@ -1,8 +1,10 @@
 use std::fmt;
 
-use skiff_artifact_model::BuiltinReceiverOp;
+use skiff_artifact_model::{
+    bytecode::dto::DbOperationKind, BuiltinReceiverOp, FileIrRef, PackageArtifactRef,
+};
 
-use crate::{IntrinsicIndex, LinkedNativeCallableSignature};
+use crate::{IntrinsicIndex, LinkedNativeCallableSignature, LinkedValueTransferPlan, TypeIndex};
 
 /// Validated static intrinsic key. It is an untrusted registry claim, not an
 /// authority token.
@@ -73,6 +75,7 @@ pub struct LinkedIntrinsicTarget {
     index: IntrinsicIndex,
     kind: LinkedIntrinsicKind,
     signature: LinkedNativeCallableSignature,
+    db_operation: Option<LinkedDbOperation>,
 }
 
 impl LinkedIntrinsicTarget {
@@ -85,6 +88,7 @@ impl LinkedIntrinsicTarget {
             index,
             kind,
             signature,
+            db_operation: None,
         }
     }
 
@@ -99,11 +103,119 @@ impl LinkedIntrinsicTarget {
     pub const fn signature(&self) -> &LinkedNativeCallableSignature {
         &self.signature
     }
+
+    pub fn with_db_operation(mut self, db_operation: LinkedDbOperation) -> Self {
+        self.db_operation = Some(db_operation);
+        self
+    }
+
+    pub const fn db_operation(&self) -> Option<&LinkedDbOperation> {
+        self.db_operation.as_ref()
+    }
+}
+
+/// Exact linked DB object target identity.
+///
+/// This is the image-local form of
+/// `DbObjectTargetId(PackageArtifactRef, FileIrRef, typeIndex)`. Runtime
+/// consumers must use this identity and never reconstruct a target from
+/// `type_name`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedDbObjectTargetId {
+    package_artifact_ref: PackageArtifactRef,
+    file_ir_ref: FileIrRef,
+    type_index: u32,
+}
+
+impl LinkedDbObjectTargetId {
+    pub fn new(
+        package_artifact_ref: PackageArtifactRef,
+        file_ir_ref: FileIrRef,
+        type_index: u32,
+    ) -> Self {
+        Self {
+            package_artifact_ref,
+            file_ir_ref,
+            type_index,
+        }
+    }
+
+    pub const fn package_artifact_ref(&self) -> &PackageArtifactRef {
+        &self.package_artifact_ref
+    }
+
+    pub const fn file_ir_ref(&self) -> &FileIrRef {
+        &self.file_ir_ref
+    }
+
+    pub const fn type_index(&self) -> u32 {
+        self.type_index
+    }
+}
+
+/// Exact compiler facts for one linked DB operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedDbOperation {
+    target_id: LinkedDbObjectTargetId,
+    type_name: Box<str>,
+    op: DbOperationKind,
+    parameter_plan: LinkedValueTransferPlan,
+    result_type: TypeIndex,
+    result_plan: LinkedValueTransferPlan,
+}
+
+impl LinkedDbOperation {
+    pub fn new(
+        target_id: LinkedDbObjectTargetId,
+        type_name: impl Into<String>,
+        op: DbOperationKind,
+        parameter_plan: LinkedValueTransferPlan,
+        result_type: TypeIndex,
+        result_plan: LinkedValueTransferPlan,
+    ) -> Result<Self, LinkedIntrinsicTargetError> {
+        let type_name = type_name.into();
+        if type_name.is_empty() {
+            return Err(LinkedIntrinsicTargetError::EmptyTypeName);
+        }
+        Ok(Self {
+            target_id,
+            type_name: type_name.into_boxed_str(),
+            op,
+            parameter_plan,
+            result_type,
+            result_plan,
+        })
+    }
+
+    pub const fn target_id(&self) -> &LinkedDbObjectTargetId {
+        &self.target_id
+    }
+
+    pub fn type_name(&self) -> &str {
+        &self.type_name
+    }
+
+    pub const fn op(&self) -> DbOperationKind {
+        self.op
+    }
+
+    pub const fn parameter_plan(&self) -> &LinkedValueTransferPlan {
+        &self.parameter_plan
+    }
+
+    pub const fn result_type(&self) -> TypeIndex {
+        self.result_type
+    }
+
+    pub const fn result_plan(&self) -> &LinkedValueTransferPlan {
+        &self.result_plan
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkedIntrinsicTargetError {
     EmptyCanonicalKey,
+    EmptyTypeName,
     InvalidCanonicalKey {
         value: String,
         character_index: usize,
@@ -117,6 +229,7 @@ impl fmt::Display for LinkedIntrinsicTargetError {
             Self::EmptyCanonicalKey => {
                 formatter.write_str("intrinsic canonical key must not be empty")
             }
+            Self::EmptyTypeName => formatter.write_str("db object type name must not be empty"),
             Self::InvalidCanonicalKey {
                 value,
                 character_index,

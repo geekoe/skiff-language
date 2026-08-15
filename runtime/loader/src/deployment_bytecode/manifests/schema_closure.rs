@@ -195,6 +195,13 @@ fn collect_relocation(
         }
         BytecodeRelocation::IntrinsicRef { intrinsic } => {
             collect_host_signature(package, &intrinsic.signature, roots)?;
+            if let Some(operation) = &intrinsic.db_operation {
+                collect_type_ref(package, &operation.target.type_ref, roots)?;
+                collect_type_ref(package, &operation.result_type, roots)?;
+                for plan in &operation.result_plans {
+                    collect_plan(package, plan, roots)?;
+                }
+            }
         }
         BytecodeRelocation::TypeRef { ty } => collect_type_ref(package, ty, roots)?,
         BytecodeRelocation::ServiceOperationRef { service_call } => {
