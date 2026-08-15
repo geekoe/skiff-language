@@ -127,6 +127,7 @@ struct ActiveRequest {
     telemetry: RequestTelemetryContext,
     started_at: Instant,
     cancel_event_emitted: Arc<AtomicBool>,
+    cancel_received: Arc<AtomicBool>,
     observer: BytecodeExecutionObserver,
 }
 
@@ -379,6 +380,7 @@ impl RequestSupervisor {
                 RequestRow::Revoked(revoked) => revoked.revocation == ReservationRevocation::Cancel,
                 RequestRow::Active(active) => {
                     let settlement = active.execution_budget.request_cancel().into_settlement();
+                    active.cancel_received.store(true, Ordering::SeqCst);
                     active_to_wake = Some((
                         active.clone(),
                         settlement.winner() == ExecutionWinner::Cancelled,
@@ -529,6 +531,7 @@ impl RequestReservation {
                         telemetry,
                         started_at: Instant::now(),
                         cancel_event_emitted: Arc::new(AtomicBool::new(false)),
+                        cancel_received: Arc::new(AtomicBool::new(false)),
                         observer: self.observer.clone(),
                     };
                     state
@@ -755,7 +758,11 @@ fn finish_completion(
         ));
     observe_terminal(&winner.active, terminal);
     let duration_ms = elapsed_ms(winner.active.started_at);
-    let response_action = response_action(&winner.settlement);
+    let response_action = if winner.active.cancel_received.load(Ordering::SeqCst) {
+        CompletionResponseAction::StopWithoutResponse
+    } else {
+        response_action(&winner.settlement)
+    };
 
     match winner.settlement.winner() {
         ExecutionWinner::Succeeded => {
@@ -1281,6 +1288,48 @@ mod tests {
         let response = permit.response_override().unwrap();
         assert_eq!(response.code, "TimeoutError");
         assert_eq!(response.message, "execution deadline exceeded");
+    }
+
+    #[tokio::test]
+    async fn cancel_received_suppresses_a_later_deadline_response() {
+        let supervisor = Arc::new(RequestSupervisor::new());
+        let sink = Arc::new(RecordingSink::default());
+        let key = key("session", "cancel-deadline-race");
+        assert!(supervisor.start_session(key.router_session().clone()));
+        let deadline = AdmittedRequestDeadline::new(
+            Instant::now()
+                .checked_sub(std::time::Duration::from_millis(1))
+                .unwrap(),
+        );
+        let supervised = activate(
+            supervisor
+                .reserve(key.clone(), observer(sink, &key), Some(deadline))
+                .unwrap(),
+            &key,
+        );
+
+        assert!(
+            supervisor
+                .cancel(
+                    key.router_session(),
+                    &RequestCancel {
+                        request_id: "cancel-deadline-race".to_string(),
+                        reason: None,
+                    },
+                )
+                .await
+        );
+
+        let permit = supervisor
+            .complete_success(&supervised, zero_snapshot(), CompletionTrace::RUNTIME)
+            .await
+            .unwrap();
+        assert_eq!(
+            permit.response_action(),
+            CompletionResponseAction::StopWithoutResponse
+        );
+        assert!(!permit.response_owned());
+        assert!(permit.response_override().is_none());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
