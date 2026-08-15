@@ -22,6 +22,10 @@ const hostRustSource = fileURLToPath(new URL(
   '../../runtime/host/tests/bytecode_vm_phase_6.rs',
   import.meta.url,
 ));
+const hostChainSource = fileURLToPath(new URL(
+  '../../runtime/host/tests/bytecode_vm_phase_6/host_chain.rs',
+  import.meta.url,
+));
 const recoverableCodecSource = fileURLToPath(new URL(
   '../../runtime/host/tests/bytecode_vm_phase_6/recoverable_codec.rs',
   import.meta.url,
@@ -73,18 +77,34 @@ test('positive fixtures drive real Phase 6 source semantics, not test seams', as
 test('J2 focused fixtures use unary owner-internal production paths', async () => {
   const recoverable = await readFile(fixture('recoverable-positive'), 'utf8');
   const db = await readFile(fixture('db-positive'), 'utf8');
+  const recoverableHttp = await readFile(
+    fixture('recoverable-positive', 'http.yml'),
+    'utf8',
+  );
+  const dbHttp = await readFile(fixture('db-positive', 'http.yml'), 'utf8');
   const localHttp = await readFile(
     fixture('interface-local-success', 'http.yml'),
     'utf8',
   );
+  const hostChain = await readFile(hostChainSource, 'utf8');
   assert.match(recoverable, /db object/);
   assert.doesNotMatch(recoverable, /dispatch |rawHttp/);
+  assert.match(recoverableHttp, /typedJson/);
+  assert.doesNotMatch(recoverableHttp, /rawHttp/);
   assert.match(db, /db object/);
   assert.doesNotMatch(db, /rawHttp/);
+  assert.match(dbHttp, /typedJson/);
+  assert.doesNotMatch(dbHttp, /rawHttp/);
   assert.match(localHttp, /typedJson/);
   assert.doesNotMatch(localHttp, /rawHttp/);
   assert.match(localHttp, /path: \/phase-6\/interface\n/);
   assert.match(localHttp, /path: \/phase-6\/interface-local\n/);
+  assert.match(
+    hostChain,
+    /Capability::Service\s*\|\s*Capability::InterfaceLocal\s*\|\s*Capability::Recoverable\s*\|\s*Capability::Db/,
+  );
+  assert.match(hostChain, /let mode = if unary_json \{ "unary" \}/);
+  assert.match(hostChain, /let body = if unary_json \{\s*b"7"\.as_slice\(\)/);
 });
 
 test('every interface-local focused fixture has canonical authoring files', async () => {

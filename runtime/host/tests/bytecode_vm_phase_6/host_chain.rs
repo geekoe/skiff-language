@@ -59,12 +59,12 @@ pub async fn interface_local_named_throw_terminal(
 async fn drive(capability: Capability, prefix: &str) -> HostResponse {
     let fixture = published_positive(capability, prefix);
     let path = capability_path(capability);
-    let mode = if matches!(capability, Capability::Service | Capability::InterfaceLocal) {
-        "unary"
-    } else {
-        "serverStream"
-    };
-    let body = if matches!(capability, Capability::Service | Capability::InterfaceLocal) {
+    let unary_json = matches!(
+        capability,
+        Capability::Service | Capability::InterfaceLocal | Capability::Recoverable | Capability::Db
+    );
+    let mode = if unary_json { "unary" } else { "serverStream" };
+    let body = if unary_json {
         b"7".as_slice()
     } else {
         b"phase6".as_slice()
