@@ -37,7 +37,10 @@ use skiff_runtime_model::{
         CatchIdentity, ErrorCorrelation, ExceptionStackFrame, FileAddr, LocalExecutionTypeIdentity,
         NominalTypeIdentity, PackageSchemaTypeIdentity, RequestException, TypeAddr, UnitAddr,
     },
-    vm_heap::{VmHeap, VmHeapError, VmHeapPathSegment, VmLocalInterfaceTable, VmRecordField},
+    vm_heap::{
+        VmHeap, VmHeapError, VmHeapPathSegment, VmLocalInterfaceTable, VmRecordField,
+        VmRemoteInterfaceTable,
+    },
     vm_root::{VmRootSource, VmRootVisitor},
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot},
 };
@@ -45,9 +48,10 @@ use skiff_runtime_model::{
 use crate::{
     admission::{is_discardable_root, validate_entry_arguments},
     control::{
-        AdapterInvocation, ChildInvocation, ChildTarget, StreamItem, VmCompletion, VmLifecycleSite,
-        VmOwnedException, VmOwnedValues, VmResumeAuthority, VmResumeBinding, VmTerminalCause,
-        VmTerminalEscrow, VmTerminalOwner,
+        AdapterInvocation, ChildInvocation, ChildTarget, InterfaceCallPlan,
+        RemoteInterfaceCallPlan, StreamItem, VmCompletion, VmLifecycleSite, VmOwnedException,
+        VmOwnedValues, VmResumeAuthority, VmResumeBinding, VmTerminalCause, VmTerminalEscrow,
+        VmTerminalOwner,
     },
     fiber::entry_admission::validate_entry_contract,
     frame::VmFrame,
@@ -1200,9 +1204,12 @@ impl VmFiber {
                 instruction_index,
                 &instruction,
             ),
-            Opcode::InterfaceBoxRemote => {
-                self.execute_interface_box_remote(function_index, instruction_index, &instruction)
-            }
+            Opcode::InterfaceBoxRemote => self.execute_interface_box_remote(
+                lifecycle.heap(),
+                function_index,
+                instruction_index,
+                &instruction,
+            ),
             Opcode::StreamNext => {
                 self.execute_stream_next(function_index, instruction_index, &instruction)
             }
@@ -3702,6 +3709,7 @@ impl VmFiber {
             None,
             expected_stack_height,
             result_count as u32,
+            None,
         )?;
         let invocation = ChildInvocation::new(
             target,
@@ -3870,6 +3878,7 @@ impl VmFiber {
 
     fn execute_interface_box_remote(
         &mut self,
+        heap: &mut dyn VmHeap,
         function: FunctionIndex,
         instruction: InstructionIndex,
         decoded: &LinkedInstruction,
@@ -3879,7 +3888,8 @@ impl VmFiber {
         else {
             return Err(self.malformed_instruction(function, instruction, decoded));
         };
-        self.execution_image()
+        let row = self
+            .execution_image()
             .interface_tables()
             .get(table_index.get() as usize)
             .filter(|row| row.index() == table_index)
@@ -3887,11 +3897,33 @@ impl VmFiber {
                 table: CandidateTable::InterfaceTables,
                 row: table_index.get(),
             })?;
-        Err(VmError::FullValueLifecyclePlanUnavailable {
-            function,
-            instruction,
-            opcode: Opcode::InterfaceBoxRemote,
-        })
+        let LinkedInterfaceTableKind::Remote(remote) = row.kind() else {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode: Opcode::InterfaceBoxRemote,
+            });
+        };
+        let carrier_type =
+            interface_carrier_type(self.execution_image(), row).ok_or_else(|| {
+                VmError::FullValueLifecyclePlanUnavailable {
+                    function,
+                    instruction,
+                    opcode: Opcode::InterfaceBoxRemote,
+                }
+            })?;
+        let exact: Arc<dyn Any + Send + Sync> = Arc::new(remote.clone());
+        let table = VmRemoteInterfaceTable::new(table_index.get(), remote.methods().len(), exact);
+        let carrier = heap
+            .allocate_remote_interface(
+                table,
+                compact_type_tag(function, instruction, carrier_type)?,
+                ValueFlags::new(0),
+            )
+            .map_err(VmError::Heap)?;
+        self.push_operand(carrier)?;
+        self.advance_current_instruction()?;
+        Ok(DispatchOutcome::Continue)
     }
 
     fn execute_call_service(
@@ -3963,6 +3995,7 @@ impl VmFiber {
             None,
             expected_stack_height,
             result_count as u32,
+            None,
         )?;
         let invocation = ChildInvocation::new(
             target,
@@ -4047,6 +4080,7 @@ impl VmFiber {
             None,
             expected_stack_height,
             result_count as u32,
+            None,
         )?;
         let invocation = ChildInvocation::new(
             target,
@@ -4118,26 +4152,38 @@ impl VmFiber {
                 table: CandidateTable::InterfaceTables,
                 row: table_index.get(),
             })?;
-        let signature = match table.kind() {
+        let (signature, remote_plan) = match table.kind() {
             LinkedInterfaceTableKind::Requirement(requirement)
             | LinkedInterfaceTableKind::Callback(requirement) => requirement
                 .methods()
                 .get(method_ordinal)
-                .map(|method| method.signature()),
+                .map(|method| (Some(method.signature()), None)),
             LinkedInterfaceTableKind::Local(local) => local
                 .methods()
                 .get(method_ordinal)
-                .map(|method| method.signature()),
-            LinkedInterfaceTableKind::Remote(remote) => remote
-                .methods()
-                .get(method_ordinal)
-                .map(|method| method.signature()),
+                .map(|method| (Some(method.signature()), None)),
+            LinkedInterfaceTableKind::Remote(remote) => {
+                Some(match remote.methods().get(method_ordinal) {
+                    Some(method) => (
+                        Some(method.signature()),
+                        Some(RemoteInterfaceCallPlan::new(remote.clone(), method.clone())),
+                    ),
+                    None => (None, None),
+                })
+            }
         }
         .ok_or(VmError::FullValueLifecyclePlanUnavailable {
             function,
             instruction,
             opcode,
         })?;
+        let Some(signature) = signature else {
+            return Err(VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode,
+            });
+        };
         if signature.result_types().len() != result_count {
             return Err(VmError::FullValueLifecyclePlanUnavailable {
                 function,
@@ -4162,28 +4208,64 @@ impl VmFiber {
                 capacity: self.current_frame()?.operand_capacity(),
             })?;
         let argument_plans = signature.parameter_plans().to_vec();
-        if let LinkedInterfaceTableKind::Local(local) = table.kind() {
-            let (_, _, operands) = self.borrow_operands(input_count)?;
-            let carrier = operands
-                .first()
-                .ok_or_else(|| VmError::OperandStackUnderflow {
-                    function,
-                    needed: 1,
-                    available: 0,
-                })?;
-            let carrier_table = heap.local_interface_table(carrier).map_err(VmError::Heap)?;
-            if carrier_table.table_index() != table_index.get()
-                || carrier_table.concrete_type() != local.concrete_type().get()
-                || carrier_table.method_count() != local.methods().len()
-                || method_ordinal >= local.methods().len()
-            {
-                return Err(VmError::FullValueLifecyclePlanUnavailable {
-                    function,
-                    instruction,
-                    opcode,
-                });
+        match table.kind() {
+            LinkedInterfaceTableKind::Local(local) => {
+                let (_, _, operands) = self.borrow_operands(input_count)?;
+                let carrier = operands
+                    .first()
+                    .ok_or_else(|| VmError::OperandStackUnderflow {
+                        function,
+                        needed: 1,
+                        available: 0,
+                    })?;
+                let carrier_table = heap.local_interface_table(carrier).map_err(VmError::Heap)?;
+                if carrier_table.table_index() != table_index.get()
+                    || carrier_table.concrete_type() != local.concrete_type().get()
+                    || carrier_table.method_count() != local.methods().len()
+                    || method_ordinal >= local.methods().len()
+                {
+                    return Err(VmError::FullValueLifecyclePlanUnavailable {
+                        function,
+                        instruction,
+                        opcode,
+                    });
+                }
             }
+            LinkedInterfaceTableKind::Remote(remote) => {
+                let (_, _, operands) = self.borrow_operands(input_count)?;
+                let carrier = operands
+                    .first()
+                    .ok_or_else(|| VmError::OperandStackUnderflow {
+                        function,
+                        needed: 1,
+                        available: 0,
+                    })?;
+                let carrier_table = heap
+                    .remote_interface_table(carrier)
+                    .map_err(VmError::Heap)?;
+                if carrier_table.table_index() != table_index.get()
+                    || carrier_table.method_count() != remote.methods().len()
+                    || method_ordinal >= remote.methods().len()
+                {
+                    return Err(VmError::FullValueLifecyclePlanUnavailable {
+                        function,
+                        instruction,
+                        opcode,
+                    });
+                }
+            }
+            LinkedInterfaceTableKind::Requirement(_) | LinkedInterfaceTableKind::Callback(_) => {}
         }
+        let carrier_plan = signature
+            .parameter_plans()
+            .first()
+            .cloned()
+            .ok_or_else(|| VmError::FullValueLifecyclePlanUnavailable {
+                function,
+                instruction,
+                opcode,
+            })?;
+        let interface_plan = InterfaceCallPlan::new(signature.clone(), carrier_plan, remote_plan);
         let arguments = self.pop_operands(input_count, false)?;
         let expected_stack_height =
             self.current_frame()?
@@ -4210,6 +4292,7 @@ impl VmFiber {
             None,
             expected_stack_height,
             result_count as u32,
+            Some(interface_plan),
         )?;
         let invocation = ChildInvocation::new(
             target,
@@ -4343,6 +4426,7 @@ impl VmFiber {
             None,
             expected_stack_height,
             expected_result_count,
+            None,
         )?;
         let invocation = AdapterInvocation::new(
             adapter_index,
@@ -4519,6 +4603,7 @@ impl VmFiber {
             Some(end_resume_pc),
             expected_stack_height,
             1,
+            None,
         )?;
         let invocation = ChildInvocation::new_stream_next(
             crate::control::StreamEndpointRef::new(endpoint),
@@ -4609,6 +4694,7 @@ impl VmFiber {
             None,
             expected_stack_height,
             0,
+            None,
         )?;
         let stream_item = StreamItem::new(
             VmOwnedValues::new_exact(
@@ -4836,6 +4922,7 @@ impl VmFiber {
         end_resume_pc: Option<InstructionIndex>,
         expected_stack_height: u32,
         expected_result_count: u32,
+        interface_plan: Option<crate::control::InterfaceCallPlan>,
     ) -> Result<VmResumeToken, VmError> {
         let image = Arc::clone(self.entry.image());
         let sequence = self.resume_sequence;
@@ -4854,6 +4941,7 @@ impl VmFiber {
             expected_stack_height,
             expected_result_count,
             authority,
+            interface_plan,
         );
         self.pending_resume = Some(PendingResume {
             binding: Arc::clone(token.binding()),

@@ -26,8 +26,9 @@ pub use budget::{
 };
 pub use control::{
     AdapterControl, AdapterInvocation, BoundaryStart, ChildInvocation, ChildTarget, EffectStart,
-    PendingOperation, PendingTicket, ResumeOutcome, StreamEndpointRef, StreamInvocation,
-    StreamItem, StreamItemReleaseError, VmCompletion, VmControl, VmHostEffectArguments,
+    InterfaceCallPlan, PendingOperation, PendingTicket, RemoteInterfaceCallPlan, ResumeOutcome,
+    StreamEndpointRef, StreamInvocation, StreamItem, StreamItemReleaseError, TaskDispatchIndex,
+    TaskDispatchRequest, VmCompletion, VmControl, VmHostEffectArguments,
     VmHostEffectArgumentsReleaseError, VmInternalTerminal, VmLifecycleSite, VmOwnedException,
     VmOwnedExceptionRejected, VmOwnedValues, VmOwnedValuesRejected, VmResult, VmResumeFailure,
     VmResumeKind, VmResumeToken, VmTerminalCause, VmTerminalEscrow, VmThrownDiagnostic,

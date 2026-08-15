@@ -3,14 +3,17 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use skiff_runtime_linked_bytecode::{LinkedLocalInterfaceTable, TypeIndex};
+use skiff_artifact_model::{PackageBuildId, ServiceProtocolIdentity, ServiceRequirementKey};
+use skiff_runtime_linked_bytecode::{
+    LinkedLocalInterfaceTable, LinkedPublicInstanceKey, LinkedRemoteInterfaceTable, TypeIndex,
+};
 use skiff_runtime_model::{
     addr::{FileAddr, TypeAddr, UnitAddr},
     request_heap::RequestHeapLimits,
     service_error::{CatchIdentity, LocalExecutionTypeIdentity, NominalTypeIdentity},
     vm_heap::{
         VmHandleInvalidReason, VmHeap, VmHeapError, VmHeapOperation, VmHeapPathSegment,
-        VmLocalInterfaceTable, VmRecordField,
+        VmLocalInterfaceTable, VmRecordField, VmRemoteInterfaceTable,
     },
     vm_root::{VmRootSource, VmRootVisitor},
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot},
@@ -131,6 +134,72 @@ fn phase_6_local_interface_carrier_rejects_wrong_exact_table_and_cleans_payload(
     heap.release_snapshot(&carrier)
         .expect("carrier release releases its exact payload");
     assert_eq!(heap.live_value_count(), live_before);
+}
+
+#[test]
+fn phase_6_remote_interface_carrier_allocates_reads_and_releases_exact_table() {
+    let mut heap = heap();
+    let live_before = heap.live_value_count();
+    let remote = LinkedRemoteInterfaceTable::new(
+        ServiceRequirementKey {
+            caller_package_build_id: PackageBuildId::new("build:caller"),
+            service_requirement_slot: 0,
+        },
+        LinkedPublicInstanceKey::parse("instance:reader").expect("public instance key"),
+        Box::new([]),
+        ServiceProtocolIdentity::new("protocol:reader-v1"),
+    )
+    .expect("empty remote table is canonical");
+    let exact_arc = Arc::new(remote.clone());
+    let exact_any: Arc<dyn Any + Send + Sync> =
+        Arc::clone(&exact_arc) as Arc<dyn Any + Send + Sync>;
+    let table = VmRemoteInterfaceTable::new(4, 0, exact_any);
+
+    let heap_obj: &mut dyn VmHeap = &mut heap;
+    let carrier = heap_obj
+        .allocate_remote_interface(table, tag(6), FLAGS)
+        .expect("remote interface carrier allocation");
+
+    let carrier_table = heap
+        .remote_interface_table(&carrier)
+        .expect("carrier table read");
+    assert_eq!(carrier_table.table_index(), 4);
+    assert_eq!(carrier_table.method_count(), 0);
+    let linked = heap
+        .remote_interface_linked_table(&carrier)
+        .expect("exact linked remote table read");
+    assert!(Arc::ptr_eq(&linked, &exact_arc));
+    assert_eq!(&*linked, &remote);
+
+    assert!(matches!(
+        heap.representation_payload(&carrier),
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::RepresentationPayload,
+            ..
+        })
+    ));
+
+    heap.release_snapshot(&carrier)
+        .expect("remote carrier release");
+    assert_eq!(heap.live_value_count(), live_before);
+    assert!(heap.validate_live(&carrier).is_err());
+}
+
+#[test]
+fn phase_6_remote_interface_carrier_rejects_wrong_exact_table() {
+    let mut heap = heap();
+    let exact_any: Arc<dyn Any + Send + Sync> = Arc::new(17_u32);
+    let table = VmRemoteInterfaceTable::new(4, 0, exact_any);
+
+    let heap_obj: &mut dyn VmHeap = &mut heap;
+    let carrier = heap_obj
+        .allocate_remote_interface(table, tag(6), FLAGS)
+        .expect("remote interface carrier allocation");
+
+    assert!(heap.remote_interface_linked_table(&carrier).is_err());
+    assert!(heap.local_interface_table(&carrier).is_err());
+    heap.release_snapshot(&carrier)
+        .expect("remote carrier release");
 }
 
 struct RecordingByteStreamSource(Arc<Mutex<Vec<RequestResourceTermination>>>);

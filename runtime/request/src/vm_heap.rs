@@ -12,7 +12,7 @@ use std::{
     },
 };
 
-use skiff_runtime_linked_bytecode::LinkedLocalInterfaceTable;
+use skiff_runtime_linked_bytecode::{LinkedLocalInterfaceTable, LinkedRemoteInterfaceTable};
 use skiff_runtime_model::{
     error::RuntimeModelError as RuntimeError,
     request_heap::{RequestHeap, RequestHeapLimits},
@@ -21,7 +21,8 @@ use skiff_runtime_model::{
     vm_heap::{
         PinnedWritablePathSegment, VmContainerElement, VmContainerElements, VmContainerShape,
         VmHandleInvalidReason, VmHeap, VmHeapError, VmHeapOperation, VmHeapPathSegment,
-        VmLocalInterfaceTable, VmMapEntry, VmRecordField, WritablePathPreparation,
+        VmLocalInterfaceTable, VmMapEntry, VmRecordField, VmRemoteInterfaceTable,
+        WritablePathPreparation,
     },
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot, VmHandle},
 };
@@ -63,6 +64,10 @@ struct RequestLocalInterfaceCarrier {
     payload: ValueSlot,
 }
 
+struct RequestRemoteInterfaceCarrier {
+    table: VmRemoteInterfaceTable,
+}
+
 #[derive(Clone, Copy)]
 struct ExcludedOwnerField<'a> {
     root: HeapHandle,
@@ -85,6 +90,7 @@ pub struct RequestVmHeap {
     >,
     representation_slots: HashMap<HeapHandle, ValueSlot>,
     local_interface_slots: HashMap<HeapHandle, RequestLocalInterfaceCarrier>,
+    remote_interface_slots: HashMap<HeapHandle, RequestRemoteInterfaceCarrier>,
 }
 
 impl RequestVmHeap {
@@ -128,6 +134,7 @@ impl RequestVmHeap {
             map_slots: HashMap::new(),
             representation_slots: HashMap::new(),
             local_interface_slots: HashMap::new(),
+            remote_interface_slots: HashMap::new(),
         }
     }
 
@@ -209,6 +216,25 @@ impl RequestVmHeap {
             .map_err(|_| VmHeapError::HeapOperationFailed {
                 operation: VmHeapOperation::LocalInterfaceTable,
                 message: "local interface carrier does not hold the expected linked table"
+                    .to_string(),
+            })
+    }
+
+    /// Recovers the exact linked remote interface table stored in a carrier.
+    ///
+    /// This is the checked seam for the remote-interface child leaf: the
+    /// carrier itself, not a caller-image lookup, is the authority for the
+    /// exact remote method table. Foreign or non-carrier slots fail closed.
+    pub fn remote_interface_linked_table(
+        &self,
+        carrier: &ValueSlot,
+    ) -> Result<Arc<LinkedRemoteInterfaceTable>, VmHeapError> {
+        let table = self.remote_interface_table(carrier)?;
+        Arc::clone(table.exact())
+            .downcast::<LinkedRemoteInterfaceTable>()
+            .map_err(|_| VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::RemoteInterfaceTable,
+                message: "remote interface carrier does not hold the expected linked table"
                     .to_string(),
             })
     }
@@ -421,6 +447,12 @@ impl RequestVmHeap {
         }
         let entry = self.live_entry(value)?;
         if self.local_interface_slots.contains_key(&entry.heap_handle) {
+            return Err(VmHeapError::OperationKindMismatch {
+                operation,
+                kind: ValueKind::RequestHeapRef,
+            });
+        }
+        if self.remote_interface_slots.contains_key(&entry.heap_handle) {
             return Err(VmHeapError::OperationKindMismatch {
                 operation,
                 kind: ValueKind::RequestHeapRef,
@@ -655,6 +687,7 @@ impl RequestVmHeap {
         if let Some(carrier) = self.local_interface_slots.remove(&heap_handle) {
             children.push(carrier.payload);
         }
+        self.remote_interface_slots.remove(&heap_handle);
         children
     }
 
@@ -1787,6 +1820,43 @@ impl VmHeap for RequestVmHeap {
             .ok_or_else(|| VmHeapError::HeapOperationFailed {
                 operation,
                 message: format!("{handle:?} is not a local interface carrier cell"),
+            })
+    }
+
+    fn allocate_remote_interface(
+        &mut self,
+        table: VmRemoteInterfaceTable,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        let operation = VmHeapOperation::AllocateRemoteInterface;
+        self.ensure_serial_available(operation)?;
+        let carrier = RuntimeValueCarrier::unidentified(RuntimeValue::Null);
+        let heap_handle = self
+            .heap
+            .alloc_local_carrier_cell(carrier)
+            .map_err(|error| self.map_error(error, operation))?;
+        let slot = self.register_handle(heap_handle, compact_type_tag, flags)?;
+        self.remote_interface_slots
+            .insert(heap_handle, RequestRemoteInterfaceCarrier { table });
+        Ok(slot)
+    }
+
+    fn remote_interface_table(
+        &self,
+        carrier: &ValueSlot,
+    ) -> Result<VmRemoteInterfaceTable, VmHeapError> {
+        let operation = VmHeapOperation::RemoteInterfaceTable;
+        let handle = carrier
+            .as_request_heap_ref()
+            .ok_or(VmHeapError::InvalidValueMetadata)?;
+        let heap_handle = self.live_entry(carrier)?.heap_handle;
+        self.remote_interface_slots
+            .get(&heap_handle)
+            .map(|entry| entry.table.clone())
+            .ok_or_else(|| VmHeapError::HeapOperationFailed {
+                operation,
+                message: format!("{handle:?} is not a remote interface carrier cell"),
             })
     }
 

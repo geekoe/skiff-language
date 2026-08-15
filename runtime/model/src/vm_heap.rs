@@ -223,6 +223,7 @@ pub enum VmHeapOperation {
     AllocateRecord,
     AllocateRepresentation,
     AllocateLocalInterface,
+    AllocateRemoteInterface,
     ArrayGet,
     ArrayLen,
     MapGet,
@@ -233,6 +234,7 @@ pub enum VmHeapOperation {
     RepresentationPayload,
     LocalInterfacePayload,
     LocalInterfaceTable,
+    RemoteInterfaceTable,
     ContainerElements,
     ArrayPushOwned,
     MapPutOwned,
@@ -297,6 +299,55 @@ impl fmt::Debug for VmLocalInterfaceTable {
             .debug_struct("VmLocalInterfaceTable")
             .field("table_index", &self.table_index)
             .field("concrete_type", &self.concrete_type)
+            .field("method_count", &self.method_count)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Exact opaque remote-interface table facts carried by one heap carrier.
+///
+/// Like the local carrier table, the concrete linked remote table lives
+/// behind `exact` so heap-neutral model code can check the same indexed
+/// identity while the request heap can recover the exact linked table for a
+/// remote child dispatch.
+#[derive(Clone)]
+pub struct VmRemoteInterfaceTable {
+    table_index: u32,
+    method_count: usize,
+    exact: Arc<dyn Any + Send + Sync>,
+}
+
+impl VmRemoteInterfaceTable {
+    pub const fn new(
+        table_index: u32,
+        method_count: usize,
+        exact: Arc<dyn Any + Send + Sync>,
+    ) -> Self {
+        Self {
+            table_index,
+            method_count,
+            exact,
+        }
+    }
+
+    pub const fn table_index(&self) -> u32 {
+        self.table_index
+    }
+
+    pub const fn method_count(&self) -> usize {
+        self.method_count
+    }
+
+    pub const fn exact(&self) -> &Arc<dyn Any + Send + Sync> {
+        &self.exact
+    }
+}
+
+impl fmt::Debug for VmRemoteInterfaceTable {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("VmRemoteInterfaceTable")
+            .field("table_index", &self.table_index)
             .field("method_count", &self.method_count)
             .finish_non_exhaustive()
     }
@@ -652,6 +703,35 @@ pub trait VmHeap {
     ) -> Result<VmLocalInterfaceTable, VmHeapError> {
         Err(VmHeapError::OperationKindMismatch {
             operation: VmHeapOperation::LocalInterfaceTable,
+            kind: ValueKind::RequestHeapRef,
+        })
+    }
+
+    /// Allocates one checked remote-interface carrier.
+    ///
+    /// A remote carrier has no VM-local payload owner; it stores only the
+    /// exact opaque linked table facts needed to validate later method
+    /// dispatch. Allocation validates the carrier table identity and the
+    /// concrete heap's live-root bookkeeping.
+    fn allocate_remote_interface(
+        &mut self,
+        _table: VmRemoteInterfaceTable,
+        _compact_type_tag: CompactTypeTag,
+        _flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::AllocateRemoteInterface,
+            kind: ValueKind::RequestHeapRef,
+        })
+    }
+
+    /// Reads the checked identity of one remote-interface carrier.
+    fn remote_interface_table(
+        &self,
+        _carrier: &ValueSlot,
+    ) -> Result<VmRemoteInterfaceTable, VmHeapError> {
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::RemoteInterfaceTable,
             kind: ValueKind::RequestHeapRef,
         })
     }

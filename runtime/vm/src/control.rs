@@ -1,10 +1,15 @@
-use std::{fmt, num::NonZeroU64, sync::Arc};
+use std::{
+    fmt,
+    num::{NonZeroU32, NonZeroU64},
+    sync::Arc,
+};
 
 use skiff_artifact_model::Opcode;
 use skiff_runtime_linked_bytecode::{
     ActorMethodIndex, FunctionIndex, HostEffectAdapterIndex, InstructionIndex, InterfaceTableIndex,
-    IntrinsicIndex, LinkedValueTransferPlan, ResumeSiteIndex, ServiceOperationIndex, ShapeIndex,
-    SyntheticCallbackIndex, TypeIndex,
+    IntrinsicIndex, LinkedCallableSignature, LinkedRemoteInterfaceMethod,
+    LinkedRemoteInterfaceTable, LinkedValueTransferPlan, ResumeSiteIndex, ServiceOperationIndex,
+    ShapeIndex, SyntheticCallbackIndex, TypeIndex,
 };
 use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_model::{
@@ -184,6 +189,7 @@ pub(crate) struct VmResumeBinding {
     expected_stack_height: u32,
     expected_result_count: u32,
     authority: VmResumeAuthority,
+    interface_plan: Option<InterfaceCallPlan>,
 }
 
 impl VmResumeToken {
@@ -202,6 +208,7 @@ impl VmResumeToken {
         expected_stack_height: u32,
         expected_result_count: u32,
         authority: VmResumeAuthority,
+        interface_plan: Option<InterfaceCallPlan>,
     ) -> Self {
         Self {
             binding: Arc::new(VmResumeBinding {
@@ -215,6 +222,7 @@ impl VmResumeToken {
                 expected_stack_height,
                 expected_result_count,
                 authority,
+                interface_plan,
             }),
         }
     }
@@ -266,6 +274,14 @@ impl VmResumeToken {
 
     pub(crate) fn authority(&self) -> VmResumeAuthority {
         self.binding.authority
+    }
+
+    /// Exact linked interface call facts carried by this continuation.
+    ///
+    /// Non-interface resumes carry `None`; interface resumes must carry a
+    /// complete plan before leaving the VM core.
+    pub fn interface_plan(&self) -> Option<&InterfaceCallPlan> {
+        self.binding.interface_plan.as_ref()
     }
 
     pub(crate) const fn binding(&self) -> &Arc<VmResumeBinding> {
@@ -321,6 +337,87 @@ pub enum VmResumeKind {
     StreamItem,
 }
 
+/// Exact task dispatch target index.
+///
+/// The index is opaque to the VM core. It is deliberately non-zero so a
+/// missing/ambiguous plan cannot be represented by a default integer value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TaskDispatchIndex(NonZeroU32);
+
+impl TaskDispatchIndex {
+    pub const fn new(value: NonZeroU32) -> Self {
+        Self(value)
+    }
+
+    pub fn try_new(value: u32) -> Option<Self> {
+        Some(Self(NonZeroU32::new(value)?))
+    }
+
+    pub const fn get(self) -> u32 {
+        self.0.get()
+    }
+}
+
+/// Exact linked interface call facts carried with a continuation.
+///
+/// This plan is sealed by the VM and travels in the resume token so the flat
+/// scheduler/request mux cannot reconstruct a method signature or carrier
+/// plan from a table name or request metadata. Remote calls additionally
+/// carry the exact linked remote method and table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterfaceCallPlan {
+    signature: LinkedCallableSignature,
+    carrier_plan: LinkedValueTransferPlan,
+    remote: Option<RemoteInterfaceCallPlan>,
+}
+
+impl InterfaceCallPlan {
+    pub fn new(
+        signature: LinkedCallableSignature,
+        carrier_plan: LinkedValueTransferPlan,
+        remote: Option<RemoteInterfaceCallPlan>,
+    ) -> Self {
+        Self {
+            signature,
+            carrier_plan,
+            remote,
+        }
+    }
+
+    pub const fn signature(&self) -> &LinkedCallableSignature {
+        &self.signature
+    }
+
+    pub const fn carrier_plan(&self) -> &LinkedValueTransferPlan {
+        &self.carrier_plan
+    }
+
+    pub const fn remote(&self) -> Option<&RemoteInterfaceCallPlan> {
+        self.remote.as_ref()
+    }
+}
+
+/// Exact remote method facts for one interface call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteInterfaceCallPlan {
+    table: LinkedRemoteInterfaceTable,
+    method: LinkedRemoteInterfaceMethod,
+}
+
+impl RemoteInterfaceCallPlan {
+    pub fn new(table: LinkedRemoteInterfaceTable, method: LinkedRemoteInterfaceMethod) -> Self {
+        Self { table, method }
+    }
+
+    pub const fn table(&self) -> &LinkedRemoteInterfaceTable {
+        &self.table
+    }
+
+    pub const fn method(&self) -> &LinkedRemoteInterfaceMethod {
+        &self.method
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChildTarget {
     Service(ServiceOperationIndex),
@@ -331,7 +428,54 @@ pub enum ChildTarget {
     },
     Db(IntrinsicIndex),
     Callback(SyntheticCallbackIndex),
+    Task(TaskDispatchIndex),
     StreamNext,
+}
+
+/// Owned task dispatch request with exact VM arguments and raw request
+/// payload bytes.
+///
+/// This is the payload materialization seam for T6F: the target index is
+/// opaque and checked, the VM arguments remain VM-owned roots, and the
+/// recoverable task payload bytes travel beside them without being interpreted
+/// by the VM core or stored only in a host-side sidecar.
+#[must_use = "a task dispatch request owns VM arguments and payload bytes"]
+pub struct TaskDispatchRequest {
+    target: TaskDispatchIndex,
+    arguments: VmOwnedValues,
+    payload: Box<[u8]>,
+}
+
+impl TaskDispatchRequest {
+    pub fn new(target: TaskDispatchIndex, arguments: VmOwnedValues, payload: Box<[u8]>) -> Self {
+        Self {
+            target,
+            arguments,
+            payload,
+        }
+    }
+
+    pub const fn target(&self) -> TaskDispatchIndex {
+        self.target
+    }
+
+    pub const fn arguments(&self) -> &VmOwnedValues {
+        &self.arguments
+    }
+
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+
+    pub fn into_parts(self) -> (TaskDispatchIndex, VmOwnedValues, Box<[u8]>) {
+        (self.target, self.arguments, self.payload)
+    }
+}
+
+impl VmRootSource for TaskDispatchRequest {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        self.arguments.visit_roots(visitor)
+    }
 }
 
 /// Non-owning route to the exact affine endpoint borrowed by `StreamNext`.
@@ -893,6 +1037,14 @@ pub(crate) fn visit_values(
 mod tests {
     use std::mem::size_of;
 
+    use skiff_artifact_model::{
+        CallableEffectSummary, ContractOperationId, PackageBuildId, ParamModeIr,
+        ServiceProtocolIdentity, ServiceRequirementKey,
+    };
+    use skiff_runtime_linked_bytecode::{
+        LinkedCallableSignature, LinkedPublicInstanceKey, LinkedRemoteInterfaceMethod,
+        LinkedRemoteInterfaceTable, LinkedValueDropPlan, LinkedValueTransferPlan, TypeIndex,
+    };
     use skiff_runtime_model::{
         vm_heap::VmHeapError,
         vm_root::{VmRootSource, VmRootVisitor},
@@ -900,8 +1052,8 @@ mod tests {
     };
 
     use super::{
-        PendingOperation, PendingTicket, ResumeOutcome, VmControl, VmError, VmOwnedValues,
-        VmResumeToken,
+        ChildTarget, InterfaceCallPlan, PendingOperation, PendingTicket, ResumeOutcome,
+        TaskDispatchIndex, TaskDispatchRequest, VmControl, VmError, VmOwnedValues, VmResumeToken,
     };
 
     #[test]
@@ -964,5 +1116,94 @@ mod tests {
         let _: fn() -> ResumeOutcome = || ResumeOutcome::Empty;
         let _: fn() -> ResumeOutcome = || ResumeOutcome::StreamEnd;
         let _: fn(VmError) -> ResumeOutcome = ResumeOutcome::Failure;
+    }
+
+    #[test]
+    fn task_dispatch_index_is_nonzero_and_opaque() {
+        assert!(TaskDispatchIndex::try_new(0).is_none());
+        let first = TaskDispatchIndex::try_new(1).expect("one is valid");
+        let second = TaskDispatchIndex::try_new(2).expect("two is valid");
+        assert_ne!(first, second);
+        assert_eq!(
+            ChildTarget::Task(first),
+            ChildTarget::Task(TaskDispatchIndex::try_new(1).expect("one is valid"))
+        );
+        assert_ne!(ChildTarget::Task(first), ChildTarget::Task(second));
+    }
+
+    #[test]
+    fn task_dispatch_request_exposes_arguments_and_raw_payload() {
+        fn payload_materializer(request: &TaskDispatchRequest) -> (&VmOwnedValues, &[u8]) {
+            (request.arguments(), request.payload())
+        }
+        fn assert_root_source<T: VmRootSource>() {}
+
+        let _ = payload_materializer;
+        assert_root_source::<TaskDispatchRequest>();
+    }
+
+    #[test]
+    fn interface_call_plan_keeps_exact_signature_and_carrier_plan() {
+        let plan = LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::Trivial,
+        };
+        let signature = LinkedCallableSignature::new(
+            Box::new([TypeIndex::new(0), TypeIndex::new(1)]),
+            Box::new([ParamModeIr::Value, ParamModeIr::Value]),
+            Box::new([plan.clone(), plan.clone()]),
+            Box::new([TypeIndex::new(2)]),
+            Box::new([plan.clone()]),
+            CallableEffectSummary::analysis_pending(),
+        )
+        .expect("interface signature is canonical");
+        let call = InterfaceCallPlan::new(signature.clone(), plan.clone(), None);
+
+        assert_eq!(call.signature(), &signature);
+        assert_eq!(call.carrier_plan(), &plan);
+        assert!(call.remote().is_none());
+    }
+
+    #[test]
+    fn remote_interface_call_plan_keeps_exact_remote_method_and_table() {
+        let plan = LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::Trivial,
+        };
+        let signature = LinkedCallableSignature::new(
+            Box::new([TypeIndex::new(0)]),
+            Box::new([ParamModeIr::Value]),
+            Box::new([plan.clone()]),
+            Box::new([]),
+            Box::new([]),
+            CallableEffectSummary::analysis_pending(),
+        )
+        .expect("remote method signature is canonical");
+        let method = LinkedRemoteInterfaceMethod::new(
+            0,
+            skiff_runtime_linked_bytecode::LinkedInterfaceMethodAbiId::parse("reader:method:read")
+                .expect("method ABI id"),
+            signature,
+            ContractOperationId::new("operation:reader.read"),
+        );
+        let table = LinkedRemoteInterfaceTable::new(
+            ServiceRequirementKey {
+                caller_package_build_id: PackageBuildId::new("build:caller"),
+                service_requirement_slot: 0,
+            },
+            LinkedPublicInstanceKey::parse("instance:reader").expect("public instance key"),
+            Box::new([method.clone()]),
+            ServiceProtocolIdentity::new("protocol:reader-v1"),
+        )
+        .expect("remote table is canonical");
+        let call = InterfaceCallPlan::new(
+            method.signature().clone(),
+            plan,
+            Some(super::RemoteInterfaceCallPlan::new(
+                table.clone(),
+                method.clone(),
+            )),
+        );
+        let remote = call.remote().expect("remote plan");
+        assert_eq!(remote.table(), &table);
+        assert_eq!(remote.method(), &method);
     }
 }

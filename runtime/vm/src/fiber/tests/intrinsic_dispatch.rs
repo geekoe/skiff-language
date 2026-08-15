@@ -257,6 +257,7 @@ pub(super) fn host_result_resume_token() -> crate::VmResumeToken {
         resume.expected_stack_height_before_result(),
         u32::try_from(resume.result_types().len()).unwrap(),
         VmResumeAuthority::Adapter(adapter),
+        None,
     )
 }
 

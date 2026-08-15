@@ -1,3 +1,4 @@
+pub mod actor_vm_arena;
 pub mod addr;
 pub mod bytecode_execution_observation;
 pub mod callback_projection;

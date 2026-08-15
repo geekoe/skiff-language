@@ -122,6 +122,7 @@ fn caller_token(
         0,
         0,
         VmResumeAuthority::Child(ChildTarget::StreamNext),
+        None,
     )
 }
 
