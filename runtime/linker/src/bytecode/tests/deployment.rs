@@ -288,12 +288,29 @@ fn production_sleep_image_exposes_only_the_indexed_typed_executor_target() {
         }],
         "the exact registry-owned Duration parameter must remain an immediate-safe trivial snapshot",
     );
+    let [duration] = target.signature().parameter_types() else {
+        panic!("Sleep must expose its one exact linked parameter type");
+    };
+    let carrier = image
+        .type_representation_carrier(*duration)
+        .expect("Sleep parameter must expose its compiler-owned carrier fact");
+    assert_eq!(
+        image.types()[carrier.representation_type().get() as usize].type_ref(),
+        &TypeRefIr::builtin("integer"),
+    );
+    assert_eq!(
+        image.types()[carrier.physical_carrier_type().get() as usize].type_ref(),
+        &TypeRefIr::builtin("number"),
+    );
     assert!(
         image
             .host_effect_target(HostEffectAdapterIndex::new(u32::MAX))
             .is_none(),
         "opaque target lookup must fail closed for an unknown index"
     );
+    assert!(image
+        .type_representation_carrier(TypeIndex::new(u32::MAX))
+        .is_none());
 }
 
 #[test]

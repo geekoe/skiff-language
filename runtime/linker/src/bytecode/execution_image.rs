@@ -14,9 +14,9 @@ use skiff_runtime_linked_bytecode::{
     InstructionIndex, LinkedActorMethodTarget, LinkedBytecodeCandidate, LinkedCallableSignature,
     LinkedCallbackCaptureLayout, LinkedConstantEntry, LinkedConstantRoot, LinkedExactLocalTarget,
     LinkedFrozenConstantNode, LinkedInterfaceTable, LinkedIntrinsicTarget,
-    LinkedPackageBytecodeProvenance, LinkedServiceOperationTarget, LinkedShapeEntry,
-    LinkedSyntheticCallbackTarget, LinkedTypeEntry, LinkedWritablePathEntry, ResumeSiteIndex,
-    ShapeIndex, TypeIndex,
+    LinkedPackageBytecodeProvenance, LinkedRepresentationCarrier, LinkedServiceOperationTarget,
+    LinkedShapeEntry, LinkedSyntheticCallbackTarget, LinkedTypeEntry, LinkedWritablePathEntry,
+    ResumeSiteIndex, ShapeIndex, TypeIndex,
 };
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 use skiff_runtime_model::vm_value::CompactTypeTag;
@@ -162,6 +162,20 @@ impl DeploymentExecutionImage {
             .get(position)
             .filter(|entry| entry.index() == index)
             .map(LinkedTypeEntry::plan)
+    }
+
+    /// Returns the exact compiler-emitted physical representation boundary for
+    /// one linked TypeRef row. This performs only a checked direct-index lookup.
+    pub fn type_representation_carrier(
+        &self,
+        index: TypeIndex,
+    ) -> Option<&LinkedRepresentationCarrier> {
+        let position = usize::try_from(index.get()).ok()?;
+        self.linked
+            .types()
+            .get(position)
+            .filter(|entry| entry.index() == index)
+            .and_then(LinkedTypeEntry::representation_carrier)
     }
 
     pub fn shapes(&self) -> &[LinkedShapeEntry] {

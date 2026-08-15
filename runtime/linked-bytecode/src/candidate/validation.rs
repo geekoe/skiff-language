@@ -287,6 +287,9 @@ fn validate_dispatch_target_references(
             row: target.index().get(),
         };
         validate_native_signature(target.signature(), location, parts)?;
+        if target.executor_identity() == skiff_artifact_model::HostEffectExecutorIdentity::Sleep {
+            validate_sleep_representation_carrier(target, parts)?;
+        }
     }
     for target in &parts.intrinsics {
         let location = CandidateLocation::TableRow {
@@ -294,6 +297,37 @@ fn validate_dispatch_target_references(
             row: target.index().get(),
         };
         validate_native_signature(target.signature(), location, parts)?;
+    }
+    Ok(())
+}
+
+fn validate_sleep_representation_carrier(
+    target: &crate::LinkedHostEffectAdapterTarget,
+    parts: &LinkedBytecodeCandidateParts,
+) -> Result<(), LinkedBytecodeCandidateError> {
+    let [parameter] = target.signature().parameter_types() else {
+        return Err(
+            LinkedBytecodeCandidateError::SleepRepresentationCarrierMismatch {
+                host_effect_adapter: target.index(),
+                detail: "Sleep must retain exactly one linked parameter type",
+            },
+        );
+    };
+    let Some(row) = parts.types.get(parameter.get() as usize) else {
+        return Err(
+            LinkedBytecodeCandidateError::SleepRepresentationCarrierMismatch {
+                host_effect_adapter: target.index(),
+                detail: "Sleep parameter type row is absent",
+            },
+        );
+    };
+    if row.index() != *parameter || row.representation_carrier().is_none() {
+        return Err(
+            LinkedBytecodeCandidateError::SleepRepresentationCarrierMismatch {
+                host_effect_adapter: target.index(),
+                detail: "Sleep parameter lacks its exact representation carrier fact",
+            },
+        );
     }
     Ok(())
 }

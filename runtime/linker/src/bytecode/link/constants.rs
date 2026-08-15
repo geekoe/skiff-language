@@ -18,8 +18,7 @@ use crate::bytecode::{
 
 use self::validation::{
     artifact_constant_index, artifact_node_index, constant_error, constant_index,
-    constant_location, frozen_node_index, require_literal_carrier, source_literal, source_type,
-    unavailable,
+    constant_location, frozen_node_index, require_literal_carrier, source_literal, unavailable,
 };
 use super::{unsatisfied, DeploymentLinker};
 
@@ -188,11 +187,12 @@ impl DeploymentLinker<'_> {
                     )
                 })?;
             let literal = source_literal(package, *node_index, location.clone())?;
-            let declared_type = source_type(package, *type_ref, location.clone())?;
-            require_literal_carrier(literal, declared_type, location.clone())?;
             let (ty, concrete_type) =
                 type_linker.intern_package_global_type(package, *type_ref, location.clone())?;
-            require_literal_carrier(literal, &concrete_type, location.clone())?;
+            let physical_carrier = type_linker
+                .linked_representation_carrier(ty)
+                .and_then(|carrier| type_linker.linked_type_ref(carrier.physical_carrier_type()));
+            require_literal_carrier(literal, &concrete_type, physical_carrier, location.clone())?;
             let linked_plan = type_linker
                 .link_transfer_plan(plan, &BTreeMap::new(), location.clone())
                 .map_err(|error| constant_error(location.clone(), error.to_string()))?;

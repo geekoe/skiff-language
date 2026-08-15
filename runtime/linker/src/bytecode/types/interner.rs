@@ -1,14 +1,16 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_model::{BytecodePoolEntry, PackageBuildId, PoolCategory, TypeRefIr};
+use skiff_artifact_model::{
+    BytecodePoolEntry, PackageBuildId, PoolCategory, RepresentationCarrierDeclaration, TypeRefIr,
+};
 use skiff_runtime_linked_bytecode::{
     ArtifactCallbackCaptureIndex, ArtifactShapeIndex, ArtifactTypeIndex, ArtifactWritablePathIndex,
     CallbackCaptureLayoutIndex, FunctionIndex, InstructionIndex, LinkedArtifactPoolOrigin,
     LinkedCallbackCapture, LinkedCallbackCaptureLayout, LinkedContainerLayout,
-    LinkedContainerPosition, LinkedResumeResultMaterialization, LinkedResumeSite, LinkedShapeEntry,
-    LinkedShapeField, LinkedTypeEntry, LinkedValueTransferPlan, LinkedWritablePathEntry,
-    LinkedWritablePathSegment, ResumeSiteIndex, ShapeIndex, SpecializationKey, TypeIndex,
-    WritablePathIndex,
+    LinkedContainerPosition, LinkedRepresentationCarrier, LinkedResumeResultMaterialization,
+    LinkedResumeSite, LinkedShapeEntry, LinkedShapeField, LinkedTypeEntry, LinkedValueTransferPlan,
+    LinkedWritablePathEntry, LinkedWritablePathSegment, ResumeSiteIndex, ShapeIndex,
+    SpecializationKey, TypeIndex, WritablePathIndex,
 };
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
@@ -126,6 +128,8 @@ impl<'a> TypeLinker<'a> {
         let concrete =
             self.concrete_type(package, artifact_index, substitutions, location.clone())?;
         let declared_plan = self.artifact_type_plan(package, artifact_index, location.clone())?;
+        let declared_carrier =
+            self.artifact_representation_carrier(package, artifact_index, location.clone())?;
         let (index, entry_position) = self.reserve(origin_key, location.clone())?;
         self.pending_type_refs.insert(index, concrete.clone());
         let plan = self.link_type_entry_plan_at(
@@ -142,6 +146,15 @@ impl<'a> TypeLinker<'a> {
             specialization,
             substitutions,
             index,
+            &concrete,
+            &plan,
+            location.clone(),
+        )?;
+        let representation_carrier = self.link_representation_carrier(
+            package,
+            Some(specialization),
+            substitutions,
+            declared_carrier,
             &concrete,
             &plan,
             location.clone(),
@@ -163,6 +176,7 @@ impl<'a> TypeLinker<'a> {
             origin,
             concrete,
             plan,
+            representation_carrier,
             container_layout,
         ));
         self.pending_type_refs.remove(&index);
@@ -214,9 +228,20 @@ impl<'a> TypeLinker<'a> {
         let concrete =
             self.concrete_type(package, artifact_index, &substitutions, location.clone())?;
         let declared_plan = self.artifact_type_plan(package, artifact_index, location.clone())?;
+        let declared_carrier =
+            self.artifact_representation_carrier(package, artifact_index, location.clone())?;
         let plan = self.link_transfer_plan(&declared_plan, &substitutions, location.clone())?;
         let (index, entry_position) = self.reserve(origin_key, location.clone())?;
         self.pending_type_refs.insert(index, concrete.clone());
+        let representation_carrier = self.link_representation_carrier(
+            package,
+            None,
+            &substitutions,
+            declared_carrier,
+            &concrete,
+            &plan,
+            location.clone(),
+        )?;
         let origin = LinkedArtifactPoolOrigin::new(
             package.reference().package_build_id.clone(),
             ArtifactTypeIndex::new(artifact_index),
@@ -237,6 +262,7 @@ impl<'a> TypeLinker<'a> {
             origin,
             concrete.clone(),
             plan,
+            representation_carrier,
             None,
         ));
         self.pending_type_refs.remove(&index);
@@ -305,22 +331,34 @@ impl<'a> TypeLinker<'a> {
     }
 
     pub(in crate::bytecode) fn linked_type_ref(&self, index: TypeIndex) -> Option<&TypeRefIr> {
+        self.linked_type_entry(index)
+            .map(LinkedTypeEntry::type_ref)
+            .or_else(|| self.pending_type_refs.get(&index))
+    }
+
+    pub(in crate::bytecode) fn linked_type_entry(
+        &self,
+        index: TypeIndex,
+    ) -> Option<&LinkedTypeEntry> {
         self.entries
             .get(index.get() as usize)
             .and_then(Option::as_ref)
-            .map(LinkedTypeEntry::type_ref)
-            .or_else(|| self.pending_type_refs.get(&index))
+            .filter(|entry| entry.index() == index)
+    }
+
+    pub(in crate::bytecode) fn linked_representation_carrier(
+        &self,
+        index: TypeIndex,
+    ) -> Option<&LinkedRepresentationCarrier> {
+        self.linked_type_entry(index)
+            .and_then(LinkedTypeEntry::representation_carrier)
     }
 
     pub(in crate::bytecode) fn linked_type_plan(
         &self,
         index: TypeIndex,
     ) -> Option<&LinkedValueTransferPlan> {
-        self.entries
-            .get(index.get() as usize)
-            .and_then(Option::as_ref)
-            .filter(|entry| entry.index() == index)
-            .map(LinkedTypeEntry::plan)
+        self.linked_type_entry(index).map(LinkedTypeEntry::plan)
     }
 
     pub(in crate::bytecode) fn finish(
@@ -435,6 +473,112 @@ impl<'a> TypeLinker<'a> {
             ));
         };
         Ok(plan.clone())
+    }
+
+    fn artifact_representation_carrier(
+        &self,
+        package: &HydratedBytecodePackage,
+        artifact_index: u32,
+        location: BytecodeLinkLocation,
+    ) -> Result<Option<RepresentationCarrierDeclaration>, BytecodeLinkError> {
+        let artifact_index_usize = usize::try_from(artifact_index).map_err(|_| {
+            obligation_error(
+                location.clone(),
+                format!("validated type pool row {artifact_index} does not fit usize"),
+            )
+        })?;
+        let entry = package
+            .bytecode()
+            .and_then(|bytecode| bytecode.view().pools().types.get(artifact_index_usize))
+            .ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    format!("validated type pool row {artifact_index} is absent"),
+                )
+            })?;
+        let BytecodePoolEntry::TypeRef {
+            representation_carrier,
+            ..
+        } = entry
+        else {
+            return Err(obligation_error(
+                location,
+                format!("validated type pool row {artifact_index} has the wrong entry kind"),
+            ));
+        };
+        Ok(*representation_carrier)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn link_representation_carrier(
+        &mut self,
+        package: &HydratedBytecodePackage,
+        specialization: Option<&SpecializationKey>,
+        substitutions: &BTreeMap<String, TypeRefIr>,
+        declaration: Option<RepresentationCarrierDeclaration>,
+        owner_type: &TypeRefIr,
+        owner_plan: &LinkedValueTransferPlan,
+        location: BytecodeLinkLocation,
+    ) -> Result<Option<LinkedRepresentationCarrier>, BytecodeLinkError> {
+        let Some(declaration) = declaration else {
+            return Ok(None);
+        };
+        let mut intern = |artifact_index| match specialization {
+            Some(specialization) => self.intern_pool_type(
+                package,
+                specialization,
+                artifact_index,
+                substitutions,
+                location.clone(),
+            ),
+            None => self
+                .intern_package_global_type(package, artifact_index, location.clone())
+                .map(|(index, _)| index),
+        };
+        let representation = intern(declaration.representation_type_ref)?;
+        let physical = intern(declaration.physical_carrier_type_ref)?;
+        let representation_row = self.linked_type_entry(representation).ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                "linked representation source row is absent".to_string(),
+            )
+        })?;
+        let physical_row = self.linked_type_entry(physical).ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                "linked representation physical carrier row is absent".to_string(),
+            )
+        })?;
+        for (row, artifact_index) in [
+            (representation_row, declaration.representation_type_ref),
+            (physical_row, declaration.physical_carrier_type_ref),
+        ] {
+            if row.origin().package_build_id() != &package.reference().package_build_id
+                || row.origin().artifact_index().get() != artifact_index
+                || row.origin().specialization() != specialization
+            {
+                return Err(obligation_error(
+                    location,
+                    "linked representation carrier did not retain its exact artifact origin"
+                        .to_string(),
+                ));
+            }
+        }
+        super::representation::validate_representation_carrier(
+            self.deployment,
+            package,
+            owner_type,
+            representation_row.type_ref(),
+            physical_row.type_ref(),
+            owner_plan,
+            representation_row.plan(),
+            physical_row.plan(),
+            location,
+        )?;
+        Ok(Some(LinkedRepresentationCarrier::new(
+            representation,
+            physical,
+        )))
     }
 
     fn reserve(

@@ -11,7 +11,7 @@ use crate::bytecode::{
 
 use super::{
     execution_limits,
-    fixtures::{ConstantProgram, Fixture, ROOT_FUNCTION},
+    fixtures::{ConstantProgram, Fixture, RepresentationLiteralCase, ROOT_FUNCTION},
     generous_execution_limits, generous_limits,
 };
 
@@ -98,6 +98,69 @@ fn package_global_string_literal_links_its_exact_compiler_lifecycle() {
         image.frozen_constant_nodes()[0].value(),
         LinkedFrozenConstantValue::Literal(LiteralIr::String { value }) if value == "ready"
     ));
+}
+
+#[test]
+fn representation_literal_uses_exact_direct_artifact_rows_after_reorder_and_duplication() {
+    for (case, representation_artifact_index, physical_artifact_index) in [
+        (RepresentationLiteralCase::Exact, 1, 2),
+        (RepresentationLiteralCase::ReorderedRows, 2, 0),
+        (RepresentationLiteralCase::DuplicatePayloadRows, 2, 3),
+    ] {
+        let fixture = Fixture::representation_literal(case);
+        let image =
+            link_deployment_execution_image(fixture.hydrate(), &generous_execution_limits())
+                .expect("exact representation literal fact should link");
+        let owner = image.constants()[0].ty();
+        let carrier = image
+            .type_representation_carrier(owner)
+            .expect("constant owner exposes its exact linked carrier fact");
+        let representation = &image.types()[carrier.representation_type().get() as usize];
+        let physical = &image.types()[carrier.physical_carrier_type().get() as usize];
+        assert_eq!(representation.type_ref(), &TypeRefIr::builtin("integer"));
+        assert_eq!(physical.type_ref(), &TypeRefIr::builtin("number"));
+        assert_eq!(
+            representation.origin().artifact_index().get(),
+            representation_artifact_index,
+        );
+        assert_eq!(
+            physical.origin().artifact_index().get(),
+            physical_artifact_index,
+        );
+        assert!(representation.origin().specialization().is_none());
+        assert!(physical.origin().specialization().is_none());
+    }
+}
+
+#[test]
+fn representation_literal_rejects_missing_or_inconsistent_exact_fact() {
+    let missing = Fixture::representation_literal(RepresentationLiteralCase::MissingFact);
+    assert!(matches!(
+        link_deployment_execution_image(missing.hydrate(), &generous_execution_limits()),
+        Err(DeploymentExecutionImageError::Link(
+            BytecodeLinkError::ImplementationUnavailable {
+                obligation: BytecodeLinkObligation::ConstantInitializationPlan,
+                ..
+            }
+        ))
+    ));
+
+    for case in [
+        RepresentationLiteralCase::WrongDescriptor,
+        RepresentationLiteralCase::WrongPayload,
+        RepresentationLiteralCase::WrongPhysicalCarrier,
+    ] {
+        let fixture = Fixture::representation_literal(case);
+        assert!(matches!(
+            link_deployment_execution_image(fixture.hydrate(), &generous_execution_limits()),
+            Err(DeploymentExecutionImageError::Link(
+                BytecodeLinkError::UnsatisfiedObligation {
+                    obligation: BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                    ..
+                }
+            ))
+        ));
+    }
 }
 
 #[test]
