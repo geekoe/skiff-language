@@ -605,6 +605,15 @@ impl VmOwnedException {
         &self.diagnostic
     }
 
+    /// Returns the exact VM-local payload owner retained by this exception.
+    ///
+    /// The payload is still owned by the exception and by its origin heap. A
+    /// child boundary may read it for typed materialization before consuming
+    /// this exception through `release_all` or terminal escrow.
+    pub fn vm_local_payload(&self) -> Option<ValueSlot> {
+        self.exception.vm_local_slot()
+    }
+
     pub(crate) fn exception(&self) -> &RequestException {
         &self.exception
     }

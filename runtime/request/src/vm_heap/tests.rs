@@ -110,6 +110,29 @@ fn phase_6_local_interface_carrier_allocates_reads_and_releases_exact_payload() 
     assert!(heap.validate_live(&payload).is_err());
 }
 
+#[test]
+fn phase_6_local_interface_carrier_rejects_wrong_exact_table_and_cleans_payload() {
+    let mut heap = heap();
+    let live_before = heap.live_value_count();
+    let payload = heap
+        .alloc_typed_string("interface-payload".to_string(), tag(5), FLAGS)
+        .expect("payload string");
+    let exact_any: Arc<dyn Any + Send + Sync> = Arc::new(17_u32);
+    let table = VmLocalInterfaceTable::new(3, 5, 0, exact_any);
+
+    let heap_obj: &mut dyn VmHeap = &mut heap;
+    let carrier = heap_obj
+        .allocate_local_interface(&payload, table, tag(6), FLAGS)
+        .expect("local interface carrier allocation");
+
+    assert!(heap.local_interface_payload(&carrier) == Ok(payload));
+    assert!(heap.local_interface_linked_table(&carrier).is_err());
+
+    heap.release_snapshot(&carrier)
+        .expect("carrier release releases its exact payload");
+    assert_eq!(heap.live_value_count(), live_before);
+}
+
 struct RecordingByteStreamSource(Arc<Mutex<Vec<RequestResourceTermination>>>);
 
 impl VmRootSource for RecordingByteStreamSource {

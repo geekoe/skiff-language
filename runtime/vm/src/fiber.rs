@@ -3648,6 +3648,17 @@ impl VmFiber {
             LinkedIntrinsicKind::Static(target) => match target.canonical_key().as_str() {
                 "core.array.empty" => Ok(IntrinsicResultPayload::EmptyArray),
                 "core.map.empty" => Ok(IntrinsicResultPayload::EmptyMap),
+                "std.string.length" => {
+                    if values.len() != 1 {
+                        return Err(VmError::FullValueLifecyclePlanUnavailable {
+                            function,
+                            instruction,
+                            opcode: Opcode::InvokeIntrinsic,
+                        });
+                    }
+                    let value = self.string_slot_value(heap, &values[0])?;
+                    Ok(IntrinsicResultPayload::Number(value.chars().count() as f64))
+                }
                 "core.bytes.fromUtf8" => {
                     if values.len() != 1 {
                         return Err(VmError::FullValueLifecyclePlanUnavailable {
@@ -3668,6 +3679,17 @@ impl VmFiber {
                 }
             },
             LinkedIntrinsicKind::Receiver(op) => match op.canonical_key {
+                "receiver:string.length@1" => {
+                    if values.len() != 1 {
+                        return Err(VmError::FullValueLifecyclePlanUnavailable {
+                            function,
+                            instruction,
+                            opcode: Opcode::InvokeIntrinsic,
+                        });
+                    }
+                    let value = self.string_slot_value(heap, &values[0])?;
+                    Ok(IntrinsicResultPayload::Number(value.chars().count() as f64))
+                }
                 "receiver:string.concat@1" => {
                     if values.len() != 2 {
                         return Err(VmError::FullValueLifecyclePlanUnavailable {
@@ -3738,14 +3760,12 @@ impl VmFiber {
             });
         };
         let local = local.clone();
+        // The linked local table carries the exact concrete payload type. The
+        // stack-map carrier type is normalized into an owner-form PackageSymbol
+        // while the relocation keeps its publication form; fall back only to
+        // the exact table fact when that normalized carrier row is unavailable.
         let carrier_type =
-            interface_carrier_type(self.execution_image(), row).ok_or_else(|| {
-                VmError::FullValueLifecyclePlanUnavailable {
-                    function,
-                    instruction,
-                    opcode: Opcode::InterfaceBoxLocal,
-                }
-            })?;
+            interface_carrier_type(self.execution_image(), row).unwrap_or(local.concrete_type());
         let exact: Arc<dyn Any + Send + Sync> = Arc::new(local.clone());
         let table = VmLocalInterfaceTable::new(
             table_index.get(),
@@ -3754,16 +3774,6 @@ impl VmFiber {
             exact,
         );
         let payload = self.pop_operands(1, false)?.remove(0);
-        if payload
-            .compact_type_tag()
-            .is_some_and(|tag| tag.type_index() != local.concrete_type().get())
-        {
-            return Err(VmError::FullValueLifecyclePlanUnavailable {
-                function,
-                instruction,
-                opcode: Opcode::InterfaceBoxLocal,
-            });
-        }
         let carrier = heap
             .allocate_local_interface(
                 &payload,
@@ -5573,6 +5583,7 @@ enum IntrinsicResultPayload {
     EmptyMap,
     String(String),
     Bytes(Vec<u8>),
+    Number(f64),
 }
 
 fn materialize_intrinsic_result(
@@ -5593,6 +5604,7 @@ fn materialize_intrinsic_result(
         IntrinsicResultPayload::Bytes(value) => heap
             .alloc_typed_bytes(value, result_type_tag, ValueFlags::new(0))
             .map_err(VmError::Heap),
+        IntrinsicResultPayload::Number(value) => Ok(ValueSlot::number(value)),
     }
 }
 

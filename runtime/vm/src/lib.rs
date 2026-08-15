@@ -16,6 +16,7 @@ mod fiber;
 mod frame;
 mod lifecycle;
 mod limits;
+mod local_interface;
 mod projection;
 mod statement;
 mod terminal_ownership;
@@ -34,5 +35,9 @@ pub use control::{
 pub use error::{VmEntryArgumentRejection, VmError, VmValueLocation, VmVerifiedInvariant};
 pub use fiber::{Vm, VmFiber, VmFiberState};
 pub use limits::VmLimits;
+pub use local_interface::{
+    materialize_local_interface_value, release_local_interface_source,
+    LocalInterfaceMaterializeError,
+};
 pub use projection::VmProjectionHandoff;
 pub use skiff_runtime_linker::DeploymentExecutionEntry;

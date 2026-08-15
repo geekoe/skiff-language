@@ -839,6 +839,19 @@ fn intrinsic_string_and_bytes_results_keep_the_exact_signature_type() {
     assert!(heap.request_live.is_empty());
 }
 
+#[test]
+fn intrinsic_number_result_uses_a_scalar_slot_without_heap_allocation() {
+    let mut heap = IntrinsicReleaseRecordingHeap::default();
+    let number = materialize_intrinsic_result(
+        &mut heap,
+        IntrinsicResultPayload::Number(12.5),
+        compact_tag(13),
+    )
+    .expect("scalar intrinsic result");
+    assert_eq!(number.as_number(), Some(12.5));
+    assert!(heap.request_live.is_empty());
+}
+
 // ---------------------------------------------------------------------------
 // O1 Phase 1 observation-window tests. The fixtures below compile the same
 // scalar local-call sources accepted by the Phase 1 containment surface and
