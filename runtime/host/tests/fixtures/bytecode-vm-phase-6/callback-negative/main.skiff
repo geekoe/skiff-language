@@ -1,0 +1,12 @@
+function invoke(value: string, handler: fn(value: string) -> string) -> string {
+  return handler(value)
+}
+
+function upper(value: string) -> string {
+  return value.concat("-bad")
+}
+
+function run(seed: number) -> number {
+  invoke("bad", upper)
+  return seed
+}

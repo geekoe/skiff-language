@@ -1,0 +1,9 @@
+type Box {
+  value: number,
+}
+
+function run(seed: number) -> number {
+  var box = Box { value: seed }
+  inout payments/echo(box)
+  return box.value
+}

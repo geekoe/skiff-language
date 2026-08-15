@@ -1,0 +1,9 @@
+import std
+
+function run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  payments/echo()
+  emit({ tag: "start", status: 200, headers: [] })
+  emit({ tag: "chunk", value: bytes.fromUtf8("service-ok") })
+  emit({ tag: "end" })
+  return null
+}

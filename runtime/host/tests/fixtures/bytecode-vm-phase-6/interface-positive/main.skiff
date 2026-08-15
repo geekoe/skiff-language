@@ -1,0 +1,24 @@
+import std
+
+interface Reader {
+  function label(self: Self) -> string
+}
+
+type Impl implements Reader {
+  value: string,
+}
+
+impl Impl {
+  function label() -> string {
+    return self.value
+  }
+}
+
+function run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  final reader = Impl { value: "interface-ok" } as Reader
+  final value = reader.label()
+  emit({ tag: "start", status: 200, headers: [] })
+  emit({ tag: "chunk", value: bytes.fromUtf8(value) })
+  emit({ tag: "end" })
+  return null
+}

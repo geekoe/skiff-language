@@ -1,0 +1,17 @@
+import std
+
+function invoke(value: string, handler: fn(value: string) -> string) -> string {
+  return handler(value)
+}
+
+function upper(value: string) -> string {
+  return value.concat("-callback")
+}
+
+function run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  final value = invoke("callback", upper)
+  emit({ tag: "start", status: 200, headers: [] })
+  emit({ tag: "chunk", value: bytes.fromUtf8(value) })
+  emit({ tag: "end" })
+  return null
+}
