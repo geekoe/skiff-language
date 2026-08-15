@@ -24,7 +24,8 @@ test('positive fixture is the rawHttp serverStream carrier consumed by Rust proo
   const dropLeftOffset = source.indexOf('function dropLeft(');
   assert.notEqual(dropLeftOffset, -1);
   const runSource = source.slice(0, dropLeftOffset);
-  const dropLeftSource = source.slice(dropLeftOffset);
+  const dropLeftEnd = source.indexOf('function endThenEmit(');
+  const dropLeftSource = source.slice(dropLeftOffset, dropLeftEnd);
   assert.match(runSource, /emit\(\{ tag: "start", status: 207, headers: \[\] \}\)/);
   assert.equal((runSource.match(/emit\(\{ tag: "chunk", value:/g) ?? []).length, 6);
   assert.equal((runSource.match(/emit\(\{ tag: "end" \}\)/g) ?? []).length, 1);

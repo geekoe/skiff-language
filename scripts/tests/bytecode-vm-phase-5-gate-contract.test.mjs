@@ -156,12 +156,12 @@ test('A5/C5/V5R focused joins pin compiler authority and production image struct
     lanes: Object.freeze(['G9', 'G10', 'V5R', 'P5G']),
   });
   assert.equal(byId['k5-scheduler-phase-5-ownership'].expectedTests, 18);
-  assert.equal(byId['k5-request-phase-5-library'].expectedTests, 17);
+  assert.equal(byId['k5-request-phase-5-library'].expectedTests, 26);
   assert.deepEqual(byId['k5-request-phase-5-integration'].args, [
     'test', '--no-fail-fast', '-p', 'skiff-runtime-request',
     '--test', 'bytecode_request', 'phase_5_', '--', '--nocapture',
   ]);
-  assert.equal(byId['k5-request-phase-5-integration'].expectedTests, 16);
+  assert.equal(byId['k5-request-phase-5-integration'].expectedTests, 18);
   assert.equal(byId['h5-production-bytecode-http-composition'].expectedTests, 15);
   assert.equal(byId['h5-server-stream-flush-ack'].expectedTests, 4);
   assert.equal(byId['h5-typed-allocation-trait-object'].expectedTests, 1);
