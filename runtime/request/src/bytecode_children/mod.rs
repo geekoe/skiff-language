@@ -26,7 +26,9 @@ use skiff_runtime_vm::{ChildTarget, ResumeOutcome, VmCompletion, VmFiber};
 
 use crate::{memory_ledger::MemoryLedgerError, vm_heap::RequestVmHeap, RequestMemoryLedger};
 
-pub use db::BytecodeDbChildComposition;
+pub use db::{
+    BytecodeDbChildComposition, BytecodeDbChildError, DbObjectTargetId, DbTransactionSession,
+};
 pub(crate) use interface::execute_interface_child;
 pub(crate) use service::execute_service_child;
 
