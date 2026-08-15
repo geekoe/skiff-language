@@ -273,7 +273,7 @@ impl PublishedFixture {
         }
     }
 
-    pub fn link(&self) -> Arc<DeploymentExecutionImage> {
+    pub(super) fn link(&self) -> Arc<DeploymentExecutionImage> {
         let store = self.store();
         let hydrated = load_deployment_bytecode_from_store(&store, &self.deployment)
             .expect("hydrate admitted carrier through production loader");

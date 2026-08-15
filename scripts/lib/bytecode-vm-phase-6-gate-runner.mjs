@@ -13,6 +13,10 @@ import {
 import { createPhase6EvidenceRoot } from './bytecode-vm-phase-6-evidence-root.mjs';
 import { assertNoUnsafeHttpBypassEnvironment } from './http_live_process.mjs';
 import {
+  PHASE5_CARRIER_ENV,
+  PHASE5_RUNTIME_BIN_ENV,
+} from './bytecode-vm-phase-5-gate-runner.mjs';
+import {
   checkPhase6Evidence,
   finalizePhase6Evidence,
 } from './bytecode-vm-phase-6-evidence.mjs';
@@ -77,6 +81,8 @@ export async function runPhase6Gate(options, {
     CARGO_TARGET_DIR: PHASE6_CARGO_TARGET_DIR,
     [PHASE6_CARRIER_ENV]: input.carrierRoot,
     [PHASE6_RUNTIME_BIN_ENV]: join(PHASE6_CARGO_TARGET_DIR, 'debug', 'runtime'),
+    [PHASE5_CARRIER_ENV]: input.carrierRoot,
+    [PHASE5_RUNTIME_BIN_ENV]: join(PHASE6_CARGO_TARGET_DIR, 'debug', 'runtime'),
   };
   const commandEnvironments = new Map(
     [...candidateSpecs, ...workloadSpecs]
