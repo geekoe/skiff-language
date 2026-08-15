@@ -10,6 +10,20 @@
 本MAP是Phase 6文件写集、owner、DAG、Gate workload和join顺序的唯一权威。P6D owner提交A0 activation record，
 integration owner机械合入后再按本文创建worktree。
 
+## A0. Activation record
+
+| Field | Recorded value |
+| --- | --- |
+| Phase 5 result | `doc/implementation/bytecode-vm-convergence/results/phase-5.md`，`status = accepted` |
+| Phase 5 frozen candidate | `31a33c49e2358c49858b645c5f98434e3c8c91f6` / `3b631a9020077a867f8e5956322d842c421703dc` |
+| Phase 5 result merge / activation input | `094215c624712c257aa9455fc499cc6fb3657a9e` / `ec44479d88aca83f94038f84cf8a9c38f3693ba8` |
+| Phase 6 docs activation | `e21092b5` / `23d3050e6b96aabd97bee6bc8684cb19cf004d74` |
+| Worktree roots | `/Users/geek/workspace/skiff-bcvm-p6-{integration,gate,facts,kernel,compose}-r1` |
+| Cargo lease / target | `/tmp/skiff-bcvm-p6-r1-cargo.lockdir`；`/Users/geek/workspace/.skiff-cargo-target` |
+| Evidence epoch | not yet minted; first expected-red G6 baseline will mint the r1 epoch from candidate-owned hashes |
+
+Production dispatch is authorized only after these identities are clean and reachable from the worktree branches.
+
 ## 1. 有界代码接缝盘点
 
 这是启动所需的有限清单，不是全仓architecture/reference review。行内“owner”指Phase 6修复归属。
