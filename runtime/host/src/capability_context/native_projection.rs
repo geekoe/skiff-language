@@ -127,7 +127,15 @@ impl NativeDbCapability for RuntimeNativeDbCapabilityContext {
         args: Vec<RuntimeValue>,
         heap: &mut RequestHeap,
     ) -> Result<PreparedNativeCall<'static>> {
-        let target = operation.target.type_name.clone();
+        let target = operation
+            .target
+            .as_ref()
+            .map(|target| target.type_name.clone())
+            .ok_or_else(|| {
+                RuntimeError::Unsupported(
+                    "std.db.operation native write requires an exact DB object target".to_string(),
+                )
+            })?;
         let store = self
             .db_context
             .require_store(&target, "serviceDb is not configured for std.db.operation")

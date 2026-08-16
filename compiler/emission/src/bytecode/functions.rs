@@ -547,11 +547,29 @@ impl<'a> FunctionEmitter<'a> {
         expression: &MirExpression,
         operation: &skiff_artifact_model::DbOperationIr,
     ) -> Result<(), BytecodeEmissionError> {
-        if operation.op != DbOpKindIr::Insert || operation.many {
+        match operation.op {
+            DbOpKindIr::Insert => self.emit_db_write(expression, operation),
+            DbOpKindIr::Find | DbOpKindIr::Optional | DbOpKindIr::Require => {
+                self.emit_db_read(expression, operation)
+            }
+            _ => Err(unsupported(
+                &self.key,
+                "DbOperation",
+                "bytecode F6 facts currently admit normalized db read/write only",
+            )),
+        }
+    }
+
+    fn emit_db_write(
+        &mut self,
+        expression: &MirExpression,
+        operation: &skiff_artifact_model::DbOperationIr,
+    ) -> Result<(), BytecodeEmissionError> {
+        if operation.many {
             return Err(unsupported(
                 &self.key,
                 "DbOperation",
-                "bytecode F6 facts currently admit single-object db insert only",
+                "bytecode F6 write facts currently admit a single object write only",
             ));
         }
         if operation.selector.is_some()
@@ -562,7 +580,7 @@ impl<'a> FunctionEmitter<'a> {
             return Err(unsupported(
                 &self.key,
                 "DbOperation",
-                "single-object db insert must not carry selector/query/change facts",
+                "single-object db write must not carry selector/query/change facts",
             ));
         }
         let body = operation
@@ -573,24 +591,24 @@ impl<'a> FunctionEmitter<'a> {
                 unsupported(
                     &self.key,
                     "DbOperation",
-                    "single-object db insert has no object body",
+                    "single-object db write has no object body",
                 )
             })?;
         let DbBodyIr::ObjectFields { fields } = body else {
             return Err(unsupported(
                 &self.key,
                 "DbOperation",
-                "bytecode F6 facts currently admit object-field insert only",
+                "bytecode F6 write facts currently admit object-field writes only",
             ));
         };
         let target_type = self.db_object_publication_type(&operation.target.type_ref);
         let construct_fields =
-            self.record_construct_fields(&operation.target.type_ref, fields, "db insert object")?;
+            self.record_construct_fields(&operation.target.type_ref, fields, "db write object")?;
         let shape = self.image.intern_shape(
             self.unit.module_path.as_str(),
             &target_type,
             &construct_fields,
-            &format!("db insert object shape in `{}`", self.key),
+            &format!("db write object shape in `{}`", self.key),
         )?;
         for name in construct_fields.keys() {
             self.emit_expression(
@@ -600,10 +618,117 @@ impl<'a> FunctionEmitter<'a> {
             )?;
         }
         let field_count = u32::try_from(construct_fields.len())
-            .map_err(|_| arithmetic(&self.key, "db insert field count conversion"))?;
+            .map_err(|_| arithmetic(&self.key, "db write field count conversion"))?;
         self.emit_op(Opcode::NewRecord, vec![shape, field_count])?;
 
-        let intrinsic = self.db_intrinsic_reference(operation, &target_type)?;
+        let result_type = self.db_object_publication_type(&operation.result_type);
+        let parameter_plan = self.image.exact_type_plan(
+            self.unit.module_path.as_str(),
+            &target_type,
+            &format!("db write parameter plan in `{}`", self.key),
+        )?;
+        let result_plan = self.image.exact_type_plan(
+            self.unit.module_path.as_str(),
+            &result_type,
+            &format!("db write result plan in `{}`", self.key),
+        )?;
+        let reference = DbOperationReference {
+            op: DbOperationKind::Write,
+            target: Some(DbTargetIr {
+                type_ref: target_type.clone(),
+                type_name: operation.target.type_name.clone(),
+            }),
+            operand_roles: vec![DbOperandRole::ObjectFields],
+            result_types: vec![result_type.clone()],
+            result_plans: vec![result_plan.clone()],
+        };
+        let signature = HostEffectSignature {
+            parameter_types: vec![target_type.clone()],
+            parameter_modes: vec![ParamModeIr::Value],
+            parameter_plans: vec![parameter_plan.clone()],
+            result_types: vec![result_type.clone()],
+            result_plans: vec![result_plan.clone()],
+            effects: self.db_operation_effects()?,
+        };
+        self.emit_db_data_intrinsic(expression, reference, signature)?;
+        Ok(())
+    }
+
+    fn emit_db_read(
+        &mut self,
+        expression: &MirExpression,
+        operation: &skiff_artifact_model::DbOperationIr,
+    ) -> Result<(), BytecodeEmissionError> {
+        if operation.many {
+            return Err(unsupported(
+                &self.key,
+                "DbOperation",
+                "bytecode F6 read facts currently admit a keyed single read only",
+            ));
+        }
+        let Some(skiff_artifact_model::DbSelectorIr::Key { value }) = operation.selector.as_ref()
+        else {
+            return Err(unsupported(
+                &self.key,
+                "DbOperation",
+                "bytecode F6 read facts currently admit key reads only",
+            ));
+        };
+        if operation.query.is_some()
+            || operation.projection.is_some()
+            || operation.body.is_some()
+            || operation.insert_body.is_some()
+            || operation.change.is_some()
+        {
+            return Err(unsupported(
+                &self.key,
+                "DbOperation",
+                "keyed db read must not carry query/projection/body/change facts",
+            ));
+        }
+        let target_type = self.db_object_publication_type(&operation.target.type_ref);
+        let key_type = self.function.expression(*value)?.ty.clone();
+        let parameter_plan = self.image.exact_type_plan(
+            self.unit.module_path.as_str(),
+            &key_type,
+            &format!("db read key plan in `{}`", self.key),
+        )?;
+        let result_type = self.db_object_publication_type(&operation.result_type);
+        let result_plan = self.image.exact_type_plan(
+            self.unit.module_path.as_str(),
+            &result_type,
+            &format!("db read result plan in `{}`", self.key),
+        )?;
+        self.emit_expression(*value)?;
+        let reference = DbOperationReference {
+            op: DbOperationKind::Read,
+            target: Some(DbTargetIr {
+                type_ref: target_type.clone(),
+                type_name: operation.target.type_name.clone(),
+            }),
+            operand_roles: vec![DbOperandRole::ReadKey],
+            result_types: vec![result_type.clone()],
+            result_plans: vec![result_plan.clone()],
+        };
+        let signature = HostEffectSignature {
+            parameter_types: vec![key_type.clone()],
+            parameter_modes: vec![ParamModeIr::Value],
+            parameter_plans: vec![parameter_plan.clone()],
+            result_types: vec![result_type.clone()],
+            result_plans: vec![result_plan.clone()],
+            effects: self.db_operation_effects()?,
+        };
+        self.emit_db_data_intrinsic(expression, reference, signature)?;
+        Ok(())
+    }
+
+    fn emit_db_data_intrinsic(
+        &mut self,
+        expression: &MirExpression,
+        reference: DbOperationReference,
+        signature: HostEffectSignature,
+    ) -> Result<(), BytecodeEmissionError> {
+        let intrinsic = self.db_intrinsic_reference(reference, signature)?;
         let relocation_index = u32::try_from(self.relocations.len())
             .map_err(|_| arithmetic(&self.key, "db relocation index conversion"))?;
         self.relocations
@@ -633,11 +758,41 @@ impl<'a> FunctionEmitter<'a> {
         Ok(())
     }
 
-    fn db_intrinsic_reference(
+    fn emit_db_transaction_control(
         &mut self,
-        operation: &skiff_artifact_model::DbOperationIr,
-        target_type: &TypeRefIr,
-    ) -> Result<IntrinsicReference, BytecodeEmissionError> {
+        op: DbOperationKind,
+    ) -> Result<(), BytecodeEmissionError> {
+        let signature = HostEffectSignature {
+            parameter_types: Vec::new(),
+            parameter_modes: Vec::new(),
+            parameter_plans: Vec::new(),
+            result_types: Vec::new(),
+            result_plans: Vec::new(),
+            effects: self.db_operation_effects()?,
+        };
+        let reference = DbOperationReference {
+            op,
+            target: None,
+            operand_roles: Vec::new(),
+            result_types: Vec::new(),
+            result_plans: Vec::new(),
+        };
+        let intrinsic = self.db_intrinsic_reference(reference, signature)?;
+        let relocation_index = u32::try_from(self.relocations.len())
+            .map_err(|_| arithmetic(&self.key, "db transaction relocation index conversion"))?;
+        self.relocations
+            .push(BytecodeRelocation::IntrinsicRef { intrinsic });
+        let instruction = self.emit_op(Opcode::InvokeIntrinsic, vec![relocation_index, 0, 0])?;
+        self.generated_source_sites.push((
+            instruction,
+            InstructionSourceSite::Synthetic {
+                reason: SyntheticInstructionSiteReason::CompilerDesugaring,
+            },
+        ));
+        Ok(())
+    }
+
+    fn db_operation_effects(&self) -> Result<CallableMayEffects, BytecodeEmissionError> {
         let mut effects = skiff_artifact_model::host_effect_registry()
             .entries()
             .iter()
@@ -652,32 +807,21 @@ impl<'a> FunctionEmitter<'a> {
             })?;
         effects.may_pending = false;
         effects.pending_effect_categories.clear();
-        let parameter_plan = self.image.exact_type_plan(
-            self.unit.module_path.as_str(),
-            target_type,
-            &format!("db insert parameter plan in `{}`", self.key),
-        )?;
-        let result_type = self.db_object_publication_type(&operation.result_type);
-        let result_plan = self.image.exact_type_plan(
-            self.unit.module_path.as_str(),
-            &result_type,
-            &format!("db insert result plan in `{}`", self.key),
-        )?;
-        let signature = HostEffectSignature {
-            parameter_types: vec![target_type.clone()],
-            parameter_modes: vec![ParamModeIr::Value],
-            parameter_plans: vec![parameter_plan.clone()],
-            result_types: vec![result_type.clone()],
-            result_plans: vec![result_plan.clone()],
-            effects,
-        };
+        Ok(effects)
+    }
+
+    fn db_intrinsic_reference(
+        &mut self,
+        reference: DbOperationReference,
+        signature: HostEffectSignature,
+    ) -> Result<IntrinsicReference, BytecodeEmissionError> {
         for ty in signature
             .parameter_types
             .iter()
             .chain(&signature.result_types)
         {
             self.image
-                .intern_type(self.unit.module_path.as_str(), ty, "db insert")?;
+                .intern_type(self.unit.module_path.as_str(), ty, "db operation")?;
         }
         Ok(IntrinsicReference {
             target: BytecodeIntrinsicRef::Static {
@@ -685,16 +829,7 @@ impl<'a> FunctionEmitter<'a> {
                 signature_version: 1,
             },
             signature,
-            db_operation: Some(Box::new(DbOperationReference {
-                op: DbOperationKind::Insert,
-                target: DbTargetIr {
-                    type_ref: target_type.clone(),
-                    type_name: operation.target.type_name.clone(),
-                },
-                operand_roles: vec![DbOperandRole::ObjectFields],
-                result_type,
-                result_plans: vec![result_plan],
-            })),
+            db_operation: Some(Box::new(reference)),
         })
     }
 
@@ -744,6 +879,7 @@ impl<'a> FunctionEmitter<'a> {
         body_block.successors.clear();
         self.emit_value_block_block(&body_block)?;
         self.emit_expression(transaction.result)?;
+        self.emit_db_transaction_control(DbOperationKind::Commit)?;
         self.map_completed_expression_events(expression.index)?;
         Ok(())
     }
@@ -1307,6 +1443,7 @@ impl<'a> FunctionEmitter<'a> {
                 ));
             }
             self.emit_expression(call.args[0])?;
+            self.emit_db_transaction_control(DbOperationKind::Commit)?;
             self.map_call_event(expression.index);
             return Ok(());
         }

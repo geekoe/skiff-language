@@ -223,13 +223,14 @@ impl DbTransactionSession {
 
     pub fn prepared_read_one_by_key(
         &self,
+        target: &DbCapabilityTarget,
         heap: &mut RequestHeap,
         key: DbKey,
         projection: Option<Vec<FieldPath>>,
     ) -> Result<PreparedDbOptionalRuntimeOperation, BytecodeDbChildError> {
         self.store
             .prepare_find_one_by_key_runtime(
-                self.target.lookup_key(),
+                target.lookup_key(),
                 key,
                 projection,
                 heap,
@@ -242,12 +243,13 @@ impl DbTransactionSession {
 
     pub fn prepared_create(
         &self,
+        target: &DbCapabilityTarget,
         heap: &mut RequestHeap,
         value: &RuntimeValue,
     ) -> Result<PreparedDbValueRuntimeOperation, BytecodeDbChildError> {
         self.store
             .prepare_create_runtime(
-                self.target.lookup_key(),
+                target.lookup_key(),
                 value,
                 heap,
                 self.recoverable_context.clone(),
@@ -259,13 +261,14 @@ impl DbTransactionSession {
 
     pub fn prepared_update_one(
         &self,
+        target: &DbCapabilityTarget,
         heap: &mut RequestHeap,
         selector: DbOneSelector,
         change: DbRuntimeChange,
     ) -> Result<PreparedDbOptionalRuntimeOperation, BytecodeDbChildError> {
         self.store
             .prepare_update_one_runtime(
-                self.target.lookup_key(),
+                target.lookup_key(),
                 selector,
                 change,
                 heap,
@@ -278,13 +281,14 @@ impl DbTransactionSession {
 
     pub fn prepared_replace_one(
         &self,
+        target: &DbCapabilityTarget,
         heap: &mut RequestHeap,
         selector: DbOneSelector,
         value: &RuntimeValue,
     ) -> Result<PreparedDbOptionalRuntimeOperation, BytecodeDbChildError> {
         self.store
             .prepare_replace_one_runtime(
-                self.target.lookup_key(),
+                target.lookup_key(),
                 selector,
                 value,
                 heap,

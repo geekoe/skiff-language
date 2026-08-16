@@ -1710,7 +1710,7 @@ fn db_operation_facts(
     result_plan: LinkedValueTransferPlan,
 ) -> LinkedDbOperation {
     LinkedDbOperation::new(
-        LinkedDbObjectTargetId::new(
+        Some(LinkedDbObjectTargetId::new(
             PackageArtifactRef {
                 package_id: "test.skiff/db".to_string(),
                 package_version: "1.0.0".to_string(),
@@ -1719,14 +1719,26 @@ fn db_operation_facts(
             },
             FileIrRef::new("file:db", "main.skiff"),
             0,
-        ),
+        )),
         "Doc",
-        DbOperationKind::Insert,
-        result_plan.clone(),
-        result_type,
-        result_plan,
+        DbOperationKind::Write,
+        Box::new([result_plan.clone()]),
+        Box::new([result_type]),
+        Box::new([result_plan]),
     )
     .expect("linked DB operation facts remain valid")
+}
+
+fn db_control_facts(op: DbOperationKind) -> LinkedDbOperation {
+    LinkedDbOperation::new(
+        None,
+        "db.transaction",
+        op,
+        Box::new([]),
+        Box::new([]),
+        Box::new([]),
+    )
+    .expect("linked DB transaction control facts remain valid")
 }
 
 fn supported_db_type_plan(
@@ -1747,7 +1759,9 @@ fn supported_db_type_plan(
 }
 
 fn db_intrinsic_target(operation: &LinkedDbOperation) -> LinkedIntrinsicTarget {
-    let parameter_plan = operation.parameter_plan().clone();
+    let parameter_plan = operation.parameter_plans()[0].clone();
+    let result_type = operation.result_types()[0];
+    let result_plan = operation.result_plans()[0].clone();
     LinkedIntrinsicTarget::new(
         IntrinsicIndex::new(0),
         LinkedIntrinsicKind::Static(
@@ -1761,14 +1775,40 @@ fn db_intrinsic_target(operation: &LinkedDbOperation) -> LinkedIntrinsicTarget {
             .expect("DB intrinsic signature version is valid"),
         ),
         LinkedNativeCallableSignature::new(
-            Box::new([operation.result_type()]),
+            Box::new([result_type]),
             Box::new([ParamModeIr::Value]),
             Box::new([parameter_plan]),
-            Box::new([operation.result_type()]),
-            Box::new([operation.result_plan().clone()]),
+            Box::new([result_type]),
+            Box::new([result_plan]),
             no_intrinsic_effects(),
         )
         .expect("DB intrinsic signature remains structurally valid"),
+    )
+    .with_db_operation(operation.clone())
+}
+
+fn db_control_intrinsic_target(operation: &LinkedDbOperation) -> LinkedIntrinsicTarget {
+    LinkedIntrinsicTarget::new(
+        IntrinsicIndex::new(0),
+        LinkedIntrinsicKind::Static(
+            skiff_runtime_linked_bytecode::LinkedStaticIntrinsicTarget::new(
+                skiff_runtime_linked_bytecode::LinkedIntrinsicCanonicalKey::parse(
+                    "std.db.operation",
+                )
+                .expect("DB intrinsic canonical key is valid"),
+                1,
+            )
+            .expect("DB intrinsic signature version is valid"),
+        ),
+        LinkedNativeCallableSignature::new(
+            Box::new([]),
+            Box::new([]),
+            Box::new([]),
+            Box::new([]),
+            Box::new([]),
+            no_intrinsic_effects(),
+        )
+        .expect("DB transaction control signature remains structurally valid"),
     )
     .with_db_operation(operation.clone())
 }
@@ -1936,7 +1976,7 @@ fn linked_db_intrinsic_result_plan_mismatch_fails_before_argument_move() {
     let signature = LinkedNativeCallableSignature::new(
         Box::new([result_type]),
         Box::new([ParamModeIr::Value]),
-        Box::new([operation.parameter_plan().clone()]),
+        Box::new([operation.parameter_plans()[0].clone()]),
         Box::new([result_type]),
         Box::new([moved_only]),
         no_intrinsic_effects(),
@@ -2027,6 +2067,93 @@ fn linked_db_intrinsic_result_escrow_releases_exact_owner() {
         heap.debug_inventory()
     );
     assert!(matches!(fiber.state, VmFiberState::BlockedOnChild));
+}
+
+#[test]
+fn linked_db_commit_and_abort_hand_off_zero_arity_flat_children() {
+    for op in [DbOperationKind::Commit, DbOperationKind::Abort] {
+        let fixture = ObservationFixture::build(
+            "example.com/fiber-db-transaction-control",
+            "function run() -> number { return 1 }",
+        );
+        let observer = BytecodeExecutionObserver::new(
+            Arc::new(RecordingSink::default()),
+            observation_correlation(),
+        );
+        let mut fiber = fixture.start(vm_limits(), observer, Box::<[ValueSlot]>::default());
+        let mut heap = IntrinsicDispatchHeap::default();
+        let operation = db_control_facts(op);
+        let target = db_control_intrinsic_target(&operation);
+        let frame = fiber.current_frame().unwrap().clone();
+        let mut executor = LifecycleExecutor::new(&mut heap);
+        let outcome = fiber
+            .execute_resolved_intrinsic(
+                &mut executor,
+                frame.function(),
+                frame.instruction(),
+                &target,
+                0,
+                0,
+            )
+            .expect("linked DB transaction control must hand off to the flat child lifecycle");
+        drop(executor);
+
+        let DispatchOutcome::Handoff(VmControl::EnterChild(invocation)) = outcome else {
+            panic!("linked DB transaction control must produce a flat child handoff");
+        };
+        assert!(invocation.arguments().values().is_empty());
+        assert_eq!(invocation.resume().expected_result_count(), 0);
+
+        let (_, arguments, _, resume) = invocation.into_parts();
+        arguments
+            .into_terminal_escrow()
+            .release_all(&mut heap)
+            .expect("empty DB transaction control arguments release");
+        let owned = VmOwnedValues::try_from_db_intrinsic_resume(&resume, Box::new([]), &operation)
+            .expect("zero-result DB transaction control binds to its resume token");
+        fiber
+            .resume(resume, ResumeOutcome::Values(owned))
+            .expect("DB transaction control resumes through the flat lifecycle");
+        assert!(matches!(fiber.state, VmFiberState::Runnable));
+    }
+}
+
+#[test]
+fn linked_db_commit_rejects_nonzero_arity_before_operand_move() {
+    let fixture = ObservationFixture::build(
+        "example.com/fiber-db-transaction-control-arity",
+        "function run() -> number { return 1 }",
+    );
+    let observer = BytecodeExecutionObserver::new(
+        Arc::new(RecordingSink::default()),
+        observation_correlation(),
+    );
+    let mut fiber = fixture.start(vm_limits(), observer, Box::<[ValueSlot]>::default());
+    let mut heap = IntrinsicDispatchHeap::default();
+    let operation = db_control_facts(DbOperationKind::Commit);
+    let target = db_control_intrinsic_target(&operation);
+    let frame = fiber.current_frame().unwrap().clone();
+    let mut executor = LifecycleExecutor::new(&mut heap);
+    let error = match fiber.execute_resolved_intrinsic(
+        &mut executor,
+        frame.function(),
+        frame.instruction(),
+        &target,
+        1,
+        1,
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("DB transaction control with nonzero arity must fail closed"),
+    };
+    drop(executor);
+    assert!(matches!(
+        error,
+        VmError::FullValueLifecyclePlanUnavailable {
+            opcode: Opcode::InvokeIntrinsic,
+            ..
+        }
+    ));
+    assert_eq!(fiber.current_frame().unwrap().operand_height(), 0);
 }
 
 #[test]

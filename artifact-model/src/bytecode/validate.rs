@@ -1140,52 +1140,130 @@ fn validate_db_operation_reference(
     operation: &crate::bytecode::dto::DbOperationReference,
 ) -> Result<(), StructuralValidationError> {
     let operation_location = format!("{location}.dbOperation");
-    if operation.op != crate::bytecode::dto::DbOperationKind::Insert {
-        return Err(header_error(format!(
-            "{operation_location}.op only supports single insert in this contract generation"
-        )));
+    match operation.op {
+        crate::bytecode::dto::DbOperationKind::Read => validate_data_db_operation(
+            effect,
+            pools,
+            &operation_location,
+            operation,
+            crate::bytecode::dto::DbOperandRole::ReadKey,
+            false,
+        ),
+        crate::bytecode::dto::DbOperationKind::Write => validate_data_db_operation(
+            effect,
+            pools,
+            &operation_location,
+            operation,
+            crate::bytecode::dto::DbOperandRole::ObjectFields,
+            true,
+        ),
+        crate::bytecode::dto::DbOperationKind::Commit
+        | crate::bytecode::dto::DbOperationKind::Abort => {
+            validate_transaction_control_db_operation(effect, pools, &operation_location, operation)
+        }
     }
-    if operation.operand_roles != vec![crate::bytecode::dto::DbOperandRole::ObjectFields] {
-        return Err(header_error(format!(
-            "{operation_location}.operandRoles only supports ObjectFields in this contract generation"
-        )));
-    }
-    if operation.target.type_name.is_empty() {
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_data_db_operation(
+    effect: &HostEffectReference,
+    pools: &BytecodePools,
+    operation_location: &str,
+    operation: &crate::bytecode::dto::DbOperationReference,
+    operand_role: crate::bytecode::dto::DbOperandRole,
+    target_must_match_parameter: bool,
+) -> Result<(), StructuralValidationError> {
+    let target = operation.target.as_ref().ok_or_else(|| {
+        header_error(format!(
+            "{operation_location}.target is required for a DB data operation"
+        ))
+    })?;
+    if target.type_name.is_empty() {
         return Err(header_error(format!(
             "{operation_location}.target.typeName must not be empty"
         )));
     }
     validate_inline_type_depth(
-        &operation.target.type_ref,
+        &target.type_ref,
         &format!("{operation_location}.target.typeRef"),
     )?;
-    validate_inline_type_depth(
-        &operation.result_type,
-        &format!("{operation_location}.resultType"),
-    )?;
-    if effect.signature.parameter_types.len() != 1
-        || effect.signature.parameter_plans.len() != 1
-        || operation.target.type_ref != effect.signature.parameter_types[0]
-    {
+    if operation.operand_roles != vec![operand_role] {
         return Err(header_error(format!(
-            "{operation_location}.target.typeRef must match the single insert parameter type"
+            "{operation_location}.operandRoles must exactly match the normalized data operation"
         )));
     }
+    if effect.signature.parameter_types.len() != 1
+        || effect.signature.parameter_modes.len() != 1
+        || effect.signature.parameter_plans.len() != 1
+    {
+        return Err(header_error(format!(
+            "{operation_location} must carry exactly one operand plan"
+        )));
+    }
+    if target_must_match_parameter && target.type_ref != effect.signature.parameter_types[0] {
+        return Err(header_error(format!(
+            "{operation_location}.target.typeRef must match the write object parameter type"
+        )));
+    }
+    validate_transfer_plan(
+        &effect.signature.parameter_plans[0],
+        pools,
+        None,
+        &format!("{operation_location}.signature.parameterPlans[0]"),
+    )?;
     if effect.signature.result_types.len() != 1
         || effect.signature.result_plans.len() != 1
-        || operation.result_type != effect.signature.result_types[0]
+        || operation.result_types != effect.signature.result_types
         || operation.result_plans != effect.signature.result_plans
     {
         return Err(header_error(format!(
-            "{operation_location} result type/plans must match the single insert result signature"
+            "{operation_location} result type/plans must match the exact data operation signature"
         )));
     }
+    validate_inline_type_depth(
+        &operation.result_types[0],
+        &format!("{operation_location}.resultTypes[0]"),
+    )?;
     validate_transfer_plan(
         &operation.result_plans[0],
         pools,
         None,
         &format!("{operation_location}.resultPlans[0]"),
     )
+}
+
+fn validate_transaction_control_db_operation(
+    effect: &HostEffectReference,
+    _pools: &BytecodePools,
+    operation_location: &str,
+    operation: &crate::bytecode::dto::DbOperationReference,
+) -> Result<(), StructuralValidationError> {
+    if operation.target.is_some() {
+        return Err(header_error(format!(
+            "{operation_location}.target must be absent for a transaction control"
+        )));
+    }
+    if !operation.operand_roles.is_empty() {
+        return Err(header_error(format!(
+            "{operation_location}.operandRoles must be empty for a transaction control"
+        )));
+    }
+    if !operation.result_types.is_empty() || !operation.result_plans.is_empty() {
+        return Err(header_error(format!(
+            "{operation_location} must carry no result plans for a transaction control"
+        )));
+    }
+    if !effect.signature.parameter_types.is_empty()
+        || !effect.signature.parameter_modes.is_empty()
+        || !effect.signature.parameter_plans.is_empty()
+        || !effect.signature.result_types.is_empty()
+        || !effect.signature.result_plans.is_empty()
+    {
+        return Err(header_error(format!(
+            "{operation_location} signature must be empty for a transaction control"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_callable_signature(

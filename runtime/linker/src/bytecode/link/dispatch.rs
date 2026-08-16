@@ -6,8 +6,8 @@ use skiff_artifact_model::{
     BoundaryValueFact, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
     BytecodeIntrinsicRef, BytecodeRelocation, CallableEffectSummary, CallableMayEffects,
     CallableRegistryTypeExpression, ContractLiteral, ContractOperationId, ContractTypeRef,
-    HostEffectExecutorIdentity, HostEffectRegistryEntry, InterfaceInstantiationRef, LiteralIr,
-    Opcode, PackageActorAbi, PackageBuildId, PackageLocalAbiSymbol, PackageRefIr,
+    DbTargetIr, HostEffectExecutorIdentity, HostEffectRegistryEntry, InterfaceInstantiationRef,
+    LiteralIr, Opcode, PackageActorAbi, PackageBuildId, PackageLocalAbiSymbol, PackageRefIr,
     PackageSchemaTypeId, PackageSymbolRef, ParamModeIr, PendingEffectCategory,
     ResolvedPackageValueType, ServiceBoundaryPlan, ServiceCallbackPlan, ServiceRequirementKey,
     TypeRefIr, ValueLifecycleFactResolver, ValueLifecyclePolicyBudget, ValueLifecycleResolverError,
@@ -17,15 +17,15 @@ use skiff_runtime_linked_bytecode::{
     ArtifactFunctionKey, FunctionIndex, InterfaceTableIndex, LinkedActorCreateTarget,
     LinkedActorImplementationRef, LinkedActorMethodTarget, LinkedActorStateField,
     LinkedCallableSignature, LinkedCallbackInterfaceMethod, LinkedFrameLayout,
-    LinkedHostEffectAdapterTarget,
-    LinkedInterfaceInstantiation, LinkedInterfaceMethodAbiId, LinkedInterfaceRequirementMethod,
-    LinkedInterfaceRequirementTable, LinkedInterfaceTable, LinkedInterfaceTableKind,
-    LinkedLocalInterfaceMethod, LinkedLocalInterfaceTable, LinkedNativeCallableSignature,
-    LinkedPublicInstanceKey, LinkedRemoteInterfaceMethod, LinkedRemoteInterfaceTable,
-    LinkedServiceBoundaryErrorPlan, LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue,
-    LinkedServiceCallbackPlan, LinkedServiceOperationTarget, LinkedSyntheticCallbackTarget,
-    LinkedTaskPayloadParameter, LinkedTaskPayloadPlan, LinkedTaskTarget, LinkedTaskTiming,
-    ServiceOperationIndex, SpecializationKey, TaskTargetIndex, TypeIndex,
+    LinkedHostEffectAdapterTarget, LinkedInterfaceInstantiation, LinkedInterfaceMethodAbiId,
+    LinkedInterfaceRequirementMethod, LinkedInterfaceRequirementTable, LinkedInterfaceTable,
+    LinkedInterfaceTableKind, LinkedLocalInterfaceMethod, LinkedLocalInterfaceTable,
+    LinkedNativeCallableSignature, LinkedPublicInstanceKey, LinkedRemoteInterfaceMethod,
+    LinkedRemoteInterfaceTable, LinkedServiceBoundaryErrorPlan, LinkedServiceBoundaryPlan,
+    LinkedServiceBoundaryValue, LinkedServiceCallbackPlan, LinkedServiceOperationTarget,
+    LinkedSyntheticCallbackTarget, LinkedTaskPayloadParameter, LinkedTaskPayloadPlan,
+    LinkedTaskTarget, LinkedTaskTiming, ServiceOperationIndex, SpecializationKey, TaskTargetIndex,
+    TypeIndex,
 };
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
@@ -47,6 +47,8 @@ pub(in crate::bytecode) struct LinkedDispatchTables {
         BTreeMap<(PackageBuildId, String), skiff_runtime_linked_bytecode::SyntheticCallbackIndex>,
     pub(in crate::bytecode) task_submit_indices:
         BTreeMap<(PackageBuildId, String), skiff_runtime_linked_bytecode::IntrinsicIndex>,
+    pub(in crate::bytecode) intrinsic_relocation_indices:
+        BTreeMap<(PackageBuildId, String, u32), skiff_runtime_linked_bytecode::IntrinsicIndex>,
     pub(in crate::bytecode) host_effect_adapters: Vec<LinkedHostEffectAdapterTarget>,
     pub(in crate::bytecode) intrinsics: Vec<skiff_runtime_linked_bytecode::LinkedIntrinsicTarget>,
 }
@@ -76,7 +78,7 @@ impl DeploymentLinker<'_> {
             type_linker,
             &mut interface_tables,
         )?;
-        let (host_effect_adapters, intrinsics, task_submit_indices) =
+        let (host_effect_adapters, intrinsics, task_submit_indices, intrinsic_relocation_indices) =
             self.link_host_and_intrinsics(reachable, indices, frames, type_linker)?;
 
         let synthetic_callback_origins = synthetic_callbacks
@@ -113,6 +115,7 @@ impl DeploymentLinker<'_> {
             synthetic_callbacks,
             synthetic_callback_origins,
             task_submit_indices,
+            intrinsic_relocation_indices,
             host_effect_adapters,
             intrinsics,
         };
@@ -2873,14 +2876,17 @@ impl DeploymentLinker<'_> {
             Vec<LinkedHostEffectAdapterTarget>,
             Vec<skiff_runtime_linked_bytecode::LinkedIntrinsicTarget>,
             BTreeMap<(PackageBuildId, String), skiff_runtime_linked_bytecode::IntrinsicIndex>,
+            BTreeMap<(PackageBuildId, String, u32), skiff_runtime_linked_bytecode::IntrinsicIndex>,
         ),
         BytecodeLinkError,
     > {
         let mut host = Vec::new();
         let mut intrinsics = Vec::new();
         let mut task_submit_indices = BTreeMap::new();
+        let mut intrinsic_relocation_indices = BTreeMap::new();
         let mut seen_host = BTreeSet::new();
         let mut seen_intrinsics = BTreeSet::new();
+        let mut seen_intrinsic_indices = BTreeMap::new();
         let mut seen_task_submit = BTreeSet::new();
         for package in self
             .deployment
@@ -2906,7 +2912,7 @@ impl DeploymentLinker<'_> {
                 }) {
                     continue;
                 }
-                for relocation in &function.relocations {
+                for (relocation_index, relocation) in function.relocations.iter().enumerate() {
                     if !reachable.iter().any(|reference| {
                         reference.specialization.package_build_id()
                             == &package.reference().package_build_id
@@ -3161,6 +3167,7 @@ impl DeploymentLinker<'_> {
                                         package,
                                         specialization,
                                         operation,
+                                        &intrinsic.signature,
                                         type_linker,
                                         &location,
                                     )
@@ -3237,35 +3244,63 @@ impl DeploymentLinker<'_> {
                                 |operation| {
                                     format!(
                                         "{intrinsic_key}:{}:{}:{}:{}",
-                                        operation.target_id().package_artifact_ref().package_id,
-                                        operation.target_id().file_ir_ref().file_ir_identity,
-                                        operation.target_id().type_index(),
+                                        operation
+                                            .target_id()
+                                            .map(|target| target
+                                                .package_artifact_ref()
+                                                .package_id
+                                                .as_str())
+                                            .unwrap_or("db.transaction"),
+                                        operation
+                                            .target_id()
+                                            .map(|target| target
+                                                .file_ir_ref()
+                                                .file_ir_identity
+                                                .as_str())
+                                            .unwrap_or("transaction"),
+                                        operation
+                                            .target_id()
+                                            .map(|target| target.type_index().to_string())
+                                            .unwrap_or_else(|| "control".to_string()),
                                         format!("{:?}", operation.op()),
                                     )
                                 },
                             );
-                            if !seen_intrinsics.insert(intrinsic_key) {
-                                continue;
-                            }
-                            let mut linked =
-                                skiff_runtime_linked_bytecode::LinkedIntrinsicTarget::new(
-                                    skiff_runtime_linked_bytecode::IntrinsicIndex::new(
-                                        intrinsics.len() as u32,
-                                    ),
-                                    kind,
-                                    signature,
+                            if seen_intrinsics.insert(intrinsic_key.clone()) {
+                                let index = skiff_runtime_linked_bytecode::IntrinsicIndex::new(
+                                    intrinsics.len() as u32,
                                 );
-                            if let Some(db_operation) = db_operation {
-                                linked = linked.with_db_operation(db_operation);
+                                seen_intrinsic_indices.insert(intrinsic_key.clone(), index);
+                                let mut linked =
+                                    skiff_runtime_linked_bytecode::LinkedIntrinsicTarget::new(
+                                        index, kind, signature,
+                                    );
+                                if let Some(db_operation) = db_operation {
+                                    linked = linked.with_db_operation(db_operation);
+                                }
+                                intrinsics.push(linked);
                             }
-                            intrinsics.push(linked);
+                            let index = seen_intrinsic_indices[&intrinsic_key];
+                            intrinsic_relocation_indices.insert(
+                                (
+                                    package.reference().package_build_id.clone(),
+                                    function.function_key.clone(),
+                                    relocation_index as u32,
+                                ),
+                                index,
+                            );
                         }
                         _ => {}
                     }
                 }
             }
         }
-        Ok((host, intrinsics, task_submit_indices))
+        Ok((
+            host,
+            intrinsics,
+            task_submit_indices,
+            intrinsic_relocation_indices,
+        ))
     }
 
     fn link_db_operation(
@@ -3273,57 +3308,93 @@ impl DeploymentLinker<'_> {
         package: &HydratedBytecodePackage,
         specialization: &SpecializationKey,
         operation: &DbOperationReference,
+        signature: &skiff_artifact_model::HostEffectSignature,
         type_linker: &mut TypeLinker<'_>,
         location: &BytecodeLinkLocation,
     ) -> Result<skiff_runtime_linked_bytecode::LinkedDbOperation, BytecodeLinkError> {
-        let target_id = self.resolve_db_object_target(package, operation, location)?;
-        let parameter_index = type_linker.intern_concrete_type(
-            package,
-            specialization,
-            &operation.target.type_ref,
-            &BTreeMap::new(),
-            location.clone(),
-        )?;
-        let parameter_plan = type_linker
-            .linked_type_plan(parameter_index)
-            .cloned()
-            .ok_or_else(|| {
+        let target_id = match operation.op {
+            skiff_artifact_model::bytecode::dto::DbOperationKind::Read
+            | skiff_artifact_model::bytecode::dto::DbOperationKind::Write => {
+                let target = operation.target.as_ref().ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        location.clone(),
+                        "db read/write operation is missing its exact target".to_string(),
+                    )
+                })?;
+                Some(self.resolve_db_object_target(package, target, location)?)
+            }
+            skiff_artifact_model::bytecode::dto::DbOperationKind::Commit
+            | skiff_artifact_model::bytecode::dto::DbOperationKind::Abort => None,
+        };
+        let mut parameter_plans = Vec::with_capacity(signature.parameter_types.len());
+        for (ty, plan) in signature
+            .parameter_types
+            .iter()
+            .zip(&signature.parameter_plans)
+        {
+            let index = type_linker.intern_concrete_type(
+                package,
+                specialization,
+                ty,
+                &BTreeMap::new(),
+                location.clone(),
+            )?;
+            let concrete = type_linker.linked_type_ref(index).cloned().ok_or_else(|| {
                 unsatisfied(
                     BytecodeLinkObligation::FrameAndValueTransferPlan,
                     location.clone(),
-                    format!(
-                        "db operation target type {} has no linked transfer plan",
-                        parameter_index.get()
-                    ),
+                    "db operation parameter type is absent".to_string(),
                 )
             })?;
-        let result_index = type_linker.intern_concrete_type(
-            package,
-            specialization,
-            &operation.result_type,
-            &BTreeMap::new(),
-            location.clone(),
-        )?;
-        let result_plan = type_linker
-            .linked_type_plan(result_index)
-            .cloned()
-            .ok_or_else(|| {
+            parameter_plans.push(type_linker.link_plan_for_type_at(
+                package,
+                specialization,
+                &BTreeMap::new(),
+                plan,
+                &concrete,
+                location.clone(),
+            )?);
+        }
+        let mut result_types = Vec::with_capacity(signature.result_types.len());
+        let mut result_plans = Vec::with_capacity(signature.result_types.len());
+        for (ty, plan) in signature.result_types.iter().zip(&signature.result_plans) {
+            let index = type_linker.intern_concrete_type(
+                package,
+                specialization,
+                ty,
+                &BTreeMap::new(),
+                location.clone(),
+            )?;
+            let concrete = type_linker.linked_type_ref(index).cloned().ok_or_else(|| {
                 unsatisfied(
                     BytecodeLinkObligation::FrameAndValueTransferPlan,
                     location.clone(),
-                    format!(
-                        "db operation result type {} has no linked transfer plan",
-                        result_index.get()
-                    ),
+                    "db operation result type is absent".to_string(),
                 )
             })?;
+            result_types.push(index);
+            result_plans.push(type_linker.link_plan_for_type_at(
+                package,
+                specialization,
+                &BTreeMap::new(),
+                plan,
+                &concrete,
+                location.clone(),
+            )?);
+        }
+        let type_name = operation
+            .target
+            .as_ref()
+            .map(|target| target.type_name.clone())
+            .unwrap_or_else(|| "db.transaction".to_string());
         skiff_runtime_linked_bytecode::LinkedDbOperation::new(
             target_id,
-            operation.target.type_name.clone(),
+            type_name,
             operation.op,
-            parameter_plan,
-            result_index,
-            result_plan,
+            parameter_plans.into_boxed_slice(),
+            result_types.into_boxed_slice(),
+            result_plans.into_boxed_slice(),
         )
         .map_err(|error| {
             unsatisfied(
@@ -3337,22 +3408,17 @@ impl DeploymentLinker<'_> {
     fn resolve_db_object_target(
         &self,
         caller: &HydratedBytecodePackage,
-        operation: &DbOperationReference,
+        target: &DbTargetIr,
         location: &BytecodeLinkLocation,
     ) -> Result<skiff_runtime_linked_bytecode::LinkedDbObjectTargetId, BytecodeLinkError> {
-        let normalized = normalize_type(
-            self.deployment,
-            caller,
-            &operation.target.type_ref,
-            location,
-        )
-        .map_err(|error| {
-            unsatisfied(
-                BytecodeLinkObligation::ConcreteTargetTables,
-                location.clone(),
-                format!("db target resolution failed: {error}"),
-            )
-        })?;
+        let normalized = normalize_type(self.deployment, caller, &target.type_ref, location)
+            .map_err(|error| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    format!("db target resolution failed: {error}"),
+                )
+            })?;
         let TypeRefIr::PackageSymbol { symbol } = normalized else {
             return Err(unsatisfied(
                 BytecodeLinkObligation::ConcreteTargetTables,
@@ -4430,30 +4496,11 @@ impl LinkedDispatchTables {
             .map(|target| target.index())
     }
 
-    pub(in crate::bytecode) fn intrinsic_index(
+    pub(in crate::bytecode) fn intrinsic_relocation_index(
         &self,
-        reference: &BytecodeIntrinsicRef,
+        key: &(PackageBuildId, String, u32),
     ) -> Option<skiff_runtime_linked_bytecode::IntrinsicIndex> {
-        self.intrinsics
-            .iter()
-            .find(|target| match (target.kind(), reference) {
-                (
-                    skiff_runtime_linked_bytecode::LinkedIntrinsicKind::Static(linked),
-                    BytecodeIntrinsicRef::Static {
-                        canonical_key,
-                        signature_version,
-                    },
-                ) => {
-                    linked.canonical_key().as_str() == canonical_key
-                        && linked.signature_version() == *signature_version
-                }
-                (
-                    skiff_runtime_linked_bytecode::LinkedIntrinsicKind::Receiver(linked),
-                    BytecodeIntrinsicRef::Receiver { op },
-                ) => linked == op,
-                _ => false,
-            })
-            .map(|target| target.index())
+        self.intrinsic_relocation_indices.get(key).copied()
     }
 }
 

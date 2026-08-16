@@ -170,39 +170,63 @@ impl LinkedDbObjectTargetId {
 /// Exact compiler facts for one linked DB operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkedDbOperation {
-    target_id: LinkedDbObjectTargetId,
+    target_id: Option<LinkedDbObjectTargetId>,
     type_name: Box<str>,
     op: DbOperationKind,
-    parameter_plan: LinkedValueTransferPlan,
-    result_type: TypeIndex,
-    result_plan: LinkedValueTransferPlan,
+    parameter_plans: Box<[LinkedValueTransferPlan]>,
+    result_types: Box<[TypeIndex]>,
+    result_plans: Box<[LinkedValueTransferPlan]>,
 }
 
 impl LinkedDbOperation {
     pub fn new(
-        target_id: LinkedDbObjectTargetId,
+        target_id: Option<LinkedDbObjectTargetId>,
         type_name: impl Into<String>,
         op: DbOperationKind,
-        parameter_plan: LinkedValueTransferPlan,
-        result_type: TypeIndex,
-        result_plan: LinkedValueTransferPlan,
+        parameter_plans: Box<[LinkedValueTransferPlan]>,
+        result_types: Box<[TypeIndex]>,
+        result_plans: Box<[LinkedValueTransferPlan]>,
     ) -> Result<Self, LinkedIntrinsicTargetError> {
         let type_name = type_name.into();
         if type_name.is_empty() {
             return Err(LinkedIntrinsicTargetError::EmptyTypeName);
         }
+        if result_types.len() != result_plans.len() {
+            return Err(LinkedIntrinsicTargetError::DbResultPlanArity {
+                expected: result_types.len(),
+                actual: result_plans.len(),
+            });
+        }
+        match op {
+            DbOperationKind::Read | DbOperationKind::Write => {
+                if target_id.is_none() {
+                    return Err(LinkedIntrinsicTargetError::DbTargetRequired);
+                }
+                if parameter_plans.len() != 1 || result_types.len() != 1 {
+                    return Err(LinkedIntrinsicTargetError::DbDataOpArity);
+                }
+            }
+            DbOperationKind::Commit | DbOperationKind::Abort => {
+                if target_id.is_some() {
+                    return Err(LinkedIntrinsicTargetError::DbControlCarriesTarget);
+                }
+                if !parameter_plans.is_empty() || !result_types.is_empty() {
+                    return Err(LinkedIntrinsicTargetError::DbControlArity);
+                }
+            }
+        }
         Ok(Self {
             target_id,
             type_name: type_name.into_boxed_str(),
             op,
-            parameter_plan,
-            result_type,
-            result_plan,
+            parameter_plans,
+            result_types,
+            result_plans,
         })
     }
 
-    pub const fn target_id(&self) -> &LinkedDbObjectTargetId {
-        &self.target_id
+    pub const fn target_id(&self) -> Option<&LinkedDbObjectTargetId> {
+        self.target_id.as_ref()
     }
 
     pub fn type_name(&self) -> &str {
@@ -213,16 +237,16 @@ impl LinkedDbOperation {
         self.op
     }
 
-    pub const fn parameter_plan(&self) -> &LinkedValueTransferPlan {
-        &self.parameter_plan
+    pub fn parameter_plans(&self) -> &[LinkedValueTransferPlan] {
+        &self.parameter_plans
     }
 
-    pub const fn result_type(&self) -> TypeIndex {
-        self.result_type
+    pub fn result_types(&self) -> &[TypeIndex] {
+        &self.result_types
     }
 
-    pub const fn result_plan(&self) -> &LinkedValueTransferPlan {
-        &self.result_plan
+    pub fn result_plans(&self) -> &[LinkedValueTransferPlan] {
+        &self.result_plans
     }
 }
 
@@ -230,6 +254,14 @@ impl LinkedDbOperation {
 pub enum LinkedIntrinsicTargetError {
     EmptyCanonicalKey,
     EmptyTypeName,
+    DbTargetRequired,
+    DbDataOpArity,
+    DbControlCarriesTarget,
+    DbControlArity,
+    DbResultPlanArity {
+        expected: usize,
+        actual: usize,
+    },
     InvalidCanonicalKey {
         value: String,
         character_index: usize,
@@ -244,6 +276,22 @@ impl fmt::Display for LinkedIntrinsicTargetError {
                 formatter.write_str("intrinsic canonical key must not be empty")
             }
             Self::EmptyTypeName => formatter.write_str("db object type name must not be empty"),
+            Self::DbTargetRequired => {
+                formatter.write_str("db read/write operation requires an exact object target")
+            }
+            Self::DbDataOpArity => {
+                formatter.write_str("db read/write operation must carry one operand and one result")
+            }
+            Self::DbControlCarriesTarget => {
+                formatter.write_str("db transaction control must not carry an object target")
+            }
+            Self::DbControlArity => {
+                formatter.write_str("db transaction control must carry zero operands and results")
+            }
+            Self::DbResultPlanArity { expected, actual } => write!(
+                formatter,
+                "db result type/plan arity mismatch: expected {expected}, got {actual}"
+            ),
             Self::InvalidCanonicalKey {
                 value,
                 character_index,

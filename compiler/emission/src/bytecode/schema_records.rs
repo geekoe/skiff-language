@@ -197,8 +197,12 @@ fn collect_relocation(
         BytecodeRelocation::IntrinsicRef { intrinsic } => {
             collect_host_signature(&intrinsic.signature, roots)?;
             if let Some(operation) = &intrinsic.db_operation {
-                collect_type_ref(&operation.target.type_ref, roots);
-                collect_type_ref(&operation.result_type, roots);
+                if let Some(target) = &operation.target {
+                    collect_type_ref(&target.type_ref, roots);
+                }
+                for result_type in &operation.result_types {
+                    collect_type_ref(result_type, roots);
+                }
                 for plan in &operation.result_plans {
                     collect_plan(plan, roots);
                 }

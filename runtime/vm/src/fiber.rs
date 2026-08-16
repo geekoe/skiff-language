@@ -3734,20 +3734,18 @@ impl VmFiber {
                 opcode: Opcode::InvokeIntrinsic,
             }
         })?;
-        if arg_count != 1 || result_count != 1 {
-            return Err(VmError::FullValueLifecyclePlanUnavailable {
-                function,
-                instruction,
-                opcode: Opcode::InvokeIntrinsic,
-            });
-        }
         let signature = intrinsic.signature();
-        if signature.parameter_plans().len() != 1
-            || signature.result_types().len() != 1
-            || signature.result_plans().len() != 1
-            || signature.parameter_plans()[0] != *operation.parameter_plan()
-            || signature.result_types()[0] != operation.result_type()
-            || signature.result_plans()[0] != *operation.result_plan()
+        let expected_args = operation.parameter_plans().len();
+        let expected_results = operation.result_plans().len();
+        if arg_count != expected_args
+            || result_count != expected_results
+            || signature.parameter_types().len() != expected_args
+            || signature.parameter_plans().len() != expected_args
+            || signature.result_types().len() != expected_results
+            || signature.result_plans().len() != expected_results
+            || signature.parameter_plans() != operation.parameter_plans()
+            || signature.result_types() != operation.result_types()
+            || signature.result_plans() != operation.result_plans()
         {
             return Err(VmError::FullValueLifecyclePlanUnavailable {
                 function,

@@ -396,6 +396,7 @@ fn phase_5_absent_stream_supervisor_release_failure_reaches_terminal_retry_escro
         execution_control: start.execution_control.clone(),
         stream_registrar,
         child_composition: Default::default(),
+        db_session: Arc::new(Mutex::new(None)),
         cleanup_roots: Mutex::new(Vec::new()),
         materialization_escrows: Mutex::new(Vec::new()),
         manual_sleep_completion: Mutex::new(None),

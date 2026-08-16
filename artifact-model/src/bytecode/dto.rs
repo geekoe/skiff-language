@@ -526,19 +526,27 @@ pub struct HostEffectSignature {
     pub effects: crate::CallableMayEffects,
 }
 
-/// Structured DB operation kind carried by a host-effect invocation. The first
-/// contract generation only admits single-object insert; unsupported DB
-/// operations remain fail-closed at serde and structural validation.
+/// Structured DB operation kind carried by a host-effect invocation.
+///
+/// The bytecode lane is normalized to four exact operations: read/write use a
+/// linked object target and one operand/result, while commit/abort are
+/// transaction controls with no object operand or result. Any other source DB
+/// operation must be normalized to one of these lanes or fail closed before
+/// emission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum DbOperationKind {
-    Insert,
+    Read,
+    Write,
+    Commit,
+    Abort,
 }
 
 /// Role of each operand passed to a structured DB operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub enum DbOperandRole {
+    ReadKey,
     ObjectFields,
 }
 
@@ -551,9 +559,10 @@ pub enum DbOperandRole {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DbOperationReference {
     pub op: DbOperationKind,
-    pub target: crate::DbTargetIr,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<crate::DbTargetIr>,
     pub operand_roles: Vec<DbOperandRole>,
-    pub result_type: TypeRefIr,
+    pub result_types: Vec<TypeRefIr>,
     pub result_plans: Vec<ValueTransferPlan>,
 }
 

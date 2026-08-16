@@ -421,24 +421,24 @@ fn db_operation_reference_round_trips_camel_case_without_metadata_strings() {
             },
         },
         db_operation: Some(Box::new(crate::bytecode::dto::DbOperationReference {
-            op: crate::bytecode::dto::DbOperationKind::Insert,
-            target: crate::DbTargetIr {
+            op: crate::bytecode::dto::DbOperationKind::Write,
+            target: Some(crate::DbTargetIr {
                 type_ref: string_type(),
                 type_name: "fixture".to_string(),
-            },
+            }),
             operand_roles: vec![crate::bytecode::dto::DbOperandRole::ObjectFields],
-            result_type: string_type(),
+            result_types: vec![string_type()],
             result_plans: vec![snapshot_share()],
         })),
     };
     let value = serde_json::to_value(&effect).expect("serialize DB host effect");
-    assert_eq!(value["dbOperation"]["op"], serde_json::json!("insert"));
+    assert_eq!(value["dbOperation"]["op"], serde_json::json!("write"));
     assert_eq!(value["dbOperation"]["target"]["typeName"], "fixture");
     assert_eq!(
         value["dbOperation"]["operandRoles"],
         serde_json::json!(["objectFields"])
     );
-    assert_eq!(value["dbOperation"]["resultType"]["kind"], "builtin");
+    assert_eq!(value["dbOperation"]["resultTypes"][0]["kind"], "builtin");
     assert_eq!(
         value["dbOperation"]["resultPlans"][0]["kind"],
         "snapshotShare"
@@ -492,7 +492,7 @@ fn task_submit_reference_round_trips_exact_target_and_timing_facts() {
 fn db_operation_wire_rejects_unsupported_ops_and_roles() {
     assert!(
         serde_json::from_value::<crate::bytecode::dto::DbOperationKind>(serde_json::json!(
-            "update"
+            "insert"
         ))
         .is_err()
     );
@@ -518,4 +518,47 @@ fn std_db_operation_without_structured_reference_fails_closed() {
     let error = structurally_validate(&artifact)
         .expect_err("std.db.operation must require a structured DB operation");
     assert!(error.to_string().contains("dbOperation"), "{error}");
+}
+
+#[test]
+fn db_transaction_controls_validate_with_zero_arity_and_no_target() {
+    for op in [
+        crate::bytecode::dto::DbOperationKind::Commit,
+        crate::bytecode::dto::DbOperationKind::Abort,
+    ] {
+        let mut artifact = canonical_artifact();
+        let BytecodePoolEntry::HostEffectRef(effect) = &mut artifact.image.pools.effects[0] else {
+            unreachable!("canonical fixture has a host effect");
+        };
+        effect.target = crate::NativeTarget {
+            namespace: "std".to_string(),
+            symbol: "db.operation".to_string(),
+            binding_key: Some("std.db.operation".to_string()),
+            metadata: std::collections::BTreeMap::new(),
+        };
+        effect.signature = crate::bytecode::dto::HostEffectSignature {
+            parameter_types: Vec::new(),
+            parameter_modes: Vec::new(),
+            parameter_plans: Vec::new(),
+            result_types: Vec::new(),
+            result_plans: Vec::new(),
+            effects: crate::CallableMayEffects {
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_pending: false,
+                pending_effect_categories: Vec::new(),
+                inout_path_effects: Vec::new(),
+            },
+        };
+        effect.db_operation = Some(Box::new(crate::bytecode::dto::DbOperationReference {
+            op,
+            target: None,
+            operand_roles: Vec::new(),
+            result_types: Vec::new(),
+            result_plans: Vec::new(),
+        }));
+        structurally_validate(&artifact)
+            .unwrap_or_else(|error| panic!("DB transaction control {op:?} must validate: {error}"));
+    }
 }

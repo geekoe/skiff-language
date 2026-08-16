@@ -1570,17 +1570,21 @@ fn validate_relocation(
         BytecodeRelocation::IntrinsicRef { intrinsic } => {
             validate_host_signature(package, &intrinsic.signature, deployment, packages)?;
             if let Some(operation) = &intrinsic.db_operation {
-                validate_type_ref(package, &operation.target.type_ref, deployment, packages)?;
-                validate_type_ref(package, &operation.result_type, deployment, packages)?;
+                if let Some(target) = &operation.target {
+                    validate_type_ref(package, &target.type_ref, deployment, packages)?;
+                    if target.type_name.is_empty() {
+                        return Err(manifest_mismatch(
+                            package.reference(),
+                            DeploymentBytecodeManifestKind::PackageReference,
+                            "db operation target.typeName must not be empty".to_string(),
+                        ));
+                    }
+                }
+                for result_type in &operation.result_types {
+                    validate_type_ref(package, result_type, deployment, packages)?;
+                }
                 for plan in &operation.result_plans {
                     validate_plan(package, plan, deployment, packages)?;
-                }
-                if operation.target.type_name.is_empty() {
-                    return Err(manifest_mismatch(
-                        package.reference(),
-                        DeploymentBytecodeManifestKind::PackageReference,
-                        "db operation target.typeName must not be empty".to_string(),
-                    ));
                 }
             }
         }

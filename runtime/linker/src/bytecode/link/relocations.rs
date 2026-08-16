@@ -590,9 +590,13 @@ impl<'a, 'deployment, 'limits> RelocationContext<'a, 'deployment, 'limits> {
                         )
                     })
             }
-            BytecodeRelocation::IntrinsicRef { intrinsic } => self
+            BytecodeRelocation::IntrinsicRef { .. } => self
                 .dispatch_tables
-                .intrinsic_index(&intrinsic.target)
+                .intrinsic_relocation_index(&(
+                    self.source.package.reference().package_build_id.clone(),
+                    self.source.function.function_key.clone(),
+                    raw,
+                ))
                 .map(LinkedInstructionTarget::Intrinsic)
                 .ok_or_else(|| {
                     unsatisfied(

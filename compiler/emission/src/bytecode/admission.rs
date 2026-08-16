@@ -2913,33 +2913,64 @@ fn admit_db_operation_facts(
     function_key: &str,
     operation: &skiff_artifact_model::DbOperationIr,
 ) -> Result<(), BytecodeEmissionError> {
-    if operation.op != DbOpKindIr::Insert || operation.many {
-        return Err(rejected_function(
-            unit,
-            function_key,
-            Phase1UnsupportedCapability::ServiceTarget,
-            "bytecode F6 facts currently admit single-object db insert only",
-        ));
-    }
-    let body = operation
-        .body
-        .as_ref()
-        .or(operation.insert_body.as_ref())
-        .ok_or_else(|| {
-            rejected_function(
+    match operation.op {
+        DbOpKindIr::Insert => {
+            if operation.many {
+                return Err(rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::ServiceTarget,
+                    "bytecode F6 write facts currently admit a single object write only",
+                ));
+            }
+            let body = operation
+                .body
+                .as_ref()
+                .or(operation.insert_body.as_ref())
+                .ok_or_else(|| {
+                    rejected_function(
+                        unit,
+                        function_key,
+                        Phase1UnsupportedCapability::ServiceTarget,
+                        "db write has no object body",
+                    )
+                })?;
+            if !matches!(body, DbBodyIr::ObjectFields { .. }) {
+                return Err(rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::ServiceTarget,
+                    "bytecode F6 write facts currently admit object-field writes only",
+                ));
+            }
+        }
+        DbOpKindIr::Find | DbOpKindIr::Optional | DbOpKindIr::Require => {
+            if operation.many
+                || !operation.selector.as_ref().is_some_and(|selector| {
+                    matches!(selector, skiff_artifact_model::DbSelectorIr::Key { .. })
+                })
+                || operation.query.is_some()
+                || operation.projection.is_some()
+                || operation.body.is_some()
+                || operation.insert_body.is_some()
+                || operation.change.is_some()
+            {
+                return Err(rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::ServiceTarget,
+                    "bytecode F6 read facts currently admit keyed single reads only",
+                ));
+            }
+        }
+        _ => {
+            return Err(rejected_function(
                 unit,
                 function_key,
                 Phase1UnsupportedCapability::ServiceTarget,
-                "db insert has no object body",
-            )
-        })?;
-    if !matches!(body, DbBodyIr::ObjectFields { .. }) {
-        return Err(rejected_function(
-            unit,
-            function_key,
-            Phase1UnsupportedCapability::ServiceTarget,
-            "bytecode F6 facts currently admit object-field insert only",
-        ));
+                "bytecode F6 facts currently admit normalized db read/write only",
+            ));
+        }
     }
     admit_db_target_facts(units, unit, function_key, &operation.target)?;
     if !matches!(operation.result_type, TypeRefIr::DbObjectSymbol { .. }) {
@@ -2950,7 +2981,7 @@ fn admit_db_operation_facts(
             &operation.result_type,
             false,
             &format!(
-                "db insert result type in module `{}` function `{function_key}`",
+                "db operation result type in module `{}` function `{function_key}`",
                 unit.module_path
             ),
             &LocalInterfaceFacts::empty(),

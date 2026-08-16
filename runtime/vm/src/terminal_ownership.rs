@@ -150,11 +150,12 @@ impl VmOwnedValues {
         operation: &LinkedDbOperation,
     ) -> Result<Self, VmOwnedValuesRejected> {
         let image = Arc::clone(resume.image());
+        let expected = operation.result_plans().len();
         if !matches!(
             resume.authority(),
             VmResumeAuthority::Child(ChildTarget::Db(_))
-        ) || resume.expected_result_count() != 1
-            || values.len() != 1
+        ) || resume.expected_result_count() != expected as u32
+            || values.len() != expected
         {
             return Err(VmOwnedValuesRejected::new(
                 image,
@@ -162,10 +163,16 @@ impl VmOwnedValues {
                 values,
             ));
         }
-        let result_type = operation.result_type();
-        let result_plan = operation.result_plan();
-        if image.type_plan(result_type) != Some(result_plan)
-            || !resume_value_matches(&image, &values[0], result_type, result_plan)
+        if expected == 0 {
+            let mut owned = Self::empty(image);
+            owned.resume_binding = Some(Arc::clone(resume.binding()));
+            return Ok(owned);
+        }
+        let result_type = operation.result_types()[0];
+        let result_plan = operation.result_plans()[0].clone();
+        if operation.result_types().len() != 1
+            || image.type_plan(result_type) != Some(&result_plan)
+            || !resume_value_matches(&image, &values[0], result_type, &result_plan)
         {
             return Err(VmOwnedValuesRejected::new(
                 image,
@@ -177,7 +184,7 @@ impl VmOwnedValues {
                 values,
             ));
         }
-        let mut owned = Self::new_exact(image, values, Box::new([result_plan.clone()]));
+        let mut owned = Self::new_exact(image, values, Box::new([result_plan]));
         owned.resume_binding = Some(Arc::clone(resume.binding()));
         Ok(owned)
     }

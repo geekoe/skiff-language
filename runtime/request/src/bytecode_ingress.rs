@@ -12,7 +12,8 @@ use skiff_artifact_model::{
 };
 use skiff_runtime_boundary::http::HttpBoundaryNameValue;
 use skiff_runtime_capability_context::{
-    CancellationToken, ExecutionBudgetReason, TaskSubmitResponseControl,
+    CancellationToken, DbRuntimeFinalizer, ExecutionBudgetReason,
+    PreparedDbOptionalRuntimeOperation, PreparedDbValueRuntimeOperation, TaskSubmitResponseControl,
 };
 use skiff_runtime_linked_bytecode::{
     LinkedDbOperation, LinkedNativeCallableSignature, LinkedRepresentationCarrier,
@@ -58,12 +59,12 @@ use skiff_runtime_vm::{
 
 use crate::{
     bytecode_children::{
-        encode_durable_task_payload, execute_actor_child, execute_interface_child,
-        execute_service_child, is_task_request, linked_db_target, materialize_db_result_to_vm,
-        require_db_operation, task_arguments, task_submit_message_from_composition,
-        task_target_by_dispatch_index, task_timing_control, BytecodeChildHeapFactory,
-        BytecodeChildLane, BytecodeRequestChildComposition, DbPendingCarrier, DbPendingRoots,
-        DbTransactionSession, RequestChildHeapFactory,
+        db_key_from_runtime, encode_durable_task_payload, execute_actor_child,
+        execute_interface_child, execute_service_child, is_task_request, linked_db_target,
+        materialize_db_result_to_vm, require_db_operation, task_arguments,
+        task_submit_message_from_composition, task_target_by_dispatch_index, task_timing_control,
+        BytecodeChildHeapFactory, BytecodeChildLane, BytecodeRequestChildComposition,
+        DbPendingCarrier, DbPendingRoots, DbTransactionSession, RequestChildHeapFactory,
     },
     bytecode_host_effects::{
         BytecodeHttpFailure, BytecodeHttpRequest, BytecodeHttpResponse,
@@ -443,6 +444,7 @@ pub fn drive_runtime_bytecode_request_controlled(
         execution_control: start.execution_control.clone(),
         stream_registrar,
         child_composition: input_child_composition.clone(),
+        db_session: Arc::new(Mutex::new(None)),
         cleanup_roots: Mutex::new(Vec::new()),
         materialization_escrows: Mutex::new(Vec::new()),
         manual_sleep_completion: Mutex::new(None),
@@ -567,6 +569,74 @@ fn take_db_pending_session(carrier: &Arc<Mutex<DbPendingCarrier>>) -> DbTransact
         .expect("DB transaction session remains in pending carrier")
 }
 
+fn take_db_session(
+    slot: &Arc<Mutex<Option<DbTransactionSession>>>,
+) -> Result<DbTransactionSession, String> {
+    slot.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+        .ok_or_else(|| "DB transaction session is not active".to_string())
+}
+
+fn store_db_session(
+    slot: &Arc<Mutex<Option<DbTransactionSession>>>,
+    session: DbTransactionSession,
+) -> Result<(), String> {
+    let mut guard = slot
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if guard.is_some() {
+        return Err("DB transaction reentry rejected by the request session ledger".to_string());
+    }
+    *guard = Some(session);
+    Ok(())
+}
+
+enum PreparedDbChildOperation {
+    Read(PreparedDbOptionalRuntimeOperation),
+    Write(PreparedDbValueRuntimeOperation),
+}
+
+impl PreparedDbChildOperation {
+    async fn into_wait(self) -> Result<DbChildFinalizer, String> {
+        match self {
+            Self::Read(operation) => operation
+                .into_wait()
+                .await
+                .map(DbChildFinalizer::Read)
+                .map_err(|error| format!("DB read wait failed: {error}")),
+            Self::Write(operation) => operation
+                .into_wait()
+                .await
+                .map(DbChildFinalizer::Write)
+                .map_err(|error| format!("DB write wait failed: {error}")),
+        }
+    }
+}
+
+enum DbChildFinalizer {
+    Read(DbRuntimeFinalizer<Option<skiff_runtime_model::runtime_value::RuntimeValue>>),
+    Write(DbRuntimeFinalizer<skiff_runtime_model::runtime_value::RuntimeValue>),
+}
+
+impl DbChildFinalizer {
+    fn finalize(
+        self,
+        heap: &mut RequestVmHeap,
+    ) -> Result<skiff_runtime_model::runtime_value::RuntimeValue, String> {
+        match self {
+            Self::Read(finalizer) => match finalizer.finalize(heap.request_heap_mut()) {
+                Ok(Some(value)) => Ok(value),
+                Ok(None) => Ok(skiff_runtime_model::runtime_value::RuntimeValue::Null),
+                Err(error) => Err(format!("DB read finalization failed: {error}")),
+            },
+            Self::Write(finalizer) => finalizer
+                .finalize(heap.request_heap_mut())
+                .map_err(|error| format!("DB write finalization failed: {error}")),
+        }
+    }
+}
+
 pub(super) type RequestPendingRegistry =
     PendingRegistry<VmResumeToken, VmSuspended, RequestPendingOutcome>;
 type RequestCompletionHandle = CompletionHandle<VmResumeToken, VmSuspended, RequestPendingOutcome>;
@@ -669,6 +739,10 @@ pub(super) struct RequestPendingRuntime {
     stream_registrar: BytecodeHttpStreamRegistrar,
     #[allow(dead_code)]
     child_composition: BytecodeRequestChildComposition,
+    /// Request-scoped active D6R transaction session. It stays behind a
+    /// stable Arc/Mutex because the pending child carrier and the host
+    /// executor both need to move the affine session without cloning it.
+    db_session: Arc<Mutex<Option<DbTransactionSession>>>,
     /// Owners whose explicit release failed during synchronous host-result
     /// materialization. No pending or GC safepoint intervenes before terminal
     /// request retention takes this escrow.
@@ -1090,27 +1164,45 @@ impl BytecodeHostExecutor {
                 invocation,
             ));
         }
-        if invocation.arguments().values().len() != 1 || invocation.stream_endpoint().is_some() {
+        let expected_args = operation.parameter_plans().len();
+        if invocation.arguments().values().len() != expected_args
+            || invocation.stream_endpoint().is_some()
+        {
             return Err(BytecodePortFailure::input(
                 BytecodeSchedulerError::Port(
-                    "DB intrinsic child must carry exactly one argument and no stream endpoint"
+                    "DB intrinsic child must carry its exact operand count and no stream endpoint"
                         .to_string(),
                 ),
                 invocation,
             ));
         }
         let mut db_composition = self.child_composition.db_child.clone();
-        if db_composition.exact_target.is_none() {
-            db_composition.exact_target = Some(linked_db_target(&operation));
-        }
-        if !db_composition.is_available() {
-            return Err(BytecodePortFailure::input(
-                BytecodeSchedulerError::Port(
-                    "DB intrinsic child composition is not available; exact target, capability or recoverable context is missing"
-                        .to_string(),
-                ),
-                invocation,
-            ));
+        if matches!(
+            operation.op(),
+            skiff_artifact_model::bytecode::dto::DbOperationKind::Read
+                | skiff_artifact_model::bytecode::dto::DbOperationKind::Write
+        ) {
+            let target = match linked_db_target(&operation) {
+                Ok(target) => target,
+                Err(message) => {
+                    return Err(BytecodePortFailure::input(
+                        BytecodeSchedulerError::Port(message),
+                        invocation,
+                    ));
+                }
+            };
+            if db_composition.exact_target.is_none() {
+                db_composition.exact_target = Some(target);
+            }
+            if !db_composition.is_available() {
+                return Err(BytecodePortFailure::input(
+                    BytecodeSchedulerError::Port(
+                        "DB intrinsic child composition is not available; exact target, capability or recoverable context is missing"
+                            .to_string(),
+                    ),
+                    invocation,
+                ));
+            }
         }
         let caller_vm = match heap
             .as_any()
@@ -1126,14 +1218,18 @@ impl BytecodeHostExecutor {
                 ));
             }
         };
-        let argument = invocation.arguments().values()[0];
-        let argument_runtime = match caller_vm.runtime_value_for_slot(&argument) {
-            Ok(value) => value,
-            Err(error) => {
-                return Err(BytecodePortFailure::input(
-                    BytecodeSchedulerError::Vm(VmError::Heap(error)),
-                    invocation,
-                ));
+        let argument_runtime = if expected_args == 0 {
+            None
+        } else {
+            let argument = invocation.arguments().values()[0];
+            match caller_vm.runtime_value_for_slot(&argument) {
+                Ok(value) => Some(value),
+                Err(error) => {
+                    return Err(BytecodePortFailure::input(
+                        BytecodeSchedulerError::Vm(VmError::Heap(error)),
+                        invocation,
+                    ));
+                }
             }
         };
         let mut child_heap = match self.child_heap_factory.create_child_heap(
@@ -1150,7 +1246,7 @@ impl BytecodeHostExecutor {
                 ));
             }
         };
-        let child_runtime = {
+        let child_runtime = if let Some(argument_runtime) = argument_runtime {
             let child_vm = match child_heap
                 .heap_mut()
                 .as_any_mut()
@@ -1171,7 +1267,7 @@ impl BytecodeHostExecutor {
                 child_vm.request_heap_mut(),
                 &argument_runtime,
             ) {
-                Ok(value) => value,
+                Ok(value) => Some(value),
                 Err(error) => {
                     return Err(BytecodePortFailure::input(
                         BytecodeSchedulerError::Port(format!(
@@ -1181,13 +1277,15 @@ impl BytecodeHostExecutor {
                     ));
                 }
             }
+        } else {
+            None
         };
 
         let (_target, arguments, endpoint, resume) = invocation.into_parts();
         if endpoint.is_some() {
             return Err(BytecodePortFailure::continuation(
                 BytecodeSchedulerError::Port(
-                    "task child must not carry a stream endpoint".to_string(),
+                    "DB child must not carry a stream endpoint".to_string(),
                 ),
                 resume,
             ));
@@ -1201,97 +1299,182 @@ impl BytecodeHostExecutor {
         }
 
         let ledger = Arc::clone(&self.child_composition.memory_ledger);
+        let session_slot = Arc::clone(&self.runtime.db_session);
+        let outcome_operation = operation.clone();
         let pending_carrier = Arc::new(Mutex::new(DbPendingCarrier::new(child_heap)));
         let pending_roots = RootEscrow::new(Box::new(DbPendingRoots {
             carrier: Arc::clone(&pending_carrier),
         }));
         let future = async move {
             let result = async {
-                let session = match db_composition.begin_transaction(ledger.as_ref()).await {
-                    Ok(session) => session,
-                    Err(error) => return Err(format!("DB transaction begin failed: {error}")),
-                };
-                lock_db_pending(&pending_carrier).session = Some(session);
-
-                let prepared = {
-                    let mut child_heap = lock_db_pending(&pending_carrier)
-                        .child_heap
-                        .take()
-                        .expect("DB child heap remains in pending carrier");
-                    let mut session = take_db_pending_session(&pending_carrier);
-                    let child_vm = match child_heap
-                        .heap_mut()
-                        .as_any_mut()
-                        .and_then(|heap| heap.downcast_mut::<RequestVmHeap>())
-                    {
-                        Some(heap) => heap,
-                        None => {
-                            session.abort().await;
-                            lock_db_pending(&pending_carrier).child_heap = Some(child_heap);
-                            return Err("DB child heap is not a request VM heap".to_string());
-                        }
-                    };
-                    let prepared = match session
-                        .prepared_create(child_vm.request_heap_mut(), &child_runtime)
-                    {
-                        Ok(prepared) => prepared,
-                        Err(error) => {
-                            session.abort().await;
-                            lock_db_pending(&pending_carrier).child_heap = Some(child_heap);
-                            return Err(format!("DB create preparation failed: {error}"));
-                        }
-                    };
-                    lock_db_pending(&pending_carrier).child_heap = Some(child_heap);
-                    lock_db_pending(&pending_carrier).session = Some(session);
-                    prepared
-                };
-
-                let finalizer = match prepared.into_wait().await {
-                    Ok(finalizer) => finalizer,
-                    Err(error) => {
+                match operation.op() {
+                    skiff_artifact_model::bytecode::dto::DbOperationKind::Commit
+                    | skiff_artifact_model::bytecode::dto::DbOperationKind::Abort => {
+                        let session = match take_db_session(&session_slot) {
+                            Ok(session) => session,
+                            Err(error) => return Err(error),
+                        };
+                        lock_db_pending(&pending_carrier).session = Some(session);
                         let mut session = take_db_pending_session(&pending_carrier);
-                        session.abort().await;
-                        return Err(format!("DB create wait failed: {error}"));
+                        if operation.op()
+                            == skiff_artifact_model::bytecode::dto::DbOperationKind::Commit
+                        {
+                            session
+                                .commit()
+                                .await
+                                .map(|_| RuntimeValue::Null)
+                                .map_err(|error| format!("DB commit failed: {error}"))
+                        } else {
+                            session.abort().await;
+                            Ok(RuntimeValue::Null)
+                        }
                     }
-                };
-                let created = {
-                    let mut child_heap = lock_db_pending(&pending_carrier)
-                        .child_heap
-                        .take()
-                        .expect("DB child heap remains in pending carrier");
-                    let child_vm = match child_heap
-                        .heap_mut()
-                        .as_any_mut()
-                        .and_then(|heap| heap.downcast_mut::<RequestVmHeap>())
-                    {
-                        Some(heap) => heap,
-                        None => {
-                            let mut session = take_db_pending_session(&pending_carrier);
-                            session.abort().await;
-                            lock_db_pending(&pending_carrier).child_heap = Some(child_heap);
-                            return Err("DB child heap is not a request VM heap".to_string());
-                        }
-                    };
-                    let created = match finalizer.finalize(child_vm.request_heap_mut()) {
-                        Ok(value) => value,
-                        Err(error) => {
-                            let mut session = take_db_pending_session(&pending_carrier);
-                            session.abort().await;
-                            lock_db_pending(&pending_carrier).child_heap = Some(child_heap);
-                            return Err(format!("DB create finalization failed: {error}"));
-                        }
-                    };
-                    lock_db_pending(&pending_carrier).child_heap = Some(child_heap);
-                    created
-                };
+                    skiff_artifact_model::bytecode::dto::DbOperationKind::Read
+                    | skiff_artifact_model::bytecode::dto::DbOperationKind::Write => {
+                        let active = take_db_session(&session_slot).ok();
+                        let session = match active {
+                            Some(session) => session,
+                            None => match db_composition.begin_transaction(ledger.as_ref()).await {
+                                Ok(session) => session,
+                                Err(error) => {
+                                    return Err(format!("DB transaction begin failed: {error}"));
+                                }
+                            },
+                        };
+                        let target = db_composition
+                            .exact_target
+                            .clone()
+                            .ok_or_else(|| "DB data target is missing".to_string())?;
+                        lock_db_pending(&pending_carrier).session = Some(session);
 
-                let mut session = take_db_pending_session(&pending_carrier);
-                if let Err(error) = session.commit().await {
-                    session.abort().await;
-                    return Err(format!("DB commit failed: {error}"));
+                        let prepared = {
+                            let mut child_heap = lock_db_pending(&pending_carrier)
+                                .child_heap
+                                .take()
+                                .expect("DB child heap remains in pending carrier");
+                            let mut session = take_db_pending_session(&pending_carrier);
+                            let child_vm = match child_heap
+                                .heap_mut()
+                                .as_any_mut()
+                                .and_then(|heap| heap.downcast_mut::<RequestVmHeap>())
+                            {
+                                Some(heap) => heap,
+                                None => {
+                                    session.abort().await;
+                                    lock_db_pending(&pending_carrier).child_heap = Some(child_heap);
+                                    return Err(
+                                        "DB child heap is not a request VM heap".to_string()
+                                    );
+                                }
+                            };
+                            let prepared = match operation.op() {
+                                skiff_artifact_model::bytecode::dto::DbOperationKind::Read => {
+                                    let key = match db_key_from_runtime(
+                                        child_runtime
+                                            .as_ref()
+                                            .expect("DB read child carries a key operand"),
+                                    ) {
+                                        Ok(key) => key,
+                                        Err(error) => {
+                                            session.abort().await;
+                                            lock_db_pending(&pending_carrier).child_heap =
+                                                Some(child_heap);
+                                            return Err(error);
+                                        }
+                                    };
+                                    match session.prepared_read_one_by_key(
+                                        &target,
+                                        child_vm.request_heap_mut(),
+                                        key,
+                                        None,
+                                    ) {
+                                        Ok(prepared) => PreparedDbChildOperation::Read(prepared),
+                                        Err(error) => {
+                                            session.abort().await;
+                                            lock_db_pending(&pending_carrier).child_heap =
+                                                Some(child_heap);
+                                            return Err(format!(
+                                                "DB read preparation failed: {error}"
+                                            ));
+                                        }
+                                    }
+                                }
+                                skiff_artifact_model::bytecode::dto::DbOperationKind::Write => {
+                                    match session.prepared_create(
+                                        &target,
+                                        child_vm.request_heap_mut(),
+                                        child_runtime
+                                            .as_ref()
+                                            .expect("DB write child carries an object operand"),
+                                    ) {
+                                        Ok(prepared) => PreparedDbChildOperation::Write(prepared),
+                                        Err(error) => {
+                                            session.abort().await;
+                                            lock_db_pending(&pending_carrier).child_heap =
+                                                Some(child_heap);
+                                            return Err(format!(
+                                                "DB write preparation failed: {error}"
+                                            ));
+                                        }
+                                    }
+                                }
+                                _ => unreachable!("data op routing already checked"),
+                            };
+                            lock_db_pending(&pending_carrier).child_heap = Some(child_heap);
+                            lock_db_pending(&pending_carrier).session = Some(session);
+                            prepared
+                        };
+
+                        let finalizer = match prepared.into_wait().await {
+                            Ok(finalizer) => finalizer,
+                            Err(error) => {
+                                let mut session = take_db_pending_session(&pending_carrier);
+                                session.abort().await;
+                                return Err(format!("DB operation wait failed: {error}"));
+                            }
+                        };
+                        let value = {
+                            let mut child_heap = lock_db_pending(&pending_carrier)
+                                .child_heap
+                                .take()
+                                .expect("DB child heap remains in pending carrier");
+                            let child_vm = match child_heap
+                                .heap_mut()
+                                .as_any_mut()
+                                .and_then(|heap| heap.downcast_mut::<RequestVmHeap>())
+                            {
+                                Some(heap) => heap,
+                                None => {
+                                    let mut session = take_db_pending_session(&pending_carrier);
+                                    session.abort().await;
+                                    lock_db_pending(&pending_carrier).child_heap = Some(child_heap);
+                                    return Err(
+                                        "DB child heap is not a request VM heap".to_string()
+                                    );
+                                }
+                            };
+                            let value = match finalizer.finalize(child_vm) {
+                                Ok(value) => value,
+                                Err(error) => {
+                                    let mut session = take_db_pending_session(&pending_carrier);
+                                    session.abort().await;
+                                    lock_db_pending(&pending_carrier).child_heap = Some(child_heap);
+                                    return Err(format!(
+                                        "DB operation finalization failed: {error}"
+                                    ));
+                                }
+                            };
+                            lock_db_pending(&pending_carrier).child_heap = Some(child_heap);
+                            value
+                        };
+
+                        let session = take_db_pending_session(&pending_carrier);
+                        if let Err(error) = store_db_session(&session_slot, session) {
+                            return Err(error);
+                        }
+                        Ok(value)
+                    }
                 }
-                lock_db_pending(&pending_carrier).session = Some(session);
-                Ok(created)
             }
             .await;
             let child_heap = lock_db_pending(&pending_carrier)
@@ -1309,7 +1492,7 @@ impl BytecodeHostExecutor {
                 false,
                 PendingFutureTerminalPolicy::DropFuture,
                 move |(result, child_heap)| RequestPendingOutcome::Db {
-                    operation,
+                    operation: outcome_operation,
                     child_heap,
                     result,
                 },
@@ -3103,6 +3286,9 @@ fn materialize_db_pending_outcome(
             }));
         }
     };
+    if operation.result_plans().is_empty() {
+        return ResumeOutcome::Empty;
+    }
     let child_vm = match child_heap
         .heap_mut()
         .as_any_mut()
@@ -4457,6 +4643,7 @@ mod tests {
             execution_control: ExecutionControl::new(cancellation, &budget).owned(),
             stream_registrar: BytecodeHttpStreamRegistrar::new(resources),
             child_composition: Default::default(),
+            db_session: Arc::new(Mutex::new(None)),
             cleanup_roots: Mutex::new(Vec::new()),
             materialization_escrows: Mutex::new(Vec::new()),
             manual_sleep_completion: Mutex::new(None),
@@ -5335,6 +5522,7 @@ mod tests {
             execution_control: ExecutionControl::new(CancellationToken::new(), &budget).owned(),
             stream_registrar: BytecodeHttpStreamRegistrar::new(_context.resource_table()),
             child_composition: Default::default(),
+            db_session: Arc::new(Mutex::new(None)),
             cleanup_roots: Mutex::new(Vec::new()),
             materialization_escrows: Mutex::new(Vec::new()),
             manual_sleep_completion: Mutex::new(Some(completion.clone())),
@@ -5367,6 +5555,7 @@ mod tests {
             execution_control: ExecutionControl::new(CancellationToken::new(), &budget).owned(),
             stream_registrar: BytecodeHttpStreamRegistrar::new(resources),
             child_composition: Default::default(),
+            db_session: Arc::new(Mutex::new(None)),
             cleanup_roots: Mutex::new(Vec::new()),
             materialization_escrows: Mutex::new(Vec::new()),
             manual_sleep_completion: Mutex::new(Some(completion.clone())),

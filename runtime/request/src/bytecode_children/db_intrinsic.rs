@@ -8,8 +8,9 @@
 //! existing request composition and materialize logical runtime values under
 //! the exact linked result plan.
 
+use serde_json::{Number, Value};
 use skiff_artifact_model::bytecode::dto::DbOperationKind;
-use skiff_runtime_capability_context::{DbCapabilityTarget, DbCapabilityTargetId};
+use skiff_runtime_capability_context::{DbCapabilityTarget, DbCapabilityTargetId, DbKey};
 use skiff_runtime_linked_bytecode::{
     LinkedDbOperation, LinkedShapeEntry, LinkedTypeEntry, TypeIndex,
 };
@@ -24,29 +25,77 @@ use skiff_runtime_model::{
 
 use crate::vm_heap::RequestVmHeap;
 
-pub(crate) fn linked_db_target(operation: &LinkedDbOperation) -> DbCapabilityTarget {
-    DbCapabilityTarget::new(
+pub(crate) fn linked_db_target(
+    operation: &LinkedDbOperation,
+) -> Result<DbCapabilityTarget, String> {
+    let target_id = operation
+        .target_id()
+        .ok_or_else(|| "DB read/write operation is missing its exact target".to_string())?;
+    Ok(DbCapabilityTarget::new(
         DbCapabilityTargetId {
-            package_artifact_ref: operation.target_id().package_artifact_ref().clone(),
-            file_ir_ref: operation.target_id().file_ir_ref().clone(),
-            type_index: usize::try_from(operation.target_id().type_index())
+            package_artifact_ref: target_id.package_artifact_ref().clone(),
+            file_ir_ref: target_id.file_ir_ref().clone(),
+            type_index: usize::try_from(target_id.type_index())
                 .expect("linked DB type index fits usize"),
         },
         operation.type_name(),
-    )
+    ))
 }
 
 pub(crate) fn require_db_operation(operation: &LinkedDbOperation) -> Result<(), String> {
-    if operation.op() != DbOperationKind::Insert {
-        return Err(format!(
-            "K6 DB intrinsic seam currently admits linked DB insert only; got {:?}. \
-             Full DB read/write/commit/abort routing needs F6 to emit the exact \
-             DbOperationKind/operand plan and K6 to accept op-specific intrinsic \
-             arity before X6 can dispatch the leaf",
-            operation.op(),
-        ));
+    match operation.op() {
+        DbOperationKind::Read | DbOperationKind::Write => {
+            if operation.target_id().is_none() {
+                return Err(
+                    "DB read/write intrinsic is missing its exact DbObjectTargetId".to_string(),
+                );
+            }
+            if operation.parameter_plans().len() != 1
+                || operation.result_types().len() != 1
+                || operation.result_plans().len() != 1
+            {
+                return Err(format!(
+                    "DB {} intrinsic must carry exactly one operand and result; got {:?}/{:?}",
+                    format!("{:?}", operation.op()).to_lowercase(),
+                    operation.parameter_plans().len(),
+                    operation.result_plans().len(),
+                ));
+            }
+        }
+        DbOperationKind::Commit | DbOperationKind::Abort => {
+            if operation.target_id().is_some() {
+                return Err(
+                    "DB transaction control intrinsic must not carry an object target".to_string(),
+                );
+            }
+            if !operation.parameter_plans().is_empty()
+                || !operation.result_types().is_empty()
+                || !operation.result_plans().is_empty()
+            {
+                return Err(
+                    "DB transaction control intrinsic must carry zero operands and results"
+                        .to_string(),
+                );
+            }
+        }
     }
     Ok(())
+}
+
+pub(crate) fn db_key_from_runtime(value: &RuntimeValue) -> Result<DbKey, String> {
+    let json = match value {
+        RuntimeValue::Null => Value::Null,
+        RuntimeValue::Bool(value) => Value::Bool(*value),
+        RuntimeValue::Number(value) => Number::from_f64(*value)
+            .map(Value::Number)
+            .ok_or_else(|| "DB read key number is not finite".to_string())?,
+        RuntimeValue::Date(value) => Value::Number(Number::from(*value)),
+        RuntimeValue::String(value) => Value::String(value.clone()),
+        RuntimeValue::ActorRef(_) | RuntimeValue::Heap(_) => {
+            return Err("DB read key must be a scalar runtime value".to_string());
+        }
+    };
+    Ok(DbKey::new(json))
 }
 
 /// Materializes one provider runtime value into the caller VM heap using only
@@ -59,14 +108,23 @@ pub(crate) fn materialize_db_result_to_vm(
     value: &RuntimeValue,
     operation: &LinkedDbOperation,
 ) -> Result<ValueSlot, String> {
+    let result_type = operation
+        .result_types()
+        .first()
+        .copied()
+        .ok_or_else(|| "linked DB data result type is absent".to_string())?;
+    let result_plan = operation
+        .result_plans()
+        .first()
+        .ok_or_else(|| "linked DB data result plan is absent".to_string())?;
     let mut session = Vec::new();
     match materialize_runtime_value(
         destination,
         source,
         image,
         value,
-        operation.result_type(),
-        operation.result_plan(),
+        result_type,
+        result_plan,
         &mut session,
     ) {
         Ok(value) => Ok(value),
@@ -271,4 +329,98 @@ fn unique_shape_for_type_index<'a>(
 
 fn heap_error(error: VmHeapError) -> String {
     format!("DB result materialization failed: {error}")
+}
+
+#[cfg(test)]
+mod tests {
+    use skiff_artifact_model::{
+        FileIrRef, PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity,
+    };
+    use skiff_runtime_linked_bytecode::LinkedDbObjectTargetId;
+
+    use super::*;
+
+    fn target_id() -> LinkedDbObjectTargetId {
+        LinkedDbObjectTargetId::new(
+            PackageArtifactRef {
+                package_id: "test.skiff/db".to_string(),
+                package_version: "1.0.0".to_string(),
+                package_build_id: PackageBuildId::new("build:db"),
+                package_local_abi_identity: PackageLocalAbiIdentity::new("abi:db"),
+            },
+            FileIrRef::new("file:db", "main.skiff"),
+            0,
+        )
+    }
+
+    fn scalar_plan() -> skiff_runtime_linked_bytecode::LinkedValueTransferPlan {
+        skiff_runtime_linked_bytecode::LinkedValueTransferPlan::SnapshotShare {
+            drop: skiff_runtime_linked_bytecode::LinkedValueDropPlan::Trivial,
+        }
+    }
+
+    fn data_operation(op: DbOperationKind) -> LinkedDbOperation {
+        let plan = scalar_plan();
+        LinkedDbOperation::new(
+            Some(target_id()),
+            "Doc",
+            op,
+            Box::new([plan.clone()]),
+            Box::new([TypeIndex::new(0)]),
+            Box::new([plan]),
+        )
+        .expect("linked data operation is valid")
+    }
+
+    fn control_operation(op: DbOperationKind) -> LinkedDbOperation {
+        LinkedDbOperation::new(
+            None,
+            "db.transaction",
+            op,
+            Box::new([]),
+            Box::new([]),
+            Box::new([]),
+        )
+        .expect("linked transaction control is valid")
+    }
+
+    #[test]
+    fn require_db_operation_accepts_normalized_lanes() {
+        for op in [
+            DbOperationKind::Read,
+            DbOperationKind::Write,
+            DbOperationKind::Commit,
+            DbOperationKind::Abort,
+        ] {
+            let operation = match op {
+                DbOperationKind::Read | DbOperationKind::Write => data_operation(op),
+                DbOperationKind::Commit | DbOperationKind::Abort => control_operation(op),
+            };
+            require_db_operation(&operation).expect("normalized DB lane is admitted");
+        }
+    }
+
+    #[test]
+    fn linked_db_operation_rejects_transaction_control_with_arity() {
+        let plan = scalar_plan();
+        assert!(LinkedDbOperation::new(
+            None,
+            "db.transaction",
+            DbOperationKind::Commit,
+            Box::new([plan.clone()]),
+            Box::new([TypeIndex::new(0)]),
+            Box::new([plan]),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn db_key_from_runtime_accepts_scalar_and_rejects_heap() {
+        assert_eq!(
+            db_key_from_runtime(&RuntimeValue::String("key".to_string())).unwrap(),
+            DbKey::new(serde_json::json!("key"))
+        );
+        assert!(db_key_from_runtime(&RuntimeValue::Null).is_ok());
+        assert!(db_key_from_runtime(&RuntimeValue::Number(1.0)).is_ok());
+    }
 }

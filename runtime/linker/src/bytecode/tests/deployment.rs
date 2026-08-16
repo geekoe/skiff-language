@@ -1581,20 +1581,37 @@ fn linked_image_carries_exact_db_object_target_facts() {
         "p6-db-facts",
     );
     let operations = image.db_operations().collect::<Vec<_>>();
-    assert_eq!(operations.len(), 1);
+    assert_eq!(operations.len(), 2);
     let operation = operations[0];
-    assert_eq!(operation.op(), DbOperationKind::Insert);
+    assert_eq!(operation.op(), DbOperationKind::Write);
     assert!(operation.type_name().ends_with("Doc"));
-    assert_eq!(operation.target_id().file_ir_ref().module_path, "main");
-    assert_eq!(operation.target_id().type_index(), 0);
     assert_eq!(
-        operation.parameter_plan().kind(),
+        operation
+            .target_id()
+            .expect("linked db write has an exact target")
+            .file_ir_ref()
+            .module_path,
+        "main"
+    );
+    assert_eq!(
+        operation
+            .target_id()
+            .expect("linked db write has an exact target")
+            .type_index(),
+        0
+    );
+    assert_eq!(
+        operation.parameter_plans()[0].kind(),
         ValueTransferPlanKind::SnapshotShare
     );
     assert_eq!(
-        operation.result_plan().kind(),
+        operation.result_plans()[0].kind(),
         ValueTransferPlanKind::SnapshotShare
     );
+    assert_eq!(operations[1].op(), DbOperationKind::Commit);
+    assert!(operations[1].target_id().is_none());
+    assert!(operations[1].parameter_plans().is_empty());
+    assert!(operations[1].result_plans().is_empty());
 }
 
 #[test]

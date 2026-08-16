@@ -39,9 +39,9 @@ fn validate_operation(
     operation: &DbOperationReference,
     arg_count: usize,
 ) -> Result<()> {
-    if operation.op != DbOperationKind::Insert {
+    if operation.op != DbOperationKind::Write {
         return Err(RuntimeError::Unsupported(format!(
-            "{binding_key} only supports single insert in this contract generation"
+            "{binding_key} only supports normalized single write in this contract generation"
         )));
     }
     if operation.operand_roles != [DbOperandRole::ObjectFields] {

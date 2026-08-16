@@ -2294,7 +2294,7 @@ mod tests {
                 construct: "DbOperation",
                 location,
             } if function_key == "db::insertItem"
-                && location == " bytecode F6 facts currently admit single-object db insert only"
+                && location == " bytecode F6 facts currently admit normalized db read/write only"
         ));
     }
 
@@ -2399,11 +2399,25 @@ mod tests {
             .expect("db insert emits an intrinsic DB operation fact");
         assert_eq!(
             operation.op,
-            skiff_artifact_model::bytecode::dto::DbOperationKind::Insert
+            skiff_artifact_model::bytecode::dto::DbOperationKind::Write
         );
-        assert_eq!(operation.target.type_name, "Item");
-        assert_eq!(operation.target.type_ref, record_ty);
-        assert_eq!(operation.result_type, record_ty);
+        assert_eq!(
+            operation
+                .target
+                .as_ref()
+                .expect("db write target is present")
+                .type_name,
+            "Item"
+        );
+        assert_eq!(
+            operation
+                .target
+                .as_ref()
+                .expect("db write target is present")
+                .type_ref,
+            record_ty
+        );
+        assert_eq!(operation.result_types, vec![record_ty.clone()]);
         assert_eq!(operation.result_plans.len(), 1);
         assert_eq!(intrinsic.signature.parameter_types, vec![record_ty.clone()]);
         assert_eq!(intrinsic.signature.result_types, vec![record_ty]);
@@ -2415,6 +2429,112 @@ mod tests {
                 signature_version: 1,
             }
         );
+    }
+
+    #[test]
+    fn db_read_emits_exact_intrinsic_facts_and_result_plan() {
+        let record_ty = TypeRefIr::Record {
+            fields: BTreeMap::from([
+                ("id".to_string(), TypeRefIr::builtin("string")),
+                ("value".to_string(), TypeRefIr::builtin("string")),
+            ]),
+        };
+        let key_ty = TypeRefIr::builtin("string");
+        let operation = DbOperationIr {
+            op: DbOpKindIr::Find,
+            many: false,
+            target: DbTargetIr {
+                type_ref: record_ty.clone(),
+                type_name: "Item".to_string(),
+            },
+            selector: Some(skiff_artifact_model::DbSelectorIr::Key {
+                value: expression(1),
+            }),
+            query: None,
+            projection: None,
+            body: None,
+            insert_body: None,
+            change: None,
+            result_type: record_ty.clone(),
+            source_span: None,
+        };
+        let expressions = vec![
+            MirExpression {
+                index: 0,
+                expression: ExprIr::DbOperation { operation },
+                ty: record_ty.clone(),
+                writable: None,
+                direct_call: None,
+                stream_result: None,
+                remote_interface: None,
+            },
+            MirExpression {
+                index: 1,
+                expression: ExprIr::Literal {
+                    value: LiteralIr::String {
+                        value: "item-id".to_string(),
+                    },
+                },
+                ty: key_ty.clone(),
+                writable: None,
+                direct_call: None,
+                stream_result: None,
+                remote_interface: None,
+            },
+        ];
+        let function = function(
+            "db",
+            "readItem",
+            record_ty.clone(),
+            Vec::new(),
+            expressions,
+            vec![MirBlock {
+                id: 0,
+                label: "entry".to_string(),
+                statements: one_return(expression(0)),
+                successors: Vec::new(),
+            }],
+            return_statements(0),
+            BTreeMap::new(),
+            Vec::new(),
+        );
+        let (unit, bundle) =
+            mir_and_bundle("db", Vec::new(), ExternalRefTable::default(), function);
+        let plans = plans(&unit);
+        let artifact = emit_bytecode_artifact(&[unit], &[bundle], &plans)
+            .expect("keyed db read emits exact bytecode facts");
+        let function = artifact.image.functions.get("db::readItem").unwrap();
+        let (intrinsic, operation) = function
+            .relocations
+            .iter()
+            .find_map(|relocation| match relocation {
+                BytecodeRelocation::IntrinsicRef { intrinsic } => intrinsic
+                    .db_operation
+                    .as_ref()
+                    .map(|operation| (intrinsic, operation)),
+                _ => None,
+            })
+            .expect("db read emits an intrinsic DB operation fact");
+        assert_eq!(
+            operation.op,
+            skiff_artifact_model::bytecode::dto::DbOperationKind::Read
+        );
+        assert_eq!(
+            operation.operand_roles,
+            vec![skiff_artifact_model::bytecode::dto::DbOperandRole::ReadKey]
+        );
+        assert_eq!(
+            operation
+                .target
+                .as_ref()
+                .expect("db read target is present")
+                .type_name,
+            "Item"
+        );
+        assert_eq!(operation.result_types, vec![record_ty.clone()]);
+        assert_eq!(intrinsic.signature.parameter_types, vec![key_ty]);
+        assert_eq!(intrinsic.signature.result_types, vec![record_ty]);
+        assert_eq!(intrinsic.signature.result_plans, operation.result_plans);
     }
 
     #[test]
