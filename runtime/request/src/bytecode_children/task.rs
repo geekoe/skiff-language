@@ -1003,6 +1003,40 @@ mod tests {
     }
 
     #[test]
+    fn task_submit_message_fails_closed_without_caller_request_id() {
+        let mut composition = composition();
+        composition.caller_request_id.clear();
+        let error = task_submit_message_from_composition(
+            &deployment(),
+            "protocol:task",
+            &target(LinkedTaskTiming::Immediate),
+            b"payload",
+            "rpc:task-child",
+            &composition,
+            Some(TaskSubmitTimingControl::Immediate),
+        )
+        .expect_err("missing caller request id must fail before submission");
+        assert!(error.to_string().contains("caller request id"));
+    }
+
+    #[test]
+    fn task_submit_message_fails_closed_without_runtime_id() {
+        let mut composition = composition();
+        composition.runtime_id.clear();
+        let error = task_submit_message_from_composition(
+            &deployment(),
+            "protocol:task",
+            &target(LinkedTaskTiming::Immediate),
+            b"payload",
+            "rpc:task-child",
+            &composition,
+            Some(TaskSubmitTimingControl::Immediate),
+        )
+        .expect_err("missing runtime id must fail before submission");
+        assert!(error.to_string().contains("runtime id"));
+    }
+
+    #[test]
     fn task_payload_uses_exact_linked_record_parameter_names() {
         let image = task_image();
         let target = image

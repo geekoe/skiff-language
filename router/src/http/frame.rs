@@ -24,12 +24,13 @@ use skiff_runtime_transport::TransportError;
 use super::error::HttpError;
 use super::ingress::HttpIngressBinding;
 use super::selector::{HttpRequestMetadata, TestCaseCorrelation};
+use crate::task::activation::activation_identity_for_deployment;
 
 static REQUEST_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Builds the canonical HTTP `request.start` typed header for one ingress
-/// (M4: the routing header carries the release-resolved build id; the
-/// assembly identity/generation tuple fields are left absent).
+/// Builds the canonical HTTP `request.start` typed header for one ingress.
+/// The routing header carries the release-resolved build id plus the exact
+/// activation identity projected from that immutable deployment.
 pub fn build_request_start_header(
     binding: &HttpIngressBinding,
     request_id: String,
@@ -45,6 +46,12 @@ pub fn build_request_start_header(
         .as_deref()
         .unwrap_or_default()
         .to_ascii_uppercase();
+    let (assembly_identity, assembly_generation) =
+        activation_identity_for_deployment(&binding.deployment).ok_or_else(|| {
+            HttpError::internal(
+                "request.start activation identity requires an exact release-resolved deployment",
+            )
+        })?;
     Ok(BytecodeRequestStartFrameHeader {
         schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
         frame_type: "request.start".to_string(),
@@ -55,8 +62,8 @@ pub fn build_request_start_header(
         },
         routing: BytecodeRequestRoutingFrameHeader {
             kind: "runtimeAssembly".to_string(),
-            assembly_identity: None,
-            assembly_generation: None,
+            assembly_identity: Some(assembly_identity),
+            assembly_generation: Some(assembly_generation),
             deployment: binding.deployment.clone(),
             build_id: Some(binding.build_id.clone()),
             gateway_entry_identity,

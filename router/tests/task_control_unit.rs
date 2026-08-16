@@ -12,9 +12,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use base64::Engine as _;
+use sha2::{Digest, Sha256};
 use skiff_artifact_model::{
     ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, DeploymentArtifactIdentity,
-    PackageCallableId,
+    PackageCallableId, RUNTIME_ASSEMBLY_IDENTITY_PREFIX,
 };
 use skiff_router::dispatch::{RequestDispatcher, RuntimeDispatcherOptions};
 use skiff_router::release::ReleaseResolver;
@@ -587,6 +588,17 @@ fn phase6_image() -> TaskExecutionImageRef {
         "a".repeat(64)
     ));
     image
+}
+
+fn assembly_identity_for_build(build: &str) -> String {
+    let digest = Sha256::digest(build);
+    format!(
+        "{RUNTIME_ASSEMBLY_IDENTITY_PREFIX}:{}",
+        digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )
 }
 
 fn record(
@@ -1321,10 +1333,26 @@ mod tests {
         let decision = rig.admission.admit(&claimed).await;
         assert_eq!(decision, AdmissionDecision::Accepted);
         assert_eq!(rig.peer.record.lock().unwrap().attempts.len(), 1);
+        let peer = rig.peer.record.lock().unwrap();
+        let header = peer.attempt_headers[0].clone();
+        let request_id = peer.attempts[0].clone();
+        let deployment = corpus_image().deployment;
+        let expected_identity =
+            assembly_identity_for_build(deployment.deployment_artifact_identity.as_str());
+        assert_eq!(
+            header
+                .routing
+                .assembly_identity
+                .as_ref()
+                .map(|identity| identity.as_str()),
+            Some(expected_identity.as_str())
+        );
+        assert_eq!(header.routing.assembly_generation, Some(1));
+        assert_eq!(header.routing.deployment, deployment);
         assert_eq!(rig.control.pending_attempt_count(), 1);
-        let request_id = &rig.peer.record.lock().unwrap().attempts[0];
-        assert!(rig.dispatcher.is_task_attempt(request_id));
+        assert!(rig.dispatcher.is_task_attempt(&request_id));
         assert_eq!(rig.dispatcher.pending_count(), 1);
+        rig.worker.abort();
     }
 
     #[tokio::test]

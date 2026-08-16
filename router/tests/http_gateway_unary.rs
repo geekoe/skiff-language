@@ -9,6 +9,8 @@ mod tests {
 
     use bytes::Bytes;
     use serde_json::Value;
+    use sha2::{Digest, Sha256};
+    use skiff_artifact_model::RUNTIME_ASSEMBLY_IDENTITY_PREFIX;
     use skiff_router::http::fake::{FakeDispatchPlan, FakeHttpDispatcher};
     use skiff_router::http::{start_http_gateway, HttpGatewayServer, HttpGatewayServerOptions};
 
@@ -17,6 +19,17 @@ mod tests {
         fixture_deployment_identity, fixture_resolver, send_request, service_headers,
         CONTRACT_VERSION, DEPLOYMENT_REVISION, SERVICE_ID,
     };
+
+    fn expected_assembly_identity() -> String {
+        let digest = Sha256::digest(fixture_deployment_identity());
+        format!(
+            "{RUNTIME_ASSEMBLY_IDENTITY_PREFIX}:{}",
+            digest
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        )
+    }
 
     async fn start_server(
         dispatcher: FakeHttpDispatcher,
@@ -69,14 +82,17 @@ mod tests {
         assert_eq!(header.mode, "unary");
         assert_eq!(header.request_id, header.request_id);
         assert_eq!(header.routing.kind, "runtimeAssembly");
-        assert!(
-            header.routing.assembly_identity.is_none(),
-            "M4: router does not fill the assembly identity tuple"
+        let expected_identity = expected_assembly_identity();
+        assert_eq!(
+            header
+                .routing
+                .assembly_identity
+                .as_ref()
+                .map(|identity| identity.as_str()),
+            Some(expected_identity.as_str()),
+            "request.start must carry the exact activation identity projected from the deployment"
         );
-        assert!(
-            header.routing.assembly_generation.is_none(),
-            "M4: router does not fill the generation tuple"
-        );
+        assert_eq!(header.routing.assembly_generation, Some(1));
         assert_eq!(header.routing.deployment.service_id, SERVICE_ID);
         assert_eq!(header.routing.deployment.contract_version, CONTRACT_VERSION);
         assert_eq!(

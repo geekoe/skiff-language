@@ -8,6 +8,7 @@
 //! from activation/session/actor owners; it consumes them only through the
 //! narrow ports defined here and in the dispatcher.
 
+pub(crate) mod activation;
 pub mod actor_attempt;
 pub mod actor_plan;
 pub mod actor_ports;

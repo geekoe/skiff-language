@@ -57,7 +57,10 @@ use crate::dispatch::{
 use crate::session::identity::RuntimeSessionEpoch;
 use crate::supervisor::actor::ActorComponents;
 use crate::supervisor::actor_sink::ActorFrameSink;
-use crate::task::{TaskActorOwnerPort, TaskAttemptInvocationCorrelation, TaskExecutionImageSource};
+use crate::task::{
+    activation::activation_identity_for_deployment, TaskActorOwnerPort,
+    TaskAttemptInvocationCorrelation, TaskExecutionImageSource,
+};
 use crate::telemetry::{task_event, TaskTelemetrySink};
 use crate::ws::Clock;
 
@@ -207,6 +210,8 @@ impl RouterTaskAttemptAdmission {
             expires_at: super::iso_timestamp(now.saturating_add(self.request_timeout_ms)),
         };
         let test_case = record.test_case.as_ref();
+        let (assembly_identity, assembly_generation) =
+            activation_identity_for_deployment(&record.execution.deployment)?;
         Some(BytecodeTaskRequestStartFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             frame_type: "request.start".to_string(),
@@ -217,8 +222,8 @@ impl RouterTaskAttemptAdmission {
             },
             routing: BytecodeTaskRequestRoutingFrameHeader {
                 kind: "runtimeAssembly".to_string(),
-                assembly_identity: None,
-                assembly_generation: None,
+                assembly_identity: Some(assembly_identity),
+                assembly_generation: Some(assembly_generation),
                 deployment: record.execution.deployment.clone(),
                 build_id: Some(
                     record
