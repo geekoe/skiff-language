@@ -2,9 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
     host_effect_registry, CallIr, CallableMayEffects, CallableRegistryTypeExpression, DbBodyIr,
-    DbChangeOpIr, DbOperationIr, DbPredicateIr, DbSelectorIr, ExprIr, HostEffectExecutorIdentity,
-    HostEffectReceiverSemantics, HostEffectRegistryEntry, NativeTarget, NominalTypeRefBaseIr,
-    PackageRefIr, PendingEffectCategory, PrivilegedAffineCompositeIdentity,
+    DbChangeOpIr, DbOperationIr, DbPredicateIr, DbSelectorIr, ExprIr, ExprRefIr,
+    HostEffectExecutorIdentity, HostEffectReceiverSemantics, HostEffectRegistryEntry, NativeTarget,
+    NominalTypeRefBaseIr, PackageRefIr, PendingEffectCategory, PrivilegedAffineCompositeIdentity,
     PrivilegedAffineFieldAccess, TypeRefIr,
 };
 use skiff_compiler_lowering::mir::{MirForInBinding, MirForInItemKind, MirFunction, MirStmtKind};
@@ -138,6 +138,8 @@ pub(super) struct HostEffectAdmissions {
     callback_calls: BTreeSet<u32>,
     actor_calls: BTreeSet<u32>,
     task_categories: BTreeMap<u32, PendingEffectCategory>,
+    throw_payload_expressions: BTreeSet<u32>,
+    db_result_slots: BTreeSet<u32>,
     expressions: BTreeMap<u32, Vec<RegistryValueAuthority>>,
     slots: BTreeMap<u32, Vec<RegistryValueAuthority>>,
     stream_for_in_statements: BTreeSet<u32>,
@@ -289,6 +291,37 @@ impl HostEffectAdmissions {
                         executor_identity,
                         role: RegistryValueRole::Result { ordinal: 0 },
                     });
+            }
+        }
+
+        for block in &function.blocks {
+            for statement in &block.statements {
+                if let MirStmtKind::Throw { value, .. } = &statement.kind {
+                    collect_throw_payload_descendants(
+                        function,
+                        *value,
+                        &mut admissions.throw_payload_expressions,
+                    )
+                    .map_err(|detail| HostEffectAdmissionError {
+                        expression_index: value.expression,
+                        detail,
+                    })?;
+                }
+                if let MirStmtKind::InitSlot { slot, value } = &statement.kind {
+                    let expression =
+                        function
+                            .expression(*value)
+                            .map_err(|error| HostEffectAdmissionError {
+                                expression_index: value.expression,
+                                detail: format!("db result source expression is absent: {error}"),
+                            })?;
+                    if matches!(
+                        expression.expression,
+                        ExprIr::DbOperation { .. } | ExprIr::DbQuery { .. }
+                    ) {
+                        admissions.db_result_slots.insert(*slot);
+                    }
+                }
             }
         }
 
@@ -705,6 +738,12 @@ impl HostEffectAdmissions {
         !self.interface_calls.is_empty()
     }
 
+    pub(super) fn has_actor_task_submit(&self) -> bool {
+        self.task_categories
+            .values()
+            .any(|category| *category == PendingEffectCategory::ActorCall)
+    }
+
     pub(super) fn has_db_calls(&self) -> bool {
         !self.db_calls.is_empty()
     }
@@ -720,6 +759,14 @@ impl HostEffectAdmissions {
 
     pub(super) fn is_db_body_expression(&self, expression_index: u32) -> bool {
         self.db_body_expressions.contains(&expression_index)
+    }
+
+    pub(super) fn is_throw_payload_expression(&self, expression_index: u32) -> bool {
+        self.throw_payload_expressions.contains(&expression_index)
+    }
+
+    pub(super) fn is_db_result_slot(&self, slot: u32) -> bool {
+        self.db_result_slots.contains(&slot)
     }
 
     pub(super) fn validate_effect_coverage(
@@ -809,6 +856,58 @@ fn exact_stream_loop_breaks(
         );
     }
     Ok(breaks)
+}
+
+fn collect_throw_payload_descendants(
+    function: &MirFunction,
+    value: ExprRefIr,
+    out: &mut BTreeSet<u32>,
+) -> Result<(), String> {
+    if !out.insert(value.expression) {
+        return Ok(());
+    }
+    let expression = function
+        .expression(value)
+        .map_err(|error| error.to_string())?;
+    match &expression.expression {
+        ExprIr::Construct { fields, .. } => {
+            for field in fields.values() {
+                collect_throw_payload_descendants(function, *field, out)?;
+            }
+        }
+        ExprIr::ArrayLiteral { items } => {
+            for item in items {
+                collect_throw_payload_descendants(function, *item, out)?;
+            }
+        }
+        ExprIr::Call { call } => {
+            for argument in &call.args {
+                collect_throw_payload_descendants(function, *argument, out)?;
+            }
+        }
+        ExprIr::Field { object, .. } => {
+            collect_throw_payload_descendants(function, *object, out)?;
+        }
+        ExprIr::Index { object, index } => {
+            collect_throw_payload_descendants(function, *object, out)?;
+            collect_throw_payload_descendants(function, *index, out)?;
+        }
+        ExprIr::Unary { value, .. } => {
+            collect_throw_payload_descendants(function, *value, out)?;
+        }
+        ExprIr::Binary { left, right, .. } => {
+            collect_throw_payload_descendants(function, *left, out)?;
+            collect_throw_payload_descendants(function, *right, out)?;
+        }
+        ExprIr::Throw { value, .. } => {
+            collect_throw_payload_descendants(function, *value, out)?;
+        }
+        ExprIr::ValueBlock { result, .. } => {
+            collect_throw_payload_descendants(function, *result, out)?;
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn collect_db_operation_children(operation: &DbOperationIr, out: &mut BTreeSet<u32>) {

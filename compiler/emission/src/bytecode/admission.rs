@@ -1791,7 +1791,7 @@ fn admit_function(
                 &format!("slot {} type", slot.slot),
                 host_effects.slot_authorities(slot.slot),
                 local_interface_tables,
-                exact_actor_face,
+                exact_actor_face || host_effects.is_db_result_slot(slot.slot),
             )?;
         }
     }
@@ -2059,9 +2059,11 @@ fn admit_effects_with_authority(
         })?;
     let interface_call_conservative_effects = host_effects.has_interface_calls()
         && (effects.escapes_caller_value || effects.invokes_unknown_target);
+    let has_actor_task_submit = host_effects.has_actor_task_submit();
     if effects.requires_same_heap_identity
         || (interface_call_conservative_effects && !host_effects.has_interface_calls())
         || (!host_effects.has_interface_calls()
+            && !has_actor_task_submit
             && (effects.escapes_caller_value || effects.invokes_unknown_target))
     {
         return Err(rejected_function(
@@ -2539,7 +2541,13 @@ fn admit_expression_with_host_effects(
             &expression.expression,
             ExprIr::Construct { type_ref, .. }
                 if local_interface_tables.concrete_type(type_ref)
-        );
+        )
+        || host_effects.is_throw_payload_expression(expression.index)
+        || host_effects.is_db_expression(expression.index)
+        || host_effects.is_db_body_expression(expression.index);
+    if let ExprIr::LoadSlot { slot } = &expression.expression {
+        local_interface_exact_face |= host_effects.is_db_result_slot(*slot);
+    }
     if let ExprIr::Call { call } = &expression.expression {
         if matches!(call.target, CallTargetIr::InterfaceMethod { .. })
             && call.args.first().is_some_and(|receiver| {
@@ -2594,6 +2602,16 @@ fn admit_expression_with_host_effects(
         && !host_effects.is_db_body_expression(expression.index)
         && !actor_facts.is_actor_handle(&expression.ty)
         && !is_actor_registry_get_string_literal(function, expression.index)
+        && !matches!(
+            &expression.ty,
+            TypeRefIr::Builtin { name, args } if name == "string" && args.is_empty()
+        )
+        && !matches!(
+            &expression.ty,
+            TypeRefIr::Literal {
+                value: LiteralIr::String { .. }
+            }
+        )
     {
         admit_type_with_discriminator_flag(
             units,
@@ -2692,6 +2710,11 @@ fn admit_expression_with_host_effects(
             }
             LiteralIr::String { .. } if local_interface_exact_face => None,
             LiteralIr::String { .. } if server_stream.admits_scalar_carrier(&expression.ty) => None,
+            LiteralIr::String { .. }
+                if host_effects.is_throw_payload_expression(expression.index) =>
+            {
+                None
+            }
             LiteralIr::String { .. } if host_effects.is_db_body_expression(expression.index) => {
                 None
             }
@@ -3208,7 +3231,8 @@ fn admit_call(
             if server_stream.admits_receiver_call(expression.index)
                 || server_stream.admits_intrinsic_call(function, expression.index)
                 || local_interface_tables
-                    .exact_local_interface_string_length(unit, function, call) =>
+                    .exact_local_interface_string_length(unit, function, call)
+                || exact_string_length_call(function, call) =>
         {
             return Ok(());
         }
@@ -3376,6 +3400,18 @@ fn admit_call(
     )?;
     admit_local_call_source_event(unit, function_key, function, expression, call)?;
     Ok(())
+}
+
+fn exact_string_length_call(function: &MirFunction, call: &CallIr) -> bool {
+    let CallTargetIr::ReceiverBuiltin { op } = &call.target else {
+        return false;
+    };
+    if op.canonical_key != "receiver:string.length@1" || call.args.len() != 1 {
+        return false;
+    }
+    function
+        .expression(call.args[0])
+        .is_ok_and(|receiver| receiver.ty == TypeRefIr::builtin("string"))
 }
 
 fn admit_callback_method_call(

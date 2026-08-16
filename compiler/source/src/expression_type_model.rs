@@ -2142,13 +2142,25 @@ impl<'a> OwnerChecker<'a> {
                 slots.len()
             ));
         }
+        let mut matched_rows = BTreeSet::new();
         let mut remote_slots = Vec::with_capacity(slots.len());
-        for (ordinal, (slot, method)) in slots.iter().zip(&row.methods).enumerate() {
-            if slot.slot != ordinal as u32
-                || !Self::interface_method_abi_matches(&slot.method_abi_id, &method.method_abi_id)
-            {
+        for (ordinal, slot) in slots.iter().enumerate() {
+            if slot.slot != ordinal as u32 {
+                return Err(format!("interface slot {ordinal} is not dense from zero"));
+            }
+            let mut matches = row.methods.iter().enumerate().filter(|(_, method)| {
+                Self::interface_method_abi_matches(&slot.method_abi_id, &method.method_abi_id)
+            });
+            let Some((method_ordinal, method)) = matches.next() else {
                 return Err(format!(
-                    "public instance method row {ordinal} disagrees with interface slot facts"
+                    "interface slot {ordinal} ABI `{}` has no exact public instance method row",
+                    slot.method_abi_id
+                ));
+            };
+            if matches.next().is_some() || !matched_rows.insert(method_ordinal) {
+                return Err(format!(
+                    "interface slot {ordinal} ABI `{}` joins ambiguous or duplicate public instance method rows",
+                    slot.method_abi_id
                 ));
             }
             remote_slots.push(RemoteOperationSlotPlanIr {

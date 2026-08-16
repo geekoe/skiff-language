@@ -301,6 +301,102 @@ impl<'a> TypeLinker<'a> {
         )
     }
 
+    pub(in crate::bytecode) fn intern_package_global_type_ref(
+        &mut self,
+        package: &HydratedBytecodePackage,
+        expected: &TypeRefIr,
+        location: BytecodeLinkLocation,
+    ) -> Result<Option<(TypeIndex, TypeRefIr, u32)>, BytecodeLinkError> {
+        let Some(artifact_index) = find_pool_type(package, expected, location.clone())? else {
+            return Ok(None);
+        };
+        let (index, concrete) =
+            self.intern_package_global_type(package, artifact_index, location)?;
+        Ok(Some((index, concrete, artifact_index)))
+    }
+
+    pub(in crate::bytecode) fn intern_specialized_shape_for_type_index(
+        &mut self,
+        package: &HydratedBytecodePackage,
+        specialization: &SpecializationKey,
+        artifact_type_index: u32,
+        type_index: TypeIndex,
+        location: BytecodeLinkLocation,
+    ) -> Result<Option<ShapeIndex>, BytecodeLinkError> {
+        if let Some(existing) = self.shape_entries.iter().find(|entry| {
+            entry.nominal_type() == type_index && entry.origin().specialization().is_some()
+        }) {
+            return Ok(Some(existing.index()));
+        }
+        let bytecode = package.bytecode().ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                "type-only package has no bytecode shape pool".to_string(),
+            )
+        })?;
+        let shape_index = bytecode
+            .view()
+            .pools()
+            .shapes
+            .iter()
+            .position(|entry| {
+                matches!(
+                    entry,
+                    BytecodePoolEntry::ShapeRef { shape }
+                        if shape.type_ref == artifact_type_index
+                )
+            })
+            .ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    format!("artifact type {artifact_type_index} has no exact shape row"),
+                )
+            })?;
+        let shape_index = u32::try_from(shape_index).map_err(|_| {
+            obligation_error(
+                location.clone(),
+                "shape pool index does not fit u32".to_string(),
+            )
+        })?;
+        let base = self.intern_pool_shape(
+            package,
+            specialization,
+            shape_index,
+            &BTreeMap::new(),
+            location.clone(),
+        )?;
+        let base = self.shape(base).ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                format!("linked base shape row {} is absent", base.get()),
+            )
+        })?;
+        let raw_index = self.shape_entries.len();
+        let index = ShapeIndex::new(u32::try_from(raw_index).map_err(|_| {
+            obligation_error(
+                location.clone(),
+                "specialized shape table index does not fit u32".to_string(),
+            )
+        })?);
+        let origin = LinkedArtifactPoolOrigin::new(
+            package.reference().package_build_id.clone(),
+            ArtifactShapeIndex::new(shape_index),
+            Some(specialization.clone()),
+        )
+        .map_err(|error| obligation_error(location.clone(), error.to_string()))?;
+        let entry = LinkedShapeEntry::new(
+            index,
+            origin,
+            type_index,
+            base.plan().clone(),
+            base.privileged_affine_composite(),
+            base.fields().to_vec().into_boxed_slice(),
+        )
+        .map_err(|error| obligation_error(location.clone(), error.to_string()))?;
+        self.shape_entries.push(entry);
+        Ok(Some(index))
+    }
+
     pub(in crate::bytecode) fn intern_builtin(
         &mut self,
         package: &HydratedBytecodePackage,

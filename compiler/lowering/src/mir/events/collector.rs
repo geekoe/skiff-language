@@ -160,6 +160,42 @@ impl<'a> MirSourceEventCollector<'a> {
         Ok(())
     }
 
+    pub(crate) fn record_tail_expression_for_statement(
+        &mut self,
+        key: Option<SourceEventKey>,
+        expression_index: u32,
+    ) -> Result<(), MirSourceEventPlanError> {
+        let Some(key) = key else {
+            return Ok(());
+        };
+        if self.source_facts.is_none() {
+            return Ok(());
+        }
+        if !matches!(key, SourceEventKey::Statement(_)) {
+            return Err(MirSourceEventPlanError::new(
+                "tail expression source key must be a statement key",
+            ));
+        }
+        let occurrence_ordinal = next_occurrence(
+            &mut self.expression_occurrences,
+            expression_index,
+            "expression",
+        )?;
+        let site = self.record_source_key(&key)?;
+        self.events.push(MirSourceEvent {
+            attribution_id: StatementAttributionId::Expression {
+                expression_index,
+                occurrence_ordinal,
+            },
+            site,
+            anchor: MirEmissionAnchor::Expression {
+                expression_index,
+                occurrence_ordinal,
+            },
+        });
+        Ok(())
+    }
+
     pub(crate) fn promote_tail_local_candidate(
         &mut self,
         statement_index: u32,

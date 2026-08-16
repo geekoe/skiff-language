@@ -824,6 +824,57 @@ fn actor_receiver_call_uses_actor_method_target_and_exact_local_effects() {
 }
 
 #[test]
+fn actor_receiver_call_normalizes_callee_pending_categories_to_actor_call() {
+    let model = AnalysisFixture::new(
+        r#"
+            type Doc {
+              id: string,
+            }
+
+            db object Doc {
+              primary key(id)
+            }
+
+            type Worker {
+              id: string,
+            }
+
+            actor Worker {
+              key(id)
+              create()
+            }
+
+            impl Worker {
+              function handle(self: Worker, value: number) -> number {
+                db transaction {
+                  db insert Doc { id = "actor-db" }
+                }
+                std.time.sleep(Duration.milliseconds(0))
+                return value
+              }
+            }
+
+            function wrapper(worker: Worker, value: number) -> number {
+              return worker.handle(value)
+            }
+        "#,
+    )
+    .analyze();
+
+    assert_eq!(
+        effects(&model, "wrapper"),
+        pending_only_effects(vec![PendingEffectCategory::ActorCall])
+    );
+    let callee = effects(&model, "Worker.handle");
+    assert!(callee
+        .pending_effect_categories
+        .contains(&PendingEffectCategory::HostEffect));
+    assert!(callee
+        .pending_effect_categories
+        .contains(&PendingEffectCategory::NativeCall));
+}
+
+#[test]
 fn ordinary_receiver_call_does_not_use_actor_method_target() {
     let model = AnalysisFixture::new(
         r#"

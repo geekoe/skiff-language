@@ -3406,21 +3406,88 @@ impl DeploymentLinker<'_> {
         let mut result_types = Vec::with_capacity(signature.result_types.len());
         let mut result_plans = Vec::with_capacity(signature.result_types.len());
         for (ty, plan) in signature.result_types.iter().zip(&signature.result_plans) {
-            let index = type_linker.intern_concrete_type(
-                package,
-                specialization,
+            let (index, concrete, artifact_index) = if matches!(
                 ty,
-                &BTreeMap::new(),
-                location.clone(),
-            )?;
-            let concrete = type_linker.linked_type_ref(index).cloned().ok_or_else(|| {
-                unsatisfied(
-                    BytecodeLinkObligation::FrameAndValueTransferPlan,
+                TypeRefIr::LocalType { .. }
+                    | TypeRefIr::PublicationType { .. }
+                    | TypeRefIr::DbObjectSymbol { .. }
+                    | TypeRefIr::PackageSymbol { .. }
+                    | TypeRefIr::AppliedNominal {
+                        base: skiff_artifact_model::NominalTypeRefBaseIr::PackageSymbol { .. },
+                        ..
+                    }
+            ) {
+                let index = type_linker.intern_concrete_type(
+                    package,
+                    specialization,
+                    ty,
+                    &BTreeMap::new(),
                     location.clone(),
-                    "db operation result type is absent".to_string(),
-                )
-            })?;
+                )?;
+                let concrete = type_linker.linked_type_ref(index).cloned().ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::FrameAndValueTransferPlan,
+                        location.clone(),
+                        "db operation result type is absent".to_string(),
+                    )
+                })?;
+                let artifact_index = type_linker
+                    .intern_package_global_type_ref(package, ty, location.clone())?
+                    .ok_or_else(|| {
+                        unsatisfied(
+                            BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                            location.clone(),
+                            format!("db operation result type {ty:?} has no exact shape owner"),
+                        )
+                    })?
+                    .2;
+                (index, concrete, artifact_index)
+            } else {
+                let index = type_linker.intern_concrete_type(
+                    package,
+                    specialization,
+                    ty,
+                    &BTreeMap::new(),
+                    location.clone(),
+                )?;
+                let concrete = type_linker.linked_type_ref(index).cloned().ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::FrameAndValueTransferPlan,
+                        location.clone(),
+                        "db operation result type is absent".to_string(),
+                    )
+                })?;
+                (index, concrete, 0)
+            };
             result_types.push(index);
+            if matches!(
+                concrete,
+                TypeRefIr::LocalType { .. }
+                    | TypeRefIr::PublicationType { .. }
+                    | TypeRefIr::DbObjectSymbol { .. }
+                    | TypeRefIr::PackageSymbol { .. }
+                    | TypeRefIr::AppliedNominal {
+                        base: skiff_artifact_model::NominalTypeRefBaseIr::PackageSymbol { .. },
+                        ..
+                    }
+            ) {
+                let has_shape = type_linker
+                    .intern_specialized_shape_for_type_index(
+                        package,
+                        specialization,
+                        artifact_index,
+                        index,
+                        location.clone(),
+                    )?
+                    .is_some();
+                if !has_shape {
+                    return Err(unsatisfied(
+                        BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                        location.clone(),
+                        format!("db operation result type {concrete:?} has no exact shape row"),
+                    ));
+                }
+            }
             result_plans.push(type_linker.link_plan_for_type_at(
                 package,
                 specialization,

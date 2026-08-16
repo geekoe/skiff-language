@@ -106,6 +106,88 @@ fn emitted_artifact() -> skiff_artifact_model::BytecodeArtifact {
     emit_bytecode_artifact(&admitted, &bundles, &plans).expect("local interface emits")
 }
 
+fn admit_and_emit_source(source: &str) -> skiff_artifact_model::BytecodeArtifact {
+    let lowered = lower(source);
+    let admitted = admit_phase_1_bytecode_mir(lowered.mir_units())
+        .expect("phase 6 core blocker source passes admission");
+    let plans = derive_test_bytecode_value_transfer_plans(lowered.mir_units())
+        .expect("phase 6 core blocker plans derive exactly");
+    let bundles = lowered
+        .file_ir_units()
+        .iter()
+        .map(|unit| {
+            ConstEvaluator::new(Bounds::default())
+                .evaluate_unit(unit)
+                .expect("phase 6 core blocker constants evaluate")
+        })
+        .collect::<Vec<_>>();
+    emit_bytecode_artifact(&admitted, &bundles, &plans).expect("phase 6 core blocker emits")
+}
+
+#[test]
+fn db_abort_transaction_value_with_throw_emits() {
+    admit_and_emit_source(
+        r#"
+type Doc {
+  id: string,
+  value: string,
+}
+
+db object Doc {
+  primary key(id)
+}
+
+type Failure {
+  message: string,
+}
+
+function run(seed: number) -> number {
+  db transaction value {
+    db insert Doc { id = "phase6-db-abort" value = "bad" }
+    throw Failure { message: "abort" }
+    0
+  }
+}
+"#,
+    );
+}
+
+#[test]
+fn recoverable_restore_db_require_record_with_string_fields_emits() {
+    admit_and_emit_source(
+        r#"
+type Doc {
+  id: string,
+  value: string,
+}
+
+db object Doc {
+  primary key(id)
+}
+
+function restore(seed: number) -> number {
+  final found = db require Doc("phase6-key")
+  return found.value.length()
+}
+"#,
+    );
+}
+
+#[test]
+fn service_throw_record_payload_emits() {
+    admit_and_emit_source(
+        r#"
+type Failure {
+  message: string,
+}
+
+function fail() -> void {
+  throw Failure { message: "service-throw" }
+}
+"#,
+    );
+}
+
 #[test]
 fn local_interface_admission_emits_exact_local_and_requirement_tables() {
     let artifact = emitted_artifact();

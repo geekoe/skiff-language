@@ -416,14 +416,53 @@ impl TargetCollector<'_> {
                 return None;
             }
         };
+        let slots = match self
+            .type_resolution
+            .interface_method_slots_for_instantiation(&selector.instantiation_ref)
+        {
+            Ok(slots) => slots,
+            Err(error) => {
+                self.errors.push(format!(
+                    "{}: remote interface source `{}/{}` failed: interface method slots failed: {error}",
+                    self.module_path, source.dependency_ref, source.public_path,
+                ));
+                return None;
+            }
+        };
+        let mut matched_rows = BTreeSet::new();
+        let mut operations = Vec::with_capacity(slots.len());
+        for slot in slots {
+            let mut matches = row.methods.iter().enumerate().filter(|(_, method)| {
+                interface_method_abi_matches(&slot.method_abi_id, &method.method_abi_id)
+            });
+            let Some((method_ordinal, method)) = matches.next() else {
+                self.errors.push(format!(
+                    "{}: remote interface source `{}/{}` failed: interface slot {} ABI `{}` has no exact public instance method row",
+                    self.module_path,
+                    source.dependency_ref,
+                    source.public_path,
+                    slot.slot,
+                    slot.method_abi_id
+                ));
+                return None;
+            };
+            if matches.next().is_some() || !matched_rows.insert(method_ordinal) {
+                self.errors.push(format!(
+                    "{}: remote interface source `{}/{}` failed: interface slot {} ABI `{}` joins ambiguous or duplicate public instance method rows",
+                    self.module_path,
+                    source.dependency_ref,
+                    source.public_path,
+                    slot.slot,
+                    slot.method_abi_id
+                ));
+                return None;
+            }
+            operations.push(method.contract_operation_id.clone());
+        }
         Some(ResolvedCallTarget::RemoteInterface {
             contract_requirement: requirement,
             public_instance_key: source.public_path.clone(),
-            operations: row
-                .methods
-                .iter()
-                .map(|method| method.contract_operation_id.clone())
-                .collect(),
+            operations,
         })
     }
 
@@ -1026,6 +1065,15 @@ fn interface_instantiations_match(
             .zip(interface_declaration_stable_key(right))
             .is_some_and(|(left, right)| left == right)
             && left.canonical_type_args == right.canonical_type_args)
+}
+
+fn interface_method_abi_matches(left: &str, right: &str) -> bool {
+    left == right
+        || left
+            .rsplit(':')
+            .next()
+            .zip(right.rsplit(':').next())
+            .is_some_and(|(left, right)| left == right)
 }
 
 fn interface_declaration_stable_key(

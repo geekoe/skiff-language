@@ -81,8 +81,17 @@ impl Evaluator<'_, '_> {
                     }
                     CallableState::fail_closed(CallableProvenanceUnknownReason::UnknownCallTarget)
                 });
+                let previous_pending_categories =
+                    if matches!(target, ResolvedCallTarget::ActorMethod { .. }) {
+                        Some(self.state.effects.pending_effect_categories.clone())
+                    } else {
+                        None
+                    };
                 let result = self.apply_callee(&callee, &actuals, return_reference, None);
                 if matches!(target, ResolvedCallTarget::ActorMethod { .. }) {
+                    if let Some(previous) = previous_pending_categories {
+                        self.state.effects.pending_effect_categories = previous;
+                    }
                     record_pending_category(
                         &mut self.state.effects,
                         PendingEffectCategory::ActorCall,

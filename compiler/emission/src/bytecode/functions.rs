@@ -632,6 +632,13 @@ impl<'a> FunctionEmitter<'a> {
             &result_type,
             &format!("db write result plan in `{}`", self.key),
         )?;
+        let result_fields = self.record_shape_fields(&result_type, "db write result")?;
+        self.image.intern_shape(
+            self.unit.module_path.as_str(),
+            &result_type,
+            &result_fields,
+            &format!("db write result shape in `{}`", self.key),
+        )?;
         let reference = DbOperationReference {
             op: DbOperationKind::Write,
             target: Some(DbTargetIr {
@@ -687,7 +694,15 @@ impl<'a> FunctionEmitter<'a> {
             ));
         }
         let target_type = self.db_object_publication_type(&operation.target.type_ref);
-        let key_type = self.function.expression(*value)?.ty.clone();
+        let mut key_type = self.function.expression(*value)?.ty.clone();
+        if matches!(
+            &key_type,
+            TypeRefIr::Literal {
+                value: LiteralIr::String { .. }
+            }
+        ) {
+            key_type = TypeRefIr::builtin("string");
+        }
         let parameter_plan = self.image.exact_type_plan(
             self.unit.module_path.as_str(),
             &key_type,
@@ -698,6 +713,13 @@ impl<'a> FunctionEmitter<'a> {
             self.unit.module_path.as_str(),
             &result_type,
             &format!("db read result plan in `{}`", self.key),
+        )?;
+        let result_fields = self.record_shape_fields(&result_type, "db read result")?;
+        self.image.intern_shape(
+            self.unit.module_path.as_str(),
+            &result_type,
+            &result_fields,
+            &format!("db read result shape in `{}`", self.key),
         )?;
         self.emit_expression(*value)?;
         let reference = DbOperationReference {
@@ -2576,12 +2598,12 @@ impl<'a> FunctionEmitter<'a> {
         let ExprIr::Call { call } = &expression.expression else {
             return Ok(false);
         };
-        if expression.direct_call.is_none() {
-            return Ok(false);
-        }
         if call.metadata.contains_key(TASK_SUBMIT_METADATA_KEY) {
             self.emit_task_submit_call(expression, call)?;
             return Ok(true);
+        }
+        if expression.direct_call.is_none() {
+            return Ok(false);
         }
         self.emit_direct_call(expression, false)
     }

@@ -1971,6 +1971,14 @@ impl<'a> FunctionLowerer<'a> {
             lowered.statements.push(self.lower_stmt(stmt)?);
         }
 
+        let tail_statement_key = match value_result {
+            Some(_) => Some(
+                self.source_event_collector
+                    .next_statement_key()
+                    .map_err(|error| CompileError::Semantic(error.to_string()))?,
+            ),
+            None => None,
+        };
         let (result, result_type) = if let Some(value) = value_result {
             let result_type = self
                 .next_expression_type_ir()
@@ -1981,7 +1989,13 @@ impl<'a> FunctionLowerer<'a> {
                         .flatten()
                 })
                 .unwrap_or_else(|| TypeRefIr::builtin("Json"));
-            (self.lower_expr(value)?, result_type)
+            let result = self.lower_expr(value)?;
+            if let Some(key) = tail_statement_key {
+                self.source_event_collector
+                    .record_tail_expression_for_statement(key, result.expression)
+                    .map_err(|error| CompileError::Semantic(error.to_string()))?;
+            }
+            (result, result_type)
         } else {
             let null_type = TypeRefIr::builtin("null");
             (

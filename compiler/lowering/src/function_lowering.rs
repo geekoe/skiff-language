@@ -132,7 +132,7 @@ pub(super) struct FunctionLowerer<'a> {
     pub(super) local_db_objects: &'a LocalDbObjectIndex,
     pub(super) type_param_scope: BTreeSet<String>,
     pub(super) expression_owner: Option<ExpressionOwnerKey>,
-    source_event_collector: MirSourceEventCollector<'a>,
+    pub(super) source_event_collector: MirSourceEventCollector<'a>,
     pub(super) interface_semantics: &'a InterfaceSemantics,
     pub(super) type_resolution: &'a TypeResolutionModel,
     pub(super) expression_types: Option<&'a ExpressionTypeModel>,
@@ -894,6 +894,15 @@ impl<'a> FunctionLowerer<'a> {
         };
         call.metadata
             .insert(TASK_SUBMIT_METADATA_KEY.to_string(), metadata);
+        let expression_type = self
+            .expression_types_ir
+            .get_mut(call_ref.expression as usize)
+            .ok_or_else(|| {
+                CompileError::Semantic(
+                    "dispatch expression type disappeared after task metadata lowering".to_string(),
+                )
+            })?;
+        *expression_type = TypeRefIr::builtin("TaskRef");
         self.source_event_collector
             .mark_dispatched_call(call_ref.expression)
             .map_err(source_event_error)?;
