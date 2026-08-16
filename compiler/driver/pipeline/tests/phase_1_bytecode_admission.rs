@@ -174,6 +174,7 @@ fn phase_2_bytecode_admission_publishes_nested_writable_mutation_fixture() {
         .iter()
         .find(|function| function.function_key == "main::run")
         .expect("run function");
+    assert_non_overlapping_source_map(&run.source_map, "main::run");
     assert!(
         run.instructions.iter().any(|instruction| {
             instruction.descriptor.kind == skiff_artifact_model::bytecode::Opcode::SetWritablePath
@@ -187,6 +188,26 @@ fn phase_2_bytecode_admission_publishes_nested_writable_mutation_fixture() {
         vec![2],
         "the mutated local alias is the single writable root"
     );
+}
+
+fn assert_non_overlapping_source_map(
+    source_map: &[skiff_artifact_model::SourceMapEntry],
+    function_key: &str,
+) {
+    let mut previous_end = None;
+    for (index, entry) in source_map.iter().enumerate() {
+        assert!(
+            entry.start_pc < entry.end_pc,
+            "{function_key} sourceMap[{index}] range is empty"
+        );
+        if let Some(previous_end) = previous_end {
+            assert!(
+                previous_end <= entry.start_pc,
+                "{function_key} sourceMap[{index}] overlaps previous entry"
+            );
+        }
+        previous_end = Some(entry.end_pc);
+    }
 }
 
 fn compile_phase_1_source(

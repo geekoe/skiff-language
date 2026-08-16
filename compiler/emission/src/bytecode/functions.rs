@@ -5051,6 +5051,13 @@ impl<'a> FunctionEmitter<'a> {
             .chain(&self.stream_source_sites)
             .chain(&self.generated_source_sites)
         {
+            if !covered_instructions.insert(*instruction_index) {
+                // Statement/failure source sites can land on the same emitted
+                // instruction as their expression or writable-path event.
+                // Source map rows are one-per-instruction; statement charges
+                // remain in the independent statement schedule.
+                continue;
+            }
             let start_pc = *pcs
                 .get(*instruction_index)
                 .ok_or_else(|| arithmetic(&self.key, "throw source site instruction pc lookup"))?;
@@ -6032,6 +6039,7 @@ mod tests {
 
     fn emit_with_injected_remote_events(
         events: Vec<MirSourceEvent>,
+        generated_duplicate_instruction: Option<usize>,
     ) -> Result<RelocatableBytecodeFunction, BytecodeEmissionError> {
         let mut function = remote_interface_function();
         function.liveness =
@@ -6083,7 +6091,18 @@ mod tests {
         let dense_parameter_materializations = BTreeMap::new();
         let machine_carriers =
             super::super::carriers::analyze_machine_carriers(&units).expect("carriers analyze");
-        let service_boundary_plans = BTreeMap::new();
+        let service_boundary_plans = BTreeMap::from([(
+            ServiceCallRef {
+                service_requirement_slot: 3,
+                contract_operation_id: skiff_artifact_model::ContractOperationId::new(
+                    "operation:reader:read",
+                ),
+                expected_protocol_identity: skiff_artifact_model::ServiceProtocolIdentity::new(
+                    "protocol:reader",
+                ),
+            },
+            remote_interface_service_boundary_plan(),
+        )]);
         let inputs = ValidatedEmissionInputs::validate(
             &units,
             &bundles,
@@ -6120,7 +6139,81 @@ mod tests {
         .expect("test emitter constructs");
         emitter.events = events;
         emitter.event_mapping = vec![None; emitter.events.len()];
+        if let Some(instruction) = generated_duplicate_instruction {
+            emitter.generated_source_sites.push((
+                instruction,
+                InstructionSourceSite::Synthetic {
+                    reason: SyntheticInstructionSiteReason::CompilerDesugaring,
+                },
+            ));
+        }
         emitter.emit()
+    }
+
+    fn remote_interface_service_boundary_plan() -> ServiceBoundaryPlan {
+        let descriptor = skiff_artifact_model::PackageSchemaCanonicalDescriptor {
+            type_params: Vec::new(),
+            descriptor: skiff_artifact_model::ContractTypeDescriptor::Record {
+                fields: BTreeMap::from([
+                    (
+                        "message".to_string(),
+                        skiff_artifact_model::ContractTypeRef::builtin("string"),
+                    ),
+                    (
+                        "traceId".to_string(),
+                        skiff_artifact_model::ContractTypeRef::builtin("string"),
+                    ),
+                    (
+                        "errorId".to_string(),
+                        skiff_artifact_model::ContractTypeRef::builtin("string"),
+                    ),
+                ]),
+            },
+        };
+        let type_id = skiff_artifact_model::derive_package_schema_type_id(
+            "skiff.run/std",
+            "std.service.InternalError",
+            &descriptor,
+        )
+        .expect("canonical std.service.InternalError schema derives");
+        ServiceBoundaryPlan {
+            arguments: Vec::new(),
+            results: Vec::new(),
+            error: skiff_artifact_model::BoundaryErrorPlan {
+                fallback_contract_type: skiff_artifact_model::ContractTypeRef::package_schema(
+                    "skiff.run/std",
+                    "std.service.InternalError",
+                    type_id,
+                ),
+                fallback: skiff_artifact_model::BoundaryValuePlan::Linkable {
+                    carrier: skiff_artifact_model::BoundaryValueCarrier::DetachedValueGraph,
+                    encoding: skiff_artifact_model::BoundaryValueEncoding::CanonicalValue,
+                    owner: skiff_artifact_model::BoundaryValueOwner::Caller,
+                    lifetime: skiff_artifact_model::BoundaryValueLifetime::Call,
+                },
+                policy: skiff_artifact_model::BoundaryErrorPolicy::DynamicPublicSchema {
+                    admission:
+                        skiff_artifact_model::BoundaryErrorAdmission::PublicNameableSchemaClosed,
+                    fallback_identity:
+                        skiff_artifact_model::BoundaryErrorFallbackIdentity::StdServiceInternalError,
+                },
+                transfer: skiff_artifact_model::BoundaryTransfer::Move,
+                drop: skiff_artifact_model::BoundaryDropPlan::SnapshotRelease,
+                source: skiff_artifact_model::ValueProvenance::Fresh,
+            },
+            stream_item: None,
+            callbacks: skiff_artifact_model::ServiceCallbackPlan::None,
+            effects: CallableEffectSummary::Analyzed {
+                effects: CallableMayEffects {
+                    escapes_caller_value: false,
+                    requires_same_heap_identity: false,
+                    invokes_unknown_target: false,
+                    may_pending: true,
+                    pending_effect_categories: vec![PendingEffectCategory::ServiceCall],
+                    inout_path_effects: Vec::new(),
+                },
+            },
+        }
     }
 
     #[test]
@@ -6153,8 +6246,9 @@ mod tests {
             },
         ];
 
-        let emitted = emit_with_injected_remote_events(events)
+        let emitted = emit_with_injected_remote_events(events, None)
             .expect("collapsed remote interface source events must anchor to the box");
+        assert_non_overlapping_source_map(&emitted.source_map, "remote::boxReader");
         assert_eq!(
             emitted.statement_entries.len(),
             2,
@@ -6174,6 +6268,46 @@ mod tests {
     }
 
     #[test]
+    fn remote_interface_box_generated_duplicate_source_site_stays_monotonic() {
+        let site = InstructionSourceSite::Synthetic {
+            reason: SyntheticInstructionSiteReason::CompilerDesugaring,
+        };
+        let events = vec![
+            MirSourceEvent {
+                attribution_id: StatementAttributionId::Expression {
+                    expression_index: 1,
+                    occurrence_ordinal: 0,
+                },
+                site: site.clone(),
+                anchor: MirEmissionAnchor::Expression {
+                    expression_index: 1,
+                    occurrence_ordinal: 0,
+                },
+            },
+            MirSourceEvent {
+                attribution_id: StatementAttributionId::Expression {
+                    expression_index: 1,
+                    occurrence_ordinal: 1,
+                },
+                site,
+                anchor: MirEmissionAnchor::Expression {
+                    expression_index: 1,
+                    occurrence_ordinal: 1,
+                },
+            },
+        ];
+
+        let emitted = emit_with_injected_remote_events(events, Some(0))
+            .expect("generated duplicate source site must not reject remote box emission");
+        assert_eq!(
+            emitted.source_map.len(),
+            1,
+            "the generated duplicate must not create a second source-map row"
+        );
+        assert_non_overlapping_source_map(&emitted.source_map, "remote::boxReader");
+    }
+
+    #[test]
     fn remote_interface_placeholder_event_without_anchor_fails_closed() {
         let events = vec![MirSourceEvent {
             attribution_id: StatementAttributionId::Expression {
@@ -6189,7 +6323,7 @@ mod tests {
             },
         }];
 
-        let error = emit_with_injected_remote_events(events)
+        let error = emit_with_injected_remote_events(events, None)
             .expect_err("an un-emitted placeholder must not silently anchor");
         assert!(matches!(
             error,
@@ -6201,6 +6335,26 @@ mod tests {
                 && location.contains("event 0")
                 && location.contains("not anchored to emitted code")
         ));
+    }
+
+    fn assert_non_overlapping_source_map(
+        source_map: &[skiff_artifact_model::SourceMapEntry],
+        function_key: &str,
+    ) {
+        let mut previous_end = None;
+        for (index, entry) in source_map.iter().enumerate() {
+            assert!(
+                entry.start_pc < entry.end_pc,
+                "{function_key} sourceMap[{index}] range is empty"
+            );
+            if let Some(previous_end) = previous_end {
+                assert!(
+                    previous_end <= entry.start_pc,
+                    "{function_key} sourceMap[{index}] overlaps previous entry"
+                );
+            }
+            previous_end = Some(entry.end_pc);
+        }
     }
 
     #[test]
