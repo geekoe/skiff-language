@@ -246,6 +246,22 @@ impl ActorActivationRequestBroker {
             return GetOrCreateOutcome::Joined;
         }
         if let Some(fence) = self.registry.current_owner(&request.actor_key) {
+            if fence.build_id != request.route_authority.build_id
+                || fence.actor_abi_identity != request.actor_abi_identity
+                || fence.actor_implementation_identity != request.actor_implementation_identity
+                || fence.declaration_owner != request.declaration_owner
+            {
+                inner.outcomes.insert(
+                    request.rpc_id.clone(),
+                    ActivationWaiterOutcome::Failed {
+                        code: "ActorVersionRejected".to_string(),
+                    },
+                );
+                self.notify_waiters();
+                return GetOrCreateOutcome::Failed {
+                    code: "ActorVersionRejected".to_string(),
+                };
+            }
             let actor_ref = request.actor_key.to_actor_ref(fence.epoch);
             inner.outcomes.insert(
                 request.rpc_id.clone(),
@@ -253,6 +269,24 @@ impl ActorActivationRequestBroker {
             );
             self.notify_waiters();
             return GetOrCreateOutcome::Resolved(actor_ref);
+        }
+
+        if let Some(entry) = self.registry.entry(&request.actor_key) {
+            if entry.actor_abi_identity != request.actor_abi_identity
+                || entry.actor_implementation_identity != request.actor_implementation_identity
+                || entry.declaration_owner != request.declaration_owner
+            {
+                inner.outcomes.insert(
+                    request.rpc_id.clone(),
+                    ActivationWaiterOutcome::Failed {
+                        code: "ActorVersionRejected".to_string(),
+                    },
+                );
+                self.notify_waiters();
+                return GetOrCreateOutcome::Failed {
+                    code: "ActorVersionRejected".to_string(),
+                };
+            }
         }
 
         let facts = self.registry.ensure_present(
@@ -551,5 +585,139 @@ fn ownership_failure_code(error: &OwnershipError) -> String {
         OwnershipError::NotPresent => "NotPresent".to_string(),
         OwnershipError::ReservationInFlight => "ActorCreateConflict".to_string(),
         _ => "ActorCreateConflict".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use skiff_runtime_transport::actor_method::{
+        ActorDeclarationOwnerFrameHeader, ActorOwnerFileFrameHeader, ActorOwnerUnitFrameHeader,
+    };
+
+    use super::*;
+    use crate::actor::types::{
+        ActorLogicalKey, ActorOwnerRouteAuthority, DEFAULT_ACTIVATION_DEADLINE_MS,
+        DEFAULT_OWNER_LEASE_TTL_MS,
+    };
+
+    #[derive(Debug, Default)]
+    struct RecordingActivationControl {
+        sent: Mutex<Vec<String>>,
+    }
+
+    impl ActivationControlPort for RecordingActivationControl {
+        fn send_activate_initial(
+            &self,
+            request: &ActivateInitialControlRequest,
+        ) -> Result<(), String> {
+            self.sent
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(request.request_id.clone());
+            Ok(())
+        }
+    }
+
+    fn logical_key() -> ActorLogicalKey {
+        ActorLogicalKey {
+            service_id: "example.com/phase6".to_string(),
+            actor_type_identity: "Counter".to_string(),
+            actor_id_type_identity: "CounterId".to_string(),
+            actor_id_encoding_version: "skiff-actor-id-encoding-v1".to_string(),
+            canonical_actor_id_key_bytes_base64: "AQID".to_string(),
+            actor_id_hash: "sha256:1".to_string(),
+        }
+    }
+
+    fn owner() -> ActorDeclarationOwnerFrameHeader {
+        ActorDeclarationOwnerFrameHeader {
+            unit: ActorOwnerUnitFrameHeader::Service,
+            file: ActorOwnerFileFrameHeader::FileIrIdentity("file:1".to_string()),
+            actor_symbol: "Counter".to_string(),
+        }
+    }
+
+    fn authority(build_id: &str) -> ActorOwnerRouteAuthority {
+        ActorOwnerRouteAuthority {
+            build_id: build_id.to_string(),
+        }
+    }
+
+    fn request(rpc_id: &str, build_id: &str, abi: ActorAbiIdentity) -> ActorGetOrCreateRequest {
+        ActorGetOrCreateRequest {
+            rpc_id: rpc_id.to_string(),
+            actor_key: logical_key(),
+            actor_abi_identity: abi,
+            actor_implementation_identity: ActorImplementationIdentity::new("impl-1"),
+            declaration_owner: owner(),
+            bootstrap_bytes: b"[]".to_vec(),
+            owner_runtime_id: "runtime-a".to_string(),
+            owner_connection: "conn-a".to_string(),
+            route_authority: authority(build_id),
+            deadline: None,
+            test_case_capability: None,
+            test_case_parent_request_id: None,
+            now: 0,
+        }
+    }
+
+    #[test]
+    fn existing_owner_rejects_stale_build_and_abi_reuse() {
+        let registry = Arc::new(ActorOwnershipRegistry::new());
+        let control = Arc::new(RecordingActivationControl::default());
+        let broker = ActorActivationRequestBroker::new(
+            Arc::clone(&registry),
+            control.clone(),
+            ActorActivationBrokerOptions {
+                activation_deadline_ms: DEFAULT_ACTIVATION_DEADLINE_MS,
+                lease_ttl_ms: DEFAULT_OWNER_LEASE_TTL_MS,
+                ..ActorActivationBrokerOptions::default()
+            },
+        );
+
+        let first = broker.get_or_create(&request(
+            "rpc-first",
+            "build-1",
+            ActorAbiIdentity::new("abi-1"),
+        ));
+        assert!(matches!(
+            first,
+            GetOrCreateOutcome::StartedActivation { .. }
+        ));
+        let request_id = match first {
+            GetOrCreateOutcome::StartedActivation { request_id } => request_id,
+            _ => unreachable!(),
+        };
+        let ack = broker.on_activation_ack(&request_id, "runtime-a", "conn-a", true, 1_000);
+        assert!(matches!(ack, ActivationAckOutcome::Committed { .. }));
+
+        assert!(matches!(
+            broker.get_or_create(&request(
+                "rpc-stale-build",
+                "build-0",
+                ActorAbiIdentity::new("abi-1"),
+            )),
+            GetOrCreateOutcome::Failed { code }
+                if code == "ActorVersionRejected"
+        ));
+        assert!(matches!(
+            broker.get_or_create(&request(
+                "rpc-stale-abi",
+                "build-1",
+                ActorAbiIdentity::new("abi-0"),
+            )),
+            GetOrCreateOutcome::Failed { code }
+                if code == "ActorVersionRejected"
+        ));
+        assert!(matches!(
+            broker.get_or_create(&request(
+                "rpc-exact",
+                "build-1",
+                ActorAbiIdentity::new("abi-1"),
+            )),
+            GetOrCreateOutcome::Resolved(_)
+        ));
     }
 }

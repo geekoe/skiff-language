@@ -198,7 +198,6 @@ impl RuntimeHost {
         let memory_budgets = RuntimeMemoryBudgets::default();
         let artifact_root = Arc::new(StdMutex::new(None));
         let actor_context = ActorHostContext {
-            artifact_root: Arc::clone(&artifact_root),
             request_heap_limits: RequestHeapLimits {
                 max_estimated_bytes: memory_budgets.request_heap_bytes,
                 ..RequestHeapLimits::default()

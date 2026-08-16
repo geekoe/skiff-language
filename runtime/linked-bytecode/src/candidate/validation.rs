@@ -2,9 +2,10 @@ use std::collections::BTreeSet;
 
 use crate::{
     CandidateLocation, CandidateReferenceKind, CandidateTable, LinkedArtifactPoolOrigin,
-    LinkedBytecodeCandidateError, LinkedBytecodeCandidateParts, LinkedInterfaceTable,
-    LinkedInterfaceTableKind, LinkedRemoteInterfaceMethod, LinkedServiceBoundaryPlan,
-    LinkedServiceOperationTarget, SpecializationKey,
+    LinkedBytecodeCandidateError, LinkedBytecodeCandidateParts, LinkedCallableSignature,
+    LinkedInterfaceTable, LinkedInterfaceTableKind, LinkedRemoteInterfaceMethod,
+    LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue, LinkedServiceOperationTarget,
+    SpecializationKey,
 };
 
 mod callbacks;
@@ -257,6 +258,15 @@ fn validate_dispatch_target_references(
             }
         }
         validate_callable_signature(target.signature(), location, parts)?;
+        validate_actor_boundaries(
+            target.index().get(),
+            target.parameter_boundaries(),
+            target.result_boundaries(),
+            target.signature(),
+            location,
+            parts,
+            true,
+        )?;
     }
     for target in &parts.actor_methods {
         let location = CandidateLocation::TableRow {
@@ -281,6 +291,15 @@ fn validate_dispatch_target_references(
             }
         }
         validate_callable_signature(target.signature(), location, parts)?;
+        validate_actor_boundaries(
+            target.index().get(),
+            target.parameter_boundaries(),
+            target.result_boundaries(),
+            target.signature(),
+            location,
+            parts,
+            false,
+        )?;
     }
     for table in &parts.interface_tables {
         validate_interface_table(table, parts, package_ids)?;
@@ -324,6 +343,66 @@ fn validate_dispatch_target_references(
                 }
             })?;
             validate_callable_signature(task.signature(), task_location, parts)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_actor_boundaries(
+    row: u32,
+    parameters: &[LinkedServiceBoundaryValue],
+    results: &[LinkedServiceBoundaryValue],
+    signature: &LinkedCallableSignature,
+    location: CandidateLocation,
+    parts: &LinkedBytecodeCandidateParts,
+    create: bool,
+) -> Result<(), LinkedBytecodeCandidateError> {
+    if parameters.len() != signature.parameter_types().len()
+        || results.len() != signature.result_types().len()
+    {
+        return Err(if create {
+            LinkedBytecodeCandidateError::ActorCreateBoundaryCountMismatch {
+                actor_create: row,
+                boundary_parameters: parameters.len(),
+                boundary_results: results.len(),
+                signature_parameters: signature.parameter_types().len(),
+                signature_results: signature.result_types().len(),
+            }
+        } else {
+            LinkedBytecodeCandidateError::ActorMethodBoundaryCountMismatch {
+                actor_method: row,
+                boundary_parameters: parameters.len(),
+                boundary_results: results.len(),
+                signature_parameters: signature.parameter_types().len(),
+                signature_results: signature.result_types().len(),
+            }
+        });
+    }
+    for (boundary, expected_type) in parameters
+        .iter()
+        .zip(signature.parameter_types())
+        .chain(results.iter().zip(signature.result_types()))
+    {
+        if boundary.caller_type() != *expected_type {
+            return Err(LinkedBytecodeCandidateError::ActorBoundaryTypeMismatch {
+                location,
+                boundary_type: boundary.caller_type(),
+                linked_type: *expected_type,
+            });
+        }
+        check_index(
+            location,
+            CandidateReferenceKind::Type,
+            boundary.caller_type().get(),
+            parts.types.len(),
+        )?;
+        let linked = &parts.types[boundary.caller_type().get() as usize];
+        if linked.type_ref() != boundary.linked_type_ref() {
+            return Err(LinkedBytecodeCandidateError::ActorBoundaryTypeMismatch {
+                location,
+                boundary_type: boundary.caller_type(),
+                linked_type: linked.index(),
+            });
         }
     }
     Ok(())

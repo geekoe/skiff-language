@@ -18,18 +18,19 @@ use crate::{
     ArtifactFunctionKeyParseError, CallbackCaptureLayoutIndex, ConstantIndex, FrameSlotIndex,
     FunctionIndex, HostEffectAdapterIndex, InterfaceTableIndex, IntrinsicIndex,
     LinkedActorCreateTarget, LinkedActorImplementationRef, LinkedActorMethodTarget,
-    LinkedArtifactPoolOrigin, LinkedCallbackCapture, LinkedCallbackCaptureLayout,
-    LinkedCallbackInterfaceMethod, LinkedGatewayCallableRole, LinkedGatewayEntry,
-    LinkedHostBindingKey, LinkedHostEffectAdapterTarget, LinkedInterfaceInstantiation,
-    LinkedInterfaceMethodAbiId, LinkedInterfaceRequirementMethod, LinkedInterfaceRequirementTable,
-    LinkedInterfaceTable, LinkedInterfaceTableKind, LinkedIntrinsicCanonicalKey,
-    LinkedIntrinsicKind, LinkedIntrinsicTarget, LinkedOperationEntry, LinkedOperationReceiver,
-    LinkedPublicInstanceKey, LinkedRemoteInterfaceMethod, LinkedRemoteInterfaceTable,
-    LinkedResourceDropPlan, LinkedServiceBoundaryErrorPlan, LinkedServiceBoundaryPlan,
-    LinkedServiceBoundaryValue, LinkedServiceCallbackPlan, LinkedServiceOperationTarget,
-    LinkedStaticIntrinsicTarget, LinkedSyntheticCallbackTarget, LinkedTaskPayloadParameter,
-    LinkedTaskPayloadPlan, LinkedTaskTarget, LinkedTaskTiming, LinkedValueTransferPlan,
-    ServiceOperationIndex, SpecializationKey, SyntheticCallbackIndex, TaskTargetIndex, TypeIndex,
+    LinkedActorStateField, LinkedArtifactPoolOrigin, LinkedCallbackCapture,
+    LinkedCallbackCaptureLayout, LinkedCallbackInterfaceMethod, LinkedGatewayCallableRole,
+    LinkedGatewayEntry, LinkedHostBindingKey, LinkedHostEffectAdapterTarget,
+    LinkedInterfaceInstantiation, LinkedInterfaceMethodAbiId, LinkedInterfaceRequirementMethod,
+    LinkedInterfaceRequirementTable, LinkedInterfaceTable, LinkedInterfaceTableKind,
+    LinkedIntrinsicCanonicalKey, LinkedIntrinsicKind, LinkedIntrinsicTarget, LinkedOperationEntry,
+    LinkedOperationReceiver, LinkedPublicInstanceKey, LinkedRemoteInterfaceMethod,
+    LinkedRemoteInterfaceTable, LinkedResourceDropPlan, LinkedServiceBoundaryErrorPlan,
+    LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue, LinkedServiceCallbackPlan,
+    LinkedServiceOperationTarget, LinkedStaticIntrinsicTarget, LinkedSyntheticCallbackTarget,
+    LinkedTaskPayloadParameter, LinkedTaskPayloadPlan, LinkedTaskTarget, LinkedTaskTiming,
+    LinkedValueTransferPlan, ServiceOperationIndex, SpecializationKey, SyntheticCallbackIndex,
+    TaskTargetIndex, TypeIndex,
 };
 
 use super::fixtures::{
@@ -294,6 +295,13 @@ fn actor_target_retains_exact_owner_and_implementation_identity() {
         actor.clone(),
         ActorAbiIdentity::new("actor-abi:worker"),
         ActorImplementationIdentity::new("actor-implementation:worker"),
+        "Worker",
+        "string",
+        "id",
+        vec![LinkedActorStateField::new(
+            "id",
+            actor_boundary_value(BoundaryValueOwner::Caller),
+        )],
     );
     let target = LinkedActorMethodTarget::new(
         ActorMethodIndex::new(0),
@@ -301,6 +309,11 @@ fn actor_target_retains_exact_owner_and_implementation_identity() {
         ActorMethodIdentity::new("actor-method:run"),
         FunctionIndex::new(0),
         signature(),
+        vec![
+            actor_boundary_value(BoundaryValueOwner::Caller),
+            actor_boundary_value(BoundaryValueOwner::Caller),
+        ],
+        vec![actor_boundary_value(BoundaryValueOwner::Provider)],
     );
 
     assert_eq!(target.owner_package_build_id(), &build_id());
@@ -309,6 +322,21 @@ fn actor_target_retains_exact_owner_and_implementation_identity() {
         target.actor_implementation_identity().as_str(),
         "actor-implementation:worker"
     );
+    assert_eq!(target.actor_implementation().key_field(), "id");
+    assert_eq!(target.actor_implementation().state_fields()[0].name(), "id");
+    assert!(
+        target
+            .parameter_boundaries()
+            .iter()
+            .chain(target.result_boundaries())
+            .all(|boundary| {
+                !matches!(
+                    boundary.contract_type(),
+                    ContractTypeRef::Builtin { name, .. } if name == "unknown"
+                ) && !matches!(boundary.drop(), BoundaryDropPlan::Trivial)
+            }),
+        "actor boundary facts must be exact linked facts, never unknown/Trivial"
+    );
 
     let create = LinkedActorCreateTarget::new(
         ActorCreateIndex::new(0),
@@ -316,9 +344,28 @@ fn actor_target_retains_exact_owner_and_implementation_identity() {
         ActorMethodIdentity::new("actor-create:worker"),
         FunctionIndex::new(1),
         signature(),
+        vec![actor_boundary_value(BoundaryValueOwner::Caller)],
+        vec![actor_boundary_value(BoundaryValueOwner::Provider)],
     );
     assert_eq!(create.create_identity().as_str(), "actor-create:worker");
     assert_eq!(create.function(), FunctionIndex::new(1));
+}
+
+fn actor_boundary_value(owner: BoundaryValueOwner) -> LinkedServiceBoundaryValue {
+    LinkedServiceBoundaryValue::new(
+        ContractTypeRef::builtin("string"),
+        BoundaryValuePlan::Linkable {
+            carrier: BoundaryValueCarrier::DetachedValueGraph,
+            encoding: BoundaryValueEncoding::CanonicalValue,
+            owner,
+            lifetime: BoundaryValueLifetime::Call,
+        },
+        BoundaryTransfer::Copy,
+        BoundaryDropPlan::SnapshotRelease,
+        ValueProvenance::Fresh,
+        TypeIndex::new(0),
+        TypeRefIr::builtin("string"),
+    )
 }
 
 #[test]

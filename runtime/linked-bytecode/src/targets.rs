@@ -37,7 +37,7 @@ pub use intrinsic::{
 };
 pub use local::{
     LinkedActorCreateTarget, LinkedActorImplementationRef, LinkedActorMethodTarget,
-    LinkedExactLocalTarget, LinkedServiceOperationTarget,
+    LinkedActorStateField, LinkedExactLocalTarget, LinkedServiceOperationTarget,
 };
 pub use service::{
     LinkedServiceBoundaryErrorPlan, LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue,

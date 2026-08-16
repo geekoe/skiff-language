@@ -2,20 +2,22 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::bytecode::dto::DbOperationReference;
 use skiff_artifact_model::{
-    self, BoundaryDropPlan, BoundaryTransfer, BoundaryValueFact, BoundaryValuePlan,
+    self, BoundaryDropPlan, BoundaryTransfer, BoundaryValueCarrier, BoundaryValueEncoding,
+    BoundaryValueFact, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
     BytecodeIntrinsicRef, BytecodeRelocation, CallableEffectSummary, CallableMayEffects,
     CallableRegistryTypeExpression, ContractLiteral, ContractOperationId, ContractTypeRef,
     HostEffectExecutorIdentity, HostEffectRegistryEntry, InterfaceInstantiationRef, LiteralIr,
-    Opcode, PackageBuildId, PackageLocalAbiSymbol, PackageRefIr, PackageSchemaTypeId,
-    PackageSymbolRef, ParamModeIr, PendingEffectCategory, ResolvedPackageValueType,
-    ServiceBoundaryPlan, ServiceCallbackPlan, ServiceRequirementKey, TypeRefIr,
-    ValueLifecycleFactResolver, ValueLifecyclePolicyBudget, ValueLifecycleResolverError,
+    Opcode, PackageActorAbi, PackageBuildId, PackageLocalAbiSymbol, PackageRefIr,
+    PackageSchemaTypeId, PackageSymbolRef, ParamModeIr, PendingEffectCategory,
+    ResolvedPackageValueType, ServiceBoundaryPlan, ServiceCallbackPlan, ServiceRequirementKey,
+    TypeRefIr, ValueLifecycleFactResolver, ValueLifecyclePolicyBudget, ValueLifecycleResolverError,
     ValueProvenance,
 };
 use skiff_runtime_linked_bytecode::{
     ArtifactFunctionKey, FunctionIndex, InterfaceTableIndex, LinkedActorCreateTarget,
-    LinkedActorImplementationRef, LinkedActorMethodTarget, LinkedCallableSignature,
-    LinkedCallbackInterfaceMethod, LinkedFrameLayout, LinkedHostEffectAdapterTarget,
+    LinkedActorImplementationRef, LinkedActorMethodTarget, LinkedActorStateField,
+    LinkedCallableSignature, LinkedCallbackInterfaceMethod, LinkedFrameLayout,
+    LinkedHostEffectAdapterTarget,
     LinkedInterfaceInstantiation, LinkedInterfaceMethodAbiId, LinkedInterfaceRequirementMethod,
     LinkedInterfaceRequirementTable, LinkedInterfaceTable, LinkedInterfaceTableKind,
     LinkedLocalInterfaceMethod, LinkedLocalInterfaceTable, LinkedNativeCallableSignature,
@@ -23,7 +25,7 @@ use skiff_runtime_linked_bytecode::{
     LinkedServiceBoundaryErrorPlan, LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue,
     LinkedServiceCallbackPlan, LinkedServiceOperationTarget, LinkedSyntheticCallbackTarget,
     LinkedTaskPayloadParameter, LinkedTaskPayloadPlan, LinkedTaskTarget, LinkedTaskTiming,
-    ServiceOperationIndex, SpecializationKey, TaskTargetIndex,
+    ServiceOperationIndex, SpecializationKey, TaskTargetIndex, TypeIndex,
 };
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
@@ -540,35 +542,7 @@ impl DeploymentLinker<'_> {
         let mut methods = Vec::new();
         for package in self.deployment.packages().values() {
             for actor in &package.artifact().actor_implementations {
-                let actor_abi = package
-                    .artifact()
-                    .implementation_links
-                    .types
-                    .values()
-                    .find(|export| {
-                        export.file.module_path == actor.actor.module_path
-                            && export
-                                .actor
-                                .as_ref()
-                                .is_some_and(|abi| abi.abi.actor_name == actor.actor.symbol)
-                    })
-                    .and_then(|export| export.actor.as_ref())
-                    .ok_or_else(|| {
-                        unsatisfied(
-                            BytecodeLinkObligation::ConcreteTargetTables,
-                            self.package_location(package),
-                            format!(
-                                "actor {} has no package ABI authority",
-                                actor.actor.symbol_path()
-                            ),
-                        )
-                    })?;
-                let actor_ref = LinkedActorImplementationRef::new(
-                    package.reference().package_build_id.clone(),
-                    actor.actor.clone(),
-                    actor_abi.actor_abi_identity.clone(),
-                    actor.actor_implementation_identity.clone(),
-                );
+                let actor_abi = self.exact_actor_abi(package, &actor.actor)?;
                 if let Some(create) = &actor.create {
                     let callable = &create.package_callable_id;
                     let key = self.key_for_receiver_callable(package, callable, type_linker)?;
@@ -596,13 +570,42 @@ impl DeploymentLinker<'_> {
                         package.artifact().callable_semantic_facts.get(callable),
                         location.clone(),
                     )?;
-                    let signature = frame_signature(frame, effects, location)?;
+                    let signature = frame_signature(frame, effects, location.clone())?;
+                    let actor_ref = self.link_actor_implementation_ref(
+                        package,
+                        actor,
+                        actor_abi,
+                        &key,
+                        &signature,
+                        type_linker,
+                        &location,
+                    )?;
+                    let parameter_boundaries = self.link_actor_boundary_values(
+                        package,
+                        &key,
+                        signature.parameter_types(),
+                        signature.parameter_plans(),
+                        BoundaryValueOwner::Caller,
+                        type_linker,
+                        &location,
+                    )?;
+                    let result_boundaries = self.link_actor_boundary_values(
+                        package,
+                        &key,
+                        signature.result_types(),
+                        signature.result_plans(),
+                        BoundaryValueOwner::Provider,
+                        type_linker,
+                        &location,
+                    )?;
                     creates.push(LinkedActorCreateTarget::new(
                         skiff_runtime_linked_bytecode::ActorCreateIndex::new(creates.len() as u32),
                         actor_ref.clone(),
                         create.method_identity.clone(),
                         function,
                         signature,
+                        parameter_boundaries,
+                        result_boundaries,
                     ));
                 }
                 for (method_identity, callable) in &actor.methods {
@@ -628,18 +631,411 @@ impl DeploymentLinker<'_> {
                         package.artifact().callable_semantic_facts.get(callable),
                         location.clone(),
                     )?;
-                    let signature = frame_signature(frame, effects, location)?;
+                    let signature = frame_signature(frame, effects, location.clone())?;
+                    let actor_ref = self.link_actor_implementation_ref(
+                        package,
+                        actor,
+                        actor_abi,
+                        &key,
+                        &signature,
+                        type_linker,
+                        &location,
+                    )?;
+                    let parameter_boundaries = self.link_actor_boundary_values(
+                        package,
+                        &key,
+                        signature.parameter_types(),
+                        signature.parameter_plans(),
+                        BoundaryValueOwner::Caller,
+                        type_linker,
+                        &location,
+                    )?;
+                    let result_boundaries = self.link_actor_boundary_values(
+                        package,
+                        &key,
+                        signature.result_types(),
+                        signature.result_plans(),
+                        BoundaryValueOwner::Provider,
+                        type_linker,
+                        &location,
+                    )?;
                     methods.push(LinkedActorMethodTarget::new(
                         skiff_runtime_linked_bytecode::ActorMethodIndex::new(methods.len() as u32),
                         actor_ref.clone(),
                         method_identity.clone(),
                         function,
                         signature,
+                        parameter_boundaries,
+                        result_boundaries,
                     ));
                 }
             }
         }
         Ok((creates, methods))
+    }
+
+    pub(in crate::bytecode::link) fn exact_actor_abi<'a>(
+        &self,
+        package: &'a HydratedBytecodePackage,
+        actor: &skiff_artifact_model::ServiceSymbolRef,
+    ) -> Result<&'a PackageActorAbi, BytecodeLinkError> {
+        let mut matches = package
+            .artifact()
+            .implementation_links
+            .types
+            .values()
+            .filter(|export| {
+                export.file.module_path == actor.module_path
+                    && export
+                        .actor
+                        .as_ref()
+                        .is_some_and(|abi| abi.abi.actor_name == actor.symbol)
+            });
+        let first = matches.next().ok_or_else(|| {
+            unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                self.package_location(package),
+                format!("actor {} has no package ABI authority", actor.symbol_path()),
+            )
+        })?;
+        if matches.next().is_some() {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                self.package_location(package),
+                format!(
+                    "actor {} has duplicate package ABI authorities",
+                    actor.symbol_path()
+                ),
+            ));
+        }
+        first.actor.as_ref().ok_or_else(|| {
+            unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                self.package_location(package),
+                format!(
+                    "actor {} package ABI authority is missing actor facts",
+                    actor.symbol_path()
+                ),
+            )
+        })
+    }
+
+    fn link_actor_implementation_ref(
+        &self,
+        package: &HydratedBytecodePackage,
+        actor: &skiff_artifact_model::PackageActorImplementation,
+        actor_abi: &PackageActorAbi,
+        specialization: &SpecializationKey,
+        signature: &LinkedCallableSignature,
+        type_linker: &mut TypeLinker<'_>,
+        location: &BytecodeLinkLocation,
+    ) -> Result<LinkedActorImplementationRef, BytecodeLinkError> {
+        let state_type = signature
+            .parameter_types()
+            .first()
+            .copied()
+            .ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    format!(
+                        "actor {} method signature has no exact state parameter",
+                        actor.actor.symbol_path()
+                    ),
+                )
+            })?;
+        if type_linker.linked_type_ref(state_type).is_none() {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location.clone(),
+                format!(
+                    "actor {} state type {} has no linked type row",
+                    actor.actor.symbol_path(),
+                    state_type.get()
+                ),
+            ));
+        }
+        let mut state_fields = Vec::with_capacity(actor_abi.abi.fields.len());
+        for field in &actor_abi.abi.fields {
+            let field_type = type_linker.intern_concrete_type(
+                package,
+                specialization,
+                &field.ty,
+                &BTreeMap::new(),
+                location.clone(),
+            )?;
+            state_fields.push(LinkedActorStateField::new(
+                field.name.clone(),
+                self.link_actor_boundary_value_at_index(
+                    package,
+                    specialization,
+                    field_type,
+                    BoundaryValueOwner::Caller,
+                    ValueProvenance::Fresh,
+                    type_linker,
+                    location,
+                )?,
+            ));
+        }
+        let actor_type_identity = actor_abi.abi.actor_name.clone();
+        let actor_id_type_identity = format!("{:?}", actor_abi.abi.actor_id_type);
+        let key_field = actor_abi.abi.key_field.clone();
+        if !actor_abi
+            .abi
+            .fields
+            .iter()
+            .any(|field| field.name == key_field)
+        {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                format!(
+                    "actor {} key field {key_field:?} is absent from linked state fields",
+                    actor.actor.symbol_path()
+                ),
+            ));
+        }
+        Ok(LinkedActorImplementationRef::new(
+            package.reference().package_build_id.clone(),
+            actor.actor.clone(),
+            actor_abi.actor_abi_identity.clone(),
+            actor.actor_implementation_identity.clone(),
+            actor_type_identity,
+            actor_id_type_identity,
+            key_field,
+            state_fields,
+        ))
+    }
+
+    fn link_actor_boundary_values(
+        &self,
+        package: &HydratedBytecodePackage,
+        specialization: &SpecializationKey,
+        types: &[TypeIndex],
+        plans: &[skiff_runtime_linked_bytecode::LinkedValueTransferPlan],
+        owner: BoundaryValueOwner,
+        type_linker: &mut TypeLinker<'_>,
+        location: &BytecodeLinkLocation,
+    ) -> Result<Vec<LinkedServiceBoundaryValue>, BytecodeLinkError> {
+        if types.len() != plans.len() {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                "actor boundary type and plan counts differ".to_string(),
+            ));
+        }
+        types
+            .iter()
+            .zip(plans)
+            .enumerate()
+            .map(|(index, (ty, plan))| {
+                let source = if owner == BoundaryValueOwner::Caller {
+                    ValueProvenance::CallerParameter {
+                        index: index as u32,
+                    }
+                } else {
+                    ValueProvenance::Fresh
+                };
+                self.link_actor_boundary_value_with_plan(
+                    package,
+                    specialization,
+                    *ty,
+                    plan,
+                    owner,
+                    source,
+                    type_linker,
+                    location,
+                )
+            })
+            .collect()
+    }
+
+    fn link_actor_boundary_value_at_index(
+        &self,
+        package: &HydratedBytecodePackage,
+        specialization: &SpecializationKey,
+        type_index: TypeIndex,
+        owner: BoundaryValueOwner,
+        source: ValueProvenance,
+        type_linker: &mut TypeLinker<'_>,
+        location: &BytecodeLinkLocation,
+    ) -> Result<LinkedServiceBoundaryValue, BytecodeLinkError> {
+        let plan = type_linker
+            .linked_type_plan(type_index)
+            .cloned()
+            .ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::FrameAndValueTransferPlan,
+                    location.clone(),
+                    format!(
+                        "actor boundary type {} has no linked plan",
+                        type_index.get()
+                    ),
+                )
+            })?;
+        self.link_actor_boundary_value_with_plan(
+            package,
+            specialization,
+            type_index,
+            &plan,
+            owner,
+            source,
+            type_linker,
+            location,
+        )
+    }
+
+    fn link_actor_boundary_value_with_plan(
+        &self,
+        _package: &HydratedBytecodePackage,
+        _specialization: &SpecializationKey,
+        type_index: TypeIndex,
+        transfer_plan: &skiff_runtime_linked_bytecode::LinkedValueTransferPlan,
+        owner: BoundaryValueOwner,
+        source: ValueProvenance,
+        type_linker: &mut TypeLinker<'_>,
+        location: &BytecodeLinkLocation,
+    ) -> Result<LinkedServiceBoundaryValue, BytecodeLinkError> {
+        let type_ref = type_linker
+            .linked_type_ref(type_index)
+            .cloned()
+            .ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                    location.clone(),
+                    format!("actor boundary type {} is absent", type_index.get()),
+                )
+            })?;
+        let contract_type = actor_contract_type_from_ref(&type_ref, location)?;
+        let value_plan = BoundaryValuePlan::Linkable {
+            carrier: BoundaryValueCarrier::DetachedValueGraph,
+            encoding: BoundaryValueEncoding::CanonicalValue,
+            owner,
+            lifetime: BoundaryValueLifetime::Call,
+        };
+        let transfer = actor_boundary_transfer(transfer_plan, location)?;
+        let drop = actor_boundary_drop(transfer_plan, location)?;
+        Ok(LinkedServiceBoundaryValue::new(
+            contract_type,
+            value_plan,
+            transfer,
+            drop,
+            source,
+            type_index,
+            type_ref,
+        ))
+    }
+}
+
+fn actor_contract_type_from_ref(
+    ty: &TypeRefIr,
+    location: &BytecodeLinkLocation,
+) -> Result<ContractTypeRef, BytecodeLinkError> {
+    Ok(match ty {
+        TypeRefIr::Builtin { name, args } => ContractTypeRef::Builtin {
+            name: name.clone(),
+            arguments: args
+                .iter()
+                .map(|argument| actor_contract_type_from_ref(argument, location))
+                .collect::<Result<Vec<_>, _>>()?,
+        },
+        TypeRefIr::Record { fields } => ContractTypeRef::Record {
+            fields: fields
+                .iter()
+                .map(|(name, ty)| Ok((name.clone(), actor_contract_type_from_ref(ty, location)?)))
+                .collect::<Result<_, BytecodeLinkError>>()?,
+        },
+        TypeRefIr::Union { items } => ContractTypeRef::StructuralUnion {
+            variants: items
+                .iter()
+                .map(|ty| actor_contract_type_from_ref(ty, location))
+                .collect::<Result<Vec<_>, _>>()?,
+        },
+        TypeRefIr::Nullable { inner } => ContractTypeRef::Nullable {
+            inner: Box::new(actor_contract_type_from_ref(inner, location)?),
+        },
+        TypeRefIr::Literal {
+            value: LiteralIr::String { value },
+        } => ContractTypeRef::string_literal(value),
+        TypeRefIr::Literal {
+            value: LiteralIr::Null,
+        } => ContractTypeRef::builtin("null"),
+        TypeRefIr::PackageSymbol { symbol } => {
+            let package_id = match &symbol.package {
+                PackageRefIr::PackageId { package_id } => package_id.clone(),
+                PackageRefIr::Dependency { dependency_ref } => dependency_ref.clone(),
+            };
+            let stable_schema_key = symbol.symbol_path.clone();
+            let type_id = PackageSchemaTypeId::new(format!(
+                "actor-linked-package:{}",
+                serde_json::to_string(&symbol).map_err(|error| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        location.clone(),
+                        format!("actor package symbol is not serializable: {error}"),
+                    )
+                })?
+            ));
+            ContractTypeRef::package_schema(package_id, stable_schema_key, type_id)
+        }
+        TypeRefIr::ServiceSymbol { symbol } => {
+            let package_id = format!("service:{}", symbol.module_path);
+            let stable_schema_key = symbol.symbol.clone();
+            let type_id = PackageSchemaTypeId::new(format!(
+                "actor-linked-service:{}",
+                serde_json::to_string(symbol).map_err(|error| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        location.clone(),
+                        format!("actor service symbol is not serializable: {error}"),
+                    )
+                })?
+            ));
+            ContractTypeRef::package_schema(package_id, stable_schema_key, type_id)
+        }
+        _ => {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                format!("actor boundary type {ty:?} has no exact contract projection"),
+            ));
+        }
+    })
+}
+
+fn actor_boundary_transfer(
+    plan: &skiff_runtime_linked_bytecode::LinkedValueTransferPlan,
+    _location: &BytecodeLinkLocation,
+) -> Result<BoundaryTransfer, BytecodeLinkError> {
+    Ok(match plan {
+        skiff_runtime_linked_bytecode::LinkedValueTransferPlan::SnapshotShare { .. }
+        | skiff_runtime_linked_bytecode::LinkedValueTransferPlan::ExplicitCloneLease { .. } => {
+            BoundaryTransfer::Copy
+        }
+        skiff_runtime_linked_bytecode::LinkedValueTransferPlan::MoveOnly { .. }
+        | skiff_runtime_linked_bytecode::LinkedValueTransferPlan::AffineResource { .. } => {
+            BoundaryTransfer::Move
+        }
+    })
+}
+
+fn actor_boundary_drop(
+    plan: &skiff_runtime_linked_bytecode::LinkedValueTransferPlan,
+    location: &BytecodeLinkLocation,
+) -> Result<BoundaryDropPlan, BytecodeLinkError> {
+    match plan {
+        skiff_runtime_linked_bytecode::LinkedValueTransferPlan::SnapshotShare { .. }
+        | skiff_runtime_linked_bytecode::LinkedValueTransferPlan::MoveOnly { .. } => {
+            Ok(BoundaryDropPlan::SnapshotRelease)
+        }
+        skiff_runtime_linked_bytecode::LinkedValueTransferPlan::AffineResource { .. }
+        | skiff_runtime_linked_bytecode::LinkedValueTransferPlan::ExplicitCloneLease { .. } => {
+            Err(unsatisfied(
+                BytecodeLinkObligation::FrameAndValueTransferPlan,
+                location.clone(),
+                "actor boundary cannot materialize an affine resource or clone lease".to_string(),
+            ))
+        }
     }
 }
 
@@ -3799,36 +4195,31 @@ impl DeploymentLinker<'_> {
         type_linker: &mut TypeLinker<'_>,
     ) -> Result<SpecializationKey, BytecodeLinkError> {
         let location = self.package_location(package);
-        let implementation = package
-            .artifact()
-            .actor_implementations
-            .iter()
-            .find(|candidate| {
-                candidate.actor == *actor
-                    && candidate.actor_implementation_identity == *actor_implementation_identity
-            })
-            .ok_or_else(|| {
-                unsatisfied(
-                    BytecodeLinkObligation::ConcreteTargetTables,
-                    location.clone(),
-                    "actor relocation has no exact implementation authority".to_string(),
-                )
-            })?;
-        let exact_abi = package
-            .artifact()
-            .implementation_links
-            .types
-            .values()
-            .find(|export| {
-                export.file.module_path == actor.module_path
-                    && export
-                        .actor
-                        .as_ref()
-                        .is_some_and(|abi| abi.abi.actor_name == actor.symbol)
-            })
-            .and_then(|export| export.actor.as_ref())
-            .is_some_and(|abi| abi.actor_abi_identity == *actor_abi_identity);
-        if !exact_abi {
+        let mut implementations =
+            package
+                .artifact()
+                .actor_implementations
+                .iter()
+                .filter(|candidate| {
+                    candidate.actor == *actor
+                        && candidate.actor_implementation_identity == *actor_implementation_identity
+                });
+        let implementation = implementations.next().ok_or_else(|| {
+            unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                "actor relocation has no exact implementation authority".to_string(),
+            )
+        })?;
+        if implementations.next().is_some() {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                "actor relocation implementation authority is ambiguous".to_string(),
+            ));
+        }
+        let actor_abi = self.exact_actor_abi(package, actor)?;
+        if actor_abi.actor_abi_identity != *actor_abi_identity {
             return Err(unsatisfied(
                 BytecodeLinkObligation::ConcreteTargetTables,
                 location,

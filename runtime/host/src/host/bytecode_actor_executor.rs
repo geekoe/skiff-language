@@ -5,9 +5,8 @@
 //! concrete Actor instance heap behind `ActorVmArena` lifecycle facts.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     num::NonZeroU64,
-    path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
@@ -16,20 +15,12 @@ use std::{
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use skiff_artifact_model::{
-    boundary::{
-        BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-        BoundaryValuePlan,
-    },
-    ActorAbiIdentity, BoundaryDropPlan, BoundaryTransfer, ContractTypeRef, LiteralIr,
-    PackageActorAbi, PackageBuildId, TypeRefIr, ValueProvenance,
-};
+use skiff_artifact_model::{ActorAbiIdentity, LiteralIr, TypeRefIr};
 use skiff_canonical_json::canonical_json_bytes;
-use skiff_deployment::storage::CanonicalArtifactStore;
 use skiff_runtime_boundary::vm_materialize::{materialize_linked_value, release_boundary_source};
 use skiff_runtime_linked_bytecode::{
-    FrozenConstantNodeIndex, LinkedActorMethodTarget, LinkedFrozenConstantValue,
-    LinkedServiceBoundaryValue, TypeIndex,
+    FrozenConstantNodeIndex, LinkedActorMethodTarget, LinkedActorStateField,
+    LinkedFrozenConstantValue, LinkedServiceBoundaryValue, TypeIndex,
 };
 use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_model::{
@@ -62,26 +53,15 @@ static NEXT_ARENA_EPOCH: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
 pub(crate) struct ActorHostContext {
-    pub(crate) artifact_root: Arc<Mutex<Option<String>>>,
     pub(crate) request_heap_limits: RequestHeapLimits,
     pub(crate) arena_lease_root: String,
 }
 
-impl ActorHostContext {
-    fn artifact_root(&self) -> Result<PathBuf, String> {
-        self.artifact_root
-            .lock()
-            .map_err(|_| "actor artifact root lock poisoned".to_string())?
-            .clone()
-            .map(PathBuf::from)
-            .ok_or_else(|| "actor execution requires a router bootstrap artifact root".to_string())
-    }
-}
+impl ActorHostContext {}
 
 pub(crate) struct ProductionBytecodeActorExecutor {
     context: ActorHostContext,
     instances: ActorInstanceRegistry,
-    abi_cache: ActorAbiCache,
 }
 
 impl ProductionBytecodeActorExecutor {
@@ -89,7 +69,6 @@ impl ProductionBytecodeActorExecutor {
         Self {
             context,
             instances: ActorInstanceRegistry::default(),
-            abi_cache: ActorAbiCache::default(),
         }
     }
 }
@@ -173,18 +152,7 @@ impl BytecodeActorExecutor for ProductionBytecodeActorExecutor {
                 ));
             }
         };
-        let abi = match self.actor_abi(&image, method.actor_implementation().actor_abi_identity()) {
-            Ok(abi) => abi,
-            Err(error) => {
-                return Err(BytecodePortFailure::input(
-                    BytecodeSchedulerError::Port(format!(
-                        "Actor get ABI resolution failed: {error}"
-                    )),
-                    invocation,
-                ));
-            }
-        };
-        let actor_ref = match self.new_actor_ref(&image, method, &abi, &key) {
+        let actor_ref = match self.new_actor_ref(&image, method, &key) {
             Ok(actor_ref) => actor_ref,
             Err(error) => {
                 return Err(BytecodePortFailure::input(
@@ -195,13 +163,15 @@ impl BytecodeActorExecutor for ProductionBytecodeActorExecutor {
                 ));
             }
         };
-        let actor_key = ActorKey::from_actor_ref(&actor_ref);
-        if let Err(error) = self.instances.get_or_create(
-            actor_key,
-            actor_ref.clone(),
-            abi,
-            self.context.request_heap_limits.clone(),
-        ) {
+        let actor_key = ActorKey::new(
+            &actor_ref,
+            image.owner().build_id().as_str(),
+            method.actor_implementation(),
+        );
+        if let Err(error) = self
+            .instances
+            .get_or_create(actor_key, self.context.request_heap_limits.clone())
+        {
             return Err(BytecodePortFailure::input(
                 BytecodeSchedulerError::Port(format!(
                     "Actor get instance creation failed: {error}"
@@ -359,7 +329,11 @@ impl BytecodeActorExecutor for ProductionBytecodeActorExecutor {
                 ));
             }
         };
-        let actor_key = ActorKey::from_actor_ref(&actor_ref);
+        let actor_key = ActorKey::new(
+            &actor_ref,
+            image.owner().build_id().as_str(),
+            target.actor_implementation(),
+        );
         let instance = match self.instances.get(&actor_key) {
             Some(instance) => instance,
             None => {
@@ -389,18 +363,7 @@ impl BytecodeActorExecutor for ProductionBytecodeActorExecutor {
             }
         };
 
-        let abi = match self.actor_abi(&image, target.actor_implementation().actor_abi_identity()) {
-            Ok(abi) => abi,
-            Err(error) => {
-                return Err(BytecodePortFailure::input(
-                    BytecodeSchedulerError::Port(format!(
-                        "Actor method ABI resolution failed: {error}"
-                    )),
-                    invocation,
-                ));
-            }
-        };
-        let key_field = abi.abi.key_field.clone();
+        let key_field = target.actor_implementation().key_field().to_string();
         let needs_create = instance
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -410,7 +373,6 @@ impl BytecodeActorExecutor for ProductionBytecodeActorExecutor {
             match self.run_create_if_needed(
                 &image,
                 &target,
-                &abi,
                 &actor_ref,
                 &key_field,
                 &mut child_heap,
@@ -443,6 +405,7 @@ impl BytecodeActorExecutor for ProductionBytecodeActorExecutor {
                 child_heap.heap_mut(),
                 &image,
                 *actor_type,
+                target.actor_implementation().state_fields(),
             ) {
                 Ok(state_slot) => state_slot,
                 Err(error) => {
@@ -457,31 +420,30 @@ impl BytecodeActorExecutor for ProductionBytecodeActorExecutor {
         };
         let mut method_args = Vec::with_capacity(target.signature().parameter_types().len());
         method_args.push(state_slot);
-        for (index, ((source, parameter_type), _plan)) in source_arguments
+        let parameter_boundaries = target.parameter_boundaries();
+        if parameter_boundaries.len() != target.signature().parameter_types().len() {
+            return Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::Port(
+                    "Actor method parameter boundary count drifts from its linked signature"
+                        .to_string(),
+                ),
+                invocation,
+            ));
+        }
+        for (index, ((source, parameter_type), boundary)) in source_arguments
             .iter()
             .skip(1)
             .zip(target.signature().parameter_types().iter().skip(1))
-            .zip(target.signature().parameter_plans().iter().skip(1))
+            .zip(parameter_boundaries.iter().skip(1))
             .enumerate()
         {
-            let boundary = match linked_boundary_value(&image, *parameter_type) {
-                Ok(boundary) => boundary,
-                Err(error) => {
-                    return Err(BytecodePortFailure::input(
-                        BytecodeSchedulerError::Port(format!(
-                            "Actor method parameter {index} plan construction failed: {error}"
-                        )),
-                        invocation,
-                    ));
-                }
-            };
             let value = match materialize_linked_value(
                 parent_heap,
                 source,
                 child_heap.heap_mut(),
                 &image,
                 *parameter_type,
-                &boundary,
+                boundary,
             ) {
                 Ok(value) => value,
                 Err(error) => {
@@ -571,19 +533,15 @@ impl BytecodeActorExecutor for ProductionBytecodeActorExecutor {
                 ));
             }
         };
-        let mut result_plans = Vec::with_capacity(resume_site.result_types().len());
-        for ty in resume_site.result_types() {
-            match linked_boundary_value(&image, *ty) {
-                Ok(plan) => result_plans.push(plan),
-                Err(error) => {
-                    return Err(BytecodePortFailure::input(
-                        BytecodeSchedulerError::Port(format!(
-                            "Actor method result plan construction failed: {error}"
-                        )),
-                        invocation,
-                    ));
-                }
-            }
+        let result_boundaries = target.result_boundaries();
+        if result_boundaries.len() != resume_site.result_types().len() {
+            return Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::Port(
+                    "Actor method result boundary count drifts from its linked resume site"
+                        .to_string(),
+                ),
+                invocation,
+            ));
         }
         let (_, arguments, _endpoint, resume) = invocation.into_parts();
         for value in arguments.values() {
@@ -602,7 +560,8 @@ impl BytecodeActorExecutor for ProductionBytecodeActorExecutor {
             image: Arc::clone(&image),
             actor_type: *actor_type,
             state_slot,
-            result_plans,
+            result_boundaries: result_boundaries.to_vec(),
+            state_fields: target.actor_implementation().state_fields().to_vec(),
             segment_lease: Some(segment_lease),
         };
         Ok(BytecodeChildHandoff::Ready(BytecodeChildStart {
@@ -620,7 +579,8 @@ struct ActorMethodChildFinish {
     image: Arc<DeploymentExecutionImage>,
     actor_type: TypeIndex,
     state_slot: ValueSlot,
-    result_plans: Vec<LinkedServiceBoundaryValue>,
+    result_boundaries: Vec<LinkedServiceBoundaryValue>,
+    state_fields: Vec<LinkedActorStateField>,
     segment_lease: Option<ActorSegmentLease>,
 }
 
@@ -647,6 +607,7 @@ impl ChildFinish<VmFiber, VmResumeToken> for ActorMethodChildFinish {
             &mut guard.heap,
             &self.image,
             self.actor_type,
+            &self.state_fields,
         )
         .map_err(|error| {
             ChildFinishError::failure(BytecodeSchedulerError::Port(format!(
@@ -668,7 +629,7 @@ impl ChildFinish<VmFiber, VmResumeToken> for ActorMethodChildFinish {
                 for (index, (source, plan)) in child_values
                     .values()
                     .iter()
-                    .zip(self.result_plans.iter())
+                    .zip(self.result_boundaries.iter())
                     .enumerate()
                 {
                     match materialize_linked_value(
@@ -734,10 +695,17 @@ struct ActorKey {
     actor_id_encoding_version: String,
     canonical_actor_id_key_bytes: Vec<u8>,
     actor_id_hash: String,
+    build_id: String,
+    actor_abi_identity: ActorAbiIdentity,
+    actor_implementation_identity: skiff_artifact_model::ActorImplementationIdentity,
 }
 
 impl ActorKey {
-    fn from_actor_ref(actor_ref: &ActorRef) -> Self {
+    fn new(
+        actor_ref: &ActorRef,
+        build_id: &str,
+        implementation: &skiff_runtime_linked_bytecode::LinkedActorImplementationRef,
+    ) -> Self {
         Self {
             service_id: actor_ref.service_id().to_string(),
             actor_type_identity: actor_ref.actor_type_identity().to_string(),
@@ -745,6 +713,9 @@ impl ActorKey {
             actor_id_encoding_version: actor_ref.actor_id_encoding_version().to_string(),
             canonical_actor_id_key_bytes: actor_ref.canonical_actor_id_key_bytes().to_vec(),
             actor_id_hash: actor_ref.actor_id_hash().to_string(),
+            build_id: build_id.to_string(),
+            actor_abi_identity: implementation.actor_abi_identity().clone(),
+            actor_implementation_identity: implementation.actor_implementation_identity().clone(),
         }
     }
 }
@@ -787,8 +758,6 @@ impl ActorInstanceRegistry {
     fn get_or_create(
         &self,
         key: ActorKey,
-        _actor_ref: ActorRef,
-        _abi: PackageActorAbi,
         limits: RequestHeapLimits,
     ) -> Result<Arc<Mutex<ActorInstance>>, String> {
         let mut instances = self
@@ -819,57 +788,35 @@ impl ActorInstanceRegistry {
         instances.insert(key, Arc::clone(&instance));
         Ok(instance)
     }
-}
 
-#[derive(Default)]
-struct ActorAbiCache {
-    inner: Arc<Mutex<BTreeMap<PackageBuildId, BTreeMap<ActorAbiIdentity, PackageActorAbi>>>>,
+    #[allow(dead_code)]
+    fn remove(&self, key: &ActorKey) -> Result<(), String> {
+        let instance = {
+            let mut instances = self
+                .inner
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            instances
+                .remove(key)
+                .ok_or_else(|| "Actor instance is absent from the registry".to_string())?
+        };
+        let guard = instance
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.arena.discard().map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    fn len(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
 }
 
 impl ProductionBytecodeActorExecutor {
-    fn actor_abi(
-        &self,
-        image: &DeploymentExecutionImage,
-        abi_identity: &ActorAbiIdentity,
-    ) -> Result<PackageActorAbi, String> {
-        let root = self.context.artifact_root()?;
-        let store = CanonicalArtifactStore::open(&root).map_err(|error| error.to_string())?;
-        let deployment = store
-            .read_service_deployment(image.owner().deployment())
-            .map_err(|error| error.to_string())?;
-        let mut references = vec![deployment.implementation.clone()];
-        references.extend(
-            deployment
-                .package_bindings
-                .iter()
-                .map(|binding| binding.package.clone()),
-        );
-        let mut cache = self
-            .abi_cache
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        for reference in references {
-            if cache.contains_key(&reference.package_build_id) {
-                continue;
-            }
-            let package = store
-                .read_package_artifact(&reference)
-                .map_err(|error| error.to_string())?;
-            let mut abis = BTreeMap::new();
-            for export in package.implementation_links.types.values() {
-                if let Some(actor) = &export.actor {
-                    abis.insert(actor.actor_abi_identity.clone(), actor.clone());
-                }
-            }
-            cache.insert(reference.package_build_id.clone(), abis);
-        }
-        cache
-            .values()
-            .find_map(|abis| abis.get(abi_identity).cloned())
-            .ok_or_else(|| format!("actor ABI identity {abi_identity:?} is absent from deployment"))
-    }
-
     fn exact_actor_method_for_result_type<'a>(
         &self,
         image: &'a DeploymentExecutionImage,
@@ -879,38 +826,42 @@ impl ProductionBytecodeActorExecutor {
             .types()
             .get(result_type.get() as usize)
             .filter(|entry| entry.index() == result_type)
-            .map(|entry| entry.type_ref().clone())?;
+            .map(|entry| entry.type_ref())?;
         let mut matches = image.actor_methods().iter().filter(|row| {
-            row.signature()
-                .parameter_types()
-                .first()
-                .and_then(|ty| {
-                    image
-                        .types()
-                        .get(ty.get() as usize)
-                        .filter(|entry| entry.index() == *ty)
-                        .map(|entry| entry.type_ref())
-                })
-                .is_some_and(|ty| same_named_type(ty, &result_ref))
+            row.signature().parameter_types().first().and_then(|ty| {
+                image
+                    .types()
+                    .get(ty.get() as usize)
+                    .filter(|entry| entry.index() == *ty)
+                    .map(|entry| entry.type_ref())
+            }) == Some(result_ref)
         });
         let first = matches.next()?;
-        matches.next().is_none().then_some(first)
+        let implementation = first.actor_implementation();
+        matches
+            .all(|row| {
+                row.actor_implementation().actor_abi_identity()
+                    == implementation.actor_abi_identity()
+                    && row.actor_implementation().actor_implementation_identity()
+                        == implementation.actor_implementation_identity()
+            })
+            .then_some(first)
     }
 
     fn new_actor_ref(
         &self,
         image: &DeploymentExecutionImage,
-        _method: &LinkedActorMethodTarget,
-        abi: &PackageActorAbi,
+        method: &LinkedActorMethodTarget,
         key: &str,
     ) -> Result<ActorRef, String> {
         let canonical_bytes = canonical_json_bytes(&Value::String(key.to_string()))
             .map_err(|error| error.to_string())?;
         let actor_id_hash = format!("sha256:{}", hex::encode(Sha256::digest(&canonical_bytes)));
+        let implementation = method.actor_implementation();
         Ok(ActorRef::new(
             image.owner().deployment().service_id.clone(),
-            abi.abi.actor_name.clone(),
-            format!("{:?}", abi.abi.actor_id_type),
+            implementation.actor_type_identity(),
+            implementation.actor_id_type_identity(),
             ACTOR_ID_ENCODING_VERSION,
             canonical_bytes,
             actor_id_hash,
@@ -922,7 +873,6 @@ impl ProductionBytecodeActorExecutor {
         &self,
         image: &Arc<DeploymentExecutionImage>,
         method: &LinkedActorMethodTarget,
-        _abi: &PackageActorAbi,
         actor_ref: &ActorRef,
         key_field: &str,
         child_heap: &mut skiff_runtime_scheduler::ChildHeapCarrier,
@@ -948,6 +898,7 @@ impl ProductionBytecodeActorExecutor {
             actor_type,
             key_field,
             actor_ref,
+            method.actor_implementation().state_fields(),
         )?;
         let entry = image
             .function_entry(create.function())
@@ -992,6 +943,7 @@ impl ProductionBytecodeActorExecutor {
             &mut guard.heap,
             image.as_ref(),
             actor_type,
+            method.actor_implementation().state_fields(),
         )
         .map_err(|error| error.to_string())?;
         guard
@@ -1004,6 +956,7 @@ impl ProductionBytecodeActorExecutor {
             child_heap.heap_mut(),
             image.as_ref(),
             actor_type,
+            method.actor_implementation().state_fields(),
         )
         .map_err(|error| error.to_string())?;
         drop(guard);
@@ -1020,30 +973,14 @@ impl ProductionBytecodeActorExecutor {
         actor_type: TypeIndex,
         key_field: &str,
         actor_ref: &ActorRef,
+        state_fields: &[LinkedActorStateField],
     ) -> Result<ValueSlot, String> {
-        let actor_type_ref = image
-            .types()
-            .get(actor_type.get() as usize)
-            .filter(|entry| entry.index() == actor_type)
-            .map(|entry| entry.type_ref())
-            .ok_or_else(|| "actor state type is absent".to_string())?;
-        let shape = image
-            .shapes()
-            .iter()
-            .find(|shape| {
-                image
-                    .types()
-                    .get(shape.nominal_type().get() as usize)
-                    .filter(|entry| entry.index() == shape.nominal_type())
-                    .is_some_and(|entry| same_named_type(entry.type_ref(), actor_type_ref))
-            })
-            .ok_or_else(|| "actor state shape is absent".to_string())?;
         let key_json: Value = serde_json::from_slice(actor_ref.canonical_actor_id_key_bytes())
             .map_err(|error| error.to_string())?;
-        let mut fields = Vec::with_capacity(shape.fields().len());
-        for field in shape.fields() {
+        let mut fields = Vec::with_capacity(state_fields.len());
+        for field in state_fields {
             let value = if field.name() == key_field {
-                materialize_json_key(heap, image, field.ty(), &key_json)?
+                materialize_json_key(heap, image, field.boundary().caller_type(), &key_json)?
             } else {
                 ValueSlot::null()
             };
@@ -1065,37 +1002,20 @@ fn materialize_actor_state(
     destination_heap: &mut dyn VmHeap,
     image: &DeploymentExecutionImage,
     actor_type: TypeIndex,
+    state_fields: &[LinkedActorStateField],
 ) -> Result<ValueSlot, String> {
-    let actor_type_ref = image
-        .types()
-        .get(actor_type.get() as usize)
-        .filter(|entry| entry.index() == actor_type)
-        .map(|entry| entry.type_ref())
-        .ok_or_else(|| "actor state type is absent".to_string())?;
-    let shape = image
-        .shapes()
-        .iter()
-        .find(|shape| {
-            image
-                .types()
-                .get(shape.nominal_type().get() as usize)
-                .filter(|entry| entry.index() == shape.nominal_type())
-                .is_some_and(|entry| same_named_type(entry.type_ref(), actor_type_ref))
-        })
-        .ok_or_else(|| "actor state shape is absent".to_string())?;
-    let mut fields = Vec::with_capacity(shape.fields().len());
-    for field in shape.fields() {
+    let mut fields = Vec::with_capacity(state_fields.len());
+    for field in state_fields {
         let source_value = source_heap
             .record_field(source, field.name())
             .map_err(|error| error.to_string())?;
-        let boundary = linked_boundary_value(image, field.ty())?;
         let materialized = materialize_linked_value(
             source_heap,
             &source_value,
             destination_heap,
             image,
-            field.ty(),
-            &boundary,
+            field.boundary().caller_type(),
+            field.boundary(),
         )
         .map_err(|error| error.to_string())?;
         fields.push(VmRecordField {
@@ -1108,53 +1028,6 @@ fn materialize_actor_state(
     destination_heap
         .allocate_record(&fields, tag, ValueFlags::new(0))
         .map_err(|error| error.to_string())
-}
-
-fn linked_boundary_value(
-    image: &DeploymentExecutionImage,
-    type_index: TypeIndex,
-) -> Result<LinkedServiceBoundaryValue, String> {
-    let position =
-        usize::try_from(type_index.get()).map_err(|_| "type index overflow".to_string())?;
-    let entry = image
-        .types()
-        .get(position)
-        .filter(|entry| entry.index() == type_index)
-        .ok_or_else(|| format!("linked type {type_index:?} is absent"))?;
-    Ok(LinkedServiceBoundaryValue::new(
-        ContractTypeRef::Builtin {
-            name: "unknown".to_string(),
-            arguments: Vec::new(),
-        },
-        BoundaryValuePlan::Linkable {
-            carrier: BoundaryValueCarrier::DetachedValueGraph,
-            encoding: BoundaryValueEncoding::CanonicalValue,
-            owner: BoundaryValueOwner::Caller,
-            lifetime: BoundaryValueLifetime::Call,
-        },
-        BoundaryTransfer::Copy,
-        BoundaryDropPlan::Trivial,
-        ValueProvenance::Fresh,
-        type_index,
-        entry.type_ref().clone(),
-    ))
-}
-
-fn same_named_type(left: &TypeRefIr, right: &TypeRefIr) -> bool {
-    match (left, right) {
-        (
-            TypeRefIr::PackageSymbol {
-                symbol: left_symbol,
-            },
-            TypeRefIr::PackageSymbol {
-                symbol: right_symbol,
-            },
-        ) => {
-            left_symbol.package == right_symbol.package
-                && left_symbol.symbol_path == right_symbol.symbol_path
-        }
-        _ => left == right,
-    }
 }
 
 fn string_slot_value(
@@ -1282,30 +1155,65 @@ fn run_sync_fiber(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skiff_artifact_model::ActorImplementationIdentity;
 
     #[test]
-    fn actor_key_is_epoch_free() {
-        let first = ActorRef::new(
-            "svc",
-            "Counter",
-            "id",
-            ACTOR_ID_ENCODING_VERSION,
-            br#""phase6""#.to_vec(),
-            "sha256:actor-id",
-            Some(1),
-        );
-        let second = ActorRef::new(
-            "svc",
-            "Counter",
-            "id",
-            ACTOR_ID_ENCODING_VERSION,
-            br#""phase6""#.to_vec(),
-            "sha256:actor-id",
-            Some(2),
-        );
+    fn actor_key_includes_build_and_abi_identity() {
+        let base = ActorKey {
+            service_id: "svc".to_string(),
+            actor_type_identity: "Counter".to_string(),
+            actor_id_type_identity: "string".to_string(),
+            actor_id_encoding_version: ACTOR_ID_ENCODING_VERSION.to_string(),
+            canonical_actor_id_key_bytes: br#""phase6""#.to_vec(),
+            actor_id_hash: "sha256:actor-id".to_string(),
+            build_id: "build-1".to_string(),
+            actor_abi_identity: ActorAbiIdentity::new("abi-1"),
+            actor_implementation_identity: ActorImplementationIdentity::new("impl-1"),
+        };
+        let stale_build = ActorKey {
+            build_id: "build-0".to_string(),
+            ..base.clone()
+        };
+        let stale_abi = ActorKey {
+            actor_abi_identity: ActorAbiIdentity::new("abi-0"),
+            ..base.clone()
+        };
+        let stale_implementation = ActorKey {
+            actor_implementation_identity: ActorImplementationIdentity::new("impl-0"),
+            ..base.clone()
+        };
         assert_eq!(
-            ActorKey::from_actor_ref(&first),
-            ActorKey::from_actor_ref(&second)
+            base,
+            base.clone(),
+            "the logical actor key itself must remain epoch-free"
         );
+        assert_ne!(base, stale_build);
+        assert_ne!(base, stale_abi);
+        assert_ne!(base, stale_implementation);
+    }
+
+    #[test]
+    fn instance_registry_remove_discards_quiescent_arena() {
+        let registry = ActorInstanceRegistry::default();
+        let key = ActorKey {
+            service_id: "svc".to_string(),
+            actor_type_identity: "Counter".to_string(),
+            actor_id_type_identity: "string".to_string(),
+            actor_id_encoding_version: ACTOR_ID_ENCODING_VERSION.to_string(),
+            canonical_actor_id_key_bytes: br#""phase6""#.to_vec(),
+            actor_id_hash: "sha256:actor-id".to_string(),
+            build_id: "build-1".to_string(),
+            actor_abi_identity: ActorAbiIdentity::new("abi-1"),
+            actor_implementation_identity: ActorImplementationIdentity::new("impl-1"),
+        };
+        let instance = registry
+            .get_or_create(key.clone(), RequestHeapLimits::default())
+            .expect("instance creation");
+        assert_eq!(registry.len(), 1);
+        assert!(!instance.lock().unwrap().arena.snapshot().discarded);
+
+        registry.remove(&key).expect("quiescent instance removes");
+        assert_eq!(registry.len(), 0);
+        assert!(instance.lock().unwrap().arena.snapshot().discarded);
     }
 }

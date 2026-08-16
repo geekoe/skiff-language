@@ -166,3 +166,84 @@ fn validate_actor_declaration(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use skiff_artifact_model::{
+        ActorAbiIdentity, ActorAbiInput, ActorDeclarationIr, ActorFieldEncodingIr, ActorFieldIr,
+        ActorImplementationIdentity, FileIrUnit, PackageCallableId, PackageExecutableCoordinate,
+        TypeDeclIr, TypeDeclarationIr, TypeDescriptorIr, TypeRefIr, ACTOR_RUNTIME_ABI_VERSION_V1,
+    };
+
+    use super::project_actor_implementations;
+    use crate::package_artifact::callables::implementation_manifests::ImplementationCallableIndex;
+
+    fn duplicate_unit() -> FileIrUnit {
+        let mut unit = FileIrUnit::empty("actors", "source-hash");
+        unit.file_ir_identity = "file-ir:actors".to_string();
+        unit.type_table.push(TypeDeclIr {
+            name: "Counter".to_string(),
+            descriptor: TypeDescriptorIr::Record {
+                fields: BTreeMap::new(),
+            },
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        });
+        unit.declarations.types.insert(
+            "Counter".to_string(),
+            TypeDeclarationIr {
+                type_index: 0,
+                symbol: "actors.Counter".to_string(),
+                source_span: None,
+            },
+        );
+        unit.actor_declarations
+            .push(actor_declaration("abi-a", "impl-a"));
+        unit.actor_declarations
+            .push(actor_declaration("abi-b", "impl-b"));
+        unit
+    }
+
+    fn actor_declaration(abi: &str, implementation: &str) -> ActorDeclarationIr {
+        ActorDeclarationIr {
+            actor_abi_identity: ActorAbiIdentity::new(abi),
+            actor_implementation_identity: ActorImplementationIdentity::new(implementation),
+            abi: ActorAbiInput {
+                actor_name: "Counter".to_string(),
+                actor_id_type: TypeRefIr::builtin("string"),
+                key_field: "id".to_string(),
+                fields: vec![ActorFieldIr {
+                    name: "id".to_string(),
+                    ty: TypeRefIr::builtin("string"),
+                    encoding: ActorFieldEncodingIr::CanonicalValueV1,
+                }],
+                create: None,
+                public_methods: Vec::new(),
+                actor_runtime_abi_version: ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
+            },
+            method_implementations: BTreeMap::new(),
+            create_implementation: None,
+        }
+    }
+
+    #[test]
+    fn duplicate_actor_symbol_with_different_abi_is_rejected() {
+        let unit = duplicate_unit();
+        let callables = ImplementationCallableIndex::build(
+            "example.com/duplicate",
+            &[unit.clone()],
+            &BTreeMap::<PackageExecutableCoordinate, PackageCallableId>::new(),
+        )
+        .expect("empty callable index");
+        let error = project_actor_implementations("example.com/duplicate", &[unit], &callables)
+            .expect_err("duplicate actor symbol must fail closed")
+            .to_string();
+        assert!(
+            error.contains("duplicate actor implementation authority"),
+            "rejection must name the duplicate authority: {error}"
+        );
+    }
+}

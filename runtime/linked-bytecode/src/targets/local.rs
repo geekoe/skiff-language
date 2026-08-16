@@ -5,7 +5,8 @@ use skiff_artifact_model::{
 
 use crate::{
     ActorCreateIndex, ActorMethodIndex, FunctionIndex, LinkedCallableSignature,
-    LinkedServiceBoundaryPlan, ServiceOperationIndex, SpecializationKey,
+    LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue, ServiceOperationIndex,
+    SpecializationKey,
 };
 
 /// Exact concrete local or package-direct target. The key and function remain
@@ -89,12 +90,16 @@ impl LinkedServiceOperationTarget {
 
 /// Exact build-owned actor implementation facts shared by method and create
 /// targets, joined from the owning package's hydrated actor authority.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LinkedActorImplementationRef {
     owner_package_build_id: PackageBuildId,
     actor: ServiceSymbolRef,
     actor_abi_identity: ActorAbiIdentity,
     actor_implementation_identity: ActorImplementationIdentity,
+    actor_type_identity: Box<str>,
+    actor_id_type_identity: Box<str>,
+    key_field: Box<str>,
+    state_fields: Box<[LinkedActorStateField]>,
 }
 
 impl LinkedActorImplementationRef {
@@ -103,12 +108,20 @@ impl LinkedActorImplementationRef {
         actor: ServiceSymbolRef,
         actor_abi_identity: ActorAbiIdentity,
         actor_implementation_identity: ActorImplementationIdentity,
+        actor_type_identity: impl Into<String>,
+        actor_id_type_identity: impl Into<String>,
+        key_field: impl Into<String>,
+        state_fields: Vec<LinkedActorStateField>,
     ) -> Self {
         Self {
             owner_package_build_id,
             actor,
             actor_abi_identity,
             actor_implementation_identity,
+            actor_type_identity: actor_type_identity.into().into_boxed_str(),
+            actor_id_type_identity: actor_id_type_identity.into().into_boxed_str(),
+            key_field: key_field.into().into_boxed_str(),
+            state_fields: state_fields.into_boxed_slice(),
         }
     }
 
@@ -127,16 +140,58 @@ impl LinkedActorImplementationRef {
     pub const fn actor_implementation_identity(&self) -> &ActorImplementationIdentity {
         &self.actor_implementation_identity
     }
+
+    pub fn actor_type_identity(&self) -> &str {
+        &self.actor_type_identity
+    }
+
+    pub fn actor_id_type_identity(&self) -> &str {
+        &self.actor_id_type_identity
+    }
+
+    pub fn key_field(&self) -> &str {
+        &self.key_field
+    }
+
+    pub fn state_fields(&self) -> &[LinkedActorStateField] {
+        &self.state_fields
+    }
+}
+
+/// Exact actor state field fact: name plus the linked boundary value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LinkedActorStateField {
+    name: Box<str>,
+    boundary: LinkedServiceBoundaryValue,
+}
+
+impl LinkedActorStateField {
+    pub fn new(name: impl Into<String>, boundary: LinkedServiceBoundaryValue) -> Self {
+        Self {
+            name: name.into().into_boxed_str(),
+            boundary,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub const fn boundary(&self) -> &LinkedServiceBoundaryValue {
+        &self.boundary
+    }
 }
 
 /// Actor entry target inside the exact owner image.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LinkedActorMethodTarget {
     index: ActorMethodIndex,
     actor_implementation: LinkedActorImplementationRef,
     method_identity: ActorMethodIdentity,
     function: FunctionIndex,
     signature: LinkedCallableSignature,
+    parameter_boundaries: Box<[LinkedServiceBoundaryValue]>,
+    result_boundaries: Box<[LinkedServiceBoundaryValue]>,
 }
 
 impl LinkedActorMethodTarget {
@@ -146,6 +201,8 @@ impl LinkedActorMethodTarget {
         method_identity: ActorMethodIdentity,
         function: FunctionIndex,
         signature: LinkedCallableSignature,
+        parameter_boundaries: Vec<LinkedServiceBoundaryValue>,
+        result_boundaries: Vec<LinkedServiceBoundaryValue>,
     ) -> Self {
         Self {
             index,
@@ -153,6 +210,8 @@ impl LinkedActorMethodTarget {
             method_identity,
             function,
             signature,
+            parameter_boundaries: parameter_boundaries.into_boxed_slice(),
+            result_boundaries: result_boundaries.into_boxed_slice(),
         }
     }
 
@@ -191,18 +250,28 @@ impl LinkedActorMethodTarget {
     pub const fn signature(&self) -> &LinkedCallableSignature {
         &self.signature
     }
+
+    pub fn parameter_boundaries(&self) -> &[LinkedServiceBoundaryValue] {
+        &self.parameter_boundaries
+    }
+
+    pub fn result_boundaries(&self) -> &[LinkedServiceBoundaryValue] {
+        &self.result_boundaries
+    }
 }
 
 /// Exact actor create target inside the owning package build. Create remains
 /// a distinct typed table from public methods so its role is never inferred
 /// from textual or ABI identity shape.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LinkedActorCreateTarget {
     index: ActorCreateIndex,
     actor_implementation: LinkedActorImplementationRef,
     create_identity: ActorMethodIdentity,
     function: FunctionIndex,
     signature: LinkedCallableSignature,
+    parameter_boundaries: Box<[LinkedServiceBoundaryValue]>,
+    result_boundaries: Box<[LinkedServiceBoundaryValue]>,
 }
 
 impl LinkedActorCreateTarget {
@@ -212,6 +281,8 @@ impl LinkedActorCreateTarget {
         create_identity: ActorMethodIdentity,
         function: FunctionIndex,
         signature: LinkedCallableSignature,
+        parameter_boundaries: Vec<LinkedServiceBoundaryValue>,
+        result_boundaries: Vec<LinkedServiceBoundaryValue>,
     ) -> Self {
         Self {
             index,
@@ -219,6 +290,8 @@ impl LinkedActorCreateTarget {
             create_identity,
             function,
             signature,
+            parameter_boundaries: parameter_boundaries.into_boxed_slice(),
+            result_boundaries: result_boundaries.into_boxed_slice(),
         }
     }
 
@@ -256,5 +329,13 @@ impl LinkedActorCreateTarget {
 
     pub const fn signature(&self) -> &LinkedCallableSignature {
         &self.signature
+    }
+
+    pub fn parameter_boundaries(&self) -> &[LinkedServiceBoundaryValue] {
+        &self.parameter_boundaries
+    }
+
+    pub fn result_boundaries(&self) -> &[LinkedServiceBoundaryValue] {
+        &self.result_boundaries
     }
 }

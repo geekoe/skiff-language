@@ -206,6 +206,25 @@ pub enum LinkedBytecodeCandidateError {
         previous_index: u32,
         current_index: u32,
     },
+    ActorMethodBoundaryCountMismatch {
+        actor_method: u32,
+        boundary_parameters: usize,
+        boundary_results: usize,
+        signature_parameters: usize,
+        signature_results: usize,
+    },
+    ActorCreateBoundaryCountMismatch {
+        actor_create: u32,
+        boundary_parameters: usize,
+        boundary_results: usize,
+        signature_parameters: usize,
+        signature_results: usize,
+    },
+    ActorBoundaryTypeMismatch {
+        location: CandidateLocation,
+        boundary_type: crate::TypeIndex,
+        linked_type: crate::TypeIndex,
+    },
     DuplicateInterfaceTable {
         first_index: u32,
         duplicate_index: u32,

@@ -120,29 +120,7 @@ impl DeploymentLinker<'_> {
         let mut roots = Vec::new();
         for package in self.deployment.packages().values() {
             for actor in &package.artifact().actor_implementations {
-                let actor_abi = package
-                    .artifact()
-                    .implementation_links
-                    .types
-                    .values()
-                    .find(|export| {
-                        export.file.module_path == actor.actor.module_path
-                            && export
-                                .actor
-                                .as_ref()
-                                .is_some_and(|abi| abi.abi.actor_name == actor.actor.symbol)
-                    })
-                    .and_then(|export| export.actor.as_ref())
-                    .ok_or_else(|| {
-                        unsatisfied(
-                            BytecodeLinkObligation::ConcreteTargetTables,
-                            self.package_location(package),
-                            format!(
-                                "actor {} has no package ABI authority",
-                                actor.actor.symbol_path()
-                            ),
-                        )
-                    })?;
+                let actor_abi = self.exact_actor_abi(package, &actor.actor)?;
                 if let Some(create) = &actor.create {
                     roots.push(self.key_for_receiver_callable(
                         package,
