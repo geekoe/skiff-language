@@ -75,8 +75,13 @@ non-conflicting fixes together.
 
 ## 3. Lanes, agents and unique write sets
 
-An activation amendment replaces `assigned after activation` with one named agent/branch/worktree. A worktree has one writer;
-one file has one active write owner. Any extension is written into this table before editing.
+An activation amendment replaces `assigned after activation` with one named agent/branch/worktree. Write sets are provisional
+decomposition boundaries, not immutable file locks. A worktree has one writer at any time; no concurrent write to the same
+worktree is allowed. Small cross-owner writes required by a real seam may be completed during implementation, but the task
+handoff must report them as part of the actual write set. The integrator verifies those writes and records the ownership
+adjustment in the next MAP amendment. The hard constraints remain: no concurrent write to the same worktree; proof line does
+not modify production to make tests pass; and each central state machine has one write authority at any one time, but that
+authority may be amended after real convergence.
 
 | Lane / initial status | Agent / worktree | Unique write set | Depends / join |
 | --- | --- | --- | --- |
@@ -93,8 +98,11 @@ one file has one active write owner. Any extension is written into this table be
 | P7C archive/retirement / blocked, no repo content writes | integration owner | `∅` | after result commit, safe main merge and push; exact cleanup only; final state `PROJECT_CLOSED` |
 
 P7P and P7G are independent proof write owners. P7O cannot be silently absorbed by either. Router, host, runtime, compiler,
-linker, scheduler, VM, DB and GC production are read-only in Phase 7 unless a sealed blocker explicitly reopens their original
-owner. The integration owner mechanically joins commits and never becomes a semantic or Gate writer.
+linker, scheduler, VM, DB and GC production remain read-only for normal Phase 7 work. A small cross-owner production write
+required by a real seam may be completed, reported as part of the task's actual write set, verified by the integrator, and
+reflected in the next MAP amendment; it does not authorize new semantic work. Proof lanes still never modify production to
+make tests pass. Sealed blockers reopen exact original owners in non-overlapping worktrees, and the integration owner
+mechanically joins commits without becoming a semantic or Gate writer.
 
 ## 4. Gate-map and coverage realization
 
@@ -160,8 +168,11 @@ run. Before that epoch, the integration or Acceptance owner verifies there is no
 earlier-Phase Cargo lease, and pauses every other Cargo-capable agent until release. This is an enforced execution
 precondition: the Phase-specific directory excludes another Phase 7 runner but distinct legacy lock directories do not
 provide mutual exclusion. The runner sets
-`CARGO_TARGET_DIR=/Users/geek/workspace/.skiff-cargo-target`, never runs `cargo clean`, releases its lease on success, failure,
-interrupt and checker error, and never nests an earlier Gate/lease.
+`CARGO_TARGET_DIR=/Users/geek/workspace/.skiff-cargo-target`. The Gate normally does not run `cargo clean`, and never runs it
+inside the cargo epoch. When disk space is insufficient and no active Cargo/rustc/Gate process exists, the user may authorize
+cleaning `/Users/geek/workspace/.skiff-cargo-target` outside the epoch; a cold rebuild does not invalidate evidence or the
+candidate. The runner releases its lease on success, failure, interrupt and checker error, and never nests an earlier
+Gate/lease.
 
 ### 5.2 Evidence layout
 
@@ -247,8 +258,9 @@ Original-owner routing is fixed:
 | catalog/runner/selector/receipt/checker false-green | P7G |
 
 No fixer edits until all current same-epoch failures are collected and deduplicated. Scope expansion, a second authority,
-Router production changes or a missing production seam triggers the MAP amendment and does not authorize a compatibility
-path.
+Router production changes or a missing production seam triggers a MAP amendment. A small cross-owner write already completed
+for a real seam is reported as part of the actual fix write set and reflected in that amendment. Amendments never authorize a
+compatibility path.
 
 ## 8. Freeze, parallel reviews and blocker ledger
 
@@ -268,9 +280,10 @@ candidate becomes unfrozen; independent owners fix the complete sealed batch in 
 commits, runs focused checks plus full preflight, and freezes a new commit/tree/evidence epoch.
 
 Targeted recheck is allowed only when every changed file is inside the sealed fix sets and impact is bounded. It runs in
-parallel for every affected review domain. Any authority/support-surface/ownership change, write-set escape or unexpected
-proof/Gate change requires a complete fresh P7S cohort. In all cases the blocker ledger must be empty on the exact final
-freeze before Acceptance.
+parallel for every affected review domain. Any authority/support-surface/ownership change, unreported write outside the
+reported actual write set, or unexpected proof/Gate change requires a complete fresh P7S cohort. Cross-owner writes verified
+by the integrator and recorded in the next MAP amendment are not treated as escapes. In all cases the blocker ledger must be
+empty on the exact final freeze before Acceptance.
 
 ## 9. Detached Acceptance and result
 
@@ -332,5 +345,8 @@ First `status_after` targets are:
 - P7S: assigned review scope completed on the exact recorded HEAD even if a blocker was found;
 - P7A: full Gate process is running once with output captured to the declared durable path.
 
-Write-set expansion, new semantic fact, unavailable production seam, stale binary dependency, second authority or hand-built
-proof need causes an immediate partial handoff and MAP amendment. It never authorizes local compatibility code.
+Write sets are provisional decomposition boundaries, not immutable file locks. A new semantic fact, unavailable production
+seam, stale binary dependency, second authority or hand-built proof need causes an immediate partial handoff and MAP
+amendment. A small cross-owner write required for a real seam may be completed and reported in the task handoff as part of
+the actual write set; the integrator verifies it and records the ownership adjustment in the next MAP amendment. Amendments
+never authorize local compatibility code.

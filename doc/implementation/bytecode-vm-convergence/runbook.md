@@ -11,13 +11,17 @@
    真实生产边界的产出，不能 hand-build；首日全部 expected-red（真实断言，非 skip），一次 `--no-fail-fast`
    并行暴露所有已到达层的红。closure-only 且没有 production producer 的 Phase 按第 5 步的受控红例外执行。
 2. **执行地图**：`tasks/phase-N-execution-map.md` 一张表：lane / worktree / 写集 / join 顺序 / Gate 矩阵。
-   这是写集的唯一权威，任何其它载体不重复文件清单。
+   这是写集的唯一权威，任何其它载体不重复文件清单。写集是 provisional decomposition boundaries，不是 immutable
+   file locks；真实 seam 所需少量跨 owner 写入完成后，在 task handoff 中报告为实际 write set，由 integrator
+   验证并反映到下一次 MAP amendment。
 3. **派发**：把本 Phase 写面拆成互不重叠的 lane，能拆几个就并行几个，**不设固定数量和固定角色模板**
    （Phase 4 的写面可能是 scheduler kernel / session-request owner / VM control，Phase 6 是 service/task/
-   interface/callback/Actor 各 lane）。唯一硬约束：每个中央状态机只有一个 write owner；proof lane 独立。
+   interface/callback/Actor 各 lane）。硬约束包括：同一 worktree 不同时并发写入；proof lane 不修改生产制造
+   PASS；每个中央状态机在任一时刻只有一个 write owner，但该 owner 可在真实收敛后通过 MAP amendment 调整。
    lane 数量由写面分区推导，不由角色名决定。派发前花几分钟做只读 gate-map 预调查：目标面会经过哪些
-   pipeline 门、门在谁家，写进 MAP。任务信封 = 引用契约/MAP 条目 + 验收判据 + 预算 + 上报格式。写集外
-   需求先上报，获准后**先改 MAP 再动代码**。
+   pipeline 门、门在谁家，写进 MAP。任务信封 = 引用契约/MAP 条目 + 验收判据 + 预算 + 上报格式。写集是初始分解
+   边界，不是文件锁；真实 seam 需要少量跨 owner 写入时，可完成写入并在 task handoff 中作为实际 write set 上报，
+   integrator 验证后在下一次 MAP amendment 中反映。新语义、第二 authority 或兼容路径仍必须先上报再改。
    任务信封的"验收判据"必须**引用契约的 VCP/checklist 小节，不得复述**；integrator 派单时机械核对
    信封判据 ⊆ 契约条款，防止复述漂移。
 4. **验证**：focused 每轮跑；三包/全量只在 join 点跑；跨 worker cargo 用目录租约串行；>30s 重定向轮询；
@@ -39,8 +43,9 @@
    proof/Gate/evidence 两面，全部读取同一 frozen commit/tree；发现 blocker 仍完成本 scope，不得报一个就修一个。
    Integrator 等全部返回后合并、去重并封存唯一 blocker ledger。若非空，先 unfreeze、按原 semantic/proof owner
    和 exact write set 一次并行修完整批次，再跑 affected focused checks + full merged preflight、re-freeze 新 epoch；
-   严格落在 sealed fix scope 内的变更可并行 targeted recheck，authority/support/write-set 逃逸必须重跑完整 fresh
-   cohort。Review 只判实际代码/测试、核心契约、已接受不变式、假绿/第二权威/fallback/fail-closed；不做
+   严格落在 sealed fix scope 内的变更可并行 targeted recheck；已上报并经 integrator 验证的跨 owner 写入在下一
+   MAP amendment 记录为实际 write set，未上报的 write-set 逃逸必须重跑完整 fresh cohort。Review 只判实际代码/测试、
+   核心契约、已接受不变式、假绿/第二权威/fallback/fail-closed；不做
    architecture 文档完备性 review，不因外围措辞漂移 FAIL。
 8. **独立 Acceptance 与 closeout**：blocker ledger 在 exact frozen HEAD 上为零后，另一名全新只读 agent 在新建
    detached clean worktree运行完整 Gate + checklist + raw evidence核对；它不能是 writer或本轮 reviewer。
@@ -51,5 +56,6 @@
    最后置为 `closed/accepted`、停止所有 agent且不自动启动下一 Phase。
 9. **上报格式**（所有 lane）：`{完成了什么, 意外点, 尝试过什么, 需要什么}`。
 
-强制隔离只有三条：frozen candidate reviewer cohort / Acceptance 必须是没写本 Phase 候选的全新 agent，且
-Acceptance 与 cohort 不复用 owner；proof 不修改生产制造 PASS；kernel 状态机只有一个 write owner。
+强制硬约束是：frozen candidate reviewer cohort / Acceptance 必须是没写本 Phase 候选的全新 agent，且
+Acceptance 与 cohort 不复用 owner；proof 不修改生产制造 PASS；同一时刻 kernel 状态机只有一个 write owner，
+但该 authority 可在真实收敛后通过 MAP amendment 调整。

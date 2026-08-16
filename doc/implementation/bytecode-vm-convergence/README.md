@@ -334,8 +334,11 @@ Acceptance、main 合流、evidence 归档和所有 Phase 7 临时状态退役�
 - candidate 任意变化开启新 evidence epoch。
 - accepted/main push 后按 exact inventory 处理每个本 Phase worktree、stash、branch/archive ref；不得通配删除或触碰其它 Phase。
 
-Phase plan 只冻结角色分离、write set 和验收约束；实际 Agent、worktree 数量、路径和复用方式不在总体
-计划中提前冻结。
+Phase plan 冻结硬角色隔离、验收约束和中央状态机单一 write authority；同一 worktree 不同时并发写入，proof
+不修改生产制造 PASS，且中央状态机在任一时刻只有一个 write owner，但该 authority 可在真实收敛后通过 MAP
+amendment 调整。write set 是 provisional decomposition boundaries，不作为 immutable file locks。真实 seam
+需要的少量跨 owner 写入可在实现中完成，并在 task handoff 中作为实际 write set 上报；integrator 验证后在下一次
+MAP amendment 中反映所有权调整。实际 Agent、worktree 数量、路径和复用方式不在总体计划中提前冻结。
 
 ## 10. 当前文档状态
 

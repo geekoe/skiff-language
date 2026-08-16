@@ -38,7 +38,11 @@ closeout baseline, not from this document:
 
 The activation amendment records the exact identifiers, exported symbol paths and exact Phase 7 write sets that cannot be
 known now. This mechanical amendment does not reopen an architecture-document review and does not authorize a wider support
-surface.
+surface. Write sets are provisional decomposition boundaries, not immutable file locks. A small cross-owner write required by
+a real seam may be completed during implementation, reported in the task handoff as part of the actual write set, verified by
+the integrator, and reflected in the next MAP amendment. Hard constraints remain: no concurrent write to the same worktree;
+proof line does not modify production to make tests pass; and each central state machine has one write authority at any one
+time, but that authority may be amended after real convergence.
 
 ## 2. Inherited authority and verifier hard cut
 
@@ -175,11 +179,13 @@ work remains FAIL.
 Before the workload epoch, the owner verifies there is no Cargo/rustc process or active earlier-Phase lease and pauses every
 other Cargo-capable agent until release. All Cargo commands then execute serially while the runner holds exactly one
 `/tmp/skiff-bcvm-p7-r1-cargo.lockdir` lease for the complete workload epoch and sets
-`CARGO_TARGET_DIR=/Users/geek/workspace/.skiff-cargo-target`; it never runs `cargo clean`. Every `cargo test` command has
-effective `--no-fail-fast`. Other Cargo subcommands retain valid native arguments. The Phase-specific directory prevents a
-second Phase 7 runner; it is not claimed to lock legacy Phase runners, so the exclusive-agent precondition is mandatory.
-Commands expected to exceed 30 seconds run once with captured durable stdout/stderr; an external operator polls the same
-process/log rather than restarting it.
+`CARGO_TARGET_DIR=/Users/geek/workspace/.skiff-cargo-target`. The Gate normally does not run `cargo clean`, and never runs it
+inside the cargo epoch. When disk space is insufficient and no active Cargo/rustc/Gate process exists, the user may authorize
+cleaning `/Users/geek/workspace/.skiff-cargo-target` outside the epoch; a cold rebuild does not invalidate evidence or the
+candidate. Every `cargo test` command has effective `--no-fail-fast`. Other Cargo subcommands retain valid native arguments.
+The Phase-specific directory prevents a second Phase 7 runner; it is not claimed to lock legacy Phase runners, so the
+exclusive-agent precondition is mandatory. Commands expected to exceed 30 seconds run once with captured durable
+stdout/stderr; an external operator polls the same process/log rather than restarting it.
 
 ### 5.2 Spec and receipt schema
 
@@ -259,9 +265,10 @@ frozen candidate Fn
 
 All reviewers finish before the blocker ledger is sealed; an early finding does not turn review into serial
 find-one/fix-one work. The integrator and P7G never patch production. A fix outside the sealed scope, a support-surface or
-authority change, or an unexpected Gate/checker change requires a full fresh review cohort on the new freeze; a strictly
-bounded fix receives parallel targeted rechecks for every affected finding/domain. Acceptance always reruns the complete
-canonical Gate.
+authority change, or an unexpected Gate/checker change requires a MAP amendment and the review depth assigned to that change;
+a strictly bounded fix receives parallel targeted rechecks for every affected finding/domain. A small cross-owner write
+required for a real seam is reported as part of the actual fix write set and reflected in that amendment. Acceptance always
+reruns the complete canonical Gate.
 
 ## 8. Risks, recovery and non-authorities
 
