@@ -193,6 +193,21 @@ impl BoundaryStaging {
                 _ => Ok(()),
             };
             if result.is_err() {
+                // A child terminal may already have consumed a staged argument
+                // by returning or throwing it. That root is still enumerable
+                // here until the carrier's terminal cleanup, but its physical
+                // owner is gone and a second release is the expected no-op for
+                // this same carrier. Other heap failures remain fail-closed.
+                if matches!(
+                    result,
+                    Err(VmHeapError::InvalidHandle {
+                        reason: skiff_runtime_model::vm_heap::VmHandleInvalidReason::StaleGenerationOrEpoch,
+                        ..
+                    })
+                ) {
+                    self.roots.pop();
+                    continue;
+                }
                 return result;
             }
             self.roots.pop();
@@ -812,13 +827,16 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{num::NonZeroU64, sync::Arc};
+    use std::{
+        num::NonZeroU64,
+        sync::{Arc, Mutex},
+    };
 
     use skiff_runtime_model::{
         memory_ledger::{MemoryLease, MemoryLeaseHost, MemoryLeaseToken},
-        vm_heap::{HeapDomainId, HeapEpoch, VmHeap, VmHeapError},
+        vm_heap::{HeapDomainId, HeapEpoch, VmHandleInvalidReason, VmHeap, VmHeapError},
         vm_root::{VmRootSource, VmRootVisitor},
-        vm_value::{ValueKind, ValueSlot},
+        vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot, VmHandle},
     };
 
     use super::{ChildHeapCarrier, EnterChildError, FlatTrampoline, TrampolineCompletion};
@@ -898,6 +916,68 @@ mod tests {
         }
     }
 
+    struct StaleAfterReleaseHeap {
+        released: Arc<Mutex<Vec<u64>>>,
+    }
+
+    impl StaleAfterReleaseHeap {
+        fn new(released: Arc<Mutex<Vec<u64>>>) -> Self {
+            Self { released }
+        }
+
+        fn stale(handle: VmHandle) -> VmHeapError {
+            VmHeapError::InvalidHandle {
+                kind: ValueKind::RequestHeapRef,
+                handle,
+                reason: VmHandleInvalidReason::StaleGenerationOrEpoch,
+            }
+        }
+    }
+
+    impl VmHeap for StaleAfterReleaseHeap {
+        fn validate_live(&self, value: &ValueSlot) -> Result<(), VmHeapError> {
+            let Some(handle) = value.as_request_heap_ref() else {
+                return Ok(());
+            };
+            if self.released.lock().unwrap().contains(&handle.get()) {
+                return Err(Self::stale(handle));
+            }
+            Ok(())
+        }
+
+        fn snapshot_share(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+            Ok(*source)
+        }
+
+        fn transfer_owner(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+            Ok(*source)
+        }
+
+        fn release_snapshot(&mut self, owner: &ValueSlot) -> Result<(), VmHeapError> {
+            let handle = owner
+                .as_request_heap_ref()
+                .ok_or(VmHeapError::InvalidValueMetadata)?;
+            let mut released = self.released.lock().unwrap();
+            if released.contains(&handle.get()) {
+                return Err(Self::stale(handle));
+            }
+            released.push(handle.get());
+            Ok(())
+        }
+
+        fn release_resource(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    fn request_slot(serial: u64) -> ValueSlot {
+        ValueSlot::request_heap_ref(
+            VmHandle::new((1_u64 << 32) | serial),
+            CompactTypeTag::try_from_type_index(7).expect("test type index fits compact tag"),
+            ValueFlags::new(0),
+        )
+    }
+
     struct LeaseHost;
 
     impl MemoryLeaseHost for LeaseHost {
@@ -974,6 +1054,77 @@ mod tests {
         heap.release_published_roots().unwrap();
         assert_eq!(heap.state(), super::ChildHeapState::Released);
         assert!(heap.staging_roots().is_empty());
+    }
+
+    #[test]
+    fn child_heap_carrier_releases_live_staging_roots_in_lifo_order() {
+        let released = Arc::new(Mutex::new(Vec::new()));
+        let mut carrier = ChildHeapCarrier::new(
+            Box::new(StaleAfterReleaseHeap::new(Arc::clone(&released))),
+            HeapDomainId::try_new(1).unwrap(),
+            HeapEpoch::new(0),
+            lease(8),
+            owner_lease(),
+        );
+        let first = request_slot(1);
+        let second = request_slot(2);
+        carrier.publish_staging_root(first).unwrap();
+        carrier.publish_staging_root(second).unwrap();
+
+        carrier.release_published_roots().unwrap();
+
+        assert_eq!(carrier.state(), super::ChildHeapState::Released);
+        assert!(carrier.staging_roots().is_empty());
+        assert_eq!(
+            *released.lock().unwrap(),
+            vec![(1_u64 << 32) | 2, (1_u64 << 32) | 1]
+        );
+        assert!(matches!(
+            carrier.heap().validate_live(&first),
+            Err(VmHeapError::InvalidHandle {
+                reason: VmHandleInvalidReason::StaleGenerationOrEpoch,
+                ..
+            })
+        ));
+        assert!(matches!(
+            carrier.heap().validate_live(&second),
+            Err(VmHeapError::InvalidHandle {
+                reason: VmHandleInvalidReason::StaleGenerationOrEpoch,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn child_heap_carrier_terminal_release_skips_root_already_consumed_by_child() {
+        let released = Arc::new(Mutex::new(Vec::new()));
+        let mut carrier = ChildHeapCarrier::new(
+            Box::new(StaleAfterReleaseHeap::new(Arc::clone(&released))),
+            HeapDomainId::try_new(1).unwrap(),
+            HeapEpoch::new(0),
+            lease(8),
+            owner_lease(),
+        );
+        let first = request_slot(1);
+        let second = request_slot(2);
+        carrier.publish_staging_root(first).unwrap();
+        carrier.publish_staging_root(second).unwrap();
+
+        carrier
+            .heap_mut()
+            .release_snapshot(&second)
+            .expect("child terminal consumed its staged argument");
+        carrier
+            .release_published_roots()
+            .expect("already-released child staging root must not fail terminal cleanup");
+
+        assert_eq!(carrier.state(), super::ChildHeapState::Released);
+        assert!(carrier.staging_roots().is_empty());
+        assert_eq!(
+            *released.lock().unwrap(),
+            vec![(1_u64 << 32) | 2, (1_u64 << 32) | 1]
+        );
+        drop(carrier);
     }
 
     #[test]
