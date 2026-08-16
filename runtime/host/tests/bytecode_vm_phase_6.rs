@@ -202,7 +202,7 @@ mod tests {
     );
 
     #[test]
-    fn interface_remote_table_links_remote_service_operation() {
+    fn interface_remote_table_links_exact_operation() {
         let image = linked_image(
             Capability::InterfaceRemote,
             "interface-remote-table-links-service-operation",
