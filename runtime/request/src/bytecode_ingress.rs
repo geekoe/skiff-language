@@ -11,10 +11,12 @@ use skiff_artifact_model::{
     HostEffectExecutorIdentity, Opcode, PackageRefIr, PrivilegedAffineCompositeIdentity, TypeRefIr,
 };
 use skiff_runtime_boundary::http::HttpBoundaryNameValue;
-use skiff_runtime_capability_context::{CancellationToken, ExecutionBudgetReason};
+use skiff_runtime_capability_context::{
+    CancellationToken, ExecutionBudgetReason, TaskSubmitResponseControl,
+};
 use skiff_runtime_linked_bytecode::{
     LinkedDbOperation, LinkedNativeCallableSignature, LinkedRepresentationCarrier,
-    LinkedResumeResultMaterialization, LinkedShapeEntry, LinkedValueDropPlan,
+    LinkedResumeResultMaterialization, LinkedShapeEntry, LinkedTaskTarget, LinkedValueDropPlan,
     LinkedValueTransferPlan, TypeIndex,
 };
 use skiff_runtime_linker::{DeploymentExecutionEntry, DeploymentExecutionImage};
@@ -56,10 +58,11 @@ use skiff_runtime_vm::{
 
 use crate::{
     bytecode_children::{
-        execute_actor_child, execute_interface_child, execute_service_child, execute_task_child,
-        is_task_request, linked_db_target, materialize_db_result_to_vm, require_db_operation,
-        task_arguments, BytecodeChildHeapFactory, BytecodeChildLane,
-        BytecodeRequestChildComposition, RequestChildHeapFactory,
+        encode_durable_task_payload, execute_actor_child, execute_interface_child,
+        execute_service_child, is_task_request, linked_db_target, materialize_db_result_to_vm,
+        require_db_operation, task_arguments, task_submit_message_from_composition,
+        task_target_by_dispatch_index, task_timing_control, BytecodeChildHeapFactory,
+        BytecodeChildLane, BytecodeRequestChildComposition, RequestChildHeapFactory,
     },
     bytecode_host_effects::{
         BytecodeHttpFailure, BytecodeHttpRequest, BytecodeHttpResponse,
@@ -72,9 +75,9 @@ use crate::{
     },
     execution_budget::{ExecutionWinner, RequestPendingSink},
     vm_heap::RequestVmHeap,
-    BinaryHttpRequest, BoundaryResponse, ExecutionBudget, ExecutionControl, GatewayAdapterSource,
-    HttpAdapterKind, HttpNameValue, HttpResponseMetadata, RequestEnvelope, RequestError,
-    RequestResult,
+    BinaryHttpRequest, BoundaryResponse, BytecodeTaskSubmitError, ExecutionBudget,
+    ExecutionControl, GatewayAdapterSource, HttpAdapterKind, HttpNameValue, HttpResponseMetadata,
+    RequestEnvelope, RequestError, RequestResult,
 };
 
 pub struct BytecodeRequestExecutionInput {
@@ -510,6 +513,10 @@ pub(super) enum RequestPendingOutcome {
         child_heap: ChildHeapCarrier,
         result: Result<RuntimeValue, String>,
     },
+    TaskSubmit {
+        target: LinkedTaskTarget,
+        result: Result<TaskSubmitResponseControl, BytecodeTaskSubmitError>,
+    },
 }
 
 impl VmRootSource for RequestPendingOutcome {
@@ -521,6 +528,7 @@ impl VmRootSource for RequestPendingOutcome {
             | Self::StreamNext { .. }
             | Self::ServerStreamFlush { .. } => Ok(()),
             Self::Db { child_heap, .. } => child_heap.visit_roots(visitor),
+            Self::TaskSubmit { .. } => Ok(()),
         }
     }
 }
@@ -1117,7 +1125,15 @@ impl BytecodeHostExecutor {
             }
         };
 
-        let (_target, arguments, _endpoint, resume) = invocation.into_parts();
+        let (_target, arguments, endpoint, resume) = invocation.into_parts();
+        if endpoint.is_some() {
+            return Err(BytecodePortFailure::continuation(
+                BytecodeSchedulerError::Port(
+                    "task child must not carry a stream endpoint".to_string(),
+                ),
+                resume,
+            ));
+        }
         let mut argument_escrow = arguments.into_terminal_escrow();
         if let Err(error) = argument_escrow.release_all(heap) {
             return Err(BytecodePortFailure::continuation(
@@ -1205,6 +1221,103 @@ impl BytecodeHostExecutor {
                 BytecodePortFailure::continuation(reason, resume)
             })
     }
+
+    fn execute_task_child(
+        &self,
+        invocation: ChildInvocation,
+        heap: &mut dyn VmHeap,
+        _budget: &mut dyn VmBudget,
+    ) -> Result<BytecodeChildHandoff<VmFiber>, BytecodePortFailure<ChildInvocation, VmResumeToken>>
+    {
+        let ChildTarget::Task(index) = invocation.target() else {
+            return Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::UnsupportedChild,
+                invocation,
+            ));
+        };
+        let image = Arc::clone(invocation.resume().image());
+        let composition = self.child_composition.task_child.clone();
+        let Some(target) = task_target_by_dispatch_index(&image, index).cloned() else {
+            return Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::Port("task dispatch table row is absent".to_string()),
+                invocation,
+            ));
+        };
+        if !composition.is_available() {
+            return Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::Port(
+                    "task child requires exact activation identity, caller request id and runtime id"
+                        .to_string(),
+                ),
+                invocation,
+            ));
+        }
+        let timing = match task_timing_control(&target) {
+            Ok(timing) => timing,
+            Err(error) => {
+                return Err(BytecodePortFailure::input(
+                    BytecodeSchedulerError::Port(error.to_string()),
+                    invocation,
+                ));
+            }
+        };
+        let payload = match encode_durable_task_payload(
+            &image,
+            &target,
+            invocation.arguments().values(),
+            heap,
+        ) {
+            Ok(payload) => payload,
+            Err(error) => {
+                return Err(BytecodePortFailure::input(
+                    BytecodeSchedulerError::Port(error.to_string()),
+                    invocation,
+                ));
+            }
+        };
+        let rpc_id = format!(
+            "{}-task-{}",
+            composition.caller_request_id,
+            invocation.resume().sequence()
+        );
+        let message = match task_submit_message_from_composition(
+            image.owner().deployment(),
+            image.service_protocol_identity().as_str(),
+            &target,
+            &payload,
+            &rpc_id,
+            &composition,
+            Some(timing),
+        ) {
+            Ok(message) => message,
+            Err(error) => {
+                return Err(BytecodePortFailure::input(
+                    BytecodeSchedulerError::Port(error.to_string()),
+                    invocation,
+                ));
+            }
+        };
+
+        let (_target, arguments, _endpoint, resume) = invocation.into_parts();
+        let mut argument_escrow = arguments.into_terminal_escrow();
+        if let Err(error) = argument_escrow.release_all(heap) {
+            return Err(BytecodePortFailure::continuation(
+                BytecodeSchedulerError::Vm(error),
+                resume,
+            ));
+        }
+
+        let future = Arc::clone(&composition.submitter).submit(message);
+        self.runtime
+            .begin_pending(resume, future, false, move |result| {
+                RequestPendingOutcome::TaskSubmit { target, result }
+            })
+            .map(BytecodeChildHandoff::Pending)
+            .map_err(|failure| {
+                let (reason, resume) = failure.into_parts();
+                BytecodePortFailure::continuation(reason, resume)
+            })
+    }
 }
 
 impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
@@ -1249,9 +1362,7 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                 self.observer.clone(),
                 vm_limits(),
             ),
-            BytecodeChildLane::Task => {
-                execute_task_child(invocation, heap, budget, &self.child_composition.task_child)
-            }
+            BytecodeChildLane::Task => self.execute_task_child(invocation, heap, budget),
             BytecodeChildLane::Db => self.execute_db_child(invocation, heap, budget),
             BytecodeChildLane::Disabled => Err(BytecodePortFailure::input(
                 BytecodeSchedulerError::UnsupportedChild,
@@ -2854,6 +2965,9 @@ fn materialize_request_pending_outcome(
             terminal_escrows,
             heap,
         ),
+        RequestPendingOutcome::TaskSubmit { target, result } => {
+            materialize_task_submit_outcome(resume, target, result, terminal_escrows, heap)
+        }
     }
 }
 
@@ -2923,6 +3037,83 @@ fn materialize_db_pending_outcome(
         }
     };
     match VmOwnedValues::try_from_db_intrinsic_resume(resume, Box::new([slot]), &operation) {
+        Ok(values) => ResumeOutcome::Values(values),
+        Err(rejected) => {
+            let (error, escrow) = rejected.into_terminal_escrow();
+            terminal_escrows
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(escrow);
+            ResumeOutcome::Failure(error)
+        }
+    }
+}
+
+fn task_submit_failure_outcome(error: BytecodeTaskSubmitError) -> ResumeOutcome {
+    task_submit_failure_message(error.to_string())
+}
+
+fn task_submit_failure_message(message: String) -> ResumeOutcome {
+    ResumeOutcome::Failure(VmError::HostEffectFailure(RuntimeErrorPayload {
+        code: "TaskSubmitFailed".to_string(),
+        message,
+        status: None,
+        details: None,
+    }))
+}
+
+fn task_intrinsic_result_type(
+    image: &DeploymentExecutionImage,
+    target: &LinkedTaskTarget,
+) -> Result<TypeIndex, String> {
+    image
+        .intrinsics()
+        .iter()
+        .find_map(|row| {
+            let row_target = row.task_target()?;
+            (row_target.index() == target.index())
+                .then(|| row.signature().result_types().first().copied())
+                .flatten()
+        })
+        .ok_or_else(|| {
+            format!(
+                "task dispatch target {} has no linked intrinsic result row",
+                target.target_identity()
+            )
+        })
+}
+
+fn materialize_task_submit_outcome(
+    resume: &VmResumeToken,
+    target: LinkedTaskTarget,
+    result: Result<TaskSubmitResponseControl, BytecodeTaskSubmitError>,
+    terminal_escrows: &Mutex<Vec<VmTerminalEscrow>>,
+    heap: &mut dyn VmHeap,
+) -> ResumeOutcome {
+    let response = match result {
+        Ok(response) => response,
+        Err(error) => return task_submit_failure_outcome(error),
+    };
+    let result_type = match task_intrinsic_result_type(resume.image(), &target) {
+        Ok(result_type) => result_type,
+        Err(message) => return task_submit_failure_message(message),
+    };
+    let tag = match CompactTypeTag::try_from_type_index(result_type.get()) {
+        Some(tag) => tag,
+        None => {
+            return task_submit_failure_message(format!(
+                "task result type {} does not fit compact tag",
+                result_type.get()
+            ));
+        }
+    };
+    let slot = match heap.alloc_typed_string(response.task_ref, tag, ValueFlags::new(0)) {
+        Ok(slot) => slot,
+        Err(error) => {
+            return task_submit_failure_message(format!("task result allocation failed: {error}"))
+        }
+    };
+    match VmOwnedValues::try_from_task_intrinsic_resume(resume, Box::new([slot]), &target) {
         Ok(values) => ResumeOutcome::Values(values),
         Err(rejected) => {
             let (error, escrow) = rejected.into_terminal_escrow();

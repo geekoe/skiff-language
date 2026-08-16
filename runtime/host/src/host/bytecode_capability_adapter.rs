@@ -895,21 +895,23 @@ impl ProductionBytecodeTaskSubmitter {
 }
 
 impl BytecodeTaskSubmitter for ProductionBytecodeTaskSubmitter {
-    fn submit<'a>(
-        &'a self,
+    fn submit(
+        &self,
         message: TaskSubmitControlMessage,
     ) -> Pin<
         Box<
             dyn Future<Output = Result<TaskSubmitResponseControl, BytecodeTaskSubmitError>>
                 + Send
-                + 'a,
+                + 'static,
         >,
     > {
+        let sender = self.sender.clone();
+        let outbound_requests = Arc::clone(&self.outbound_requests);
         Box::pin(async move {
             let rpc_id = message.request.rpc_id.clone();
             let (response_tx, mut response_rx) = mpsc::unbounded_channel();
             let cancel_sender: Option<OutboundRequestCancelSender> = {
-                let sender = self.sender.clone();
+                let sender = sender.clone();
                 Some(Arc::new(move |request_id, reason| {
                     sender
                         .send(RouterWriterMessage::Control(
@@ -923,8 +925,7 @@ impl BytecodeTaskSubmitter for ProductionBytecodeTaskSubmitter {
                         .map_err(|_| OutboundRequestCancelSendError::Closed)
                 }))
             };
-            let lease = self
-                .outbound_requests
+            let lease = outbound_requests
                 .insert_with_lease(
                     rpc_id.clone(),
                     response_tx,
@@ -932,8 +933,7 @@ impl BytecodeTaskSubmitter for ProductionBytecodeTaskSubmitter {
                     "task_child_submit",
                 )
                 .map_err(|error| BytecodeTaskSubmitError::Protocol(error.to_string()))?;
-            if self
-                .sender
+            if sender
                 .send(RouterWriterMessage::TaskSubmit(message))
                 .is_err()
             {

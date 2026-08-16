@@ -52,7 +52,10 @@ pub(crate) use db_intrinsic::{
 };
 pub(crate) use interface::execute_interface_child;
 pub(crate) use service::execute_service_child;
-pub(crate) use task::{execute_task_child, is_task_request, task_arguments};
+pub(crate) use task::{
+    encode_durable_task_payload, is_task_request, task_arguments,
+    task_submit_message_from_composition, task_target_by_dispatch_index, task_timing_control,
+};
 pub use task::{
     BytecodeTaskChildComposition, BytecodeTaskSubmitError, BytecodeTaskSubmitter,
     FailClosedTaskSubmitter,
