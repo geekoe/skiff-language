@@ -1,0 +1,24 @@
+interface Reader {
+  function label(self: Self, seed: number) -> string
+  function fail(self: Self) -> void
+}
+
+type Failure {
+  message: string,
+}
+
+type ReaderImpl implements Reader {
+  value: string,
+}
+
+impl ReaderImpl {
+  function label(seed: number) -> string {
+    return self.value
+  }
+
+  function fail() -> void {
+    throw Failure { message: "remote-throw" }
+  }
+}
+
+const reader: ReaderImpl = ReaderImpl { value: "remote-ok" }

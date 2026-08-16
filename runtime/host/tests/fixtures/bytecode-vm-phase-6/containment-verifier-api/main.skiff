@@ -1,0 +1,6 @@
+import std
+
+function run(seed: number) -> number {
+  std.bytecode.verifier.verify(seed)
+  return seed
+}

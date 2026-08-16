@@ -1,0 +1,17 @@
+import std
+
+type HandlerImpl implements payments.Handler {
+  offset: number,
+}
+
+impl HandlerImpl {
+  function handle(value: number) -> number {
+    std.time.sleep(Duration.milliseconds(0))
+    return value + self.offset
+  }
+}
+
+function run(seed: number) -> number {
+  final handler = HandlerImpl { offset: 1 } as payments.Handler
+  return payments/invoke(handler, seed)
+}

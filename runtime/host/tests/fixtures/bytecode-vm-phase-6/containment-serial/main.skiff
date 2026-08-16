@@ -1,0 +1,6 @@
+function run(seed: number) -> number {
+  serial {
+    final sequenced = seed + 1
+  }
+  return seed
+}

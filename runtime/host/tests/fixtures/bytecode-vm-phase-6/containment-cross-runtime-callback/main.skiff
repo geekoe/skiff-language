@@ -1,0 +1,16 @@
+import std
+
+function headers() -> Array<std.http.HttpHeader> {
+  return []
+}
+
+function run(seed: number) -> number {
+  std.http.sse(std.http.HttpClientRequest {
+    method: "GET",
+    url: "http://cross-runtime.invalid/callback",
+    headers: headers(),
+    body: null,
+    timeoutMs: 5000,
+  })
+  return seed
+}

@@ -1,0 +1,5 @@
+function run(seed: number) -> number {
+  final reader = provider/reader as provider.Reader
+  reader.fail()
+  return seed
+}

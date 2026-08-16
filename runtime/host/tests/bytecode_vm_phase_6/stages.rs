@@ -5,7 +5,8 @@ use skiff_runtime_loader::HydratedDeploymentBytecode;
 
 use super::{
     fixture::{
-        build_capability, build_interface_local_named, BuildOutcome, Capability, PublishedFixture,
+        build_capability, build_interface_local_named, build_single_named, build_with_provider,
+        BuildOutcome, Capability, PublishedFixture,
     },
     host_chain,
 };
@@ -28,6 +29,36 @@ pub fn published_interface_local_named(
         BuildOutcome::Published(fixture) => fixture,
         BuildOutcome::Rejected { error_chain, .. } => panic!(
             "production Phase 6 interface-local {directory} source did not reach the executable carrier: {error_chain}"
+        ),
+    }
+}
+
+pub fn published_with_provider(
+    provider_dir: &str,
+    provider_id: &str,
+    consumer_dir: &str,
+    package_id: &str,
+    prefix: &str,
+) -> PublishedFixture {
+    match build_with_provider(
+        provider_dir,
+        provider_id,
+        consumer_dir,
+        package_id,
+        prefix,
+    ) {
+        BuildOutcome::Published(fixture) => fixture,
+        BuildOutcome::Rejected { error_chain, .. } => panic!(
+            "production Phase 6 provider/consumer source did not reach the executable carrier: {error_chain}"
+        ),
+    }
+}
+
+pub fn published_single_named(directory: &str, package_id: &str, prefix: &str) -> PublishedFixture {
+    match build_single_named(directory, package_id, prefix) {
+        BuildOutcome::Published(fixture) => fixture,
+        BuildOutcome::Rejected { error_chain, .. } => panic!(
+            "production Phase 6 named source did not reach the executable carrier: {error_chain}"
         ),
     }
 }
@@ -94,6 +125,50 @@ pub fn assert_interface_remote_negative_rejected(prefix: &str) {
         }
         BuildOutcome::Published(_) => {
             panic!("disabled remote interface source published an executable image")
+        }
+    }
+}
+
+pub fn assert_capability_negative_rejected(capability: Capability, prefix: &str) {
+    match build_capability(capability, true, prefix) {
+        BuildOutcome::Rejected {
+            package_pointer_absent,
+            release_pointer_absent,
+            ..
+        } => {
+            assert!(
+                package_pointer_absent,
+                "disabled Phase 6 {capability:?} negative surface wrote a package pointer"
+            );
+            assert!(
+                release_pointer_absent,
+                "disabled Phase 6 {capability:?} negative surface wrote a release pointer"
+            );
+        }
+        BuildOutcome::Published(_) => {
+            panic!("disabled Phase 6 {capability:?} negative surface published an executable image")
+        }
+    }
+}
+
+pub fn assert_single_named_rejected(directory: &str, package_id: &str, prefix: &str) {
+    match build_single_named(directory, package_id, prefix) {
+        BuildOutcome::Rejected {
+            package_pointer_absent,
+            release_pointer_absent,
+            ..
+        } => {
+            assert!(
+                package_pointer_absent,
+                "{directory} wrote a package pointer"
+            );
+            assert!(
+                release_pointer_absent,
+                "{directory} wrote a release pointer"
+            );
+        }
+        BuildOutcome::Published(_) => {
+            panic!("disabled containment {directory} source published an executable image")
         }
     }
 }

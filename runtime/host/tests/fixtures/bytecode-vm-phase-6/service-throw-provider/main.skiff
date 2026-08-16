@@ -1,0 +1,7 @@
+type Failure {
+  message: string,
+}
+
+function fail() -> void {
+  throw Failure { message: "service-throw" }
+}

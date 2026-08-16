@@ -1,0 +1,12 @@
+import std
+
+function run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  final reader = provider/reader as provider.Reader
+  final items = reader.stream(1)
+  emit({ tag: "start", status: 200, headers: [] })
+  for item in items {
+    emit({ tag: "chunk", value: bytes.fromUtf8(item) })
+  }
+  emit({ tag: "end" })
+  return null
+}

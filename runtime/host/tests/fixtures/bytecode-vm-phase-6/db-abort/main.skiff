@@ -1,0 +1,20 @@
+type Doc {
+  id: string,
+  value: string,
+}
+
+type RollbackFailure {
+  message: string,
+}
+
+db object Doc {
+  primary key(id)
+}
+
+function run(seed: number) -> number {
+  db transaction value {
+    db insert Doc { id = "phase6-db-abort" value = "bad" }
+    throw RollbackFailure { message: "abort" }
+    0
+  }
+}

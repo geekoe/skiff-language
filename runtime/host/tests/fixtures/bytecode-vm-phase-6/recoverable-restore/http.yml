@@ -1,0 +1,16 @@
+run:
+  method: POST
+  path: /phase-6/recoverable-restore
+  kind: typedJson
+  handler: main.run
+  adapterArgs:
+    - param: seed
+      source: { kind: http.body }
+restore:
+  method: POST
+  path: /phase-6/recoverable-restore-read
+  kind: typedJson
+  handler: main.restore
+  adapterArgs:
+    - param: seed
+      source: { kind: http.body }

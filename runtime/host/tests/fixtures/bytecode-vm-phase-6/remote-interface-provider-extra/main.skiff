@@ -1,0 +1,22 @@
+interface Reader {
+  function label(self: Self, seed: number) -> string
+  function stream(self: Self, seed: number) -> Stream<string>
+}
+
+type ReaderImpl implements Reader {
+  value: string,
+}
+
+impl ReaderImpl {
+  function label(seed: number) -> string {
+    return self.value
+  }
+
+  function stream(seed: number) -> Stream<string> {
+    emit("remote-stream-1")
+    emit("remote-stream-2")
+    return null
+  }
+}
+
+const reader: ReaderImpl = ReaderImpl { value: "remote-ok" }

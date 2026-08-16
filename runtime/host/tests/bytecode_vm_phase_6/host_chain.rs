@@ -1,5 +1,5 @@
 use super::{
-    fixture::Capability,
+    fixture::{Capability, PublishedFixture},
     host_harness::{HostError, HostResponse, RuntimeHostHarness},
     stages::{published_interface_local_named, published_positive},
 };
@@ -51,6 +51,31 @@ pub async fn interface_local_named_throw_terminal(
     let request_id = format!("phase-6-{prefix}");
     host.send_http_request(&request_id, named_interface_path(directory), "unary", b"7")
         .await;
+    let error = host.error(&request_id).await;
+    host.close().await;
+    error
+}
+
+pub async fn drive_published_to_terminal(
+    fixture: PublishedFixture,
+    path: &str,
+    mode: &str,
+    body: &[u8],
+    prefix: &str,
+) -> HostResponse {
+    drive_fixture(fixture, path, mode, body, prefix).await
+}
+
+pub async fn drive_published_error(
+    fixture: PublishedFixture,
+    path: &str,
+    mode: &str,
+    body: &[u8],
+    prefix: &str,
+) -> HostError {
+    let mut host = RuntimeHostHarness::start(prefix, fixture).await;
+    let request_id = format!("phase-6-{prefix}");
+    host.send_http_request(&request_id, path, mode, body).await;
     let error = host.error(&request_id).await;
     host.close().await;
     error

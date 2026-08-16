@@ -17,6 +17,9 @@ use fixture::Capability;
 mod tests {
     use super::*;
     use skiff_artifact_model::{ContractTypeRef, TypeRefIr};
+    use skiff_runtime_model::actor_vm_arena::{
+        ActorVmArena, ActorVmArenaEpoch, ActorVmArenaId, ActorVmArenaRootId,
+    };
     use skiff_runtime_model::{
         request_heap::RequestHeapLimits,
         vm_heap::{HeapDomainId, HeapEpoch, VmHeap, VmHeapError},
@@ -31,8 +34,8 @@ mod tests {
         RequestExecutionContext, RootEscrow, SettleDisposition,
     };
     use skiff_runtime_transport::protocol::{
-        ActivationIdentityFrameMetadata, TaskCallerKind, TaskSubmitRequestFrameHeaderV2,
-        TaskTargetKind, RUNTIME_FRAME_SCHEMA_VERSION,
+        ActivationIdentityFrameMetadata, BytecodeRequestDeadlineFrameHeader, TaskCallerKind,
+        TaskSubmitRequestFrameHeaderV2, TaskTargetKind, RUNTIME_FRAME_SCHEMA_VERSION,
     };
     use skiff_runtime_vm::{VmBudget, VmBudgetClosed, VmFiber, VmSemanticCharge};
     use stages::{
@@ -40,6 +43,18 @@ mod tests {
         scheduler_to_request,
     };
     use std::sync::{Arc, Mutex};
+    use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+
+    fn deadline_for_callback(timeout_ms: u64) -> BytecodeRequestDeadlineFrameHeader {
+        let expires_at = (OffsetDateTime::now_utc()
+            + time::Duration::milliseconds(timeout_ms as i64))
+        .format(&Rfc3339)
+        .expect("format request deadline");
+        BytecodeRequestDeadlineFrameHeader {
+            timeout_ms,
+            expires_at,
+        }
+    }
 
     fn assert_stage_one(capability: Capability, prefix: &str) {
         let fixture = published_positive(capability, prefix);
@@ -111,6 +126,93 @@ mod tests {
         service_s5,
         service_s6
     );
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn service_pending_round_trip() {
+        let fixture = stages::published_with_provider(
+            "service-pending-provider",
+            "example.com/payments",
+            "service-pending",
+            "test.skiff/bytecode-vm-phase-6-service-pending",
+            "service-pending",
+        );
+        let response = host_chain::drive_published_to_terminal(
+            fixture,
+            "/phase-6/service-pending",
+            "unary",
+            b"7",
+            "service-pending",
+        )
+        .await;
+        assert_eq!(response.status, 200);
+        assert!(!response.chunks.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn service_throw_terminal() {
+        let fixture = stages::published_with_provider(
+            "service-throw-provider",
+            "example.com/payments",
+            "service-throw",
+            "test.skiff/bytecode-vm-phase-6-service-throw",
+            "service-throw",
+        );
+        let error = host_chain::drive_published_error(
+            fixture,
+            "/phase-6/service-throw",
+            "unary",
+            b"7",
+            "service-throw",
+        )
+        .await;
+        assert!(!error.code.is_empty());
+        assert!(!error.message.is_empty());
+        assert!(
+            error
+                .status
+                .map_or(true, |status| (400..=599).contains(&status)),
+            "ordinary service throw must map to an HTTP error terminal"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn service_race_concurrent_pending_completions_terminate_once() {
+        let fixture = stages::published_with_provider(
+            "service-pending-provider",
+            "example.com/payments",
+            "service-pending",
+            "test.skiff/bytecode-vm-phase-6-service-pending",
+            "service-race",
+        );
+        let mut host = host_harness::RuntimeHostHarness::start("service-race", fixture).await;
+        host.send_http_request(
+            "phase-6-service-race-1",
+            "/phase-6/service-pending",
+            "unary",
+            b"7",
+        )
+        .await;
+        host.send_http_request(
+            "phase-6-service-race-2",
+            "/phase-6/service-pending",
+            "unary",
+            b"7",
+        )
+        .await;
+        let first = host.response("phase-6-service-race-1").await;
+        let second = host.response("phase-6-service-race-2").await;
+        assert_eq!(first.status, 200);
+        assert_eq!(second.status, 200);
+        assert!(!first.chunks.is_empty());
+        assert!(!second.chunks.is_empty());
+        host.close().await;
+    }
+
+    #[test]
+    fn service_negative_rejected() {
+        stages::assert_capability_negative_rejected(Capability::Service, "service-negative");
+    }
+
     capability_matrix!(
         Capability::InterfaceLocal,
         "interface-local-s1",
@@ -261,6 +363,55 @@ mod tests {
     fn interface_remote_negative_rejected() {
         stages::assert_interface_remote_negative_rejected("interface-remote-negative");
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn interface_remote_stream_round_trip() {
+        let fixture = stages::published_with_provider(
+            "remote-interface-provider-extra",
+            "example.com/phase-6-remote-provider",
+            "remote-interface-stream",
+            "test.skiff/bytecode-vm-phase-6-remote-interface-stream",
+            "interface-remote-stream",
+        );
+        let response = host_chain::drive_published_to_terminal(
+            fixture,
+            "/phase-6/remote-interface-stream",
+            "serverStream",
+            b"phase6",
+            "interface-remote-stream",
+        )
+        .await;
+        assert_eq!(response.status, 200);
+        assert!(!response.chunks.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn interface_remote_throw_terminal() {
+        let fixture = stages::published_with_provider(
+            "remote-interface-throw-provider",
+            "example.com/phase-6-remote-provider",
+            "remote-interface-throw",
+            "test.skiff/bytecode-vm-phase-6-remote-interface-throw",
+            "interface-remote-throw",
+        );
+        let error = host_chain::drive_published_error(
+            fixture,
+            "/phase-6/remote-interface-throw",
+            "unary",
+            b"7",
+            "interface-remote-throw",
+        )
+        .await;
+        assert!(!error.code.is_empty());
+        assert!(!error.message.is_empty());
+        assert!(
+            error
+                .status
+                .map_or(true, |status| (400..=599).contains(&status)),
+            "ordinary remote interface throw must map to an HTTP error terminal"
+        );
+    }
+
     capability_matrix!(
         Capability::Callback,
         "callback-s1",
@@ -340,6 +491,83 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn callback_pending_round_trip() {
+        let fixture = stages::published_with_provider(
+            "callback-provider",
+            "example.com/phase-6-callback-provider",
+            "callback-pending",
+            "test.skiff/bytecode-vm-phase-6-callback-pending",
+            "callback-pending",
+        );
+        let response = host_chain::drive_published_to_terminal(
+            fixture,
+            "/phase-6/callback-pending",
+            "unary",
+            b"7",
+            "callback-pending",
+        )
+        .await;
+        assert_eq!(response.status, 200);
+        assert!(!response.chunks.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn callback_stream_round_trip() {
+        let fixture = stages::published_with_provider(
+            "callback-stream-provider",
+            "example.com/phase-6-callback-provider",
+            "callback-stream",
+            "test.skiff/bytecode-vm-phase-6-callback-stream",
+            "callback-stream",
+        );
+        let response = host_chain::drive_published_to_terminal(
+            fixture,
+            "/phase-6/callback-stream",
+            "serverStream",
+            b"phase6",
+            "callback-stream",
+        )
+        .await;
+        assert_eq!(response.status, 200);
+        assert!(!response.chunks.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn callback_cancel_deadline_cleans_up_late_pending() {
+        let fixture = stages::published_with_provider(
+            "callback-provider",
+            "example.com/phase-6-callback-provider",
+            "callback-pending",
+            "test.skiff/bytecode-vm-phase-6-callback-pending",
+            "callback-cancel",
+        );
+        let mut host = host_harness::RuntimeHostHarness::start("callback-cancel", fixture).await;
+        host.send_http_request_with_deadline(
+            "phase-6-callback-cancel-1",
+            "/phase-6/callback-pending",
+            "unary",
+            b"7",
+            Some(deadline_for_callback(1)),
+        )
+        .await;
+        let error = host.error("phase-6-callback-cancel-1").await;
+        assert!(!error.code.is_empty());
+        assert!(!error.message.is_empty());
+
+        host.send_http_request(
+            "phase-6-callback-cancel-2",
+            "/phase-6/callback-pending",
+            "unary",
+            b"7",
+        )
+        .await;
+        let response = host.response("phase-6-callback-cancel-2").await;
+        assert_eq!(response.status, 200);
+        assert!(!response.chunks.is_empty());
+        host.close().await;
+    }
+
     capability_matrix!(
         Capability::Recoverable,
         "recoverable-s1",
@@ -350,6 +578,46 @@ mod tests {
         recoverable_s5,
         recoverable_s6
     );
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn recoverable_restore_after_durable_encode() {
+        let fixture = stages::published_single_named(
+            "recoverable-restore",
+            "test.skiff/bytecode-vm-phase-6-recoverable-restore",
+            "recoverable-restore",
+        );
+        let mut host =
+            host_harness::RuntimeHostHarness::start("recoverable-restore", fixture).await;
+        host.send_http_request(
+            "phase-6-recoverable-encode",
+            "/phase-6/recoverable-restore",
+            "unary",
+            b"7",
+        )
+        .await;
+        let encoded = host.response("phase-6-recoverable-encode").await;
+        assert_eq!(encoded.status, 200);
+        host.send_http_request(
+            "phase-6-recoverable-restore",
+            "/phase-6/recoverable-restore-read",
+            "unary",
+            b"7",
+        )
+        .await;
+        let restored = host.response("phase-6-recoverable-restore").await;
+        assert_eq!(restored.status, 200);
+        assert!(!restored.chunks.is_empty());
+        host.close().await;
+    }
+
+    #[test]
+    fn recoverable_negative_rejected() {
+        stages::assert_capability_negative_rejected(
+            Capability::Recoverable,
+            "recoverable-negative",
+        );
+    }
+
     capability_matrix!(
         Capability::Db,
         "db-s1",
@@ -360,6 +628,60 @@ mod tests {
         db_s5,
         db_s6
     );
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn db_commit_terminates() {
+        let fixture = stages::published_single_named(
+            "db-commit",
+            "test.skiff/bytecode-vm-phase-6-db-commit",
+            "db-commit",
+        );
+        let mut host = host_harness::RuntimeHostHarness::start("db-commit", fixture).await;
+        host.send_http_request("phase-6-db-commit", "/phase-6/db-commit", "unary", b"7")
+            .await;
+        let committed = host.response("phase-6-db-commit").await;
+        assert_eq!(committed.status, 200);
+        assert!(!committed.chunks.is_empty());
+        host.close().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn db_abort_rejected_terminal() {
+        let fixture = stages::published_single_named(
+            "db-abort",
+            "test.skiff/bytecode-vm-phase-6-db-abort",
+            "db-abort",
+        );
+        let mut host = host_harness::RuntimeHostHarness::start("db-abort", fixture).await;
+        host.send_http_request("phase-6-db-abort", "/phase-6/db-abort", "unary", b"7")
+            .await;
+        let aborted = host.error("phase-6-db-abort").await;
+        assert!(!aborted.code.is_empty());
+        assert!(!aborted.message.is_empty());
+        host.close().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn db_pending_terminates() {
+        let fixture = stages::published_single_named(
+            "db-pending",
+            "test.skiff/bytecode-vm-phase-6-db-pending",
+            "db-pending",
+        );
+        let mut host = host_harness::RuntimeHostHarness::start("db-pending", fixture).await;
+        host.send_http_request("phase-6-db-pending", "/phase-6/db-pending", "unary", b"7")
+            .await;
+        let response = host.response("phase-6-db-pending").await;
+        assert_eq!(response.status, 200);
+        assert!(!response.chunks.is_empty());
+        host.close().await;
+    }
+
+    #[test]
+    fn db_negative_nested_rejected() {
+        stages::assert_capability_negative_rejected(Capability::Db, "db-negative");
+    }
+
     capability_matrix!(
         Capability::Task,
         "task-s1",
@@ -384,6 +706,88 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn actor_create_host_handoff_pending_resumes_and_terminates() {
         request_to_terminal(Capability::Actor, "actor-create-pending").await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn actor_pending_method_round_trip() {
+        let fixture = stages::published_single_named(
+            "actor-pending",
+            "test.skiff/bytecode-vm-phase-6-actor-pending",
+            "actor-pending-method",
+        );
+        let mut host =
+            host_harness::RuntimeHostHarness::start("actor-pending-method", fixture).await;
+        host.send_http_request(
+            "phase-6-actor-pending",
+            "/phase-6/actor-pending",
+            "unary",
+            b"7",
+        )
+        .await;
+        let response = host.response("phase-6-actor-pending").await;
+        assert_eq!(response.status, 200);
+        assert!(!response.chunks.is_empty());
+        host.close().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn actor_db_only_transaction_round_trip() {
+        let fixture = stages::published_single_named(
+            "actor-db-only",
+            "test.skiff/bytecode-vm-phase-6-actor-db-only",
+            "actor-db-only",
+        );
+        let mut host = host_harness::RuntimeHostHarness::start("actor-db-only", fixture).await;
+        host.send_http_request(
+            "phase-6-actor-db-only",
+            "/phase-6/actor-db-only",
+            "unary",
+            b"7",
+        )
+        .await;
+        let response = host.response("phase-6-actor-db-only").await;
+        assert_eq!(response.status, 200);
+        assert!(!response.chunks.is_empty());
+        host.close().await;
+    }
+
+    #[test]
+    fn actor_negative_self_dispatch_rejected() {
+        stages::assert_capability_negative_rejected(Capability::Actor, "actor-negative");
+    }
+
+    #[test]
+    fn actor_arena_hard_cap_and_quiescent_discard() {
+        let arena = ActorVmArena::new(
+            ActorVmArenaId::try_new(1).expect("actor arena id"),
+            1,
+            ActorVmArenaEpoch::try_new(1).expect("actor arena epoch"),
+            64,
+        );
+        let memory = arena.reserve(32).expect("reserve within hard cap");
+        assert_eq!(arena.snapshot().committed, 32);
+        assert!(
+            arena.reserve(33).is_err(),
+            "arena hard cap must fail closed"
+        );
+        memory.release();
+        assert_eq!(arena.snapshot().committed, 0);
+
+        let segment = arena.acquire_segment().expect("active segment");
+        let suspended = segment.suspend().expect("suspend pending segment");
+        assert_eq!(arena.snapshot().suspended_segments, 1);
+        let active = suspended.resume().expect("resume segment");
+        assert_eq!(arena.snapshot().active_segments, 1);
+        active.release();
+        assert_eq!(arena.snapshot().active_segments, 0);
+
+        let root = arena
+            .pin_root(ActorVmArenaRootId::try_new(7).expect("actor arena root"))
+            .expect("pin root");
+        assert!(arena.discard().is_err(), "live arena must not discard");
+        root.release();
+        arena.discard().expect("quiescent arena discards");
+        assert!(arena.snapshot().discarded);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -501,6 +905,11 @@ mod tests {
     }
 
     #[test]
+    fn task_negative_dispatch_inside_transaction_rejected() {
+        stages::assert_capability_negative_rejected(Capability::Task, "task-negative");
+    }
+
+    #[test]
     fn task_fake_store_rejects_conflicting_duplicate_task_id() {
         let store = host_harness::FakeTaskStore::default();
         let request = task_submit_request("task-conflict", "parent-1");
@@ -565,6 +974,60 @@ mod tests {
     #[test]
     fn containment_negative_surfaces_do_not_publish() {
         stages::assert_containment_rejected("containment-negative");
+    }
+
+    #[test]
+    fn containment_concurrent_rejected() {
+        stages::assert_single_named_rejected(
+            "containment-concurrent",
+            "test.skiff/bytecode-vm-phase-6-containment-concurrent",
+            "containment-concurrent",
+        );
+    }
+
+    #[test]
+    fn containment_serial_rejected() {
+        stages::assert_single_named_rejected(
+            "containment-serial",
+            "test.skiff/bytecode-vm-phase-6-containment-serial",
+            "containment-serial",
+        );
+    }
+
+    #[test]
+    fn containment_cross_runtime_callback_rejected() {
+        stages::assert_single_named_rejected(
+            "containment-cross-runtime-callback",
+            "test.skiff/bytecode-vm-phase-6-containment-cross-runtime-callback",
+            "containment-cross-runtime-callback",
+        );
+    }
+
+    #[test]
+    fn containment_cross_service_behavior_envelope_rejected() {
+        stages::assert_single_named_rejected(
+            "containment-cross-service-envelope",
+            "test.skiff/bytecode-vm-phase-6-containment-cross-service-envelope",
+            "containment-cross-service-envelope",
+        );
+    }
+
+    #[test]
+    fn containment_gc_compaction_rejected() {
+        stages::assert_single_named_rejected(
+            "containment-gc-compaction",
+            "test.skiff/bytecode-vm-phase-6-containment-gc-compaction",
+            "containment-gc-compaction",
+        );
+    }
+
+    #[test]
+    fn containment_verifier_api_rejected() {
+        stages::assert_single_named_rejected(
+            "containment-verifier-api",
+            "test.skiff/bytecode-vm-phase-6-containment-verifier-api",
+            "containment-verifier-api",
+        );
     }
 
     struct NoopHeap;

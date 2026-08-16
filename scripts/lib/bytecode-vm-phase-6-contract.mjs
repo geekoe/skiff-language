@@ -62,13 +62,18 @@ export const PHASE6_REQUIRED_LANES = Object.freeze([
   'phase-5-regression',
 ]);
 
-const HOST_MATRIX_TESTS = 6;
-const INTERFACE_REMOTE_HOST_TESTS = 8;
+const SERVICE_HOST_TESTS = 10;
+const INTERFACE_LOCAL_HOST_TESTS = 12;
+const INTERFACE_REMOTE_HOST_TESTS = 10;
+const CALLBACK_MATRIX_TESTS = 11;
+const RECOVERABLE_MATRIX_TESTS = 10;
+const DB_MATRIX_TESTS = 10;
 const TASK_HOST_TESTS = 11;
-const ROUTER_MATRIX_TESTS = 8;
-const CONTAINMENT_TESTS = 2;
+const ROUTER_TASK_TESTS = 8;
+const ACTOR_HOST_TESTS = 11;
+const ROUTER_ACTOR_TESTS = 7;
+const CONTAINMENT_TESTS = 8;
 const KERNEL_TESTS = 6;
-const CALLBACK_MATRIX_TESTS = 8;
 
 export function phase6ScenarioSpecs(root) {
   return Object.freeze([
@@ -77,25 +82,25 @@ export function phase6ScenarioSpecs(root) {
       '--test-reporter=tap',
       'scripts/tests/bytecode-vm-phase-6-gate-*.test.mjs',
     ], 'node-tap', ['G6'], 29),
-    hostSuite(root, 'p6-service-matrix', 'service_', HOST_MATRIX_TESTS,
+    hostSuite(root, 'p6-service-matrix', 'service_', SERVICE_HOST_TESTS,
       ['S6', 'F6', 'K6', 'X6']),
-    hostSuite(root, 'p6-interface-local-matrix', 'interface_local_', 12,
+    hostSuite(root, 'p6-interface-local-matrix', 'interface_local_', INTERFACE_LOCAL_HOST_TESTS,
       ['I6L', 'F6', 'K6']),
     hostSuite(root, 'p6-interface-remote-matrix', 'interface_remote_', INTERFACE_REMOTE_HOST_TESTS,
       ['I6R', 'S6', 'F6', 'X6']),
     hostSuite(root, 'p6-callback-matrix', 'callback_', CALLBACK_MATRIX_TESTS,
       ['C6', 'F6', 'K6', 'X6']),
-    hostSuite(root, 'p6-recoverable-matrix', 'recoverable_', 8,
+    hostSuite(root, 'p6-recoverable-matrix', 'recoverable_', RECOVERABLE_MATRIX_TESTS,
       ['R6', 'F6', 'K6']),
-    hostSuite(root, 'p6-db-matrix', 'db_', HOST_MATRIX_TESTS,
+    hostSuite(root, 'p6-db-matrix', 'db_', DB_MATRIX_TESTS,
       ['D6', 'F6', 'K6']),
     hostSuite(root, 'p6-task-host-matrix', 'task_', TASK_HOST_TESTS,
       ['T6F', 'R6', 'D6', 'X6']),
-    routerSuite(root, 'p6-task-router-matrix', 'task_', ROUTER_MATRIX_TESTS,
+    routerSuite(root, 'p6-task-router-matrix', 'task_', ROUTER_TASK_TESTS,
       ['T6F', 'T6A']),
-    hostSuite(root, 'p6-actor-host-matrix', 'actor_', 8,
+    hostSuite(root, 'p6-actor-host-matrix', 'actor_', ACTOR_HOST_TESTS,
       ['A6', 'R6', 'D6', 'K6', 'X6']),
-    routerSuite(root, 'p6-actor-router-matrix', 'actor_', ROUTER_MATRIX_TESTS,
+    routerSuite(root, 'p6-actor-router-matrix', 'actor_', ROUTER_ACTOR_TESTS,
       ['A6', 'T6A']),
     hostSuite(root, 'p6-containment-matrix', 'containment_', CONTAINMENT_TESTS,
       ['NEG', 'F6', 'X6']),

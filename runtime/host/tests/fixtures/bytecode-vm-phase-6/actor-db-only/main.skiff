@@ -1,0 +1,49 @@
+import std
+
+type Counter {
+  id: string,
+  count: number,
+}
+
+type Doc {
+  id: string,
+  value: string,
+}
+
+db object Doc {
+  primary key(id)
+}
+
+actor Counter {
+  key(id)
+  create()
+}
+
+impl Counter {
+  function create() -> void {
+    std.time.sleep(Duration.milliseconds(0))
+    self.count = 0
+  }
+
+  function increment() -> number {
+    self.count = self.count + 1
+    return self.count
+  }
+
+  function dbOnly(seed: number) -> number {
+    db transaction {
+      db insert Doc { id = "actor-db-only" value = "ok" }
+    }
+    return seed
+  }
+}
+
+function run(seed: number) -> number {
+  final counter = std.actor.get<Counter>("phase6")
+  return counter.increment()
+}
+
+function runDbOnly(seed: number) -> number {
+  final counter = std.actor.get<Counter>("phase6-db-only")
+  return counter.dbOnly(seed)
+}

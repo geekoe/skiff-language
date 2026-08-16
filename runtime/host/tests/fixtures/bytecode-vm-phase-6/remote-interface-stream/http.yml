@@ -1,0 +1,8 @@
+run:
+  method: POST
+  path: /phase-6/remote-interface-stream
+  kind: rawHttp
+  handler: main.run
+  adapterArgs:
+    - param: request
+      source: { kind: http.request }

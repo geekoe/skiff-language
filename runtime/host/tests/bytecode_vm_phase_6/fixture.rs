@@ -174,6 +174,52 @@ pub fn build_capability(capability: Capability, negative: bool, prefix: &str) ->
     )
 }
 
+pub fn build_with_provider(
+    provider_dir: &str,
+    provider_id: &str,
+    consumer_dir: &str,
+    package_id: &str,
+    prefix: &str,
+) -> BuildOutcome {
+    let repository = repository_root();
+    let root = TempRoot::new(prefix);
+    let root_path = root.path().to_path_buf();
+    let sources =
+        CompilerPlatformSources::new(&repository).expect("open compiler platform sources");
+    seed_official_std_package(&sources, root.path()).expect("seed production std package");
+    let provider = repository
+        .join("runtime/host/tests/fixtures/bytecode-vm-phase-6")
+        .join(provider_dir);
+    match build_single_into(&provider, provider_id, "1.0.0", &root_path) {
+        BuildOutcome::Published(_) => {}
+        BuildOutcome::Rejected { error_chain, .. } => {
+            return BuildOutcome::Rejected {
+                error_chain,
+                package_pointer_absent: false,
+                release_pointer_absent: false,
+            }
+        }
+    }
+    let consumer = repository
+        .join("runtime/host/tests/fixtures/bytecode-vm-phase-6")
+        .join(consumer_dir);
+    let mut outcome = build_single_into(&consumer, package_id, "1.0.0", &root_path);
+    if let BuildOutcome::Published(fixture) = &mut outcome {
+        fixture._root = root;
+    }
+    outcome
+}
+
+pub fn build_single_named(directory: &str, package_id: &str, prefix: &str) -> BuildOutcome {
+    let repository = repository_root();
+    let fixture = repository
+        .join("runtime/host/tests/fixtures/bytecode-vm-phase-6")
+        .join(directory);
+    let root = TempRoot::new(prefix);
+    let root_path = root.path().to_path_buf();
+    build_single(&fixture, package_id, "1.0.0", &root_path, root)
+}
+
 pub fn build_interface_local_named(
     directory: &str,
     package_id: &str,

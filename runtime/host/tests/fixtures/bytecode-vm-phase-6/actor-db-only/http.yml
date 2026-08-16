@@ -1,0 +1,16 @@
+run:
+  method: POST
+  path: /phase-6/actor
+  kind: typedJson
+  handler: main.run
+  adapterArgs:
+    - param: seed
+      source: { kind: http.body }
+db-only:
+  method: POST
+  path: /phase-6/actor-db-only
+  kind: typedJson
+  handler: main.runDbOnly
+  adapterArgs:
+    - param: seed
+      source: { kind: http.body }

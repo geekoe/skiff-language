@@ -1,0 +1,7 @@
+interface StreamHandler {
+  function handle(self: Self, value: number) -> Stream<string>
+}
+
+function invokeStream(handler: any StreamHandler, value: number) -> Stream<string> {
+  return handler.handle(value)
+}

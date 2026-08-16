@@ -1,0 +1,6 @@
+function run(seed: number) -> number {
+  concurrent {
+    final parallel = seed + 1
+  }
+  return seed
+}

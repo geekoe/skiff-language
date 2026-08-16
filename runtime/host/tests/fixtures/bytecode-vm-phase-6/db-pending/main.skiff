@@ -1,0 +1,18 @@
+import std
+
+type Doc {
+  id: string,
+  value: string,
+}
+
+db object Doc {
+  primary key(id)
+}
+
+function run(seed: number) -> number {
+  db transaction {
+    std.time.sleep(Duration.milliseconds(0))
+    db insert Doc { id = "phase6-db-pending" value = "ok" }
+  }
+  return seed
+}

@@ -1,0 +1,6 @@
+import std
+
+function echo() -> void {
+  std.time.sleep(Duration.milliseconds(0))
+  return
+}

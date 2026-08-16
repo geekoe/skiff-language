@@ -1,0 +1,16 @@
+run:
+  method: POST
+  path: /phase-6/actor
+  kind: typedJson
+  handler: main.run
+  adapterArgs:
+    - param: seed
+      source: { kind: http.body }
+pending:
+  method: POST
+  path: /phase-6/actor-pending
+  kind: typedJson
+  handler: main.runPending
+  adapterArgs:
+    - param: seed
+      source: { kind: http.body }

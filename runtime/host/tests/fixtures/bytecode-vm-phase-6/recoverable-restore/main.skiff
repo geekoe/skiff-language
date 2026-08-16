@@ -1,0 +1,20 @@
+type RecoverableDoc {
+  id: string,
+  value: string,
+}
+
+db object RecoverableDoc {
+  primary key(id)
+}
+
+function run(seed: number) -> number {
+  db transaction {
+    db insert RecoverableDoc { id = "recoverable-restore" value = "ok" }
+  }
+  return seed
+}
+
+function restore(seed: number) -> number {
+  final found = db require RecoverableDoc("recoverable-restore")
+  return found.value.length()
+}

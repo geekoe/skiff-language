@@ -1,0 +1,19 @@
+interface Handler {
+  function handle(self: Self, value: number) -> number
+}
+
+type HandlerImpl implements Handler {
+  offset: number,
+}
+
+impl HandlerImpl {
+  function handle(value: number) -> number {
+    return value + self.offset
+  }
+}
+
+function run(seed: number) -> number {
+  final handler = HandlerImpl { offset: 1 } as Handler
+  inout payments/echo(handler)
+  return seed
+}

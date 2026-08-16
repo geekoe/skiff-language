@@ -147,14 +147,14 @@ test('Rust matrices expose every registered prefix with the exact expected red c
   const recoverableCodec = await readFile(recoverableCodecSource, 'utf8');
   const router = await readFile(routerRustSource, 'utf8');
   const expectedStageTests = new Map([
-    ['service_', 6],
+    ['service_', 10],
     ['interface_local_', 12],
-    ['interface_remote_', 8],
-    ['callback_', 8],
-    ['recoverable_', 8],
-    ['db_', 6],
-    ['task_', 10],
-    ['actor_', 7],
+    ['interface_remote_', 10],
+    ['callback_', 11],
+    ['recoverable_', 10],
+    ['db_', 10],
+    ['task_', 11],
+    ['actor_', 11],
   ]);
   for (const [prefix, count] of expectedStageTests) {
     const stagePattern = new RegExp(`\\b${escapeRegExp(prefix)}s[1-6]\\b`, 'g');
@@ -175,14 +175,22 @@ test('Rust matrices expose every registered prefix with the exact expected red c
     assert.equal(actual, count, `host prefix ${prefix} test count`);
   }
   for (const [prefix, count] of [
-    ['task_', 6],
-    ['actor_', 6],
+    ['task_', 8],
+    ['actor_', 7],
   ]) {
     const stagePattern = new RegExp(`\\b${escapeRegExp(prefix)}s[1-6]\\b`, 'g');
-    const actual = [...router.matchAll(stagePattern)].length;
+    const focusedPattern = new RegExp(
+      `\\bfn\\s+${escapeRegExp(prefix)}(?!s[1-6]\\b)[a-z0-9_]+\\s*\\(`,
+      'g',
+    );
+    let actual = [...router.matchAll(stagePattern)].length
+      + [...router.matchAll(focusedPattern)].length;
+    if (prefix === 'task_') {
+      actual -= [...router.matchAll(/\bfn\s+task_record\s*\(/g)].length;
+    }
     assert.equal(actual, count, `router prefix ${prefix} test count`);
   }
-  assert.equal([...host.matchAll(/\bcontainment_[a-z0-9_]+\b/g)].length, 2,
+  assert.equal([...host.matchAll(/\bcontainment_[a-z0-9_]+\b/g)].length, 8,
     'host containment test count');
   assert.equal([...host.matchAll(/\bphase_6_kernel_[a-z0-9_]+\b/g)].length, 6,
     'host kernel-focused test count');

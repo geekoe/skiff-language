@@ -1,0 +1,24 @@
+import std
+
+type StreamHandlerImpl implements payments.StreamHandler {
+  offset: number,
+}
+
+impl StreamHandlerImpl {
+  function handle(value: number) -> Stream<string> {
+    emit("callback-stream-1")
+    emit("callback-stream-2")
+    return null
+  }
+}
+
+function run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  final handler = StreamHandlerImpl { offset: 1 } as payments.StreamHandler
+  final items = payments/invokeStream(handler, 1)
+  emit({ tag: "start", status: 200, headers: [] })
+  for item in items {
+    emit({ tag: "chunk", value: bytes.fromUtf8(item) })
+  }
+  emit({ tag: "end" })
+  return null
+}

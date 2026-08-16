@@ -18,9 +18,10 @@ use skiff_runtime_transport::protocol::{
     decode_task_submit_request_frame, decode_typed_binary_frame, encode_binary_frame,
     encode_router_bootstrap_frame, encode_runtime_registered_frame,
     encode_task_submit_response_frame, BytecodeHttpRequestFrameHeader,
-    BytecodeRequestCallerFrameHeader, BytecodeRequestIngressFrameHeader,
-    BytecodeRequestIngressProtocol, BytecodeRequestRoutingFrameHeader,
-    BytecodeRequestStartFrameHeader, BytecodeRequestTraceFrameHeader, ResponseEndFrameMetadata,
+    BytecodeRequestCallerFrameHeader, BytecodeRequestDeadlineFrameHeader,
+    BytecodeRequestIngressFrameHeader, BytecodeRequestIngressProtocol,
+    BytecodeRequestRoutingFrameHeader, BytecodeRequestStartFrameHeader,
+    BytecodeRequestTraceFrameHeader, ResponseEndFrameMetadata,
     RouterBootstrapActivationFrameHeader, RouterBootstrapFrameHeader,
     RouterBootstrapHttpFrameHeader, RouterBootstrapServiceDbFrameHeader,
     RuntimeDispatchModeCapability, RuntimeRegisteredFrameHeader, TaskCallerKind, TaskRef,
@@ -175,6 +176,18 @@ impl RuntimeHostHarness {
         mode: &str,
         body: &[u8],
     ) {
+        self.send_http_request_with_deadline(request_id, ingress_path, mode, body, None)
+            .await;
+    }
+
+    pub async fn send_http_request_with_deadline(
+        &mut self,
+        request_id: &str,
+        ingress_path: &str,
+        mode: &str,
+        body: &[u8],
+        deadline: Option<BytecodeRequestDeadlineFrameHeader>,
+    ) {
         let gateway = self.fixture.gateway(ingress_path);
         let routing = self.request_routing(request_id);
         let header = BytecodeRequestStartFrameHeader {
@@ -205,7 +218,7 @@ impl RuntimeHostHarness {
                 },
             },
             client_session: None,
-            deadline: None,
+            deadline,
             trace: BytecodeRequestTraceFrameHeader {
                 trace_id: format!("trace-{request_id}"),
                 span_id: format!("span-{request_id}"),
