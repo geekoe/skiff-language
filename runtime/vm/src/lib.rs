@@ -28,10 +28,11 @@ pub use control::{
     AdapterControl, AdapterInvocation, BoundaryStart, ChildInvocation, ChildTarget, EffectStart,
     InterfaceCallPlan, PendingOperation, PendingTicket, RemoteInterfaceCallPlan, ResumeOutcome,
     StreamEndpointRef, StreamInvocation, StreamItem, StreamItemReleaseError, TaskDispatchIndex,
-    TaskDispatchRequest, VmCompletion, VmControl, VmHostEffectArguments,
-    VmHostEffectArgumentsReleaseError, VmInternalTerminal, VmLifecycleSite, VmOwnedException,
-    VmOwnedExceptionRejected, VmOwnedValues, VmOwnedValuesRejected, VmResult, VmResumeFailure,
-    VmResumeKind, VmResumeToken, VmTerminalCause, VmTerminalEscrow, VmThrownDiagnostic,
+    TaskDispatchRequest, TaskDispatchTiming, TaskDispatchTimingError, VmCompletion, VmControl,
+    VmHostEffectArguments, VmHostEffectArgumentsReleaseError, VmInternalTerminal, VmLifecycleSite,
+    VmOwnedException, VmOwnedExceptionRejected, VmOwnedValues, VmOwnedValuesRejected, VmResult,
+    VmResumeFailure, VmResumeKind, VmResumeToken, VmTerminalCause, VmTerminalEscrow,
+    VmThrownDiagnostic,
 };
 pub use error::{VmEntryArgumentRejection, VmError, VmValueLocation, VmVerifiedInvariant};
 pub use fiber::{Vm, VmFiber, VmFiberState};

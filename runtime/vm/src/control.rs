@@ -8,14 +8,15 @@ use skiff_artifact_model::Opcode;
 use skiff_runtime_linked_bytecode::{
     ActorMethodIndex, FunctionIndex, HostEffectAdapterIndex, InstructionIndex, InterfaceTableIndex,
     IntrinsicIndex, LinkedCallableSignature, LinkedRemoteInterfaceMethod,
-    LinkedRemoteInterfaceTable, LinkedTaskTarget, LinkedValueTransferPlan, ResumeSiteIndex,
-    ServiceOperationIndex, ShapeIndex, SyntheticCallbackIndex, TaskTargetIndex, TypeIndex,
+    LinkedRemoteInterfaceTable, LinkedTaskTarget, LinkedTaskTiming, LinkedValueTransferPlan,
+    ResumeSiteIndex, ServiceOperationIndex, ShapeIndex, SyntheticCallbackIndex, TaskTargetIndex,
+    TypeIndex,
 };
 use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_model::{
     vm_heap::{VmHeap, VmHeapError},
     vm_root::{VmRootSource, VmRootVisitor},
-    vm_value::{ValueSlot, VmHandle},
+    vm_value::{ValueKind, ValueSlot, VmHandle},
 };
 
 use crate::{lifecycle::LifecycleExecutor, VmBudgetClosed, VmError};
@@ -381,16 +382,153 @@ impl TaskDispatchIndex {
     }
 }
 
+/// K6-resolved submission timing for one durable task dispatch.
+///
+/// `Immediate` is carried only when the compiler/linked facts explicitly say
+/// immediate. `After` and `At` are never synthesized from an expression index
+/// or a default: the VM task intrinsic must supply the exact evaluated value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskDispatchTiming {
+    Immediate,
+    After { duration_ms: u64 },
+    At { utc_millis: i64 },
+}
+
+impl TaskDispatchTiming {
+    pub fn try_from_linked(timing: LinkedTaskTiming) -> Result<Self, TaskDispatchTimingError> {
+        match timing {
+            LinkedTaskTiming::Immediate => Ok(Self::Immediate),
+            LinkedTaskTiming::After { expression } => {
+                Err(TaskDispatchTimingError::MissingOperand {
+                    kind: "after",
+                    expression,
+                })
+            }
+            LinkedTaskTiming::At { expression } => Err(TaskDispatchTimingError::MissingOperand {
+                kind: "at",
+                expression,
+            }),
+        }
+    }
+
+    pub(crate) fn resolve_from_slot(
+        timing: LinkedTaskTiming,
+        operand: Option<ValueSlot>,
+    ) -> Result<Self, TaskDispatchTimingError> {
+        match timing {
+            LinkedTaskTiming::Immediate => match operand {
+                None => Ok(Self::Immediate),
+                Some(slot) => Err(TaskDispatchTimingError::UnexpectedOperand {
+                    kind: "immediate",
+                    actual: slot.kind(),
+                }),
+            },
+            LinkedTaskTiming::After { expression } => {
+                let slot = operand.ok_or(TaskDispatchTimingError::MissingOperand {
+                    kind: "after",
+                    expression,
+                })?;
+                if let Some(value) = slot.as_number() {
+                    if value.is_finite()
+                        && value >= 0.0
+                        && value.fract() == 0.0
+                        && value <= u64::MAX as f64
+                    {
+                        return Ok(Self::After {
+                            duration_ms: value as u64,
+                        });
+                    }
+                }
+                if let Some(value) = slot.as_integer() {
+                    if value >= 0 {
+                        return Ok(Self::After {
+                            duration_ms: value as u64,
+                        });
+                    }
+                }
+                Err(TaskDispatchTimingError::InvalidAfterValue {
+                    expression,
+                    kind: slot.kind(),
+                })
+            }
+            LinkedTaskTiming::At { expression } => {
+                let slot = operand.ok_or(TaskDispatchTimingError::MissingOperand {
+                    kind: "at",
+                    expression,
+                })?;
+                slot.as_date().map_or(
+                    Err(TaskDispatchTimingError::InvalidAtValue {
+                        expression,
+                        kind: slot.kind(),
+                    }),
+                    |utc_millis| Ok(Self::At { utc_millis }),
+                )
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskDispatchTimingError {
+    NotTaskChild,
+    MissingOperand {
+        kind: &'static str,
+        expression: u32,
+    },
+    UnexpectedOperand {
+        kind: &'static str,
+        actual: Option<ValueKind>,
+    },
+    InvalidAfterValue {
+        expression: u32,
+        kind: Option<ValueKind>,
+    },
+    InvalidAtValue {
+        expression: u32,
+        kind: Option<ValueKind>,
+    },
+}
+
+impl fmt::Display for TaskDispatchTimingError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotTaskChild => formatter.write_str(
+                "task child invocation carries no K6-resolved dispatch timing; only task continuations expose exact timing",
+            ),
+            Self::MissingOperand { kind, expression } => write!(
+                formatter,
+                "task dispatch {kind} timing expression {expression} has no K6-resolved VM timing value; exact timing must be supplied by the VM task intrinsic"
+            ),
+            Self::UnexpectedOperand { kind, actual } => write!(
+                formatter,
+                "task dispatch {kind} timing must not carry an unexpected VM timing operand (received {actual:?})"
+            ),
+            Self::InvalidAfterValue { expression, kind } => write!(
+                formatter,
+                "K6 could not resolve task dispatch after timing expression {expression} to a non-negative Duration (received {kind:?})"
+            ),
+            Self::InvalidAtValue { expression, kind } => write!(
+                formatter,
+                "K6 could not resolve task dispatch at timing expression {expression} to an Instant/Date (received {kind:?})"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TaskDispatchTimingError {}
+
 /// Sealed exact task intrinsic facts retained by a task continuation.
 ///
 /// The VM mints this plan from the linked intrinsic row so the task resume
 /// binder can validate the exact target and result plan without reconstructing
-/// either from a runtime tag or table name.
+/// either from a runtime tag or table name, and the exact K6 timing stays with
+/// the same continuation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TaskIntrinsicResumePlan {
     task_target: LinkedTaskTarget,
     result_type: TypeIndex,
     result_plan: LinkedValueTransferPlan,
+    timing: TaskDispatchTiming,
 }
 
 impl TaskIntrinsicResumePlan {
@@ -398,11 +536,13 @@ impl TaskIntrinsicResumePlan {
         task_target: LinkedTaskTarget,
         result_type: TypeIndex,
         result_plan: LinkedValueTransferPlan,
+        timing: TaskDispatchTiming,
     ) -> Self {
         Self {
             task_target,
             result_type,
             result_plan,
+            timing,
         }
     }
 
@@ -416,6 +556,10 @@ impl TaskIntrinsicResumePlan {
 
     pub(crate) const fn result_plan(&self) -> &LinkedValueTransferPlan {
         &self.result_plan
+    }
+
+    pub(crate) const fn timing(&self) -> TaskDispatchTiming {
+        self.timing
     }
 }
 
@@ -499,20 +643,28 @@ pub enum ChildTarget {
 /// This is the payload materialization seam for T6F: the target index is
 /// opaque and checked, the VM arguments remain VM-owned roots, and the
 /// recoverable task payload bytes travel beside them without being interpreted
-/// by the VM core or stored only in a host-side sidecar.
+/// by the VM core or stored only in a host-side sidecar. The exact
+/// K6-resolved timing is mandatory; there is no default.
 #[must_use = "a task dispatch request owns VM arguments and payload bytes"]
 pub struct TaskDispatchRequest {
     target: TaskDispatchIndex,
     arguments: VmOwnedValues,
     payload: Box<[u8]>,
+    timing: TaskDispatchTiming,
 }
 
 impl TaskDispatchRequest {
-    pub fn new(target: TaskDispatchIndex, arguments: VmOwnedValues, payload: Box<[u8]>) -> Self {
+    pub fn new(
+        target: TaskDispatchIndex,
+        arguments: VmOwnedValues,
+        payload: Box<[u8]>,
+        timing: TaskDispatchTiming,
+    ) -> Self {
         Self {
             target,
             arguments,
             payload,
+            timing,
         }
     }
 
@@ -528,8 +680,19 @@ impl TaskDispatchRequest {
         &self.payload
     }
 
-    pub fn into_parts(self) -> (TaskDispatchIndex, VmOwnedValues, Box<[u8]>) {
-        (self.target, self.arguments, self.payload)
+    pub const fn timing(&self) -> TaskDispatchTiming {
+        self.timing
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        TaskDispatchIndex,
+        VmOwnedValues,
+        Box<[u8]>,
+        TaskDispatchTiming,
+    ) {
+        (self.target, self.arguments, self.payload, self.timing)
     }
 }
 
@@ -630,6 +793,17 @@ impl ChildInvocation {
 
     pub const fn resume(&self) -> &VmResumeToken {
         &self.resume
+    }
+
+    /// Exact K6-resolved timing retained by a task intrinsic continuation.
+    ///
+    /// Non-task children fail closed: no caller may infer or default timing
+    /// from a non-task invocation.
+    pub fn task_dispatch_timing(&self) -> Result<TaskDispatchTiming, TaskDispatchTimingError> {
+        self.resume
+            .task_plan()
+            .map(TaskIntrinsicResumePlan::timing)
+            .ok_or(TaskDispatchTimingError::NotTaskChild)
     }
 
     /// Scheduler-TCB seam: all four parts remain one logical handoff and must
@@ -1104,8 +1278,8 @@ mod tests {
     };
     use skiff_runtime_linked_bytecode::{
         LinkedCallableSignature, LinkedPublicInstanceKey, LinkedRemoteInterfaceMethod,
-        LinkedRemoteInterfaceTable, LinkedValueDropPlan, LinkedValueTransferPlan, TaskTargetIndex,
-        TypeIndex,
+        LinkedRemoteInterfaceTable, LinkedTaskTiming, LinkedValueDropPlan, LinkedValueTransferPlan,
+        TaskTargetIndex, TypeIndex,
     };
     use skiff_runtime_model::{
         vm_heap::VmHeapError,
@@ -1115,7 +1289,8 @@ mod tests {
 
     use super::{
         ChildTarget, InterfaceCallPlan, PendingOperation, PendingTicket, ResumeOutcome,
-        TaskDispatchIndex, TaskDispatchRequest, VmControl, VmError, VmOwnedValues, VmResumeToken,
+        TaskDispatchIndex, TaskDispatchRequest, TaskDispatchTiming, TaskDispatchTimingError,
+        VmControl, VmError, VmOwnedValues, VmResumeToken,
     };
 
     #[test]
@@ -1205,13 +1380,63 @@ mod tests {
 
     #[test]
     fn task_dispatch_request_exposes_arguments_and_raw_payload() {
-        fn payload_materializer(request: &TaskDispatchRequest) -> (&VmOwnedValues, &[u8]) {
-            (request.arguments(), request.payload())
+        fn payload_materializer(
+            request: &TaskDispatchRequest,
+        ) -> (&VmOwnedValues, &[u8], TaskDispatchTiming) {
+            (request.arguments(), request.payload(), request.timing())
         }
         fn assert_root_source<T: VmRootSource>() {}
 
         let _ = payload_materializer;
         assert_root_source::<TaskDispatchRequest>();
+    }
+
+    #[test]
+    fn task_dispatch_timing_resolution_fails_closed_without_operand() {
+        assert_eq!(
+            TaskDispatchTiming::try_from_linked(LinkedTaskTiming::Immediate),
+            Ok(TaskDispatchTiming::Immediate)
+        );
+        assert!(matches!(
+            TaskDispatchTiming::try_from_linked(LinkedTaskTiming::After { expression: 4 }),
+            Err(TaskDispatchTimingError::MissingOperand {
+                kind: "after",
+                expression: 4
+            })
+        ));
+        assert!(matches!(
+            TaskDispatchTiming::try_from_linked(LinkedTaskTiming::At { expression: 5 }),
+            Err(TaskDispatchTimingError::MissingOperand {
+                kind: "at",
+                expression: 5
+            })
+        ));
+    }
+
+    #[test]
+    fn task_dispatch_timing_rejects_invalid_resolved_values() {
+        assert!(matches!(
+            TaskDispatchTiming::resolve_from_slot(
+                LinkedTaskTiming::Immediate,
+                Some(ValueSlot::number(0.0)),
+            ),
+            Err(TaskDispatchTimingError::UnexpectedOperand { .. })
+        ));
+        assert!(TaskDispatchTiming::resolve_from_slot(
+            LinkedTaskTiming::After { expression: 4 },
+            Some(ValueSlot::number(-1.0)),
+        )
+        .is_err());
+        assert!(TaskDispatchTiming::resolve_from_slot(
+            LinkedTaskTiming::After { expression: 4 },
+            Some(ValueSlot::number(f64::NAN)),
+        )
+        .is_err());
+        assert!(TaskDispatchTiming::resolve_from_slot(
+            LinkedTaskTiming::At { expression: 5 },
+            Some(ValueSlot::number(0.0)),
+        )
+        .is_err());
     }
 
     #[test]

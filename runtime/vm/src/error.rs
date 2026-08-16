@@ -241,6 +241,9 @@ pub enum VmError {
         function: FunctionIndex,
         target: InstructionIndex,
     },
+    TaskDispatchTimingUnavailable {
+        reason: String,
+    },
     ConstantIndexOutOfBounds {
         function: FunctionIndex,
         instruction: InstructionIndex,
@@ -546,6 +549,10 @@ impl fmt::Display for VmError {
                 "VM function {} branch target {} is out of bounds",
                 function.get(),
                 target.get()
+            ),
+            Self::TaskDispatchTimingUnavailable { reason } => write!(
+                formatter,
+                "VM task dispatch timing is unavailable: {reason}"
             ),
             Self::ConstantIndexOutOfBounds {
                 function,

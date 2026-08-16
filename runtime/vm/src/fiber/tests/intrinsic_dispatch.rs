@@ -1,11 +1,13 @@
 use super::*;
-use crate::{TaskDispatchIndex, VmOwnedValues};
+use crate::{TaskDispatchIndex, TaskDispatchRequest, TaskDispatchTiming, VmOwnedValues};
 
 use skiff_artifact_model::bytecode::dto::DbOperationKind;
 use skiff_artifact_model::{
     FileIrRef, PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity,
 };
-use skiff_runtime_linked_bytecode::{LinkedDbObjectTargetId, LinkedDbOperation, LinkedTaskTarget};
+use skiff_runtime_linked_bytecode::{
+    LinkedDbObjectTargetId, LinkedDbOperation, LinkedTaskTarget, LinkedTaskTiming,
+};
 
 #[test]
 fn operand_push_preflight_failure_never_partially_installs_or_advances_height() {
@@ -56,6 +58,20 @@ function work(value: number) -> void { return }
 function run(seed: number) -> number {
   dispatch work(seed)
   return seed
+}
+"#;
+
+const TASK_TIMING_INTRINSIC_SOURCE: &str = r#"
+function bump(a: number, b: number, c: number, d: number) -> number {
+  return a + b + c + d
+}
+
+function work(value: number, spare: number, extra: number) -> void { return }
+
+function run(seed: number, spare: number, extra: number) -> number {
+  final bumpValue = bump(seed, spare, extra, extra)
+  dispatch work(seed, spare, extra)
+  return bumpValue
 }
 "#;
 
@@ -194,6 +210,33 @@ fn task_intrinsic_fixture() -> &'static ObservationFixture {
     })
 }
 
+fn task_timing_intrinsic_fixture() -> &'static ObservationFixture {
+    static FIXTURE: OnceLock<ObservationFixture> = OnceLock::new();
+    FIXTURE.get_or_init(|| {
+        ObservationFixture::build_with_parameters(
+            "example.com/fiber-task-timing-intrinsic",
+            TASK_TIMING_INTRINSIC_SOURCE,
+            vec![
+                BoundaryParameter {
+                    name: "seed".to_string(),
+                    ty: ContractTypeRef::builtin("number"),
+                    value_plan: boundary_value_plan(BoundaryValueOwner::Caller),
+                },
+                BoundaryParameter {
+                    name: "spare".to_string(),
+                    ty: ContractTypeRef::builtin("number"),
+                    value_plan: boundary_value_plan(BoundaryValueOwner::Caller),
+                },
+                BoundaryParameter {
+                    name: "extra".to_string(),
+                    ty: ContractTypeRef::builtin("number"),
+                    value_plan: boundary_value_plan(BoundaryValueOwner::Caller),
+                },
+            ],
+        )
+    })
+}
+
 fn task_intrinsic_row(fixture: &ObservationFixture) -> (LinkedIntrinsicTarget, LinkedTaskTarget) {
     let intrinsic = fixture
         .image
@@ -206,6 +249,55 @@ fn task_intrinsic_row(fixture: &ObservationFixture) -> (LinkedIntrinsicTarget, L
         .task_target()
         .expect("task intrinsic row retains its exact linked target")
         .clone();
+    (intrinsic, task_target)
+}
+
+fn task_intrinsic_with_resolved_timing(
+    timing: LinkedTaskTiming,
+) -> (LinkedIntrinsicTarget, LinkedTaskTarget) {
+    let (intrinsic, task_target) = task_intrinsic_row(task_timing_intrinsic_fixture());
+    let task_target = LinkedTaskTarget::new(
+        task_target.index(),
+        task_target.target_identity().to_string(),
+        task_target.function(),
+        task_target.signature().clone(),
+        timing,
+    )
+    .expect("synthetic task target keeps exact payload signature");
+    let intrinsic_signature = intrinsic.signature();
+    let mut parameter_types = intrinsic_signature.parameter_types().to_vec();
+    parameter_types.push(TypeIndex::new(1));
+    let mut parameter_modes = intrinsic_signature.parameter_modes().to_vec();
+    parameter_modes.push(ParamModeIr::Value);
+    let mut parameter_plans = intrinsic_signature.parameter_plans().to_vec();
+    parameter_plans.push(LinkedValueTransferPlan::SnapshotShare {
+        drop: LinkedValueDropPlan::Trivial,
+    });
+    let signature = LinkedNativeCallableSignature::new(
+        parameter_types.into_boxed_slice(),
+        parameter_modes.into_boxed_slice(),
+        parameter_plans.into_boxed_slice(),
+        intrinsic_signature
+            .result_types()
+            .to_vec()
+            .into_boxed_slice(),
+        intrinsic_signature
+            .result_plans()
+            .to_vec()
+            .into_boxed_slice(),
+        CallableMayEffects {
+            escapes_caller_value: false,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_pending: true,
+            pending_effect_categories: Vec::new(),
+            inout_path_effects: Vec::new(),
+        },
+    )
+    .expect("synthetic task intrinsic timing signature is canonical");
+    let intrinsic =
+        LinkedIntrinsicTarget::new(intrinsic.index(), intrinsic.kind().clone(), signature)
+            .with_task_target(task_target.clone());
     (intrinsic, task_target)
 }
 
@@ -1983,10 +2075,27 @@ fn linked_task_intrinsic_hands_off_flat_child_with_exact_plans() {
     assert_eq!(plan.task_target(), &task_target);
     assert_eq!(plan.result_type(), intrinsic.signature().result_types()[0]);
     assert_eq!(plan.result_plan(), &intrinsic.signature().result_plans()[0]);
+    let ChildTarget::Task(dispatch_target) = invocation.target() else {
+        panic!("task intrinsic must hand off through a task child target");
+    };
+    let timing = invocation
+        .task_dispatch_timing()
+        .expect("task intrinsic exposes exact K6 timing");
+    assert_eq!(timing, TaskDispatchTiming::Immediate);
     assert!(matches!(fiber.state, VmFiberState::BlockedOnChild));
     assert_eq!(fiber.current_frame().unwrap().operand_height(), 0);
 
     let (_, arguments, _, resume) = invocation.into_parts();
+    let request = TaskDispatchRequest::new(
+        dispatch_target,
+        arguments,
+        b"exact-payload".to_vec().into_boxed_slice(),
+        timing,
+    );
+    assert_eq!(request.timing(), TaskDispatchTiming::Immediate);
+    let (_, arguments, payload, preserved_timing) = request.into_parts();
+    assert_eq!(payload.as_ref(), b"exact-payload");
+    assert_eq!(preserved_timing, timing);
     arguments
         .into_terminal_escrow()
         .release_all(&mut heap)
@@ -2002,6 +2111,179 @@ fn linked_task_intrinsic_hands_off_flat_child_with_exact_plans() {
     fiber
         .resume(resume, ResumeOutcome::Values(owned))
         .expect("linked task intrinsic resumes through the same flat lifecycle");
+    assert!(matches!(fiber.state, VmFiberState::Runnable));
+}
+
+#[test]
+fn linked_task_intrinsic_resolves_after_timing_operand_through_flat_child() {
+    let (intrinsic, task_target) =
+        task_intrinsic_with_resolved_timing(LinkedTaskTiming::After { expression: 4 });
+    let observer = BytecodeExecutionObserver::new(
+        Arc::new(RecordingSink::default()),
+        observation_correlation(),
+    );
+    let mut fiber = task_timing_intrinsic_fixture().start(
+        vm_limits(),
+        observer,
+        Box::new([
+            ValueSlot::number(1.0),
+            ValueSlot::number(2.0),
+            ValueSlot::number(3.0),
+        ]),
+    );
+    let mut heap = IntrinsicDispatchHeap::default();
+    let argument = ValueSlot::number(7.0);
+    let spare = ValueSlot::number(8.0);
+    let extra = ValueSlot::number(9.0);
+    fiber.push_operand(argument).unwrap();
+    fiber.push_operand(spare).unwrap();
+    fiber.push_operand(extra).unwrap();
+    fiber.push_operand(ValueSlot::number(500.0)).unwrap();
+
+    let frame = fiber.current_frame().unwrap().clone();
+    let mut executor = LifecycleExecutor::new(&mut heap);
+    let outcome = fiber
+        .execute_resolved_intrinsic(
+            &mut executor,
+            frame.function(),
+            frame.instruction(),
+            &intrinsic,
+            4,
+            1,
+        )
+        .expect("linked after-timing task intrinsic must hand off");
+    drop(executor);
+
+    let DispatchOutcome::Handoff(VmControl::EnterChild(invocation)) = outcome else {
+        panic!("linked after-timing task intrinsic must produce a flat child handoff");
+    };
+    assert_eq!(
+        invocation.target(),
+        ChildTarget::Task(
+            TaskDispatchIndex::from_task_target_index(task_target.index())
+                .expect("task target maps to a non-zero dispatch index")
+        )
+    );
+    assert_eq!(
+        invocation.task_dispatch_timing(),
+        Ok(TaskDispatchTiming::After { duration_ms: 500 })
+    );
+    assert!(invocation.arguments().values() == &[argument, spare, extra]);
+
+    let (_, arguments, _, _) = invocation.into_parts();
+    arguments
+        .into_terminal_escrow()
+        .release_all(&mut heap)
+        .expect("after-timing task argument release uses its exact plan");
+}
+
+#[test]
+fn linked_task_intrinsic_resolves_at_timing_operand_through_flat_child() {
+    let (intrinsic, task_target) =
+        task_intrinsic_with_resolved_timing(LinkedTaskTiming::At { expression: 5 });
+    let observer = BytecodeExecutionObserver::new(
+        Arc::new(RecordingSink::default()),
+        observation_correlation(),
+    );
+    let mut fiber = task_timing_intrinsic_fixture().start(
+        vm_limits(),
+        observer,
+        Box::new([
+            ValueSlot::number(1.0),
+            ValueSlot::number(2.0),
+            ValueSlot::number(3.0),
+        ]),
+    );
+    let mut heap = IntrinsicDispatchHeap::default();
+    let argument = ValueSlot::number(7.0);
+    let spare = ValueSlot::number(8.0);
+    let extra = ValueSlot::number(9.0);
+    fiber.push_operand(argument).unwrap();
+    fiber.push_operand(spare).unwrap();
+    fiber.push_operand(extra).unwrap();
+    fiber
+        .push_operand(ValueSlot::date(1_700_000_000_000))
+        .unwrap();
+
+    let frame = fiber.current_frame().unwrap().clone();
+    let mut executor = LifecycleExecutor::new(&mut heap);
+    let outcome = fiber
+        .execute_resolved_intrinsic(
+            &mut executor,
+            frame.function(),
+            frame.instruction(),
+            &intrinsic,
+            4,
+            1,
+        )
+        .expect("linked at-timing task intrinsic must hand off");
+    drop(executor);
+
+    let DispatchOutcome::Handoff(VmControl::EnterChild(invocation)) = outcome else {
+        panic!("linked at-timing task intrinsic must produce a flat child handoff");
+    };
+    assert_eq!(
+        invocation.target(),
+        ChildTarget::Task(
+            TaskDispatchIndex::from_task_target_index(task_target.index())
+                .expect("task target maps to a non-zero dispatch index")
+        )
+    );
+    assert_eq!(
+        invocation.task_dispatch_timing(),
+        Ok(TaskDispatchTiming::At {
+            utc_millis: 1_700_000_000_000
+        })
+    );
+    assert!(invocation.arguments().values() == &[argument, spare, extra]);
+
+    let (_, arguments, _, _) = invocation.into_parts();
+    arguments
+        .into_terminal_escrow()
+        .release_all(&mut heap)
+        .expect("at-timing task argument release uses its exact plan");
+}
+
+#[test]
+fn linked_task_intrinsic_missing_timing_operand_fails_closed() {
+    let (intrinsic, _) =
+        task_intrinsic_with_resolved_timing(LinkedTaskTiming::After { expression: 4 });
+    let observer = BytecodeExecutionObserver::new(
+        Arc::new(RecordingSink::default()),
+        observation_correlation(),
+    );
+    let mut fiber = task_timing_intrinsic_fixture().start(
+        vm_limits(),
+        observer,
+        Box::new([
+            ValueSlot::number(1.0),
+            ValueSlot::number(2.0),
+            ValueSlot::number(3.0),
+        ]),
+    );
+    let mut heap = IntrinsicDispatchHeap::default();
+    fiber.push_operand(ValueSlot::number(7.0)).unwrap();
+    fiber.push_operand(ValueSlot::number(8.0)).unwrap();
+    fiber.push_operand(ValueSlot::number(9.0)).unwrap();
+
+    let frame = fiber.current_frame().unwrap().clone();
+    let mut executor = LifecycleExecutor::new(&mut heap);
+    let error = match fiber.execute_resolved_intrinsic(
+        &mut executor,
+        frame.function(),
+        frame.instruction(),
+        &intrinsic,
+        3,
+        1,
+    ) {
+        Err(error) => error,
+        Ok(_) => panic!("a missing timing operand must fail before task handoff"),
+    };
+    drop(executor);
+    assert!(matches!(
+        error,
+        VmError::FullValueLifecyclePlanUnavailable { .. }
+    ));
     assert!(matches!(fiber.state, VmFiberState::Runnable));
 }
 

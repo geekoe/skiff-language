@@ -23,7 +23,7 @@ use skiff_runtime_linked_bytecode::{
     InstructionIndex, LinkedCallableSignature, LinkedCatchMatcher, LinkedExceptionRegion,
     LinkedFrozenConstantValue, LinkedFunction, LinkedInstruction, LinkedInstructionTarget,
     LinkedInterfaceTable, LinkedInterfaceTableKind, LinkedIntrinsicKind,
-    LinkedNativeCallableSignature, LinkedResourceDropPlan, LinkedValueDropPlan,
+    LinkedNativeCallableSignature, LinkedResourceDropPlan, LinkedTaskTiming, LinkedValueDropPlan,
     LinkedValueTransferPlan, LinkedWritablePathSegment, ResumeSiteIndex, TypeIndex,
 };
 use skiff_runtime_linker::ExecutionResumeSite;
@@ -49,9 +49,9 @@ use crate::{
     admission::{is_discardable_root, validate_entry_arguments},
     control::{
         AdapterInvocation, ChildInvocation, ChildTarget, InterfaceCallPlan,
-        RemoteInterfaceCallPlan, StreamItem, TaskDispatchIndex, TaskIntrinsicResumePlan,
-        VmCompletion, VmLifecycleSite, VmOwnedException, VmOwnedValues, VmResumeAuthority,
-        VmResumeBinding, VmTerminalCause, VmTerminalEscrow, VmTerminalOwner,
+        RemoteInterfaceCallPlan, StreamItem, TaskDispatchIndex, TaskDispatchTiming,
+        TaskIntrinsicResumePlan, VmCompletion, VmLifecycleSite, VmOwnedException, VmOwnedValues,
+        VmResumeAuthority, VmResumeBinding, VmTerminalCause, VmTerminalEscrow, VmTerminalOwner,
     },
     fiber::entry_admission::validate_entry_contract,
     frame::VmFrame,
@@ -3796,11 +3796,20 @@ impl VmFiber {
                 opcode: Opcode::InvokeIntrinsic,
             }
         })?;
-        if arg_count != intrinsic.signature().parameter_types().len()
+        let intrinsic_signature = intrinsic.signature();
+        let target_signature = task_target.signature();
+        let payload_count = target_signature.parameter_types().len();
+        let timing_operand_count = match task_target.timing() {
+            LinkedTaskTiming::Immediate => 0,
+            LinkedTaskTiming::After { .. } | LinkedTaskTiming::At { .. } => 1,
+        };
+        let expected_arg_count = payload_count + timing_operand_count;
+        if arg_count != expected_arg_count
+            || arg_count != intrinsic_signature.parameter_types().len()
             || result_count != 1
-            || intrinsic.signature().parameter_plans().len() != arg_count
-            || intrinsic.signature().result_types().len() != 1
-            || intrinsic.signature().result_plans().len() != 1
+            || intrinsic_signature.parameter_plans().len() != arg_count
+            || intrinsic_signature.result_types().len() != 1
+            || intrinsic_signature.result_plans().len() != 1
         {
             return Err(VmError::FullValueLifecyclePlanUnavailable {
                 function,
@@ -3808,16 +3817,30 @@ impl VmFiber {
                 opcode: Opcode::InvokeIntrinsic,
             });
         }
-        let target_signature = task_target.signature();
-        if target_signature.parameter_types() != intrinsic.signature().parameter_types()
-            || target_signature.parameter_modes() != intrinsic.signature().parameter_modes()
-            || target_signature.parameter_plans() != intrinsic.signature().parameter_plans()
+        if target_signature.parameter_types()
+            != &intrinsic_signature.parameter_types()[..payload_count]
+            || target_signature.parameter_modes()
+                != &intrinsic_signature.parameter_modes()[..payload_count]
+            || target_signature.parameter_plans()
+                != &intrinsic_signature.parameter_plans()[..payload_count]
         {
             return Err(VmError::FullValueLifecyclePlanUnavailable {
                 function,
                 instruction,
                 opcode: Opcode::InvokeIntrinsic,
             });
+        }
+        let timing_operand = if timing_operand_count == 1 {
+            Some(self.borrow_operands(1)?.2.remove(0))
+        } else {
+            None
+        };
+        let timing = TaskDispatchTiming::resolve_from_slot(task_target.timing(), timing_operand)
+            .map_err(|error| VmError::TaskDispatchTimingUnavailable {
+                reason: error.to_string(),
+            })?;
+        if timing_operand.is_some() {
+            self.pop_operands(1, false)?;
         }
         let result_type = intrinsic.signature().result_types()[0];
         let result_plan = intrinsic.signature().result_plans()[0].clone();
@@ -3836,8 +3859,8 @@ impl VmFiber {
                     opcode: Opcode::InvokeIntrinsic,
                 }
             })?;
-        let arguments = self.pop_operands(arg_count, false)?;
-        let argument_plans = intrinsic.signature().parameter_plans().to_vec();
+        let arguments = self.pop_operands(payload_count, false)?;
+        let argument_plans = target_signature.parameter_plans().to_vec();
         let expected_stack_height =
             self.current_frame()?
                 .operand_height()
@@ -3848,7 +3871,7 @@ impl VmFiber {
         let frame = self.current_frame()?.clone();
         let advance = self.reserve_instruction_advance(&frame, function, instruction)?;
         let target = ChildTarget::Task(dispatch);
-        let task_plan = TaskIntrinsicResumePlan::new(task_target, result_type, result_plan);
+        let task_plan = TaskIntrinsicResumePlan::new(task_target, result_type, result_plan, timing);
         let token = self.mint_resume(
             function,
             instruction,
