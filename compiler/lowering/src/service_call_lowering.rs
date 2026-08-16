@@ -91,7 +91,10 @@ pub fn lower_service_calls(
                 contract_requirement,
                 contract_operation_id,
                 ..
-            } => (contract_requirement, std::slice::from_ref(contract_operation_id)),
+            } => (
+                contract_requirement,
+                std::slice::from_ref(contract_operation_id),
+            ),
             ResolvedCallTarget::RemoteInterface {
                 contract_requirement,
                 operations,
@@ -141,7 +144,10 @@ pub fn lower_service_calls(
                 contract_requirement,
                 contract_operation_id,
                 ..
-            } => (contract_requirement, std::slice::from_ref(contract_operation_id)),
+            } => (
+                contract_requirement,
+                std::slice::from_ref(contract_operation_id),
+            ),
             ResolvedCallTarget::RemoteInterface {
                 contract_requirement,
                 operations,
@@ -150,18 +156,20 @@ pub fn lower_service_calls(
             _ => continue,
         };
         let slot = slots[&contract_requirement.alias];
-        call_sites.extend(operations.iter().map(|contract_operation_id| {
-            LoweredServiceCallSite {
-                expression: expression.clone(),
-                call_ref: ServiceCallRef {
-                    service_requirement_slot: slot,
-                    contract_operation_id: contract_operation_id.clone(),
-                    expected_protocol_identity: contract_requirement
-                        .expected_protocol_identity
-                        .clone(),
-                },
-            }
-        }));
+        call_sites.extend(
+            operations
+                .iter()
+                .map(|contract_operation_id| LoweredServiceCallSite {
+                    expression: expression.clone(),
+                    call_ref: ServiceCallRef {
+                        service_requirement_slot: slot,
+                        contract_operation_id: contract_operation_id.clone(),
+                        expected_protocol_identity: contract_requirement
+                            .expected_protocol_identity
+                            .clone(),
+                    },
+                }),
+        );
     }
 
     let (file_refs, call_ref_indices) = index_file_service_call_refs(&call_sites)?;

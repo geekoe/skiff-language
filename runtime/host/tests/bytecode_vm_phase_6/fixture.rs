@@ -44,9 +44,7 @@ impl Capability {
             (Self::InterfaceLocal, true) => {
                 "test.skiff/bytecode-vm-phase-6-interface-local-bad-signature"
             }
-            (Self::InterfaceRemote, false) => {
-                "test.skiff/bytecode-vm-phase-6-remote-interface"
-            }
+            (Self::InterfaceRemote, false) => "test.skiff/bytecode-vm-phase-6-remote-interface",
             (Self::InterfaceRemote, true) => {
                 "test.skiff/bytecode-vm-phase-6-remote-interface-negative"
             }
@@ -259,8 +257,8 @@ fn build_remote_interface_positive(repository: &Path, prefix: &str) -> BuildOutc
     let root = TempRoot::new(prefix);
     let sources = CompilerPlatformSources::new(repository).expect("open compiler platform sources");
     seed_official_std_package(&sources, root.path()).expect("seed production std package");
-    let provider =
-        repository.join("runtime/host/tests/fixtures/bytecode-vm-phase-6/remote-interface-provider");
+    let provider = repository
+        .join("runtime/host/tests/fixtures/bytecode-vm-phase-6/remote-interface-provider");
     match build_single_into(
         &provider,
         "example.com/phase-6-remote-provider",
@@ -294,8 +292,8 @@ fn build_remote_interface_negative(repository: &Path, prefix: &str) -> BuildOutc
     let root = TempRoot::new(prefix);
     let sources = CompilerPlatformSources::new(repository).expect("open compiler platform sources");
     seed_official_std_package(&sources, root.path()).expect("seed production std package");
-    let provider =
-        repository.join("runtime/host/tests/fixtures/bytecode-vm-phase-6/remote-interface-provider");
+    let provider = repository
+        .join("runtime/host/tests/fixtures/bytecode-vm-phase-6/remote-interface-provider");
     match build_single_into(
         &provider,
         "example.com/phase-6-remote-provider",

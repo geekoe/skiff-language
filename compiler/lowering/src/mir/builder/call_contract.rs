@@ -133,7 +133,10 @@ impl<'a> MirPackageCatalog<'a> {
                     contract_requirement,
                     contract_operation_id,
                     ..
-                } => (contract_requirement, std::slice::from_ref(contract_operation_id)),
+                } => (
+                    contract_requirement,
+                    std::slice::from_ref(contract_operation_id),
+                ),
                 ResolvedCallTarget::RemoteInterface {
                     contract_requirement,
                     operations,
