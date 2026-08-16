@@ -64,8 +64,8 @@ export const PHASE6_REQUIRED_LANES = Object.freeze([
 
 const HOST_MATRIX_TESTS = 6;
 const INTERFACE_REMOTE_HOST_TESTS = 8;
-const TASK_HOST_TESTS = 10;
-const ROUTER_MATRIX_TESTS = 6;
+const TASK_HOST_TESTS = 11;
+const ROUTER_MATRIX_TESTS = 8;
 const CONTAINMENT_TESTS = 2;
 const KERNEL_TESTS = 6;
 const CALLBACK_MATRIX_TESTS = 8;
@@ -93,7 +93,7 @@ export function phase6ScenarioSpecs(root) {
       ['T6F', 'R6', 'D6', 'X6']),
     routerSuite(root, 'p6-task-router-matrix', 'task_', ROUTER_MATRIX_TESTS,
       ['T6F', 'T6A']),
-    hostSuite(root, 'p6-actor-host-matrix', 'actor_', 7,
+    hostSuite(root, 'p6-actor-host-matrix', 'actor_', 8,
       ['A6', 'R6', 'D6', 'K6', 'X6']),
     routerSuite(root, 'p6-actor-router-matrix', 'actor_', ROUTER_MATRIX_TESTS,
       ['A6', 'T6A']),

@@ -188,6 +188,21 @@ pub fn build_interface_local_named(
     build_single(&fixture, package_id, "1.0.0", &root_path, root)
 }
 
+pub fn build_actor_method_task_fixture(prefix: &str) -> BuildOutcome {
+    let repository = repository_root();
+    let fixture = repository
+        .join("runtime/host/tests/fixtures/bytecode-vm-phase-6/task-actor-method-positive");
+    let root = TempRoot::new(prefix);
+    let root_path = root.path().to_path_buf();
+    build_single(
+        &fixture,
+        "test.skiff/bytecode-vm-phase-6-task-actor-method",
+        "1.0.0",
+        &root_path,
+        root,
+    )
+}
+
 fn build_service_positive(repository: &Path, prefix: &str) -> BuildOutcome {
     let root = TempRoot::new(prefix);
     let sources = CompilerPlatformSources::new(repository).expect("open compiler platform sources");

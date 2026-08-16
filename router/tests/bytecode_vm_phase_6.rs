@@ -1,3 +1,6 @@
+#[path = "bytecode_vm_phase_6/production_path.rs"]
+mod production_path;
+
 use std::sync::Arc;
 
 use skiff_artifact_identity::DEPLOYMENT_ARTIFACT_IDENTITY_PREFIX;

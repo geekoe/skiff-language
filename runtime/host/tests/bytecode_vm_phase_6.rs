@@ -4,6 +4,8 @@ mod fixture;
 mod host_chain;
 #[path = "bytecode_vm_phase_6/host_harness.rs"]
 mod host_harness;
+#[path = "bytecode_vm_phase_6/host_router_proof.rs"]
+mod host_router_proof;
 #[path = "bytecode_vm_phase_6/recoverable_codec.rs"]
 mod recoverable_codec;
 #[path = "bytecode_vm_phase_6/stages.rs"]

@@ -65,4 +65,6 @@ skiff-runtime-boundary = { path = "../boundary", features = ["test-support"] }
 skiff-runtime-capability-context = { path = "../capability-context", features = ["test-support"] }
 skiff-runtime-linker = { path = "../linker", features = ["test-support"] }
 skiff-runtime-linked-bytecode = { path = "../linked-bytecode" }
+skiff-router = { path = "../../router" }
+skiff-task-control = { path = "../../task-control" }
 skiff-test-runner = { path = "../../test-runner" }

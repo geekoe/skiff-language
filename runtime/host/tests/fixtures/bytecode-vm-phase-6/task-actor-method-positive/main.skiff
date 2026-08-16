@@ -1,0 +1,32 @@
+import std
+
+type Counter {
+  id: string,
+  count: number,
+}
+
+actor Counter {
+  key(id)
+  create()
+}
+
+impl Counter {
+  function create() -> void {
+    self.count = 0
+  }
+
+  function scheduleIncrement(id: string) -> string {
+    final ref = dispatch self.increment()
+    return "scheduled"
+  }
+
+  function increment() -> void {
+    self.count = self.count + 1
+    return
+  }
+}
+
+function run(seed: number) -> string {
+  final counter = std.actor.get<Counter>("proof")
+  return counter.scheduleIncrement("actor-task-proof")
+}
