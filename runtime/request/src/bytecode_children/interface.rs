@@ -26,11 +26,13 @@ use skiff_runtime_scheduler::{
     ChildFinish, ChildFinishError, RequestResourceTable,
 };
 use skiff_runtime_vm::{
-    materialize_local_interface_value, release_local_interface_source, ChildInvocation,
-    ChildTarget, ResumeOutcome, Vm, VmBudget, VmCompletion, VmFiber, VmLifecycleSite, VmLimits,
-    VmOwnedException, VmOwnedValues, VmResumeToken,
+    materialize_local_interface_value, materialize_operation_receiver,
+    release_local_interface_source, ChildInvocation, ChildTarget, ResumeOutcome, Vm, VmBudget,
+    VmCompletion, VmFiber, VmLifecycleSite, VmLimits, VmOwnedException, VmOwnedValues,
+    VmResumeToken,
 };
 
+use super::provider_receiver::provider_receiver_plan;
 use super::{
     execute_callback_child, BytecodeChildHeapFactory, BytecodeRequestChildComposition,
     BytecodeServiceChildError, ServiceChildThrowMaterializer,
@@ -513,12 +515,19 @@ fn execute_remote_interface_child(
     };
     let provider_signature = provider_entry.signature().clone();
     let boundary_plan = operation.boundary_plan().clone();
-    if provider_signature.parameter_types().len() != boundary_plan.arguments().len()
-        || provider_signature.result_types().len() != boundary_plan.results().len()
-    {
+    let receiver_plan = match provider_receiver_plan(
+        &provider_signature,
+        boundary_plan.arguments().len(),
+        boundary_plan.results().len(),
+        provider_entry.receiver(),
+    ) {
+        Ok(facts) => facts,
+        Err(reason) => return Err(BytecodePortFailure::input(reason, invocation)),
+    };
+    if receiver_plan.parameter_offset != 1 {
         return Err(BytecodePortFailure::input(
             BytecodeSchedulerError::Port(
-                "remote provider signature and linked service boundary plan disagree".to_string(),
+                "remote provider operation has no linked receiver parameter".to_string(),
             ),
             invocation,
         ));
@@ -554,7 +563,43 @@ fn execute_remote_interface_child(
             ));
         }
     };
-    let mut provider_arguments = Vec::with_capacity(boundary_plan.arguments().len());
+    let mut provider_arguments = Vec::with_capacity(boundary_plan.arguments().len() + 1);
+    let (Some(receiver_constant), Some(receiver_type), Some(receiver_plan)) = (
+        receiver_plan.constant,
+        receiver_plan.receiver_type,
+        receiver_plan.receiver_plan.as_ref(),
+    ) else {
+        return Err(BytecodePortFailure::input(
+            BytecodeSchedulerError::Port("remote provider receiver plan is incomplete".to_string()),
+            invocation,
+        ));
+    };
+    let receiver_slot = match materialize_operation_receiver(
+        child_heap.heap_mut(),
+        &provider_image,
+        receiver_constant,
+        receiver_type,
+        receiver_plan,
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            return Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::Port(format!(
+                    "remote provider receiver materialization failed: {error}"
+                )),
+                invocation,
+            ));
+        }
+    };
+    if let Err(error) = child_heap.publish_staging_root(receiver_slot) {
+        return Err(BytecodePortFailure::input(
+            BytecodeSchedulerError::Port(format!(
+                "remote provider receiver staging failed: {error}"
+            )),
+            invocation,
+        ));
+    }
+    provider_arguments.push(receiver_slot);
     for (index, (source, value)) in argument_values
         .iter()
         .skip(1)
@@ -573,7 +618,7 @@ fn execute_remote_interface_child(
                 invocation,
             ));
         }
-        let provider_type = provider_signature.parameter_types()[index];
+        let provider_type = provider_signature.parameter_types()[index + 1];
         let materialized = match materialize_linked_value(
             heap,
             source,
@@ -693,7 +738,7 @@ fn validate_remote_boundary_types(
     for (index, (plan, provider_type)) in boundary_plan
         .arguments()
         .iter()
-        .zip(provider_signature.parameter_types())
+        .zip(provider_signature.parameter_types().iter().skip(1))
         .enumerate()
     {
         if !boundary_value_matches_linked_type(provider_image, *provider_type, plan) {

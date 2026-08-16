@@ -17,6 +17,7 @@ mod frame;
 mod lifecycle;
 mod limits;
 mod local_interface;
+mod operation_receiver;
 mod projection;
 mod statement;
 mod terminal_ownership;
@@ -41,5 +42,6 @@ pub use local_interface::{
     materialize_local_interface_value, release_local_interface_source,
     LocalInterfaceMaterializeError,
 };
+pub use operation_receiver::{materialize_operation_receiver, OperationReceiverMaterializeError};
 pub use projection::VmProjectionHandoff;
 pub use skiff_runtime_linker::DeploymentExecutionEntry;

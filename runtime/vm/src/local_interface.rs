@@ -603,7 +603,7 @@ fn copy_record(
     Ok(record)
 }
 
-fn catch_identity_for_type(
+pub(crate) fn catch_identity_for_type(
     image: &DeploymentExecutionImage,
     leaf: TypeIndex,
 ) -> Option<CatchIdentity> {

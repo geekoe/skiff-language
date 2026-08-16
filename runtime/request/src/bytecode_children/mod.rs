@@ -10,6 +10,7 @@ mod callback;
 mod db;
 mod db_intrinsic;
 mod interface;
+mod provider_receiver;
 mod service;
 mod task;
 

@@ -17,13 +17,14 @@ use skiff_runtime_scheduler::{
     ChildFinish, ChildFinishError, RequestResourceTable,
 };
 use skiff_runtime_vm::{
-    ChildInvocation, ChildTarget, ResumeOutcome, Vm, VmBudget, VmCompletion, VmFiber, VmLimits,
-    VmResumeToken,
+    materialize_operation_receiver, ChildInvocation, ChildTarget, ResumeOutcome, Vm, VmBudget,
+    VmCompletion, VmFiber, VmLimits, VmResumeToken,
 };
 
 use super::{
-    service_operation_by_index, BytecodeChildHeapFactory, BytecodeRequestChildComposition,
-    BytecodeServiceChildError, ServiceChildThrowMaterializer,
+    provider_receiver::provider_receiver_plan, service_operation_by_index,
+    BytecodeChildHeapFactory, BytecodeRequestChildComposition, BytecodeServiceChildError,
+    ServiceChildThrowMaterializer,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -98,20 +99,21 @@ pub(crate) fn execute_service_child(
     };
     let provider_signature = provider_entry.signature().clone();
     let boundary_plan = target.boundary_plan().clone();
-    if provider_signature.parameter_types().len() != boundary_plan.arguments().len()
-        || provider_signature.result_types().len() != boundary_plan.results().len()
-    {
-        return Err(BytecodePortFailure::input(
-            BytecodeSchedulerError::Port(
-                "provider operation signature and linked service boundary plan disagree"
-                    .to_string(),
-            ),
-            invocation,
-        ));
-    }
-    if let Err(reason) =
-        validate_boundary_types(&provider_image, &provider_signature, &boundary_plan)
-    {
+    let receiver_plan = match provider_receiver_plan(
+        &provider_signature,
+        boundary_plan.arguments().len(),
+        boundary_plan.results().len(),
+        provider_entry.receiver(),
+    ) {
+        Ok(plan) => plan,
+        Err(reason) => return Err(BytecodePortFailure::input(reason, invocation)),
+    };
+    if let Err(reason) = validate_boundary_types(
+        &provider_image,
+        &provider_signature,
+        &boundary_plan,
+        receiver_plan.parameter_offset,
+    ) {
         return Err(BytecodePortFailure::input(reason, invocation));
     }
 
@@ -131,7 +133,38 @@ pub(crate) fn execute_service_child(
     };
 
     let argument_values = invocation.arguments().values().to_vec();
-    let mut provider_arguments = Vec::with_capacity(argument_values.len());
+    let mut provider_arguments =
+        Vec::with_capacity(argument_values.len() + receiver_plan.parameter_offset);
+    if let (Some(constant), Some(receiver_type), Some(receiver_plan)) = (
+        receiver_plan.constant,
+        receiver_plan.receiver_type,
+        receiver_plan.receiver_plan.as_ref(),
+    ) {
+        let receiver_slot = match materialize_operation_receiver(
+            child_heap.heap_mut(),
+            &provider_image,
+            constant,
+            receiver_type,
+            receiver_plan,
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                return Err(BytecodePortFailure::input(
+                    BytecodeSchedulerError::Port(format!(
+                        "provider receiver materialization failed: {error}"
+                    )),
+                    invocation,
+                ));
+            }
+        };
+        if let Err(error) = child_heap.publish_staging_root(receiver_slot) {
+            return Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::Port(format!("provider receiver staging failed: {error}")),
+                invocation,
+            ));
+        }
+        provider_arguments.push(receiver_slot);
+    }
     for (index, (source, value)) in argument_values
         .iter()
         .zip(boundary_plan.arguments().iter())
@@ -157,7 +190,8 @@ pub(crate) fn execute_service_child(
                 invocation,
             ));
         }
-        let provider_type = provider_signature.parameter_types()[index];
+        let provider_type =
+            provider_signature.parameter_types()[index + receiver_plan.parameter_offset];
         if is_callback_capability {
             let Some(projector) = &composition.callback_projector else {
                 return Err(BytecodePortFailure::input(
@@ -277,11 +311,17 @@ fn validate_boundary_types(
     provider_image: &DeploymentExecutionImage,
     provider_signature: &skiff_runtime_linked_bytecode::LinkedCallableSignature,
     boundary_plan: &skiff_runtime_linked_bytecode::LinkedServiceBoundaryPlan,
+    parameter_offset: usize,
 ) -> Result<(), BytecodeSchedulerError> {
     for (index, (plan, provider_type)) in boundary_plan
         .arguments()
         .iter()
-        .zip(provider_signature.parameter_types())
+        .zip(
+            provider_signature
+                .parameter_types()
+                .iter()
+                .skip(parameter_offset),
+        )
         .enumerate()
     {
         if !boundary_value_matches_linked_type(provider_image, *provider_type, plan) {
