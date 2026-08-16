@@ -1,6 +1,4 @@
-use skiff_artifact_model::{
-    BytecodeConstantRef, BytecodePoolEntry, FrozenConstantNode, LiteralIr, TypeRefIr,
-};
+use skiff_artifact_model::{BytecodeConstantRef, BytecodePoolEntry, LiteralIr, TypeRefIr};
 use skiff_runtime_linked_bytecode::{ConstantIndex, FrozenConstantNodeIndex};
 use skiff_runtime_loader::HydratedBytecodePackage;
 
@@ -76,12 +74,12 @@ impl DeploymentLinker<'_> {
             .values()
             .filter(|package| package.has_bytecode())
         {
-            self.require_complete_literal_package(package)?;
+            self.require_local_constant_pool(package)?;
         }
         Ok(())
     }
 
-    fn require_complete_literal_package(
+    fn require_local_constant_pool(
         &self,
         package: &HydratedBytecodePackage,
     ) -> Result<(), BytecodeLinkError> {
@@ -106,44 +104,7 @@ impl DeploymentLinker<'_> {
                 return Err(unavailable(self.package_location(package)));
             }
         }
-        for (position, node) in view.frozen_constant_graph().nodes.iter().enumerate() {
-            if !matches!(node, FrozenConstantNode::Literal { .. }) {
-                return Err(unavailable(constant_location(
-                    package,
-                    position,
-                    view.frozen_constant_graph().nodes.len(),
-                )?));
-            }
-        }
         Ok(())
-    }
-}
-
-pub(super) fn source_literal(
-    package: &HydratedBytecodePackage,
-    node_index: u32,
-    location: BytecodeLinkLocation,
-) -> Result<&LiteralIr, BytecodeLinkError> {
-    let position = usize::try_from(node_index).map_err(|_| {
-        constant_error(
-            location.clone(),
-            format!("frozen constant node {node_index} does not fit usize"),
-        )
-    })?;
-    match package
-        .bytecode()
-        .ok_or_else(|| unavailable(location.clone()))?
-        .view()
-        .frozen_constant_graph()
-        .nodes
-        .get(position)
-    {
-        Some(FrozenConstantNode::Literal { literal }) => Ok(literal),
-        Some(_) => Err(unavailable(location)),
-        None => Err(constant_error(
-            location,
-            format!("frozen constant node {node_index} is absent"),
-        )),
     }
 }
 
@@ -203,7 +164,10 @@ pub(super) fn unavailable(location: BytecodeLinkLocation) -> BytecodeLinkError {
     }
 }
 
-pub(super) fn constant_error(location: BytecodeLinkLocation, detail: String) -> BytecodeLinkError {
+pub(in crate::bytecode) fn constant_error(
+    location: BytecodeLinkLocation,
+    detail: String,
+) -> BytecodeLinkError {
     unsatisfied(
         BytecodeLinkObligation::ConstantInitializationPlan,
         location,
@@ -227,7 +191,7 @@ fn count(value: usize, location: BytecodeLinkLocation) -> Result<u64, BytecodeLi
         .map_err(|_| constant_error(location, "table count does not fit u64".to_string()))
 }
 
-pub(super) fn constant_location(
+pub(in crate::bytecode) fn constant_location(
     package: &HydratedBytecodePackage,
     position: usize,
     node_count: usize,

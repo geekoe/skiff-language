@@ -246,6 +246,12 @@ fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
 }
 
 fn helper_function(program: RootProgram) -> RelocatableBytecodeFunction {
+    if matches!(
+        program,
+        RootProgram::Constant(constants::ConstantProgram::Implementation)
+    ) {
+        return implementation_helper_function();
+    }
     if program == RootProgram::UnreachableInterface {
         return private_interface_function();
     }
@@ -266,6 +272,47 @@ fn helper_function(program: RootProgram) -> RelocatableBytecodeFunction {
         relocations: Vec::new(),
         call_loan_layouts: Vec::new(),
         frame_layout: empty_frame(),
+        max_operand_depth: 0,
+        effect_summary_ref: PackageCallableId::new(HELPER_CALLABLE),
+        exception_regions: Vec::new(),
+        active_regions: Vec::new(),
+        switch_tables: Vec::new(),
+        statement_entries: Vec::new(),
+        source_map: Vec::new(),
+    }
+}
+
+fn implementation_helper_function() -> RelocatableBytecodeFunction {
+    RelocatableBytecodeFunction {
+        function_key: HELPER_FUNCTION.to_string(),
+        origin: BytecodeFunctionOrigin::Executable {
+            executable: coordinate(1),
+        },
+        type_parameters: Vec::new(),
+        self_type_ref: Some(0),
+        words: vec![0x25],
+        relocations: Vec::new(),
+        call_loan_layouts: Vec::new(),
+        frame_layout: FrameLayout {
+            slot_count: 1,
+            slot_type_refs: vec![0],
+            parameter_slots: vec![ParameterSlotDecl {
+                slot: 0,
+                mode: skiff_artifact_model::ParamModeIr::Value,
+                plan: ValueTransferPlan::SnapshotShare {
+                    drop: ValueDropPlan::SnapshotRelease,
+                },
+                dense_record_shape_ref: None,
+            }],
+            writable_local_slots: Vec::new(),
+            result_count: 0,
+            result_type_refs: Vec::new(),
+            result_plans: Vec::new(),
+            stream_result_type_ref: None,
+            slot_plans: vec![ValueTransferPlan::SnapshotShare {
+                drop: ValueDropPlan::SnapshotRelease,
+            }],
+        },
         max_operand_depth: 0,
         effect_summary_ref: PackageCallableId::new(HELPER_CALLABLE),
         exception_regions: Vec::new(),

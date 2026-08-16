@@ -153,6 +153,51 @@ impl TypeLinker<'_> {
         Ok(linked)
     }
 
+    /// Links a compiler plan on one package-global type row. Frozen constant
+    /// graph rows are package-global authority and must not be given a
+    /// function-specialized origin. Recursive shape plans are handled by the
+    /// package-global shape interner before this helper is called.
+    pub(in crate::bytecode) fn link_package_global_plan_for_type_at(
+        &self,
+        type_index: TypeIndex,
+        declared: &ValueTransferPlan,
+        location: BytecodeLinkLocation,
+    ) -> Result<LinkedValueTransferPlan, BytecodeLinkError> {
+        if matches!(
+            declared,
+            ValueTransferPlan::MoveOnly {
+                drop: ValueDropPlan::RecursiveShape { .. },
+            }
+        ) {
+            return Err(BytecodeLinkError::ImplementationUnavailable {
+                obligation: BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location,
+            });
+        }
+        let linked = self.link_transfer_plan(declared, &BTreeMap::new(), location.clone())?;
+        let exact = self.linked_type_plan(type_index).ok_or_else(|| {
+            obligation_error(
+                BytecodeLinkObligation::FrameAndValueTransferPlan,
+                location.clone(),
+                format!(
+                    "linked type row {} has no compiler-owned plan",
+                    type_index.get()
+                ),
+            )
+        })?;
+        if &linked != exact {
+            return Err(obligation_error(
+                BytecodeLinkObligation::FrameAndValueTransferPlan,
+                location,
+                format!(
+                    "declared package-global value plan differs from exact TypeRef row {} plan",
+                    type_index.get()
+                ),
+            ));
+        }
+        Ok(linked)
+    }
+
     pub(in crate::bytecode) fn validate_privileged_shape_authority(
         &self,
         identity: Option<PrivilegedAffineCompositeIdentity>,

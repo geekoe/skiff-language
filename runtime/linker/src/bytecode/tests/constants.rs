@@ -1,7 +1,7 @@
 use skiff_artifact_model::{LiteralIr, Opcode, TypeRefIr};
 use skiff_runtime_linked_bytecode::{
-    LinkedConstantReference, LinkedFrozenConstantValue, LinkedInstructionTarget,
-    LinkedValueDropPlan, LinkedValueTransferPlan,
+    FrozenConstantNodeIndex, LinkedConstantReference, LinkedFrozenConstantValue,
+    LinkedInstructionTarget, LinkedValueDropPlan, LinkedValueTransferPlan,
 };
 
 use crate::bytecode::{
@@ -11,7 +11,9 @@ use crate::bytecode::{
 
 use super::{
     execution_limits,
-    fixtures::{ConstantProgram, Fixture, RepresentationLiteralCase, ROOT_FUNCTION},
+    fixtures::{
+        ConstantProgram, Fixture, RepresentationLiteralCase, HELPER_FUNCTION, ROOT_FUNCTION,
+    },
     generous_execution_limits, generous_limits,
 };
 
@@ -218,25 +220,117 @@ fn every_supported_scalar_literal_uses_its_exact_type_and_lifecycle() {
 }
 
 #[test]
-fn every_composite_graph_kind_fails_at_an_exact_constant_node() {
-    for (program, node_index) in [
-        (ConstantProgram::Array, 1),
-        (ConstantProgram::Record, 1),
-        (ConstantProgram::Representation, 1),
-        (ConstantProgram::Implementation, 1),
+fn composite_graph_kinds_link_exact_authority_and_values() {
+    for program in [
+        ConstantProgram::Array,
+        ConstantProgram::Record,
+        ConstantProgram::Representation,
+        ConstantProgram::Implementation,
     ] {
         let fixture = Fixture::constant(program);
         let hydrated = fixture.hydrate();
-        assert!(matches!(
-            link_deployment_execution_image(hydrated, &generous_execution_limits()),
-            Err(DeploymentExecutionImageError::Link(BytecodeLinkError::ImplementationUnavailable {
-                obligation: BytecodeLinkObligation::ConstantInitializationPlan,
-                location: BytecodeLinkLocation::Constant {
-                    node_index: actual,
+        let image =
+            link_deployment_execution_image(hydrated, &generous_execution_limits()).unwrap();
+        assert_eq!(image.constants().len(), 1);
+        assert_eq!(image.constant_roots().len(), 1);
+        let constant = &image.constants()[0];
+        assert!(image.constant_heap().get(constant.index()).is_some());
+        let root = &image.constant_roots()[0];
+        assert_eq!(root.constant(), constant.index());
+        match program {
+            ConstantProgram::Array => {
+                assert_eq!(image.frozen_constant_nodes().len(), 2);
+                let node = &image.frozen_constant_nodes()[1];
+                assert!(matches!(
+                    node.value(),
+                    LinkedFrozenConstantValue::Array { children }
+                        if children.as_ref() == [FrozenConstantNodeIndex::new(0)]
+                ));
+                let array_type = &image.types()[constant.ty().get() as usize];
+                assert_eq!(
+                    array_type.type_ref(),
+                    &TypeRefIr::Builtin {
+                        name: "Array".to_string(),
+                        args: vec![TypeRefIr::builtin("string")],
+                    }
+                );
+            }
+            ConstantProgram::Record => {
+                assert_eq!(image.frozen_constant_nodes().len(), 2);
+                let node = &image.frozen_constant_nodes()[1];
+                assert!(matches!(
+                    node.value(),
+                    LinkedFrozenConstantValue::Record { shape, children }
+                        if shape.get() == 0
+                            && children.as_ref() == [FrozenConstantNodeIndex::new(0)]
+                ));
+                let shape = &image.shapes()[0];
+                assert_eq!(shape.nominal_type(), constant.ty());
+                assert_eq!(shape.fields().len(), 1);
+            }
+            ConstantProgram::Representation => {
+                assert_eq!(image.frozen_constant_nodes().len(), 2);
+                let node = &image.frozen_constant_nodes()[1];
+                assert!(matches!(
+                    node.value(),
+                    LinkedFrozenConstantValue::Representation { ty, value }
+                        if *ty == constant.ty() && *value == FrozenConstantNodeIndex::new(0)
+                ));
+                let carrier = image
+                    .type_representation_carrier(constant.ty())
+                    .expect("representation constant exposes its exact carrier");
+                assert_eq!(
+                    image.types()[carrier.physical_carrier_type().get() as usize].type_ref(),
+                    &TypeRefIr::builtin("number")
+                );
+            }
+            ConstantProgram::Implementation => {
+                assert_eq!(image.frozen_constant_nodes().len(), 3);
+                let node = &image.frozen_constant_nodes()[2];
+                let LinkedFrozenConstantValue::Implementation { record, behaviors } = node.value()
+                else {
+                    panic!("implementation constant must retain an Implementation graph node");
+                };
+                assert_eq!(record.get(), 1);
+                assert_eq!(behaviors.len(), 1);
+                assert_eq!(
+                    behaviors[0].artifact_function_key().as_str(),
+                    HELPER_FUNCTION
+                );
+                let function = &image.functions()[behaviors[0].function().get() as usize];
+                assert_eq!(
+                    function.key().artifact_function_key().as_str(),
+                    HELPER_FUNCTION
+                );
+            }
+            _ => unreachable!("positive composite graph fixture"),
+        }
+    }
+}
+
+#[test]
+fn composite_graph_malformed_or_missing_plans_fail_closed() {
+    for program in [
+        ConstantProgram::RecordWrongFieldPlan,
+        ConstantProgram::RepresentationMissingCarrier,
+        ConstantProgram::ImplementationMissingReceiver,
+        ConstantProgram::AmbiguousArray,
+    ] {
+        let fixture = Fixture::constant(program);
+        let hydrated = fixture.hydrate();
+        let error = link_deployment_execution_image(hydrated, &generous_execution_limits())
+            .expect_err("malformed constant graph must fail closed");
+        assert!(
+            matches!(
+                error,
+                DeploymentExecutionImageError::Link(BytecodeLinkError::UnsatisfiedObligation {
+                    obligation: BytecodeLinkObligation::ConstantInitializationPlan,
+                    location: BytecodeLinkLocation::Constant { .. },
                     ..
-                },
-            })) if actual == node_index
-        ));
+                })
+            ),
+            "unexpected malformed graph error: {error:?}"
+        );
     }
 }
 

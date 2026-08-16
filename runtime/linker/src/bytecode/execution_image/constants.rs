@@ -57,18 +57,17 @@ pub(in crate::bytecode) fn build_constant_heap(
                 constant: constant.index(),
                 node: *node,
             })?;
-        let LinkedFrozenConstantValue::Literal(literal) = linked_node.value() else {
-            return Err(ExecutionImageConstructionError::UnsupportedConstantNode {
-                constant: constant.index(),
-                node: *node,
-            });
+        let value = match linked_node.value() {
+            LinkedFrozenConstantValue::Literal(literal) => {
+                materialize_literal(constant.index(), *node, constant.ty(), literal)?
+            }
+            _ => ValueSlot::const_ref(
+                VmHandle::new(u64::from(node.get())),
+                compact_type_tag(constant.ty())?,
+                ValueFlags::new(0),
+            ),
         };
-        values.push(materialize_literal(
-            constant.index(),
-            *node,
-            constant.ty(),
-            literal,
-        )?);
+        values.push(value);
     }
     Ok(ExecutionConstantHeap {
         values: values.into_boxed_slice(),

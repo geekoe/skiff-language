@@ -46,7 +46,7 @@ pub(super) fn package(
             callable_link(
                 helper_callable.clone(),
                 1,
-                if program == RootProgram::LocalInterface {
+                if program == RootProgram::LocalInterface || is_implementation_constant(program) {
                     OperationCallableKind::ImplMethod
                 } else {
                     OperationCallableKind::InternalFunction
@@ -64,7 +64,9 @@ pub(super) fn package(
             "fixture.helper".to_string(),
             callable_symbol(
                 helper_callable.clone(),
-                if program == RootProgram::LocalInterface {
+                if is_implementation_constant(program) {
+                    implementation_receiver_callable_signature()
+                } else if program == RootProgram::LocalInterface {
                     receiver_callable_signature()
                 } else {
                     callable_signature(program == RootProgram::UnreachableInterface)
@@ -242,20 +244,25 @@ pub(super) fn package(
                 })
                 .into_iter()
                 .collect(),
-            impl_methods: (program == RootProgram::LocalInterface)
-                .then(|| {
-                    (
-                        "fixture.helper".to_string(),
-                        ExecutableExport {
-                            file: file_ref(),
-                            executable_index: 1,
-                            symbol: "fixture.helper".to_string(),
-                            signature: receiver_executable_signature(),
+            impl_methods: (program == RootProgram::LocalInterface
+                || is_implementation_constant(program))
+            .then(|| {
+                (
+                    "fixture.helper".to_string(),
+                    ExecutableExport {
+                        file: file_ref(),
+                        executable_index: 1,
+                        symbol: "fixture.helper".to_string(),
+                        signature: if is_implementation_constant(program) {
+                            implementation_receiver_executable_signature()
+                        } else {
+                            receiver_executable_signature()
                         },
-                    )
-                })
-                .into_iter()
-                .collect(),
+                    },
+                )
+            })
+            .into_iter()
+            .collect(),
             constants: constants::implementation_links(bytecode),
             ..PackageImplementationLinks::default()
         },
@@ -306,6 +313,13 @@ pub(super) fn package(
         .unwrap();
     skiff_artifact_identity::assign_package_artifact_identities(&mut artifact).unwrap();
     artifact
+}
+
+fn is_implementation_constant(program: RootProgram) -> bool {
+    matches!(
+        program,
+        RootProgram::Constant(constants::ConstantProgram::Implementation)
+    )
 }
 
 pub(super) fn dependency_type_owner_package(
@@ -628,6 +642,23 @@ fn receiver_callable_signature() -> PackageCallableSignature {
     }
 }
 
+fn implementation_receiver_callable_signature() -> PackageCallableSignature {
+    PackageCallableSignature {
+        type_params: Vec::new(),
+        parameters: vec![skiff_artifact_model::PackageCallableParameter {
+            name: "self".to_string(),
+            ty: PackageTypeRef::Local {
+                local_type: implementation_receiver_type(),
+            },
+            mode: skiff_artifact_model::ParamModeIr::Value,
+        }],
+        return_type: PackageTypeRef::Local {
+            local_type: TypeRefIr::builtin("void"),
+        },
+        may_suspend: false,
+    }
+}
+
 fn executable_signature(has_parameter: bool) -> ExecutableSignatureIr {
     ExecutableSignatureIr {
         params: has_parameter
@@ -651,5 +682,20 @@ fn receiver_executable_signature() -> ExecutableSignatureIr {
         return_type: TypeRefIr::builtin("string"),
         self_type: Some(TypeRefIr::builtin("string")),
         may_suspend: false,
+    }
+}
+
+fn implementation_receiver_executable_signature() -> ExecutableSignatureIr {
+    ExecutableSignatureIr {
+        params: Vec::new(),
+        return_type: TypeRefIr::builtin("void"),
+        self_type: Some(implementation_receiver_type()),
+        may_suspend: false,
+    }
+}
+
+fn implementation_receiver_type() -> TypeRefIr {
+    TypeRefIr::Record {
+        fields: BTreeMap::from([("value".to_string(), TypeRefIr::builtin("number"))]),
     }
 }

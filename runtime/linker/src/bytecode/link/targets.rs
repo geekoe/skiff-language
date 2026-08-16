@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use skiff_artifact_model::{
-    GatewayAdapterKind, PackageCallableId, PackageLocalAbiSymbol, ReceiverCallAbi,
+    FrozenConstantNode, GatewayAdapterKind, PackageCallableId, PackageLocalAbiSymbol,
+    ReceiverCallAbi,
 };
 use skiff_runtime_linked_bytecode::{
     FunctionIndex, LinkedCallableSignature, LinkedFunction, LinkedGatewayCallable,
@@ -14,7 +15,10 @@ use crate::bytecode::{
     types::TypeLinker, BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation,
 };
 
-use super::constants::LinkedConstantTables;
+use super::constants::{
+    validation::{constant_error, constant_location},
+    LinkedConstantTables,
+};
 
 use super::{unsatisfied, DeploymentLinker};
 
@@ -50,6 +54,46 @@ impl DeploymentLinker<'_> {
             }
         }
         roots.extend(self.actor_roots(type_linker)?);
+        roots.extend(self.frozen_behavior_roots(type_linker)?);
+        Ok(roots)
+    }
+
+    fn frozen_behavior_roots(
+        &self,
+        type_linker: &mut TypeLinker<'_>,
+    ) -> Result<Vec<SpecializationKey>, BytecodeLinkError> {
+        let mut roots = Vec::new();
+        for package in self
+            .deployment
+            .packages()
+            .values()
+            .filter(|package| package.has_bytecode())
+        {
+            let bytecode = package.bytecode().ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    self.package_location(package),
+                    "frozen behavior owner is type-only".to_string(),
+                )
+            })?;
+            let nodes = bytecode.view().frozen_constant_graph().nodes.as_slice();
+            for (position, node) in nodes.iter().enumerate() {
+                let FrozenConstantNode::Implementation { behaviors, .. } = node else {
+                    continue;
+                };
+                let location = constant_location(package, position, nodes.len())?;
+                for behavior in behaviors {
+                    roots.push(
+                        self.key_for_receiver_function(
+                            package,
+                            &behavior.function_key,
+                            type_linker,
+                        )
+                        .map_err(|error| constant_error(location.clone(), error.to_string()))?,
+                    );
+                }
+            }
+        }
         Ok(roots)
     }
 

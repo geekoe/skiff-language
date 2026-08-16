@@ -233,6 +233,13 @@ impl<'a> TypeLinker<'a> {
         let plan = self.link_transfer_plan(&declared_plan, &substitutions, location.clone())?;
         let (index, entry_position) = self.reserve(origin_key, location.clone())?;
         self.pending_type_refs.insert(index, concrete.clone());
+        let container_layout = self.link_package_global_container_layout(
+            package,
+            index,
+            &concrete,
+            &plan,
+            location.clone(),
+        )?;
         let representation_carrier = self.link_representation_carrier(
             package,
             None,
@@ -263,7 +270,7 @@ impl<'a> TypeLinker<'a> {
             concrete.clone(),
             plan,
             representation_carrier,
-            None,
+            container_layout,
         ));
         self.pending_type_refs.remove(&index);
         Ok((index, concrete))
@@ -721,6 +728,122 @@ impl<'a> TypeLinker<'a> {
             package.reference().package_build_id.clone(),
             ArtifactShapeIndex::new(artifact_index),
             origin_specialization,
+        )
+        .map_err(|error| obligation_error(location.clone(), error.to_string()))?;
+        self.validate_privileged_shape_authority(
+            shape.privileged_affine_composite,
+            nominal_type,
+            &fields,
+            location.clone(),
+        )?;
+        self.shape_entries.push(
+            LinkedShapeEntry::new(
+                index,
+                origin,
+                nominal_type,
+                plan,
+                shape.privileged_affine_composite,
+                fields.into_boxed_slice(),
+            )
+            .map_err(|error| obligation_error(location.clone(), error.to_string()))?,
+        );
+        Ok(index)
+    }
+
+    /// Interns one package-global shape row for a frozen constant graph.
+    /// Package constants are image-global authority, so their shape origin
+    /// retains `specialization == None` instead of borrowing a function key.
+    pub(in crate::bytecode) fn intern_package_global_shape(
+        &mut self,
+        package: &HydratedBytecodePackage,
+        artifact_index: u32,
+        location: BytecodeLinkLocation,
+    ) -> Result<ShapeIndex, BytecodeLinkError> {
+        let origin_key = (
+            package.reference().package_build_id.clone(),
+            artifact_index,
+            None,
+        );
+        if let Some(index) = self.shape_origins.get(&origin_key) {
+            return Ok(*index);
+        }
+        let entry = package
+            .bytecode()
+            .ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    "type-only package has no bytecode shape pool".to_string(),
+                )
+            })?
+            .view()
+            .pools()
+            .shapes
+            .get(usize::try_from(artifact_index).map_err(|_| {
+                obligation_error(
+                    location.clone(),
+                    format!("validated shape pool row {artifact_index} does not fit usize"),
+                )
+            })?)
+            .ok_or_else(|| {
+                obligation_error(
+                    location.clone(),
+                    format!("validated shape pool row {artifact_index} is absent"),
+                )
+            })?;
+        let skiff_artifact_model::BytecodePoolEntry::ShapeRef { shape } = entry else {
+            return Err(obligation_error(
+                location,
+                format!("validated shape pool row {artifact_index} has the wrong entry kind"),
+            ));
+        };
+        let nominal_type = self
+            .intern_package_global_type(package, shape.type_ref, location.clone())?
+            .0;
+        let predicted_shape =
+            ShapeIndex::new(u32::try_from(self.shape_entries.len()).map_err(|_| {
+                obligation_error(
+                    location.clone(),
+                    "linked shape table index does not fit u32".to_string(),
+                )
+            })?);
+        let mut fields = Vec::with_capacity(shape.fields.len());
+        for field in &shape.fields {
+            let ty = self
+                .intern_package_global_type(package, field.type_ref, location.clone())?
+                .0;
+            let plan =
+                self.link_package_global_plan_for_type_at(ty, &field.plan, location.clone())?;
+            fields.push(
+                LinkedShapeField::new(field.name.clone(), ty, plan)
+                    .map_err(|error| obligation_error(location.clone(), error.to_string()))?,
+            );
+        }
+        let plan = match &shape.plan {
+            skiff_artifact_model::ValueTransferPlan::MoveOnly {
+                drop: skiff_artifact_model::ValueDropPlan::RecursiveShape { shape_ref },
+            } if *shape_ref == artifact_index && shape.privileged_affine_composite.is_some() => {
+                skiff_runtime_linked_bytecode::LinkedValueTransferPlan::MoveOnly {
+                    drop: skiff_runtime_linked_bytecode::LinkedValueDropPlan::RecursiveShape {
+                        shape: predicted_shape,
+                    },
+                }
+            }
+            declared => {
+                self.link_package_global_plan_for_type_at(nominal_type, declared, location.clone())?
+            }
+        };
+        let raw_index = self.reserve_shape(origin_key, location.clone())?;
+        let index = ShapeIndex::new(raw_index);
+        if index != predicted_shape {
+            return Err(obligation_error(
+                location,
+                "linked shape reservation diverged from its exact recursive root".to_string(),
+            ));
+        }
+        let origin = LinkedArtifactPoolOrigin::new(
+            package.reference().package_build_id.clone(),
+            ArtifactShapeIndex::new(artifact_index),
+            None,
         )
         .map_err(|error| obligation_error(location.clone(), error.to_string()))?;
         self.validate_privileged_shape_authority(
@@ -1324,6 +1447,86 @@ impl<'a> TypeLinker<'a> {
             )),
             _ => Ok(None),
         }
+    }
+
+    fn link_package_global_container_layout(
+        &mut self,
+        package: &HydratedBytecodePackage,
+        self_index: TypeIndex,
+        ty: &TypeRefIr,
+        self_plan: &LinkedValueTransferPlan,
+        location: BytecodeLinkLocation,
+    ) -> Result<Option<LinkedContainerLayout>, BytecodeLinkError> {
+        let TypeRefIr::Builtin { name, args } = ty else {
+            return Ok(None);
+        };
+        match (name.as_str(), args.as_slice()) {
+            ("Array", [element]) => self
+                .package_global_container_position(package, element, location)
+                .map(LinkedContainerLayout::array)
+                .map(Some),
+            ("Map", [key, value]) => Ok(Some(LinkedContainerLayout::map(
+                self.package_global_container_position(package, key, location.clone())?,
+                self.package_global_container_position(package, value, location)?,
+            ))),
+            ("Json", []) => Ok(Some(LinkedContainerLayout::json(
+                LinkedContainerPosition::new(self_index, self_plan.clone()),
+            ))),
+            ("JsonObject", []) => self
+                .package_global_json_object_layout(package, location)
+                .map(Some),
+            ("Array", _) | ("Map", _) | ("Json", _) | ("JsonObject", _) => Err(obligation_error(
+                location,
+                format!("builtin container {name:?} has an invalid concrete arity"),
+            )),
+            _ => Ok(None),
+        }
+    }
+
+    fn package_global_json_object_layout(
+        &mut self,
+        package: &HydratedBytecodePackage,
+        location: BytecodeLinkLocation,
+    ) -> Result<LinkedContainerLayout, BytecodeLinkError> {
+        let string = TypeRefIr::builtin("string");
+        let json = TypeRefIr::builtin("Json");
+        Ok(LinkedContainerLayout::json_object(
+            self.package_global_container_position(package, &string, location.clone())?,
+            self.package_global_container_position(package, &json, location)?,
+        ))
+    }
+
+    fn package_global_container_position(
+        &mut self,
+        package: &HydratedBytecodePackage,
+        expected: &TypeRefIr,
+        location: BytecodeLinkLocation,
+    ) -> Result<LinkedContainerPosition, BytecodeLinkError> {
+        let artifact_index = find_pool_type_after_substitution(
+            self.deployment,
+            package,
+            expected,
+            &BTreeMap::new(),
+        )?
+        .ok_or_else(|| {
+            obligation_error(
+                location.clone(),
+                "container position has no exact admitted type-pool origin".to_string(),
+            )
+        })?;
+        let ty = self
+            .intern_package_global_type(package, artifact_index, location.clone())?
+            .0;
+        let plan = self.linked_type_plan(ty).cloned().ok_or_else(|| {
+            obligation_error(
+                location,
+                format!(
+                    "container position type row {} has no compiler-owned plan",
+                    ty.get()
+                ),
+            )
+        })?;
+        Ok(LinkedContainerPosition::new(ty, plan))
     }
 
     fn json_object_layout(
