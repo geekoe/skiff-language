@@ -72,6 +72,7 @@ pub(super) enum RootProgram {
     ServiceDependency,
     ServiceOperation,
     Interface,
+    RemoteInterface,
     LocalInterface,
     UnreachableInterface,
     Host,
@@ -186,6 +187,22 @@ impl Fixture {
 
     pub(super) fn service_operation() -> Self {
         Self::new(RootProgram::ServiceOperation, false)
+    }
+
+    pub(super) fn remote_interface() -> Self {
+        Self::new(RootProgram::RemoteInterface, false)
+    }
+
+    pub(super) fn remote_interface_drifted() -> Self {
+        Self::new_with_options(
+            RootProgram::RemoteInterface,
+            false,
+            false,
+            None,
+            false,
+            Some(artifact::remote_interface_artifact(true)),
+            true,
+        )
     }
 
     pub(super) fn service_operation_drifted() -> Self {
@@ -415,7 +432,10 @@ impl Fixture {
             None,
             false,
             None,
-            matches!(program, RootProgram::ServiceOperation),
+            matches!(
+                program,
+                RootProgram::ServiceOperation | RootProgram::RemoteInterface
+            ),
         )
     }
 
@@ -566,10 +586,16 @@ impl Fixture {
 
         let service_selector = if matches!(
             program,
-            RootProgram::ServiceDependency | RootProgram::ServiceOperation
+            RootProgram::ServiceDependency
+                | RootProgram::ServiceOperation
+                | RootProgram::RemoteInterface
         ) {
             let (provider, provider_reference, provider_operation) =
-                records::contract("example.bytecode-link-provider", "call", false);
+                if program == RootProgram::RemoteInterface {
+                    records::remote_contract("example.bytecode-link-provider", "call")
+                } else {
+                    records::contract("example.bytecode-link-provider", "call", false)
+                };
             records::add_service_requirement(
                 &mut package,
                 &provider_reference,

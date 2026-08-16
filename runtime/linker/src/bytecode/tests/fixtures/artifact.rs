@@ -11,11 +11,12 @@ use skiff_artifact_model::{
     HostEffectSignature, InstructionSourceSite, InterfaceMethodSlotSignatureIr,
     InterfaceRequirementMethod, IntrinsicReference, LocalInterfaceMethod, LocalInterfaceRef,
     NativeTarget, PackageCallableId, PackageExecutableCoordinate, PackageRefIr, PackageSymbolRef,
-    ParameterSlotDecl, ReceiverCallAbi, RelocatableBytecodeFunction, ResourceDropPlan,
-    ResumeDescriptor, ResumeErrorMode, ServiceCallBoundaryFacts, ServiceCallRef, SourceMapEntry,
-    SourcePosition, SourceSpanRef, StatementAttributionId, StatementEntry,
-    SyntheticInstructionSiteReason, TypeRefIr, ValueDropPlan, ValueProvenance, ValueTransferPlan,
-    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
+    ParameterSlotDecl, ReceiverCallAbi, RelocatableBytecodeFunction, RemoteInterfaceMethod,
+    RemoteInterfaceRef, ResourceDropPlan, ResumeDescriptor, ResumeErrorMode,
+    ServiceCallBoundaryFacts, ServiceCallRef, SourceMapEntry, SourcePosition, SourceSpanRef,
+    StatementAttributionId, StatementEntry, SyntheticInstructionSiteReason, TypeRefIr,
+    ValueDropPlan, ValueProvenance, ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
+    BYTECODE_SCHEMA_VERSION,
 };
 
 use super::{
@@ -60,6 +61,28 @@ pub(super) fn service_operation_artifact(drifted: bool) -> Arc<ValidatedBytecode
                 drop: BoundaryDropPlan::SnapshotRelease,
                 source: ValueProvenance::CallerParameter { index: 0 },
             });
+    }
+    skiff_artifact_identity::assign_bytecode_identity(&mut artifact).unwrap();
+    Arc::new(ValidatedBytecodeArtifact::admit(artifact).unwrap())
+}
+
+pub(super) fn remote_interface_artifact(drifted: bool) -> Arc<ValidatedBytecodeArtifact> {
+    let mut artifact = bytecode_artifact(RootProgram::RemoteInterface);
+    if drifted {
+        let relocation = artifact
+            .image
+            .functions
+            .get_mut(ROOT_FUNCTION)
+            .unwrap()
+            .relocations
+            .first_mut()
+            .unwrap();
+        let BytecodeRelocation::RemoteInterfaceRef { interface } = relocation else {
+            panic!("remote interface fixture has a remote relocation")
+        };
+        let method = &mut interface.methods[0];
+        let argument = method.boundary_plan.arguments[0].clone();
+        method.boundary_plan.arguments.push(argument);
     }
     skiff_artifact_identity::assign_bytecode_identity(&mut artifact).unwrap();
     Arc::new(ValidatedBytecodeArtifact::admit(artifact).unwrap())
@@ -224,6 +247,7 @@ fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
         max_operand_depth: match program {
             RootProgram::RecordShape => 2,
             RootProgram::Interface
+            | RootProgram::RemoteInterface
             | RootProgram::LocalInterface
             | RootProgram::ReorderedStreamNextResumePool
             | RootProgram::Host
@@ -664,6 +688,51 @@ fn root_body(
                 vec![source_map(4, 10)],
             )
         }
+        RootProgram::RemoteInterface => {
+            let interface = skiff_artifact_model::InterfaceInstantiationRef {
+                interface_abi_id: interface_identity(),
+                canonical_type_args: Vec::new(),
+            };
+            let method_abi =
+                skiff_artifact_identity::canonical_interface_method_abi_id(&interface, "read");
+            let signature = InterfaceMethodSlotSignatureIr {
+                params: vec![
+                    FunctionTypeParamIr {
+                        name: "self".to_string(),
+                        ty: TypeRefIr::builtin("Self"),
+                    },
+                    FunctionTypeParamIr {
+                        name: "seed".to_string(),
+                        ty: TypeRefIr::builtin("string"),
+                    },
+                ],
+                return_type: TypeRefIr::builtin("string"),
+            };
+            let (provider_contract, _, provider_operation) =
+                super::records::remote_contract("example.bytecode-link-provider", "call");
+            (
+                vec![0x31, 0, 0x08, 0x25],
+                vec![BytecodeRelocation::RemoteInterfaceRef {
+                    interface: RemoteInterfaceRef {
+                        service_requirement_slot: 7,
+                        public_instance_key: "reader".to_string(),
+                        interface,
+                        methods: vec![RemoteInterfaceMethod {
+                            slot: 0,
+                            method_abi_id: method_abi,
+                            signature,
+                            contract_operation_id: provider_operation,
+                            boundary_plan: super::records::remote_service_boundary_plan(),
+                        }],
+                        callee_protocol_identity: provider_contract
+                            .service_protocol_identity
+                            .clone(),
+                    },
+                }],
+                None,
+                Vec::new(),
+            )
+        }
         RootProgram::Host => (
             vec![0x80, 0, 0, 1, 0, 0x25],
             vec![BytecodeRelocation::HostEffectRef(valid_host_effect())],
@@ -844,6 +913,31 @@ fn pools(program: RootProgram) -> BytecodePools {
                         drop: ValueDropPlan::SnapshotRelease,
                     },
                 )]
+            }
+            RootProgram::RemoteInterface => {
+                let record = super::records::std_service_internal_error_record();
+                vec![
+                    type_entry(TypeRefIr::builtin("string"), stream_item_plan()),
+                    type_entry(
+                        TypeRefIr::AnyInterface {
+                            interface: skiff_artifact_model::InterfaceInstantiationRef {
+                                interface_abi_id: interface_identity(),
+                                canonical_type_args: Vec::new(),
+                            },
+                        },
+                        stream_item_plan(),
+                    ),
+                    type_entry(
+                        TypeRefIr::PackageSchema {
+                            package_id: record.package_id,
+                            stable_schema_key: record.stable_schema_key,
+                            package_schema_type_id: record.package_schema_type_id,
+                        },
+                        ValueTransferPlan::SnapshotShare {
+                            drop: ValueDropPlan::SnapshotRelease,
+                        },
+                    ),
+                ]
             }
             _ => Vec::new(),
         },

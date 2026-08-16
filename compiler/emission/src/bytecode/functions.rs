@@ -20,9 +20,9 @@ use skiff_artifact_model::{
 };
 use skiff_compiler_lowering::mir::{
     MirCallArgument, MirDirectCallFacts, MirEmissionAnchor, MirExpression, MirForInItemKind,
-    MirFunction, MirIndexReceiverKind, MirParamMode, MirSlot, MirSlotKind, MirSourceEvent,
-    MirStatementPlacement, MirStmtKind, MirUnit, MirWritablePathSegment, MirWritablePlace,
-    MirWritableRoot,
+    MirFunction, MirIndexReceiverKind, MirParamMode, MirRemoteInterfaceFacts,
+    MirRemoteInterfaceMethodFacts, MirSlot, MirSlotKind, MirSourceEvent, MirStatementPlacement,
+    MirStmtKind, MirUnit, MirWritablePathSegment, MirWritablePlace, MirWritableRoot,
 };
 
 use super::{
@@ -1459,16 +1459,19 @@ impl<'a> FunctionEmitter<'a> {
                     let methods = remote
                         .methods
                         .iter()
-                        .map(|method| RemoteInterfaceMethod {
-                            slot: method.slot,
-                            method_abi_id: method.method_abi_id.clone(),
-                            signature: qualified_interface_signature(
-                                self.unit.module_path.as_str(),
-                                &method.signature,
-                            ),
-                            contract_operation_id: method.contract_operation_id.clone(),
+                        .map(|method| {
+                            Ok(RemoteInterfaceMethod {
+                                slot: method.slot,
+                                method_abi_id: method.method_abi_id.clone(),
+                                signature: qualified_interface_signature(
+                                    self.unit.module_path.as_str(),
+                                    &method.signature,
+                                ),
+                                contract_operation_id: method.contract_operation_id.clone(),
+                                boundary_plan: self.remote_method_boundary_plan(remote, method)?,
+                            })
                         })
-                        .collect::<Vec<_>>();
+                        .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
                     let remote_ref = RemoteInterfaceRef {
                         service_requirement_slot: remote.service_requirement_slot,
                         public_instance_key: remote.public_instance_key.clone(),
@@ -3518,6 +3521,31 @@ impl<'a> FunctionEmitter<'a> {
         Ok(())
     }
 
+    fn remote_method_boundary_plan(
+        &self,
+        facts: &MirRemoteInterfaceFacts,
+        method: &MirRemoteInterfaceMethodFacts,
+    ) -> Result<ServiceBoundaryPlan, BytecodeEmissionError> {
+        let service_call = ServiceCallRef {
+            service_requirement_slot: facts.service_requirement_slot,
+            contract_operation_id: method.contract_operation_id.clone(),
+            expected_protocol_identity: facts.callee_protocol_identity.clone(),
+        };
+        self.service_boundary_plans
+            .get(&service_call)
+            .cloned()
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "remote interface method",
+                    &format!(
+                        "no compiler-emitted service boundary plan for remote method slot {}",
+                        method.slot
+                    ),
+                )
+            })
+    }
+
     fn emit_interface_box(
         &mut self,
         expression: &MirExpression,
@@ -3535,13 +3563,16 @@ impl<'a> FunctionEmitter<'a> {
             let methods = facts
                 .methods
                 .iter()
-                .map(|method| RemoteInterfaceMethod {
-                    slot: method.slot,
-                    method_abi_id: method.method_abi_id.clone(),
-                    signature: method.signature.clone(),
-                    contract_operation_id: method.contract_operation_id.clone(),
+                .map(|method| {
+                    Ok(RemoteInterfaceMethod {
+                        slot: method.slot,
+                        method_abi_id: method.method_abi_id.clone(),
+                        signature: method.signature.clone(),
+                        contract_operation_id: method.contract_operation_id.clone(),
+                        boundary_plan: self.remote_method_boundary_plan(facts, method)?,
+                    })
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
             let relocation = BytecodeRelocation::RemoteInterfaceRef {
                 interface: RemoteInterfaceRef {
                     service_requirement_slot: facts.service_requirement_slot,

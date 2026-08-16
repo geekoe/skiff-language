@@ -1941,8 +1941,21 @@ mod tests {
         };
         let (unit, bundle) = mir_and_bundle("remote", Vec::new(), external_refs, function);
         let plans = plans(&unit);
-        let artifact =
-            emit_bytecode_artifact(&[unit], &[bundle], &plans).expect("remote interface box emits");
+        let service_boundary_plans = BTreeMap::from([(
+            ServiceCallRef {
+                service_requirement_slot: 3,
+                contract_operation_id: ContractOperationId::new(operation_abi_id.clone()),
+                expected_protocol_identity: ServiceProtocolIdentity::new("protocol:reader"),
+            },
+            service_boundary_plan(),
+        )]);
+        let artifact = emit_bytecode_artifact_with_service_boundary_plans(
+            &[unit],
+            &[bundle],
+            &plans,
+            &service_boundary_plans,
+        )
+        .expect("remote interface box emits");
         let relocation = artifact.image.functions["remote::boxReader"]
             .relocations
             .iter()

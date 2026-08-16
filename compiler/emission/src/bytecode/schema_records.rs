@@ -185,6 +185,7 @@ fn collect_relocation(
             collect_interface(&interface.interface, roots)?;
             for method in &interface.methods {
                 collect_interface_signature(&method.signature, roots)?;
+                collect_service_boundary_plan(&method.boundary_plan, roots);
             }
         }
         BytecodeRelocation::ServiceOperationRef { service_call } => {

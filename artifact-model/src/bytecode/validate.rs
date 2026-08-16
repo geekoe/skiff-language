@@ -2416,6 +2416,10 @@ fn validate_remote_interface_methods(
                 format!("{method_location} is not canonical or complete"),
             ));
         }
+        validate_service_boundary_plan(
+            &method.boundary_plan,
+            &format!("{method_location}.boundaryPlan"),
+        )?;
         previous_slot = Some(method.slot);
     }
     Ok(())

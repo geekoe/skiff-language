@@ -201,6 +201,7 @@ fn collect_relocation(
             collect_interface(package, &interface.interface, roots)?;
             for method in &interface.methods {
                 collect_interface_signature(package, &method.signature, roots)?;
+                collect_service_boundary_plan(&method.boundary_plan, roots);
             }
         }
         BytecodeRelocation::HostEffectRef(effect) => {

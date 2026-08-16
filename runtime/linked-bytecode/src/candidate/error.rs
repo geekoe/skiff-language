@@ -182,6 +182,14 @@ pub enum LinkedBytecodeCandidateError {
         service_requirement_key: ServiceRequirementKey,
         contract_operation_id: ContractOperationId,
     },
+    MissingRemoteServiceOperation {
+        location: CandidateLocation,
+        method_slot: u32,
+    },
+    RemoteServiceOperationMismatch {
+        location: CandidateLocation,
+        method_slot: u32,
+    },
     DuplicateActorMethod {
         first_index: u32,
         duplicate_index: u32,

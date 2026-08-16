@@ -522,18 +522,26 @@ impl<'a, 'deployment, 'limits> RelocationContext<'a, 'deployment, 'limits> {
                             .to_string(),
                     )
                 }),
-            BytecodeRelocation::RemoteInterfaceRef { interface } => self
-                .dispatch_tables
-                .interface_index(&interface.interface, &InterfaceKind::Remote)
-                .map(LinkedInstructionTarget::InterfaceTable)
-                .ok_or_else(|| {
-                    unsatisfied(
-                        BytecodeLinkObligation::RelocationResolution,
-                        location,
-                        "remote interface target is absent from the linked dispatch table"
-                            .to_string(),
-                    )
-                }),
+            BytecodeRelocation::RemoteInterfaceRef { interface } => {
+                let normalized = self.linker.normalize_remote_interface_instantiation(
+                    self.source.package,
+                    self.source.specialization,
+                    &interface.interface,
+                    self.type_linker,
+                    location.clone(),
+                )?;
+                self.dispatch_tables
+                    .interface_index(&normalized, &InterfaceKind::Remote)
+                    .map(LinkedInstructionTarget::InterfaceTable)
+                    .ok_or_else(|| {
+                        unsatisfied(
+                            BytecodeLinkObligation::RelocationResolution,
+                            location,
+                            "remote interface target is absent from the linked dispatch table"
+                                .to_string(),
+                        )
+                    })
+            }
             BytecodeRelocation::SyntheticCallbackRef { function_key } => self
                 .dispatch_tables
                 .synthetic_callback_index(self.source.package, function_key)

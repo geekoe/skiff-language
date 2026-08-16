@@ -218,15 +218,24 @@ mod tests {
             })
             .expect("remote interface fixture must produce a Remote method table");
         assert!(!remote.methods().is_empty());
-        assert!(
-            image.service_operations().iter().any(|operation| {
-                operation.service_requirement_key() == remote.service_requirement_key()
-                    && operation.contract_operation_id()
-                        == remote.methods()[0].contract_operation_id()
-                    && operation.expected_protocol_identity()
-                        == remote.callee_protocol_identity()
-            }),
-            "remote interface table must link the exact service operation/build"
+        let operation_index = remote.methods()[0]
+            .service_operation()
+            .expect("remote method row must join its exact service operation");
+        let operation = image
+            .service_operations()
+            .get(operation_index.get() as usize)
+            .expect("remote method service operation index must resolve in the consumer image");
+        assert_eq!(
+            operation.service_requirement_key(),
+            remote.service_requirement_key()
+        );
+        assert_eq!(
+            operation.contract_operation_id(),
+            remote.methods()[0].contract_operation_id()
+        );
+        assert_eq!(
+            operation.expected_protocol_identity(),
+            remote.callee_protocol_identity()
         );
     }
 

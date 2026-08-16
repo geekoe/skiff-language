@@ -81,7 +81,10 @@ pub(super) fn package(
     }
     if matches!(
         program,
-        RootProgram::Interface | RootProgram::LocalInterface | RootProgram::UnreachableInterface
+        RootProgram::Interface
+            | RootProgram::RemoteInterface
+            | RootProgram::LocalInterface
+            | RootProgram::UnreachableInterface
     ) {
         implementation_symbols.insert(
             "fixture.Reader".to_string(),
@@ -210,6 +213,7 @@ pub(super) fn package(
                 if matches!(
                     program,
                     RootProgram::Interface
+                        | RootProgram::RemoteInterface
                         | RootProgram::LocalInterface
                         | RootProgram::UnreachableInterface
                 ) {

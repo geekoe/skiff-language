@@ -3,7 +3,8 @@ use std::collections::BTreeSet;
 use crate::{
     CandidateLocation, CandidateReferenceKind, CandidateTable, LinkedArtifactPoolOrigin,
     LinkedBytecodeCandidateError, LinkedBytecodeCandidateParts, LinkedInterfaceTable,
-    LinkedInterfaceTableKind, LinkedServiceBoundaryPlan, SpecializationKey,
+    LinkedInterfaceTableKind, LinkedRemoteInterfaceMethod, LinkedServiceBoundaryPlan,
+    LinkedServiceOperationTarget, SpecializationKey,
 };
 
 mod callbacks;
@@ -484,18 +485,41 @@ fn validate_interface_table(
             )?;
             for method in remote.methods() {
                 validate_callable_signature(method.signature(), location, parts)?;
-                if let Some(operation) = method.service_operation() {
-                    check_index(
+                let operation = method.service_operation().ok_or_else(|| {
+                    LinkedBytecodeCandidateError::MissingRemoteServiceOperation {
                         location,
-                        CandidateReferenceKind::ServiceOperation,
-                        operation.get(),
-                        parts.service_operations.len(),
-                    )?;
+                        method_slot: method.method_slot(),
+                    }
+                })?;
+                check_index(
+                    location,
+                    CandidateReferenceKind::ServiceOperation,
+                    operation.get(),
+                    parts.service_operations.len(),
+                )?;
+                let linked_operation = &parts.service_operations[operation.get() as usize];
+                if !remote_service_operation_matches(remote, method, linked_operation) {
+                    return Err(
+                        LinkedBytecodeCandidateError::RemoteServiceOperationMismatch {
+                            location,
+                            method_slot: method.method_slot(),
+                        },
+                    );
                 }
             }
         }
     }
     Ok(())
+}
+
+fn remote_service_operation_matches(
+    remote: &crate::LinkedRemoteInterfaceTable,
+    method: &LinkedRemoteInterfaceMethod,
+    operation: &LinkedServiceOperationTarget,
+) -> bool {
+    remote.service_requirement_key() == operation.service_requirement_key()
+        && method.contract_operation_id() == operation.contract_operation_id()
+        && remote.callee_protocol_identity() == operation.expected_protocol_identity()
 }
 
 fn check_package(

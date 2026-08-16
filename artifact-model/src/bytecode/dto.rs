@@ -872,7 +872,10 @@ pub struct InterfaceRequirementMethod {
 }
 
 /// Exact symbolic remote interface table. It remains consumer-owned and
-/// carries no provider build or executable identity.
+/// carries no provider build or executable identity. Each method row also
+/// carries the exact compiler-owned service boundary plan so the atomic
+/// linker can construct the consumer service-operation target without
+/// reconstructing the operation identity.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RemoteInterfaceRef {
@@ -890,6 +893,7 @@ pub struct RemoteInterfaceMethod {
     pub method_abi_id: String,
     pub signature: crate::InterfaceMethodSlotSignatureIr,
     pub contract_operation_id: crate::ContractOperationId,
+    pub boundary_plan: ServiceBoundaryPlan,
 }
 
 /// Exact compiler-owned task submission target. Function targets carry the

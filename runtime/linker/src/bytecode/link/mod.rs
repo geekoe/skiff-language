@@ -82,8 +82,12 @@ impl<'a> DeploymentLinker<'a> {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let operation_entries =
-            self.link_operation_entries(&function_indices, &functions, &constant_tables)?;
+        let operation_entries = self.link_operation_entries(
+            &function_indices,
+            &functions,
+            &constant_tables,
+            &mut type_linker,
+        )?;
         let gateway_entries = self.link_gateway_entries(&function_indices, &functions)?;
         let exact_local_targets = keys
             .iter()

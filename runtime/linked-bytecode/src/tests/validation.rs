@@ -3,8 +3,9 @@ use std::collections::BTreeMap;
 use skiff_artifact_model::{
     current_platform_error_projection_registry_ref, opcode_table_fingerprint, BytecodeArtifactRef,
     CallableEffectSummary, ContractOperationId, HostEffectExecutorIdentity, InstructionSourceSite,
-    LinkedOperandKind, LiteralIr, NativeValueAdapterRole, NativeValueLifecycleAdapter, Opcode,
-    PackageCallableId, PackageRefIr, PackageSymbolRef, ParamModeIr, ResumeErrorMode,
+    InterfaceInstantiationRef, LinkedOperandKind, LiteralIr, NativeValueAdapterRole,
+    NativeValueLifecycleAdapter, Opcode, PackageCallableId, PackageRefIr, PackageSymbolRef,
+    ParamModeIr, ResumeErrorMode, ServiceProtocolIdentity, ServiceRequirementKey,
     StatementAttributionId, SyntheticInstructionSiteReason, TypeRefIr, OPCODE_CONTRACTS,
 };
 
@@ -23,16 +24,18 @@ use crate::{
     LinkedContainerPositionKind, LinkedExceptionRegion, LinkedFrameLayout, LinkedFrameLayoutError,
     LinkedFrozenConstantNode, LinkedFrozenConstantValue, LinkedFunctionTables,
     LinkedHostBindingKey, LinkedHostEffectAdapterTarget, LinkedInstruction, LinkedInstructionError,
-    LinkedInstructionTarget, LinkedIntrinsicCanonicalKey, LinkedIntrinsicKind,
-    LinkedIntrinsicTarget, LinkedNativeCallableSignature, LinkedOperationEntry,
-    LinkedPackageBytecodeProvenance, LinkedPackageBytecodeProvenanceError, LinkedParameterSlot,
-    LinkedProgramPointState, LinkedRepresentationCarrier, LinkedResolvedOperand,
-    LinkedResumeResultMaterialization, LinkedResumeSite, LinkedShapeEntry, LinkedShapeField,
-    LinkedSlotState, LinkedSourceMapEntry, LinkedStackMapCandidate, LinkedStackValue,
-    LinkedStatementEntry, LinkedStaticIntrinsicTarget, LinkedSwitchCase, LinkedSwitchTable,
-    LinkedTypeEntry, LinkedValueDropPlan, LinkedValueTransferPlan, LinkedWritablePathEntry,
-    LinkedWritablePathSegment, ResumeSiteIndex, ServiceOperationIndex, ShapeIndex,
-    SwitchTableIndex, SyntheticCallbackIndex, TypeIndex, WritablePathIndex,
+    LinkedInstructionTarget, LinkedInterfaceInstantiation, LinkedInterfaceMethodAbiId,
+    LinkedInterfaceTable, LinkedInterfaceTableKind, LinkedIntrinsicCanonicalKey,
+    LinkedIntrinsicKind, LinkedIntrinsicTarget, LinkedNativeCallableSignature,
+    LinkedOperationEntry, LinkedPackageBytecodeProvenance, LinkedPackageBytecodeProvenanceError,
+    LinkedParameterSlot, LinkedProgramPointState, LinkedPublicInstanceKey,
+    LinkedRemoteInterfaceMethod, LinkedRemoteInterfaceTable, LinkedRepresentationCarrier,
+    LinkedResolvedOperand, LinkedResumeResultMaterialization, LinkedResumeSite, LinkedShapeEntry,
+    LinkedShapeField, LinkedSlotState, LinkedSourceMapEntry, LinkedStackMapCandidate,
+    LinkedStackValue, LinkedStatementEntry, LinkedStaticIntrinsicTarget, LinkedSwitchCase,
+    LinkedSwitchTable, LinkedTypeEntry, LinkedValueDropPlan, LinkedValueTransferPlan,
+    LinkedWritablePathEntry, LinkedWritablePathSegment, ResumeSiteIndex, ServiceOperationIndex,
+    ShapeIndex, SwitchTableIndex, SyntheticCallbackIndex, TypeIndex, WritablePathIndex,
 };
 
 use super::fixtures::{
@@ -169,6 +172,44 @@ fn package_provenance_rejects_artifact_locator_paths() {
         error,
         LinkedPackageBytecodeProvenanceError::ArtifactReferencePathNotAllowed
     );
+}
+
+#[test]
+fn candidate_rejects_remote_interface_method_without_service_operation() {
+    let interface = InterfaceInstantiationRef {
+        interface_abi_id: "interface-abi:reader".to_string(),
+        canonical_type_args: Vec::new(),
+    };
+    let linked_interface = LinkedInterfaceInstantiation::new(interface, Box::new([]))
+        .expect("fixture interface instantiation is canonical");
+    let method = LinkedRemoteInterfaceMethod::new(
+        0,
+        LinkedInterfaceMethodAbiId::parse("method-abi:read")
+            .expect("fixture method ABI is canonical"),
+        signature(),
+        ContractOperationId::new("operation:read"),
+    );
+    let table = LinkedRemoteInterfaceTable::new(
+        ServiceRequirementKey {
+            caller_package_build_id: build_id(),
+            service_requirement_slot: 0,
+        },
+        LinkedPublicInstanceKey::parse("reader").expect("fixture public instance is canonical"),
+        Box::new([method]),
+        ServiceProtocolIdentity::new("protocol:reader"),
+    )
+    .expect("fixture remote method slots are canonical");
+    let mut parts = minimal_parts(Vec::new());
+    parts.interface_tables.push(LinkedInterfaceTable::new(
+        InterfaceTableIndex::new(0),
+        linked_interface,
+        LinkedInterfaceTableKind::Remote(table),
+    ));
+
+    assert!(matches!(
+        LinkedBytecodeCandidate::try_from_parts(parts),
+        Err(LinkedBytecodeCandidateError::MissingRemoteServiceOperation { method_slot: 0, .. })
+    ));
 }
 
 #[test]

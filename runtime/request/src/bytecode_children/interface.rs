@@ -426,21 +426,7 @@ fn execute_remote_interface_child(
             ));
         }
     };
-    let operation = caller_image
-        .service_operations()
-        .iter()
-        .find(|operation| {
-            remote_service_operation_matches(
-                remote.service_requirement_key(),
-                method.contract_operation_id(),
-                remote.callee_protocol_identity(),
-                operation.service_requirement_key(),
-                operation.contract_operation_id(),
-                operation.expected_protocol_identity(),
-            )
-        })
-        .cloned();
-    let operation = match operation {
+    let operation_index = match method.service_operation() {
         Some(operation) => operation,
         None => {
             return Err(BytecodePortFailure::input(
@@ -452,6 +438,36 @@ fn execute_remote_interface_child(
             ));
         }
     };
+    let operation = match caller_image
+        .service_operations()
+        .get(operation_index.get() as usize)
+        .cloned()
+    {
+        Some(operation) => operation,
+        None => {
+            return Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::Port(
+                    "remote interface method links an absent service operation row".to_string(),
+                ),
+                invocation,
+            ));
+        }
+    };
+    if !remote_service_operation_matches(
+        remote.service_requirement_key(),
+        method.contract_operation_id(),
+        remote.callee_protocol_identity(),
+        operation.service_requirement_key(),
+        operation.contract_operation_id(),
+        operation.expected_protocol_identity(),
+    ) {
+        return Err(BytecodePortFailure::input(
+            BytecodeSchedulerError::Port(
+                "remote interface method links a drifted service operation row".to_string(),
+            ),
+            invocation,
+        ));
+    }
     let Some(slot) = caller_image.dependency_slot(remote.service_requirement_key()) else {
         return Err(BytecodePortFailure::input(
             BytecodeSchedulerError::Port(

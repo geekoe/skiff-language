@@ -30,11 +30,27 @@ impl DeploymentLinker<'_> {
         let implementation = self.implementation_package()?;
         let mut roots = Vec::new();
         for binding in &self.deployment.deployment().operation_bindings {
-            roots.push(self.key_for_callable(
-                implementation,
-                &binding.package_callable_id,
-                self.deployment_location(),
-            )?);
+            let receiver_callable = implementation
+                .artifact()
+                .callable_links
+                .get(&binding.package_callable_id)
+                .is_some_and(|link| {
+                    link.target.callable_kind
+                        == skiff_artifact_model::OperationCallableKind::ImplMethod
+                });
+            if receiver_callable {
+                roots.push(self.key_for_receiver_callable(
+                    implementation,
+                    &binding.package_callable_id,
+                    type_linker,
+                )?);
+            } else {
+                roots.push(self.key_for_callable(
+                    implementation,
+                    &binding.package_callable_id,
+                    self.deployment_location(),
+                )?);
+            }
         }
         for entry in self.deployment.deployment().gateway_entries.values() {
             for callable in [
@@ -196,6 +212,7 @@ impl DeploymentLinker<'_> {
         indices: &BTreeMap<SpecializationKey, FunctionIndex>,
         functions: &[LinkedFunction],
         constant_tables: &LinkedConstantTables,
+        type_linker: &mut TypeLinker<'_>,
     ) -> Result<Vec<LinkedOperationEntry>, BytecodeLinkError> {
         let implementation = self.implementation_package()?;
         let mut entries = self
@@ -204,11 +221,24 @@ impl DeploymentLinker<'_> {
             .operation_bindings
             .iter()
             .map(|binding| {
-                let key = self.key_for_callable(
+                let receiver = self.operation_receiver(
                     implementation,
                     &binding.package_callable_id,
-                    self.deployment_location(),
+                    constant_tables,
                 )?;
+                let key = if receiver.is_some() {
+                    self.key_for_receiver_callable(
+                        implementation,
+                        &binding.package_callable_id,
+                        type_linker,
+                    )?
+                } else {
+                    self.key_for_callable(
+                        implementation,
+                        &binding.package_callable_id,
+                        self.deployment_location(),
+                    )?
+                };
                 let function = indices.get(&key).copied().ok_or_else(|| {
                     unsatisfied(
                         BytecodeLinkObligation::CanonicalRootSet,
@@ -228,11 +258,6 @@ impl DeploymentLinker<'_> {
                         )
                     })?,
                     self.deployment_location(),
-                )?;
-                let receiver = self.operation_receiver(
-                    implementation,
-                    &binding.package_callable_id,
-                    constant_tables,
                 )?;
                 Ok(match receiver {
                     Some(receiver) => LinkedOperationEntry::new_with_receiver(
@@ -390,6 +415,9 @@ impl DeploymentLinker<'_> {
         {
             return Ok(None);
         }
+        let operation_function = implementation
+            .function_key_for_callable(callable_id)
+            .map(str::to_owned);
         let mut public_instances = implementation
             .artifact()
             .package_local_abi
@@ -397,7 +425,11 @@ impl DeploymentLinker<'_> {
             .iter()
             .filter_map(|(public_path, symbol)| match symbol {
                 PackageLocalAbiSymbol::PublicInstance { methods, .. }
-                    if methods.values().any(|candidate| candidate == callable_id) =>
+                    if operation_function.as_deref().is_some_and(|function| {
+                        methods.values().any(|candidate| {
+                            implementation.function_key_for_callable(candidate) == Some(function)
+                        })
+                    }) =>
                 {
                     Some(public_path)
                 }

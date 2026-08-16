@@ -5,16 +5,17 @@ use skiff_artifact_model::{
     BoundaryEffectGuarantee, BoundaryErrorAdmission, BoundaryErrorFallbackIdentity,
     BoundaryErrorPlan, BoundaryErrorPolicy, BoundaryOperationContract, BoundaryOperationDescriptor,
     BoundaryParameter, BoundaryReturn, BoundaryStreamContract, BoundaryTransfer,
-    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-    BoundaryValuePlan, CallableEffectSummary, CallableMayEffects, ContractDiagnosticText,
-    ContractOperationId, ContractRequirement, ContractTypeDescriptor, ContractTypeRef,
-    DeploymentArtifactIdentity, DeploymentDiagnosticText, DeploymentOperationBinding,
-    DeploymentRevision, PackageArtifact, PackageArtifactRef, PackageBinding, PackageCallableId,
-    PackageSchemaCanonicalDescriptor, PackageSchemaTypeRecord, PendingEffectCategory,
-    ServiceBoundaryPlan, ServiceCallRef, ServiceCallbackPlan, ServiceContract, ServiceContractRef,
-    ServiceDeployment, ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey,
-    ServiceSelectorBinding, ValueProvenance, SERVICE_CONTRACT_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueFact, BoundaryValueLifetime,
+    BoundaryValueOwner, BoundaryValuePlan, CallableEffectSummary, CallableMayEffects,
+    ContractDiagnosticText, ContractOperationId, ContractPublicInstance,
+    ContractPublicInstanceInterface, ContractPublicInstanceMethod, ContractRequirement,
+    ContractTypeDescriptor, ContractTypeRef, DeploymentArtifactIdentity, DeploymentDiagnosticText,
+    DeploymentOperationBinding, DeploymentRevision, InterfaceInstantiationRef, PackageArtifact,
+    PackageArtifactRef, PackageBinding, PackageCallableId, PackageSchemaCanonicalDescriptor,
+    PackageSchemaTypeRecord, PendingEffectCategory, ServiceBoundaryPlan, ServiceCallRef,
+    ServiceCallbackPlan, ServiceContract, ServiceContractRef, ServiceDeployment,
+    ServiceProtocolIdentity, ServiceRequirement, ServiceRequirementKey, ServiceSelectorBinding,
+    ValueProvenance, SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
 use super::RootProgram;
@@ -51,6 +52,44 @@ pub(super) fn contract(
             types: BTreeMap::new(),
         },
     };
+    skiff_artifact_identity::assign_service_contract_identities(&mut contract).unwrap();
+    let reference = skiff_artifact_identity::service_contract_ref(&contract).unwrap();
+    (Arc::new(contract), reference, operation)
+}
+
+pub(super) fn remote_contract(
+    service_id: &str,
+    stable_key: &str,
+) -> (
+    Arc<ServiceContract>,
+    ServiceContractRef,
+    ContractOperationId,
+) {
+    let (contract, _, operation) = contract(service_id, stable_key, true);
+    let mut contract = contract.as_ref().clone();
+    let descriptor = contract.operations.get_mut(&operation).unwrap();
+    descriptor.contract.return_value = BoundaryReturn {
+        ty: ContractTypeRef::builtin("string"),
+        value_plan: value_plan(BoundaryValueOwner::Provider),
+    };
+    let interface = InterfaceInstantiationRef {
+        interface_abi_id: super::artifact::interface_identity(),
+        canonical_type_args: Vec::new(),
+    };
+    contract.public_instances.insert(
+        "reader".to_string(),
+        ContractPublicInstance {
+            interfaces: vec![ContractPublicInstanceInterface {
+                interface: interface.clone(),
+                methods: vec![ContractPublicInstanceMethod {
+                    method_abi_id: skiff_artifact_identity::canonical_interface_method_abi_id(
+                        &interface, "read",
+                    ),
+                    contract_operation_id: operation.clone(),
+                }],
+            }],
+        },
+    );
     skiff_artifact_identity::assign_service_contract_identities(&mut contract).unwrap();
     let reference = skiff_artifact_identity::service_contract_ref(&contract).unwrap();
     (Arc::new(contract), reference, operation)
@@ -174,6 +213,53 @@ pub(super) fn service_boundary_plan() -> ServiceBoundaryPlan {
     ServiceBoundaryPlan {
         arguments: Vec::new(),
         results: Vec::new(),
+        error: BoundaryErrorPlan {
+            fallback_contract_type: std_service_internal_error(),
+            fallback: BoundaryValuePlan::Linkable {
+                carrier: BoundaryValueCarrier::DetachedValueGraph,
+                encoding: BoundaryValueEncoding::CanonicalValue,
+                owner: BoundaryValueOwner::Caller,
+                lifetime: BoundaryValueLifetime::Call,
+            },
+            policy: BoundaryErrorPolicy::DynamicPublicSchema {
+                admission: BoundaryErrorAdmission::PublicNameableSchemaClosed,
+                fallback_identity: BoundaryErrorFallbackIdentity::StdServiceInternalError,
+            },
+            transfer: BoundaryTransfer::Move,
+            drop: BoundaryDropPlan::SnapshotRelease,
+            source: ValueProvenance::Fresh,
+        },
+        stream_item: None,
+        callbacks: ServiceCallbackPlan::None,
+        effects: CallableEffectSummary::Analyzed {
+            effects: CallableMayEffects {
+                escapes_caller_value: false,
+                requires_same_heap_identity: false,
+                invokes_unknown_target: false,
+                may_pending: true,
+                pending_effect_categories: vec![PendingEffectCategory::ServiceCall],
+                inout_path_effects: Vec::new(),
+            },
+        },
+    }
+}
+
+pub(super) fn remote_service_boundary_plan() -> ServiceBoundaryPlan {
+    ServiceBoundaryPlan {
+        arguments: vec![BoundaryValueFact {
+            contract_type: ContractTypeRef::builtin("string"),
+            value_plan: value_plan(BoundaryValueOwner::Caller),
+            transfer: BoundaryTransfer::Copy,
+            drop: BoundaryDropPlan::SnapshotRelease,
+            source: ValueProvenance::CallerParameter { index: 0 },
+        }],
+        results: vec![BoundaryValueFact {
+            contract_type: ContractTypeRef::builtin("string"),
+            value_plan: value_plan(BoundaryValueOwner::Provider),
+            transfer: BoundaryTransfer::Move,
+            drop: BoundaryDropPlan::SnapshotRelease,
+            source: ValueProvenance::Fresh,
+        }],
         error: BoundaryErrorPlan {
             fallback_contract_type: std_service_internal_error(),
             fallback: BoundaryValuePlan::Linkable {

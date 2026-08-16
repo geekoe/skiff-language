@@ -121,6 +121,16 @@ impl DeploymentLinker<'_> {
         let mut targets = Vec::new();
         let mut seen = BTreeSet::new();
         for reference in reachable {
+            if let BytecodeRelocation::RemoteInterfaceRef { interface } = &reference.relocation {
+                self.link_remote_interface_service_operations(
+                    reference,
+                    interface,
+                    type_linker,
+                    &mut targets,
+                )?;
+            }
+        }
+        for reference in reachable {
             let BytecodeRelocation::ServiceOperationRef { service_call } = &reference.relocation
             else {
                 continue;
@@ -216,16 +226,151 @@ impl DeploymentLinker<'_> {
                     "service operation table exceeds u32::MAX".to_string(),
                 )
             })?;
-            targets.push(LinkedServiceOperationTarget::new(
+            let target = LinkedServiceOperationTarget::new(
                 ServiceOperationIndex::new(index),
-                key,
+                key.clone(),
                 service_call.contract_operation_id.clone(),
                 service_call.expected_protocol_identity.clone(),
                 signature,
                 linked_plan,
-            ));
+            );
+            if let Some(existing) = targets.iter().find(|existing| {
+                existing.service_requirement_key() == &key
+                    && existing.contract_operation_id() == &service_call.contract_operation_id
+                    && existing.expected_protocol_identity()
+                        == &service_call.expected_protocol_identity
+            }) {
+                if !linked_service_operation_facts_match(existing, &target) {
+                    return Err(unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        location,
+                        "duplicate service operation facts drift".to_string(),
+                    ));
+                }
+                continue;
+            }
+            targets.push(target);
         }
         Ok(targets)
+    }
+
+    fn link_remote_interface_service_operations(
+        &self,
+        reference: &ReachableRelocation,
+        interface: &skiff_artifact_model::bytecode::dto::RemoteInterfaceRef,
+        type_linker: &mut TypeLinker<'_>,
+        targets: &mut Vec<LinkedServiceOperationTarget>,
+    ) -> Result<(), BytecodeLinkError> {
+        let caller_package_build_id = reference.specialization.package_build_id().clone();
+        let key = ServiceRequirementKey {
+            caller_package_build_id,
+            service_requirement_slot: interface.service_requirement_slot,
+        };
+        let location = self.reachable_relocation_location(reference);
+        let dependency = self
+            .deployment
+            .service_dependencies()
+            .get(&key)
+            .ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    "compiler-emitted remote interface has no hydrated dependency slot".to_string(),
+                )
+            })?;
+        if dependency.contract().service_protocol_identity != interface.callee_protocol_identity {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                "remote interface protocol drifts from the hydrated contract".to_string(),
+            ));
+        }
+        let contract = self
+            .deployment
+            .contract_store()
+            .get(dependency.contract())
+            .ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    "hydrated remote interface contract is absent".to_string(),
+                )
+            })?;
+        let caller_package = self
+            .deployment
+            .packages()
+            .get(reference.specialization.package_build_id())
+            .ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::ExactPackageClosure,
+                    location.clone(),
+                    "remote interface caller package is absent from the closure".to_string(),
+                )
+            })?;
+        for method in &interface.methods {
+            if !dependency
+                .used_operations()
+                .contains(&method.contract_operation_id)
+            {
+                return Err(unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    "remote interface operation is absent from the dependency slot".to_string(),
+                ));
+            }
+            let operation = contract
+                .operations
+                .get(&method.contract_operation_id)
+                .ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        location.clone(),
+                        "remote interface operation is absent from the hydrated contract"
+                            .to_string(),
+                    )
+                })?;
+            let plan = &method.boundary_plan;
+            validate_service_plan_against_contract(plan, &operation.contract, &location)?;
+            let linked_plan = self.link_service_boundary_plan(
+                plan,
+                caller_package,
+                &reference.specialization,
+                type_linker,
+                location.clone(),
+            )?;
+            let signature = link_service_signature(plan, &linked_plan, type_linker, &location)?;
+            let index = u32::try_from(targets.len()).map_err(|_| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    "remote service operation table exceeds u32::MAX".to_string(),
+                )
+            })?;
+            let target = LinkedServiceOperationTarget::new(
+                ServiceOperationIndex::new(index),
+                key.clone(),
+                method.contract_operation_id.clone(),
+                interface.callee_protocol_identity.clone(),
+                signature,
+                linked_plan,
+            );
+            if let Some(existing) = targets.iter().find(|existing| {
+                existing.service_requirement_key() == &key
+                    && existing.contract_operation_id() == &method.contract_operation_id
+                    && existing.expected_protocol_identity() == &interface.callee_protocol_identity
+            }) {
+                if !linked_service_operation_facts_match(existing, &target) {
+                    return Err(unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        location.clone(),
+                        "duplicate remote service operation facts drift".to_string(),
+                    ));
+                }
+                continue;
+            }
+            targets.push(target);
+        }
+        Ok(())
     }
 
     fn link_service_boundary_plan(
@@ -814,6 +959,17 @@ fn remote_method_signature_matches_operation(
         && method.parameter_plans().get(1..) == Some(operation.parameter_plans())
         && method.result_plans() == operation.result_plans()
         && method.effect_summary() == operation.effect_summary()
+}
+
+fn linked_service_operation_facts_match(
+    left: &LinkedServiceOperationTarget,
+    right: &LinkedServiceOperationTarget,
+) -> bool {
+    left.service_requirement_key() == right.service_requirement_key()
+        && left.contract_operation_id() == right.contract_operation_id()
+        && left.expected_protocol_identity() == right.expected_protocol_identity()
+        && left.signature() == right.signature()
+        && left.boundary_plan() == right.boundary_plan()
 }
 
 fn replace_self_type(ty: &TypeRefIr, receiver: &TypeRefIr) -> TypeRefIr {
@@ -1765,10 +1921,17 @@ impl DeploymentLinker<'_> {
                                 .to_string(),
                         ));
                     }
-                    let linked_interface = self.link_interface_instantiation(
+                    let normalized_interface = self.normalize_remote_interface_instantiation(
                         package,
                         &reference.specialization,
                         &interface.interface,
+                        type_linker,
+                        location.clone(),
+                    )?;
+                    let linked_interface = self.link_interface_instantiation(
+                        package,
+                        &reference.specialization,
+                        &normalized_interface,
                         type_linker,
                         location.clone(),
                     )?;
@@ -1806,7 +1969,7 @@ impl DeploymentLinker<'_> {
                             package,
                             &reference.specialization,
                             &TypeRefIr::AnyInterface {
-                                interface: interface.interface.clone(),
+                                interface: normalized_interface.clone(),
                             },
                             &method.signature,
                             operation.signature().effect_summary(),
@@ -1866,7 +2029,7 @@ impl DeploymentLinker<'_> {
                         )
                     })?;
                     if let Some(existing) = tables.iter().find(|table| {
-                        table.interface().artifact() == &interface.interface
+                        table.interface().artifact() == &normalized_interface
                             && matches!(
                                 table.kind(),
                                 LinkedInterfaceTableKind::Remote(row)
@@ -1942,6 +2105,44 @@ impl DeploymentLinker<'_> {
                 )
             },
         )
+    }
+
+    pub(in crate::bytecode::link) fn normalize_remote_interface_instantiation(
+        &self,
+        package: &HydratedBytecodePackage,
+        specialization: &SpecializationKey,
+        interface: &InterfaceInstantiationRef,
+        type_linker: &mut TypeLinker<'_>,
+        location: BytecodeLinkLocation,
+    ) -> Result<InterfaceInstantiationRef, BytecodeLinkError> {
+        let carrier = TypeRefIr::AnyInterface {
+            interface: interface.clone(),
+        };
+        let carrier_index = type_linker.intern_concrete_type(
+            package,
+            specialization,
+            &carrier,
+            &BTreeMap::new(),
+            location.clone(),
+        )?;
+        let TypeRefIr::AnyInterface { interface } = type_linker
+            .linked_type_ref(carrier_index)
+            .cloned()
+            .ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                    location.clone(),
+                    "remote interface carrier type row is absent after interning".to_string(),
+                )
+            })?
+        else {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTypeAndShapeTables,
+                location,
+                "remote interface carrier type row is not AnyInterface".to_string(),
+            ));
+        };
+        Ok(interface)
     }
 
     fn key_for_local_interface_method(

@@ -120,6 +120,7 @@ fn artifact_with_remote_method(
                     contract_operation_id: crate::ContractOperationId::new(
                         "operation:limit:remote:read",
                     ),
+                    boundary_plan: service_boundary_plan(),
                 }],
                 callee_protocol_identity: crate::ServiceProtocolIdentity::new(
                     "protocol:limit:remote",

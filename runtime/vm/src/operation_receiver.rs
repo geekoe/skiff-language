@@ -5,7 +5,7 @@ use std::fmt;
 use skiff_artifact_model::{LiteralIr, TypeRefIr};
 use skiff_runtime_linked_bytecode::{
     ConstantIndex, FrozenConstantNodeIndex, LinkedConstantReference, LinkedFrozenConstantValue,
-    LinkedValueTransferPlan, TypeIndex,
+    LinkedTypeEntry, LinkedValueTransferPlan, TypeIndex,
 };
 use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_model::{
@@ -183,7 +183,15 @@ pub fn materialize_operation_receiver(
         .ok_or(OperationReceiverMaterializeError::MissingConstant {
             constant: constant.get(),
         })?;
-    if entry.ty() != destination_type {
+    let constant_type_ref = image
+        .types()
+        .get(entry.ty().get() as usize)
+        .map(LinkedTypeEntry::type_ref);
+    let destination_type_ref = image
+        .types()
+        .get(destination_type.get() as usize)
+        .map(LinkedTypeEntry::type_ref);
+    if constant_type_ref != destination_type_ref {
         return Err(OperationReceiverMaterializeError::ConstantTypeMismatch {
             constant: constant.get(),
             expected: destination_type.get(),
@@ -454,7 +462,15 @@ fn materialize_record(
         .ok_or(OperationReceiverMaterializeError::MissingShape {
             shape: shape_index.get(),
         })?;
-    if shape.nominal_type() != destination_type {
+    if image
+        .types()
+        .get(shape.nominal_type().get() as usize)
+        .map(LinkedTypeEntry::type_ref)
+        != image
+            .types()
+            .get(destination_type.get() as usize)
+            .map(LinkedTypeEntry::type_ref)
+    {
         return Err(OperationReceiverMaterializeError::ShapeTypeMismatch {
             shape: shape_index.get(),
             expected: destination_type.get(),

@@ -1237,6 +1237,14 @@ fn production_entry_links_local_interface_tables_from_exact_compiler_facts() {
         })
         .expect("interface requirement table exists");
 
+    assert!(
+        candidate
+            .interface_tables()
+            .iter()
+            .all(|table| !matches!(table.kind(), LinkedInterfaceTableKind::Remote(_))),
+        "local interface facts must not leak into a remote table"
+    );
+
     assert_eq!(local.1.methods().len(), 1);
     assert_eq!(requirement.1.methods().len(), 1);
     assert_eq!(
@@ -1266,6 +1274,69 @@ fn production_entry_links_local_interface_tables_from_exact_compiler_facts() {
     assert!(matches!(
         image.function_entry(FunctionIndex::new(u32::MAX)),
         Err(CodeEntryLookupError::FunctionNotFound { .. })
+    ));
+}
+
+#[test]
+fn production_entry_links_remote_interface_method_to_exact_service_operation() {
+    let fixture = Fixture::remote_interface();
+    let candidate = link_deployment(&fixture.hydrate(), &generous_limits()).unwrap();
+
+    let remote = candidate
+        .interface_tables()
+        .iter()
+        .find_map(|table| match table.kind() {
+            LinkedInterfaceTableKind::Remote(remote) => Some(remote),
+            _ => None,
+        })
+        .expect("remote interface fixture links a Remote method table");
+    assert!(
+        candidate.interface_tables().iter().all(|table| {
+            !matches!(
+                table.kind(),
+                LinkedInterfaceTableKind::Local(_)
+                    | LinkedInterfaceTableKind::Requirement(_)
+                    | LinkedInterfaceTableKind::Callback(_)
+            )
+        }),
+        "remote interface facts must not leak into local/requirement tables"
+    );
+    assert_eq!(remote.methods().len(), 1);
+    let operation_index = remote.methods()[0]
+        .service_operation()
+        .expect("remote method row must carry its exact service operation index");
+    let operation = candidate
+        .service_operations()
+        .get(operation_index.get() as usize)
+        .expect("remote method index resolves to a dense service operation row");
+    assert_eq!(
+        operation.service_requirement_key(),
+        remote.service_requirement_key()
+    );
+    assert_eq!(
+        operation.contract_operation_id(),
+        remote.methods()[0].contract_operation_id()
+    );
+    assert_eq!(
+        operation.expected_protocol_identity(),
+        remote.callee_protocol_identity()
+    );
+    assert_eq!(operation.boundary_plan().arguments().len(), 1);
+    assert_eq!(operation.boundary_plan().results().len(), 1);
+}
+
+#[test]
+fn production_entry_rejects_drifted_remote_interface_service_operation() {
+    let fixture = Fixture::remote_interface_drifted();
+    let hydrated = fixture.hydrate();
+
+    assert!(matches!(
+        link_deployment(&hydrated, &generous_limits()),
+        Err(BytecodeLinkError::UnsatisfiedObligation {
+            obligation: BytecodeLinkObligation::ConcreteTargetTables,
+            detail,
+            ..
+        }) if detail.contains("argument count")
     ));
 }
 
