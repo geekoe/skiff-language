@@ -151,6 +151,19 @@ Amendment r8（2026-08-15）：记录 J2 收敛时已合入的 ownership 调整�
 DB intrinsic child dispatch seam；D6R 拥有 in-memory serviceDb provider，并可为 exercise 它做 minimal
 host-harness wiring。两者是 implementation 中发现的必要跨 owner 写，现已在 MAP 中反映为正式 ownership。
 
+Amendment r9（2026-08-16）：记录 J3 收敛时发现的 actual ownership/seam adjustments，以下归属已正式反映到
+MAP：
+
+- K6 owns the linked DB intrinsic child dispatch seam in the request child mux（`runtime/request/src/bytecode_ingress.rs`、`bytecode_children/mod.rs`、`db_intrinsic.rs`）。
+- D6R owns the in-memory serviceDb harness provider and may do minimal host-harness wiring needed to exercise it。
+- A6 owns the Actor `std.actor.get` executor and the related compiler/lowering/emission/linker seams needed for exact Actor self/root facts。
+- C6 owns the VM callback carrier projection and host callback hooks/resolver seam。
+- I6R owns real remote interface source lowering and provider public-instance callable ABI facts；F6 owns remote provider public-instance admission/linking and composite frozen constant graph support。
+- T6A owns Actor-method task admission/fence/snapshot restoration；F6 owns linked task payload plans；K6 owns task dispatch timing；X6 owns task child submission and activation identity injection。
+- G6 owns containment fixtures, task harness TaskStore response, and any gate expected-count alignment。
+
+Amendment r8 与 §3.3 provisional write-set policy 保持原样。
+
 ### 3.3 写集是 provisional boundary，不是文件锁
 
 写集是派发时的最佳已知分解边界；dispatch-time reasoning 按设计不完整，因此实现中可能发现必要的小跨 owner
