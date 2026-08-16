@@ -15,21 +15,21 @@ use skiff_artifact_model::{
 
 use crate::{
     ActorCreateIndex, ActorMethodIndex, ArtifactCallbackCaptureIndex, ArtifactFunctionKey,
-    ArtifactFunctionKeyParseError, CallbackCaptureLayoutIndex, FrameSlotIndex, FunctionIndex,
-    HostEffectAdapterIndex, InterfaceTableIndex, IntrinsicIndex, LinkedActorCreateTarget,
-    LinkedActorImplementationRef, LinkedActorMethodTarget, LinkedArtifactPoolOrigin,
-    LinkedCallbackCapture, LinkedCallbackCaptureLayout, LinkedCallbackInterfaceMethod,
-    LinkedGatewayCallableRole, LinkedGatewayEntry, LinkedHostBindingKey,
-    LinkedHostEffectAdapterTarget, LinkedInterfaceInstantiation, LinkedInterfaceMethodAbiId,
-    LinkedInterfaceRequirementMethod, LinkedInterfaceRequirementTable, LinkedInterfaceTable,
-    LinkedInterfaceTableKind, LinkedIntrinsicCanonicalKey, LinkedIntrinsicKind,
-    LinkedIntrinsicTarget, LinkedPublicInstanceKey, LinkedRemoteInterfaceMethod,
-    LinkedRemoteInterfaceTable, LinkedResourceDropPlan, LinkedServiceBoundaryErrorPlan,
-    LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue, LinkedServiceCallbackPlan,
-    LinkedServiceOperationTarget, LinkedStaticIntrinsicTarget, LinkedSyntheticCallbackTarget,
-    LinkedTaskPayloadParameter, LinkedTaskPayloadPlan, LinkedTaskTarget, LinkedTaskTiming,
-    LinkedValueTransferPlan, ServiceOperationIndex, SpecializationKey, SyntheticCallbackIndex,
-    TaskTargetIndex, TypeIndex,
+    ArtifactFunctionKeyParseError, CallbackCaptureLayoutIndex, ConstantIndex, FrameSlotIndex,
+    FunctionIndex, HostEffectAdapterIndex, InterfaceTableIndex, IntrinsicIndex,
+    LinkedActorCreateTarget, LinkedActorImplementationRef, LinkedActorMethodTarget,
+    LinkedArtifactPoolOrigin, LinkedCallbackCapture, LinkedCallbackCaptureLayout,
+    LinkedCallbackInterfaceMethod, LinkedGatewayCallableRole, LinkedGatewayEntry,
+    LinkedHostBindingKey, LinkedHostEffectAdapterTarget, LinkedInterfaceInstantiation,
+    LinkedInterfaceMethodAbiId, LinkedInterfaceRequirementMethod, LinkedInterfaceRequirementTable,
+    LinkedInterfaceTable, LinkedInterfaceTableKind, LinkedIntrinsicCanonicalKey,
+    LinkedIntrinsicKind, LinkedIntrinsicTarget, LinkedOperationEntry, LinkedOperationReceiver,
+    LinkedPublicInstanceKey, LinkedRemoteInterfaceMethod, LinkedRemoteInterfaceTable,
+    LinkedResourceDropPlan, LinkedServiceBoundaryErrorPlan, LinkedServiceBoundaryPlan,
+    LinkedServiceBoundaryValue, LinkedServiceCallbackPlan, LinkedServiceOperationTarget,
+    LinkedStaticIntrinsicTarget, LinkedSyntheticCallbackTarget, LinkedTaskPayloadParameter,
+    LinkedTaskPayloadPlan, LinkedTaskTarget, LinkedTaskTiming, LinkedValueTransferPlan,
+    ServiceOperationIndex, SpecializationKey, SyntheticCallbackIndex, TaskTargetIndex, TypeIndex,
 };
 
 use super::fixtures::{
@@ -41,6 +41,28 @@ use super::fixtures::{
 fn image_indices_are_distinct_rust_types() {
     assert_ne!(TypeId::of::<FunctionIndex>(), TypeId::of::<TypeIndex>());
     assert_eq!(FunctionIndex::new(7).get(), TypeIndex::new(7).get());
+}
+
+#[test]
+fn operation_entry_receiver_retains_exact_const_and_call_abi() {
+    let operation = ContractOperationId::new("operation:provider.label");
+    let entry = LinkedOperationEntry::new_with_receiver(
+        operation.clone(),
+        FunctionIndex::new(3),
+        signature(),
+        LinkedOperationReceiver::new(ConstantIndex::new(7), ReceiverCallAbi::ExplicitSelfFirst),
+    );
+
+    assert_eq!(entry.contract_operation_id(), &operation);
+    assert_eq!(entry.function(), FunctionIndex::new(3));
+    let receiver = entry
+        .receiver()
+        .expect("provider entry retains its receiver");
+    assert_eq!(receiver.constant(), ConstantIndex::new(7));
+    assert_eq!(
+        receiver.receiver_call_abi(),
+        ReceiverCallAbi::ExplicitSelfFirst
+    );
 }
 
 #[test]

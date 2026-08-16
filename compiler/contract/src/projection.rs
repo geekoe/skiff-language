@@ -5,7 +5,7 @@ use skiff_artifact_model::{
     BoundaryCallableProjection, BoundaryCallbackContract, BoundaryStreamContract,
     BoundaryUnavailableReason, ContractTypeDescriptor, ContractTypeRef, PackageArtifact,
     PackageCallableId, PackageLocalAbiSymbol, PackageSchemaTypeId, PackageSchemaTypeRecord,
-    PackageTypeRequirement, ServiceContract,
+    PackageTypeRequirement, ServiceContract, TypeRefIr,
 };
 
 use crate::{
@@ -109,6 +109,12 @@ fn project_service_api_with_facts(
     let mut operations = BTreeMap::new();
     let mut operation_text = BTreeMap::new();
     let mut roots = Vec::new();
+    collect_public_instance_interface_refs(
+        &public_instances,
+        records,
+        package.package_id.as_str(),
+        &mut roots,
+    );
     for (public_path, callable_id) in selected_operations {
         let projection = package
             .boundary_projections
@@ -176,6 +182,45 @@ fn project_service_api_with_facts(
         available,
         unavailable,
     })
+}
+
+fn collect_public_instance_interface_refs(
+    public_instances: &ProjectedPublicInstances,
+    records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    package_id: &str,
+    out: &mut Vec<(String, String, PackageSchemaTypeId)>,
+) {
+    for interface in public_instances.interfaces() {
+        if let Some((package_id, stable_key, type_id)) = public_interface_schema_root(
+            records,
+            package_id,
+            &interface.interface().interface_abi_id,
+        ) {
+            out.push((package_id, stable_key, type_id));
+        }
+    }
+}
+
+fn public_interface_schema_root(
+    records: &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
+    package_id: &str,
+    interface_abi_id: &str,
+) -> Option<(String, String, PackageSchemaTypeId)> {
+    let declaration = serde_json::from_str::<TypeRefIr>(interface_abi_id).ok()?;
+    let symbol = match declaration {
+        TypeRefIr::ServiceSymbol { symbol } => symbol,
+        _ => return None,
+    };
+    records
+        .values()
+        .find(|record| record.package_id == package_id && record.stable_schema_key == symbol.symbol)
+        .map(|record| {
+            (
+                record.package_id.clone(),
+                record.stable_schema_key.clone(),
+                record.package_schema_type_id.clone(),
+            )
+        })
 }
 
 fn transitive_closure(

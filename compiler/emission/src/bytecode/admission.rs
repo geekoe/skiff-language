@@ -114,11 +114,19 @@ pub(crate) struct LocalInterfaceTableFact {
 #[derive(Debug, Clone)]
 pub(crate) struct LocalInterfaceFacts {
     tables: Vec<LocalInterfaceTableFact>,
+    provider_receiver_constants: BTreeMap<(String, String), TypeRefIr>,
+    provider_conformances: Vec<(String, TypeRefIr, InterfaceInstantiationRef)>,
+    provider_method_functions: BTreeMap<String, BTreeSet<u32>>,
 }
 
 impl LocalInterfaceFacts {
     pub(crate) fn empty() -> Self {
-        Self { tables: Vec::new() }
+        Self {
+            tables: Vec::new(),
+            provider_receiver_constants: BTreeMap::new(),
+            provider_conformances: Vec::new(),
+            provider_method_functions: BTreeMap::new(),
+        }
     }
 
     pub(crate) fn tables(&self) -> &[LocalInterfaceTableFact] {
@@ -147,6 +155,112 @@ impl LocalInterfaceFacts {
 
     pub(crate) fn concrete_type(&self, ty: &TypeRefIr) -> bool {
         self.tables.iter().any(|table| table.concrete_type == *ty)
+    }
+
+    pub(crate) fn provider_receiver_constant(
+        &self,
+        module_path: &str,
+        constant: &skiff_compiler_lowering::mir::MirConst,
+    ) -> bool {
+        self.provider_receiver_constants
+            .get(&(module_path.to_string(), constant.symbol.clone()))
+            .is_some_and(|ty| ty == &constant.ty)
+    }
+
+    pub(crate) fn provider_conformance(
+        &self,
+        unit: &MirUnit,
+        ty: &TypeRefIr,
+        interface: &InterfaceInstantiationRef,
+    ) -> bool {
+        self.provider_conformances.iter().any(|row| {
+            row.0 == unit.module_path
+                && &row.1 == ty
+                && local_interface_declaration_identity(unit, &row.2)
+                    == local_interface_declaration_identity(unit, interface)
+        })
+    }
+
+    pub(crate) fn provider_method_for_executable(
+        &self,
+        module_path: &str,
+        executable_index: u32,
+    ) -> bool {
+        self.provider_method_functions
+            .get(module_path)
+            .is_some_and(|functions| functions.contains(&executable_index))
+    }
+
+    pub(crate) fn add_provider_public_instances(
+        &mut self,
+        facts: &ProviderPublicInstanceFacts,
+    ) -> Result<(), BytecodeEmissionError> {
+        let mut receiver_constants = BTreeMap::new();
+        let mut conformances = Vec::new();
+        let mut method_functions = BTreeMap::<String, BTreeSet<u32>>::new();
+        for root in &facts.roots {
+            if root.const_module.is_empty() || root.const_symbol.is_empty() {
+                return Err(BytecodeEmissionError::UnsupportedConstruct {
+                    function_key: String::new(),
+                    construct: "provider public-instance facts",
+                    location: format!(
+                        " public instance `{}` has an empty receiver constant identity",
+                        root.public_root
+                    ),
+                });
+            }
+            let receiver_key = (
+                root.const_module.clone(),
+                format!("{}.{}", root.const_module, root.const_symbol),
+            );
+            if receiver_constants
+                .insert(receiver_key.clone(), root.receiver_type.clone())
+                .is_some()
+            {
+                return Err(BytecodeEmissionError::UnsupportedConstruct {
+                    function_key: String::new(),
+                    construct: "provider public-instance facts",
+                    location: format!(
+                        " duplicate receiver constant `{}` for public instance `{}`",
+                        receiver_key.1, root.public_root
+                    ),
+                });
+            }
+            let mut seen_slots = Vec::new();
+            for interface in &root.interfaces {
+                for method in &interface.methods {
+                    if seen_slots
+                        .iter()
+                        .any(|seen: &(InterfaceInstantiationRef, u32)| {
+                            seen.0 == interface.interface && seen.1 == method.slot
+                        })
+                    {
+                        return Err(BytecodeEmissionError::UnsupportedConstruct {
+                            function_key: String::new(),
+                            construct: "provider public-instance facts",
+                            location: format!(
+                                " public instance `{}` repeats interface method slot {}",
+                                root.public_root, method.slot
+                            ),
+                        });
+                    }
+                    seen_slots.push((interface.interface.clone(), method.slot));
+                    method_functions
+                        .entry(root.const_module.clone())
+                        .or_default()
+                        .insert(method.executable_index);
+                }
+                conformances.push((
+                    root.const_module.clone(),
+                    root.receiver_type.clone(),
+                    interface.interface.clone(),
+                ));
+            }
+        }
+        self.provider_receiver_constants = receiver_constants;
+        self.provider_conformances = conformances;
+        self.provider_method_functions = method_functions;
+        Ok(())
     }
 
     fn method_for_call<'a>(
@@ -253,6 +367,166 @@ impl LocalInterfaceFacts {
             )
     }
 
+    pub(crate) fn remote_interface_receiver(
+        &self,
+        unit: &MirUnit,
+        function: &MirFunction,
+        receiver: ExprRefIr,
+    ) -> bool {
+        let Ok(expression) = function.expression(receiver) else {
+            return false;
+        };
+        if matches!(
+            &expression.expression,
+            ExprIr::InterfaceBox {
+                source: BoxSourceIr::Remote { .. },
+                ..
+            }
+        ) {
+            return true;
+        }
+        let ExprIr::LoadSlot { slot } = &expression.expression else {
+            return false;
+        };
+        for block in &function.blocks {
+            for statement in &block.statements {
+                let value = match &statement.kind {
+                    MirStmtKind::InitSlot {
+                        slot: candidate,
+                        value,
+                    } if candidate == slot => Some(*value),
+                    MirStmtKind::Assign {
+                        target: AssignTargetIr::Slot { slot: candidate },
+                        value,
+                        ..
+                    } if candidate == slot => Some(*value),
+                    _ => None,
+                };
+                let Some(value) = value else {
+                    continue;
+                };
+                if function.expression(value).is_ok_and(|value| {
+                    matches!(
+                        &value.expression,
+                        ExprIr::InterfaceBox {
+                            source: BoxSourceIr::Remote { .. },
+                            ..
+                        }
+                    )
+                }) {
+                    return true;
+                }
+            }
+        }
+        let _ = unit;
+        false
+    }
+
+    pub(crate) fn remote_interface_return_face(
+        &self,
+        unit: &MirUnit,
+        function: &MirFunction,
+        return_type: &TypeRefIr,
+    ) -> bool {
+        function.expressions.iter().any(|expression| {
+            expression.ty == *return_type
+                && matches!(
+                    &expression.expression,
+                    ExprIr::Call {
+                        call:
+                            CallIr {
+                                target: CallTargetIr::InterfaceMethod { .. },
+                                args,
+                                ..
+                            },
+                    } if args.first().is_some_and(|receiver| {
+                        self.remote_interface_receiver(unit, function, *receiver)
+                    })
+                )
+        })
+    }
+
+    pub(crate) fn remote_interface_facts_for_receiver<'a>(
+        &'a self,
+        unit: &MirUnit,
+        function: &'a MirFunction,
+        receiver: ExprRefIr,
+    ) -> Option<&'a skiff_compiler_lowering::mir::MirRemoteInterfaceFacts> {
+        let expression = function.expression(receiver).ok()?;
+        if let ExprIr::InterfaceBox {
+            source: BoxSourceIr::Remote { .. },
+            ..
+        } = &expression.expression
+        {
+            return expression.remote_interface.as_ref();
+        }
+        let ExprIr::LoadSlot { slot } = &expression.expression else {
+            return None;
+        };
+        for block in &function.blocks {
+            for statement in &block.statements {
+                let value = match &statement.kind {
+                    MirStmtKind::InitSlot {
+                        slot: candidate,
+                        value,
+                    } if candidate == slot => Some(*value),
+                    MirStmtKind::Assign {
+                        target: AssignTargetIr::Slot { slot: candidate },
+                        value,
+                        ..
+                    } if candidate == slot => Some(*value),
+                    _ => None,
+                };
+                let value = value?;
+                if let Ok(value) = function.expression(value) {
+                    if matches!(
+                        &value.expression,
+                        ExprIr::InterfaceBox {
+                            source: BoxSourceIr::Remote { .. },
+                            ..
+                        }
+                    ) {
+                        return value.remote_interface.as_ref();
+                    }
+                }
+            }
+        }
+        let _ = unit;
+        None
+    }
+
+    pub(crate) fn remote_interface_facts_for_call<'a>(
+        &'a self,
+        unit: &MirUnit,
+        function: &'a MirFunction,
+        interface: &InterfaceInstantiationRef,
+        slot: u32,
+    ) -> Option<&'a skiff_compiler_lowering::mir::MirRemoteInterfaceFacts> {
+        let mut matches = function
+            .expressions
+            .iter()
+            .filter(|expression| {
+                let ExprIr::InterfaceBox {
+                    source: BoxSourceIr::Remote { .. },
+                    ..
+                } = &expression.expression
+                else {
+                    return false;
+                };
+                expression.remote_interface.as_ref().is_some_and(|facts| {
+                    &facts.interface == interface
+                        && facts.methods.iter().any(|method| method.slot == slot)
+                })
+            })
+            .filter_map(|expression| expression.remote_interface.as_ref());
+        let first = matches.next()?;
+        if matches.next().is_some() {
+            let _ = unit;
+            return None;
+        }
+        Some(first)
+    }
+
     fn tables_for_interface(
         &self,
         interface: &InterfaceInstantiationRef,
@@ -262,6 +536,46 @@ impl LocalInterfaceFacts {
             .filter(move |table| &table.interface == interface)
             .collect()
     }
+}
+
+/// Exact provider public-instance facts consumed by Phase 1 admission.
+///
+/// These facts are assembled from source-owned public-instance API bindings,
+/// interface operation rows and validated local conformances. They permit a
+/// provider const receiver and its selected interface methods to enter the
+/// bytecode image without inventing a local interface table or widening the
+/// generic constant/receiver admission surface.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ProviderPublicInstanceFacts {
+    pub roots: Vec<ProviderPublicInstanceRoot>,
+}
+
+impl ProviderPublicInstanceFacts {
+    pub fn empty() -> Self {
+        Self::default()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderPublicInstanceRoot {
+    pub public_root: String,
+    pub const_module: String,
+    pub const_symbol: String,
+    pub receiver_type: TypeRefIr,
+    pub interfaces: Vec<ProviderPublicInstanceInterface>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderPublicInstanceInterface {
+    pub interface: InterfaceInstantiationRef,
+    pub methods: Vec<ProviderPublicInstanceMethod>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderPublicInstanceMethod {
+    pub slot: u32,
+    pub method_abi_id: String,
+    pub executable_index: u32,
 }
 
 /// One exact actor declaration row retained by Phase 1 admission.
@@ -734,7 +1048,12 @@ pub(crate) fn collect_local_interface_tables(
             }
         }
     }
-    Ok(LocalInterfaceFacts { tables })
+    Ok(LocalInterfaceFacts {
+        tables,
+        provider_receiver_constants: BTreeMap::new(),
+        provider_conformances: Vec::new(),
+        provider_method_functions: BTreeMap::new(),
+    })
 }
 
 pub(crate) fn resolve_local_interface_table_for_call<'a>(
@@ -928,6 +1247,22 @@ pub fn admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_
     server_stream_authorities: &[ServerStreamGatewayAuthority],
     service_boundary_plans: &BTreeMap<ServiceCallRef, ServiceBoundaryPlan>,
 ) -> Result<AdmittedPhase1BytecodeMir, BytecodeEmissionError> {
+    admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_plans_and_provider_public_instances(
+        units,
+        gateway_parameter_authorities,
+        server_stream_authorities,
+        service_boundary_plans,
+        &ProviderPublicInstanceFacts::empty(),
+    )
+}
+
+pub fn admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_plans_and_provider_public_instances(
+    units: &[MirUnit],
+    gateway_parameter_authorities: &[GatewayParameterAuthority],
+    server_stream_authorities: &[ServerStreamGatewayAuthority],
+    service_boundary_plans: &BTreeMap<ServiceCallRef, ServiceBoundaryPlan>,
+    provider_public_instances: &ProviderPublicInstanceFacts,
+) -> Result<AdmittedPhase1BytecodeMir, BytecodeEmissionError> {
     let units =
         package_type_authority::normalize_package_type_authorities(units).map_err(|error| {
             rejected(
@@ -959,7 +1294,8 @@ pub fn admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_
         },
     )?;
     validate_service_boundary_plan_coverage(&units, service_boundary_plans)?;
-    let local_interface_tables = collect_local_interface_tables(&units)?;
+    let mut local_interface_tables = collect_local_interface_tables(&units)?;
+    local_interface_tables.add_provider_public_instances(provider_public_instances)?;
     let local_interface_method_functions = local_interface_tables
         .tables()
         .iter()
@@ -969,12 +1305,17 @@ pub fn admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_
     let actor_facts = collect_actor_facts(&units)?;
     for unit in &units {
         unit.validate_executable_indices()?;
-        if !unit.constants.is_empty() {
+        if let Some(constant) = unit.constants.iter().find(|constant| {
+            !local_interface_tables.provider_receiver_constant(&unit.module_path, constant)
+        }) {
             return Err(rejected(
                 unit,
                 None,
                 Phase1UnsupportedCapability::Constant,
-                "compile-time constant table",
+                &format!(
+                    "compile-time constant table constant `{}` outside an exact provider public-instance receiver",
+                    constant.symbol
+                ),
             ));
         }
         for declaration in &unit.type_table {
@@ -1001,6 +1342,11 @@ pub fn admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_
                 if local_interface_tables
                     .tables_for_interface(interface)
                     .is_empty()
+                    && !local_interface_tables.provider_conformance(
+                        unit,
+                        &receiver_type_for_declaration(unit, declaration),
+                        interface,
+                    )
                 {
                     return Err(rejected(
                         unit,
@@ -1049,6 +1395,65 @@ pub fn admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_
         service_boundary_plans: service_boundary_plans.clone(),
         local_interface_tables,
     })
+}
+
+fn receiver_type_for_declaration(
+    unit: &MirUnit,
+    declaration: &skiff_artifact_model::TypeDeclIr,
+) -> TypeRefIr {
+    unit.type_table
+        .iter()
+        .position(|candidate| candidate.name == declaration.name)
+        .and_then(|index| u32::try_from(index).ok())
+        .map_or_else(
+            || TypeRefIr::ServiceSymbol {
+                symbol: ServiceSymbolRef {
+                    module_path: unit.module_path.clone(),
+                    symbol: declaration.name.clone(),
+                },
+            },
+            |type_index| TypeRefIr::LocalType { type_index },
+        )
+}
+
+fn local_interface_declaration_identity(
+    unit: &MirUnit,
+    interface: &InterfaceInstantiationRef,
+) -> Option<(TypeRefIr, Vec<TypeRefIr>)> {
+    let declaration = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id).ok()?;
+    let declaration = match declaration {
+        TypeRefIr::ServiceSymbol { symbol } => unit
+            .type_table
+            .iter()
+            .find(|candidate| candidate.name == symbol.symbol)
+            .map(|_| TypeRefIr::ServiceSymbol {
+                symbol: symbol.clone(),
+            })
+            .or(Some(TypeRefIr::ServiceSymbol { symbol }))?,
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => {
+            let name = unit.type_table.get(type_index as usize)?.name.clone();
+            TypeRefIr::ServiceSymbol {
+                symbol: ServiceSymbolRef {
+                    module_path,
+                    symbol: name,
+                },
+            }
+        }
+        TypeRefIr::LocalType { type_index } => {
+            let name = unit.type_table.get(type_index as usize)?.name.clone();
+            TypeRefIr::ServiceSymbol {
+                symbol: ServiceSymbolRef {
+                    module_path: unit.module_path.clone(),
+                    symbol: name,
+                },
+            }
+        }
+        other => other,
+    };
+    Some((declaration, interface.canonical_type_args.clone()))
 }
 
 fn validate_service_boundary_plan_coverage(
@@ -1109,7 +1514,9 @@ fn admit_function(
     let interface_impl = local_interface_method_functions.contains(&function.executable_index);
     let actor_method = actor_facts.actor_for_method(function.executable_index);
     let actor_impl = actor_method.is_some();
-    let exact_actor_face = interface_impl || actor_impl;
+    let provider_impl = local_interface_tables
+        .provider_method_for_executable(&unit.module_path, function.executable_index);
+    let exact_actor_face = interface_impl || actor_impl || provider_impl;
     if interface_impl && actor_impl {
         return Err(rejected_function(
             unit,
@@ -1120,7 +1527,7 @@ fn admit_function(
     }
     match function.kind {
         MirExecutableKind::Function => {}
-        MirExecutableKind::ImplMethod if interface_impl || actor_impl => {}
+        MirExecutableKind::ImplMethod if interface_impl || actor_impl || provider_impl => {}
         MirExecutableKind::ImplMethod => {
             return Err(rejected_function(
                 unit,
@@ -1130,7 +1537,7 @@ fn admit_function(
             ));
         }
     }
-    if interface_impl || actor_impl {
+    if interface_impl || actor_impl || provider_impl {
         let Some(receiver) = function.receiver.as_ref() else {
             return Err(rejected_function(
                 unit,
@@ -1248,7 +1655,13 @@ fn admit_function(
             ));
         }
     } else if !server_stream.admits_closure_carrier(&function.return_type) {
-        if exact_actor_face {
+        if exact_actor_face
+            || local_interface_tables.remote_interface_return_face(
+                unit,
+                function,
+                &function.return_type,
+            )
+        {
             admit_type_with_exact_local_interface_face(
                 units,
                 unit,
@@ -1411,6 +1824,7 @@ fn admit_function(
             &server_stream,
             local_interface_tables,
             actor_facts,
+            provider_impl,
         )?;
     }
     for block in &function.blocks {
@@ -2085,6 +2499,7 @@ fn admit_expression(
         &ServerStreamAdmissions::default(),
         &LocalInterfaceFacts::empty(),
         &ActorFacts::default(),
+        false,
     )
 }
 
@@ -2099,11 +2514,13 @@ fn admit_expression_with_host_effects(
     server_stream: &ServerStreamAdmissions,
     local_interface_tables: &LocalInterfaceFacts,
     actor_facts: &ActorFacts,
+    provider_impl: bool,
 ) -> Result<(), BytecodeEmissionError> {
     let registry_authorities = host_effects.expression_authorities(expression.index);
-    let local_interface_exact_face = local_interface_tables
+    let mut local_interface_exact_face = local_interface_tables
         .method_for_executable(function.executable_index)
         .is_some()
+        || provider_impl
         || actor_facts
             .actor_for_method(function.executable_index)
             .is_some()
@@ -2124,6 +2541,13 @@ fn admit_expression_with_host_effects(
                 if local_interface_tables.concrete_type(type_ref)
         );
     if let ExprIr::Call { call } = &expression.expression {
+        if matches!(call.target, CallTargetIr::InterfaceMethod { .. })
+            && call.args.first().is_some_and(|receiver| {
+                local_interface_tables.remote_interface_receiver(unit, function, *receiver)
+            })
+        {
+            local_interface_exact_face = true;
+        }
         admit_call(
             unit,
             function_key,
@@ -2212,13 +2636,50 @@ fn admit_expression_with_host_effects(
             ));
         }
     }
-    if expression.remote_interface.is_some() {
-        return Err(rejected_function(
-            unit,
-            function_key,
-            Phase1UnsupportedCapability::Interface,
-            &format!("expression {} remote interface facts", expression.index),
-        ));
+    if let Some(facts) = &expression.remote_interface {
+        let ExprIr::InterfaceBox {
+            interface,
+            source:
+                BoxSourceIr::Remote {
+                    public_instance_key,
+                    operations,
+                    callee_protocol_identity,
+                    ..
+                },
+            ..
+        } = &expression.expression
+        else {
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::Interface,
+                &format!("expression {} remote interface facts", expression.index),
+            ));
+        };
+        let exact = facts.interface == *interface
+            && facts.public_instance_key == *public_instance_key
+            && facts.callee_protocol_identity.as_str() == callee_protocol_identity.as_str()
+            && facts.methods.len() == operations.slots.len()
+            && facts
+                .methods
+                .iter()
+                .zip(&operations.slots)
+                .all(|(fact, slot)| {
+                    fact.slot == slot.slot
+                        && fact.method_abi_id == slot.method_abi_id
+                        && fact.contract_operation_id.as_str() == slot.operation_abi_id
+                });
+        if !exact {
+            return Err(rejected_function(
+                unit,
+                function_key,
+                Phase1UnsupportedCapability::Interface,
+                &format!(
+                    "expression {} remote interface facts drift",
+                    expression.index
+                ),
+            ));
+        }
     }
     let capability = match &expression.expression {
         ExprIr::Literal { value } => match value {
@@ -2291,6 +2752,28 @@ fn admit_expression_with_host_effects(
         }
         ExprIr::InterfaceBox {
             interface,
+            source: BoxSourceIr::Remote { .. },
+            ..
+        } => {
+            if expression.ty
+                != (TypeRefIr::AnyInterface {
+                    interface: interface.clone(),
+                })
+            {
+                return Err(rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::Interface,
+                    &format!(
+                        "expression {} remote interface box type {:?} diverges from interface {interface:?}",
+                        expression.index, expression.ty
+                    ),
+                ));
+            }
+            None
+        }
+        ExprIr::InterfaceBox {
+            interface,
             source:
                 BoxSourceIr::Local {
                     concrete_type,
@@ -2329,7 +2812,6 @@ fn admit_expression_with_host_effects(
             }
             None
         }
-        ExprIr::InterfaceBox { .. } => Some(Phase1UnsupportedCapability::Interface),
         ExprIr::Throw { payload_type, .. } => {
             admit_throw_payload_type(
                 units,
@@ -2722,10 +3204,30 @@ fn admit_call(
             ));
         }
         CallTargetIr::InterfaceMethod {
-            interface: _,
+            interface,
             method_abi_id,
             slot,
         } => {
+            if let Some(remote) = local_interface_tables
+                .remote_interface_facts_for_call(unit, function, interface, *slot)
+            {
+                if remote
+                    .methods
+                    .iter()
+                    .any(|method| method.slot == *slot && &method.method_abi_id == method_abi_id)
+                {
+                    return Ok(());
+                }
+                return Err(rejected_function(
+                    unit,
+                    function_key,
+                    Phase1UnsupportedCapability::Interface,
+                    &format!(
+                        "expression {} remote interface call slot {slot} ABI {method_abi_id:?} is absent from exact remote table",
+                        expression.index
+                    ),
+                ));
+            }
             let table = resolve_local_interface_table_for_call(
                 unit,
                 function,

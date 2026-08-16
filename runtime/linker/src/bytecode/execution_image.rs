@@ -15,9 +15,9 @@ use skiff_runtime_linked_bytecode::{
     InstructionIndex, LinkedActorCreateTarget, LinkedActorMethodTarget, LinkedBytecodeCandidate,
     LinkedCallableSignature, LinkedCallbackCaptureLayout, LinkedConstantEntry, LinkedConstantRoot,
     LinkedExactLocalTarget, LinkedFrozenConstantNode, LinkedInterfaceTable, LinkedIntrinsicTarget,
-    LinkedPackageBytecodeProvenance, LinkedRepresentationCarrier, LinkedServiceOperationTarget,
-    LinkedShapeEntry, LinkedSyntheticCallbackTarget, LinkedTypeEntry, LinkedWritablePathEntry,
-    ResumeSiteIndex, ShapeIndex, TypeIndex,
+    LinkedOperationReceiver, LinkedPackageBytecodeProvenance, LinkedRepresentationCarrier,
+    LinkedServiceOperationTarget, LinkedShapeEntry, LinkedSyntheticCallbackTarget, LinkedTypeEntry,
+    LinkedWritablePathEntry, ResumeSiteIndex, ShapeIndex, TypeIndex,
 };
 use skiff_runtime_loader::HydratedDeploymentBytecode;
 use skiff_runtime_model::vm_value::CompactTypeTag;
@@ -57,6 +57,7 @@ pub struct DeploymentExecutionImage {
 struct CallableEntryFacts {
     function: FunctionIndex,
     signature: LinkedCallableSignature,
+    receiver: Option<LinkedOperationReceiver>,
 }
 
 #[derive(Debug)]
@@ -275,6 +276,7 @@ impl DeploymentExecutionImage {
             function: entry.function,
             signature: entry.signature.clone(),
             parameter_dense_record_shape: None,
+            receiver: entry.receiver.clone(),
         })
     }
 
@@ -292,6 +294,7 @@ impl DeploymentExecutionImage {
             function: entry.function,
             signature: entry.signature.clone(),
             parameter_dense_record_shape: None,
+            receiver: None,
         })
     }
 
@@ -336,6 +339,7 @@ impl DeploymentExecutionImage {
             function: entry.function,
             signature: entry.signature.clone(),
             parameter_dense_record_shape: entry.parameter_dense_record_shape,
+            receiver: None,
         })
     }
 }
@@ -367,6 +371,7 @@ pub struct DeploymentExecutionEntry {
     function: FunctionIndex,
     signature: LinkedCallableSignature,
     parameter_dense_record_shape: Option<ShapeIndex>,
+    receiver: Option<LinkedOperationReceiver>,
 }
 
 impl DeploymentExecutionEntry {
@@ -386,6 +391,10 @@ impl DeploymentExecutionEntry {
     /// the entry surface admits such materialization.
     pub const fn parameter_dense_record_shape(&self) -> Option<ShapeIndex> {
         self.parameter_dense_record_shape
+    }
+
+    pub const fn receiver(&self) -> Option<&LinkedOperationReceiver> {
+        self.receiver.as_ref()
     }
 }
 
@@ -589,6 +598,7 @@ pub fn link_deployment_execution_image(
                 CallableEntryFacts {
                     function: entry.function(),
                     signature: entry.signature().clone(),
+                    receiver: entry.receiver().cloned(),
                 },
             )
         })
@@ -625,6 +635,7 @@ pub fn link_deployment_execution_image(
                 CallableEntryFacts {
                     function: function.index(),
                     signature,
+                    receiver: None,
                 },
             ))
         })

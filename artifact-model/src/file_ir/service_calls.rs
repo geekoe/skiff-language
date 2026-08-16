@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, fmt};
 
 use crate::{
     compile_requirements::ServiceCallRef,
-    executable::{CallTargetIr, ExprIr, StmtIr, TestEffectRegisterTargetIr},
+    executable::{BoxSourceIr, CallTargetIr, ExprIr, StmtIr, TestEffectRegisterTargetIr},
 };
 
 use super::{
@@ -114,6 +114,29 @@ pub fn validate_file_ir_service_calls(
             });
         };
         *referenced = true;
+    }
+    for (_, _, expression) in file_ir_expressions(unit) {
+        let ExprIr::InterfaceBox {
+            source:
+                BoxSourceIr::Remote {
+                    operations,
+                    callee_protocol_identity,
+                    ..
+                },
+            ..
+        } = expression
+        else {
+            continue;
+        };
+        for operation in &operations.slots {
+            for (index, call_ref) in unit.external_refs.service_call_refs.iter().enumerate() {
+                if call_ref.contract_operation_id.as_str() == operation.operation_abi_id
+                    && call_ref.expected_protocol_identity.as_str() == callee_protocol_identity
+                {
+                    used[index] = true;
+                }
+            }
+        }
     }
     for (executable_index, executable) in unit.executables.iter().enumerate() {
         for statement in &executable.body.statements {

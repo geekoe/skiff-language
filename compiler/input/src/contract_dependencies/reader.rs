@@ -6,7 +6,7 @@ use skiff_artifact_identity::{
 use skiff_artifact_model::{
     BoundaryCallbackContract, BoundaryOperationDescriptor, BoundaryStreamContract,
     ContractRequirement, ContractTypeDescriptor, ContractTypeRef, PackageSchemaTypeId,
-    PackageSchemaTypeRecord, ServiceContract,
+    PackageSchemaTypeRecord, ServiceContract, TypeRefIr,
 };
 use skiff_compiler_input_model::{is_reserved_source_import_alias, is_valid_source_import_alias};
 use skiff_compiler_projection_input::ResolvedPackageSchema;
@@ -218,12 +218,39 @@ fn validated_schema_records(
             visit_reachable_type(&root, &records, &mut reachable);
         }
     }
+    for public_instance in contract.public_instances.values() {
+        for interface in &public_instance.interfaces {
+            if let Some(stable_key) = public_instance_interface_stable_key(interface) {
+                if let Some(record) = records
+                    .values()
+                    .find(|record| record.stable_schema_key == stable_key)
+                {
+                    visit_reachable_type(&record.package_schema_type_id, &records, &mut reachable);
+                }
+            }
+        }
+    }
     if reachable != expected.keys().cloned().collect() {
         return Err(ContractDependencyError::SchemaReachabilityMismatch {
             alias: alias.to_string(),
         });
     }
     Ok(records)
+}
+
+fn public_instance_interface_stable_key(
+    interface: &skiff_artifact_model::ContractPublicInstanceInterface,
+) -> Option<String> {
+    let declaration =
+        serde_json::from_str::<TypeRefIr>(&interface.interface.interface_abi_id).ok()?;
+    match declaration {
+        TypeRefIr::ServiceSymbol { symbol } => Some(symbol.symbol),
+        TypeRefIr::PackageSymbol { symbol } => symbol
+            .symbol_path
+            .rsplit_once('.')
+            .map(|(_, symbol)| symbol.to_string()),
+        _ => None,
+    }
 }
 
 fn visit_reachable_type(

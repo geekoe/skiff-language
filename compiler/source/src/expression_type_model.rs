@@ -5,8 +5,8 @@ use skiff_artifact_model::{
     builtin_receiver_op_spec_by_name,
     http_boundary::{canonical_http_boundary_symbol, HTTP_RESPONSE_STREAM_EVENT_TYPE},
     BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
-    BoundaryValuePlan, BuiltinReceiverPublicReturnType, LiteralIr, PackageRefIr, PackageSymbolRef,
-    PackageTypeRef, ParamModeIr, InterfaceMethodSlotSignatureIr, RemoteOperationSlotPlanIr,
+    BoundaryValuePlan, BuiltinReceiverPublicReturnType, InterfaceMethodSlotSignatureIr, LiteralIr,
+    PackageRefIr, PackageSymbolRef, PackageTypeRef, ParamModeIr, RemoteOperationSlotPlanIr,
     RemoteOperationTablePlanIr, TypeRefIr,
 };
 use skiff_compiler_core::type_ref::{
@@ -71,8 +71,7 @@ pub struct ExpressionTypeModel {
     representation_constructor_validations:
         BTreeMap<ExpressionKey, RepresentationConstructorValidation>,
     object_materializations: BTreeMap<ExpressionKey, TargetTypedObjectMaterialization>,
-    remote_interface_operations:
-        BTreeMap<ExpressionKey, RemoteOperationTablePlanIr>,
+    remote_interface_operations: BTreeMap<ExpressionKey, RemoteOperationTablePlanIr>,
 }
 
 /// Compiler-known collection kind selected for one source bracket segment.
@@ -325,8 +324,7 @@ struct CheckOutputs {
     representation_constructor_validations:
         BTreeMap<ExpressionKey, RepresentationConstructorValidation>,
     object_materialization: ObjectMaterializationState,
-    remote_interface_operations:
-        BTreeMap<ExpressionKey, RemoteOperationTablePlanIr>,
+    remote_interface_operations: BTreeMap<ExpressionKey, RemoteOperationTablePlanIr>,
     diagnostics: Vec<String>,
 }
 
@@ -2038,20 +2036,20 @@ impl<'a> OwnerChecker<'a> {
             }
         };
         if let Expr::DependencySourceAddress(source) = value {
-            let plan = match self.remote_interface_operation_plan(source, &selector.instantiation_ref)
-            {
-                Ok(plan) => plan,
-                Err(error) => {
-                    self.outputs.diagnostics.push(format!(
-                        "{}: remote interface source `{}/{}` at {} failed: {error}",
-                        self.module_path,
-                        source.dependency_ref,
-                        source.public_path,
-                        self.expression_span_label(key)
-                    ));
-                    return None;
-                }
-            };
+            let plan =
+                match self.remote_interface_operation_plan(source, &selector.instantiation_ref) {
+                    Ok(plan) => plan,
+                    Err(error) => {
+                        self.outputs.diagnostics.push(format!(
+                            "{}: remote interface source `{}/{}` at {} failed: {error}",
+                            self.module_path,
+                            source.dependency_ref,
+                            source.public_path,
+                            self.expression_span_label(key)
+                        ));
+                        return None;
+                    }
+                };
             self.outputs
                 .remote_interface_operations
                 .insert(key.clone(), plan);
@@ -2131,7 +2129,7 @@ impl<'a> OwnerChecker<'a> {
         let row = instance
             .interfaces
             .iter()
-            .find(|row| &row.interface == interface)
+            .find(|row| Self::interface_instantiations_match(&row.interface, interface))
             .ok_or_else(|| "public instance does not expose the selected interface".to_string())?;
         let slots = self
             .type_resolution
@@ -2146,7 +2144,9 @@ impl<'a> OwnerChecker<'a> {
         }
         let mut remote_slots = Vec::with_capacity(slots.len());
         for (ordinal, (slot, method)) in slots.iter().zip(&row.methods).enumerate() {
-            if slot.slot != ordinal as u32 || slot.method_abi_id != method.method_abi_id {
+            if slot.slot != ordinal as u32
+                || !Self::interface_method_abi_matches(&slot.method_abi_id, &method.method_abi_id)
+            {
                 return Err(format!(
                     "public instance method row {ordinal} disagrees with interface slot facts"
                 ));
@@ -2165,6 +2165,43 @@ impl<'a> OwnerChecker<'a> {
             interface: interface.clone(),
             slots: remote_slots,
         })
+    }
+
+    fn interface_instantiations_match(
+        left: &skiff_artifact_model::InterfaceInstantiationRef,
+        right: &skiff_artifact_model::InterfaceInstantiationRef,
+    ) -> bool {
+        left == right
+            || (Self::interface_declaration_stable_key(left)
+                .zip(Self::interface_declaration_stable_key(right))
+                .is_some_and(|(left, right)| left == right)
+                && left.canonical_type_args == right.canonical_type_args)
+    }
+
+    fn interface_declaration_stable_key(
+        interface: &skiff_artifact_model::InterfaceInstantiationRef,
+    ) -> Option<String> {
+        let declaration =
+            serde_json::from_str::<skiff_artifact_model::TypeRefIr>(&interface.interface_abi_id)
+                .ok()?;
+        match declaration {
+            skiff_artifact_model::TypeRefIr::ServiceSymbol { symbol } => Some(symbol.symbol),
+            skiff_artifact_model::TypeRefIr::PackageSymbol { symbol } => symbol
+                .symbol_path
+                .rsplit_once('.')
+                .map(|(_, symbol)| symbol.to_string())
+                .or_else(|| Some(symbol.symbol_path)),
+            _ => None,
+        }
+    }
+
+    fn interface_method_abi_matches(left: &str, right: &str) -> bool {
+        left == right
+            || left
+                .rsplit(':')
+                .next()
+                .zip(right.rsplit(':').next())
+                .is_some_and(|(left, right)| left == right)
     }
 
     fn check_field_expr(

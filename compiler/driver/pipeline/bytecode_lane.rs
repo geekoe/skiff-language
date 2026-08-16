@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_identity::assign_package_artifact_identities;
+use skiff_artifact_identity::{
+    assign_package_artifact_identities, canonical_interface_instantiation_key,
+};
 use skiff_artifact_model::{
     derive_bytecode_statement_manifest_identity, derive_package_schema_type_id,
     http_boundary::canonical_http_boundary_type,
@@ -9,10 +11,11 @@ use skiff_artifact_model::{
     BoundaryErrorPolicy, BoundaryTransfer, BoundaryValueCarrier, BoundaryValueEncoding,
     BoundaryValueFact, BoundaryValueLifetime, BoundaryValueOwner, BoundaryValuePlan,
     BytecodeArtifactRef, BytecodeFunctionStatementManifest, CallableEffectSummary,
-    CallableMayEffects, ContractLiteral, ContractTypeRef, GatewayDispatchMode,
-    GatewayProtocolSurface, LiteralIr, PackageArtifact, PackageLocalAbiSymbol, PackageRefIr,
-    PackageSchemaTypeRecord, PackageTypeRef, PendingEffectCategory, ServiceBoundaryPlan,
-    ServiceCallRef, ServiceCallbackPlan, TypeDescriptorIr, TypeRefIr, ValueProvenance,
+    CallableMayEffects, ContractLiteral, ContractTypeRef, FileIrUnit, GatewayDispatchMode,
+    GatewayProtocolSurface, LiteralIr, NominalTypeRefBaseIr, PackageArtifact,
+    PackageLocalAbiSymbol, PackageRefIr, PackageSchemaTypeRecord, PackageTypeRef,
+    PendingEffectCategory, ServiceBoundaryPlan, ServiceCallRef, ServiceCallbackPlan,
+    TypeDescriptorIr, TypeRefIr, ValueProvenance,
 };
 use skiff_compiler_compiled::{
     BytecodeCompilationHandoff, BytecodeCompilationOutcome, BytecodeCompilationReceipt,
@@ -20,9 +23,10 @@ use skiff_compiler_compiled::{
 };
 use skiff_compiler_contract::ServicePublicInstanceOperationFacts;
 use skiff_compiler_emission::bytecode::{
-    admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_plans,
+    admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_plans_and_provider_public_instances,
     derive_bytecode_value_transfer_plans, emit_bytecode_artifact, GatewayParameterAuthority,
-    ServerStreamEmitFact, ServerStreamGatewayAuthority,
+    ProviderPublicInstanceFacts, ProviderPublicInstanceInterface, ProviderPublicInstanceMethod,
+    ProviderPublicInstanceRoot, ServerStreamEmitFact, ServerStreamGatewayAuthority,
 };
 use skiff_compiler_emission::package_artifact::PublishedPackageArtifact;
 use skiff_compiler_lowering::{
@@ -34,9 +38,10 @@ use skiff_compiler_projection::package_artifact::{
     ProjectedPackageArtifact,
 };
 use skiff_compiler_source::{
-    source_value_transfer_plan, SourceValueTransferFacts, SourceValueTransferNominalFact,
-    SourceValueTransferNominalId, SourceValueTransferNominalSemantics,
-    SourceValueTransferPackageRef, SourceValueTransferPlanInput,
+    source_value_transfer_plan, SourceSymbolKey, SourceValueTransferFacts,
+    SourceValueTransferNominalFact, SourceValueTransferNominalId,
+    SourceValueTransferNominalSemantics, SourceValueTransferPackageRef,
+    SourceValueTransferPlanInput,
 };
 
 use crate::http_gateway_projection::ProjectedHttpGateway;
@@ -180,12 +185,15 @@ fn emit_enabled_bytecode(
         server_stream_gateway_authorities(projected_gateway, unattached_package, units)?;
     let gateway_parameter_authorities = gateway_parameter_authorities(projected_gateway);
     let service_boundary_plans = service_boundary_plans(compiled)?;
-    let admitted = admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_plans(
-        units,
-        &gateway_parameter_authorities,
-        &server_stream_authorities,
-        &service_boundary_plans,
-    )?;
+    let provider_public_instances = provider_public_instance_facts(compiled)?;
+    let admitted =
+        admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_plans_and_provider_public_instances(
+            units,
+            &gateway_parameter_authorities,
+            &server_stream_authorities,
+            &service_boundary_plans,
+            &provider_public_instances,
+        )?;
     let mut bundles = Vec::new();
     for unit in compiled.lowered().file_ir_units() {
         let bundle = ConstEvaluator::new(Bounds::default())
@@ -232,6 +240,235 @@ fn emit_enabled_bytecode(
     )?)
 }
 
+fn provider_public_instance_facts(
+    compiled: &CompiledPackage,
+) -> Result<ProviderPublicInstanceFacts, PackageCompileError> {
+    let model = compiled.compile_model();
+    let conformances = model.local_interface_conformance_facts().map_err(|error| {
+        PackageCompileError::ContractValidation {
+            message: format!("provider public-instance conformance facts failed: {error}"),
+        }
+    })?;
+    let units = compiled.file_ir_units();
+    let mut roots = Vec::new();
+    for (public_root, instance) in &compiled.publication_api_seed().public_instances {
+        let unit = file_ir_unit(units, &instance.source_module)?;
+        let constant = unit
+            .declarations
+            .constants
+            .get(&instance.source_symbol)
+            .and_then(|declaration| unit.constants.get(declaration.const_index as usize))
+            .ok_or_else(|| PackageCompileError::ContractValidation {
+                message: format!(
+                    "provider public instance `{public_root}` receiver const `{}.{}` is absent",
+                    instance.source_module, instance.source_symbol
+                ),
+            })?;
+        let receiver_type = constant.ty.clone();
+        let receiver = receiver_source_symbol(unit, &receiver_type)?;
+        let mut interfaces = Vec::new();
+        for operation_row in model
+            .public_instance_operations()
+            .interfaces_for_root(public_root)
+        {
+            let conformance = conformances
+                .conformances()
+                .iter()
+                .find(|row| {
+                    row.receiver() == &receiver
+                        && canonical_interface_instantiation_key(row.interface())
+                            == canonical_interface_instantiation_key(operation_row.interface())
+                })
+                .ok_or_else(|| {
+                    PackageCompileError::ContractValidation {
+                        message: format!(
+                            "provider public instance `{public_root}` has no exact local conformance for interface {:?}",
+                            operation_row.interface()
+                        ),
+                    }
+                })?;
+            let implementation_methods = conformance.implementation_methods();
+            if implementation_methods.len() != operation_row.slots().len() {
+                return Err(PackageCompileError::ContractValidation {
+                    message: format!(
+                        "provider public instance `{public_root}` conformance has {} implementation methods but {} operation slots",
+                        implementation_methods.len(),
+                        operation_row.slots().len()
+                    ),
+                });
+            }
+            let methods = operation_row
+                .slots()
+                .iter()
+                .enumerate()
+                .map(|(ordinal, slot)| {
+                    let executable = implementation_methods.get(ordinal).ok_or_else(|| {
+                        PackageCompileError::ContractValidation {
+                            message: format!(
+                                "provider public instance `{public_root}` slot {ordinal} has no implementation method"
+                            ),
+                        }
+                    })?;
+                    let executable_index =
+                        executable_index_for_source_symbol(unit, executable)?;
+                    let method_slot = u32::try_from(ordinal).map_err(|_| {
+                        PackageCompileError::ContractValidation {
+                            message: format!(
+                                "provider public instance `{public_root}` method ordinal {ordinal} exceeds u32::MAX"
+                            ),
+                        }
+                    })?;
+                    Ok(ProviderPublicInstanceMethod {
+                        slot: method_slot,
+                        method_abi_id: slot.method_abi_id().to_string(),
+                        executable_index,
+                    })
+                })
+                .collect::<Result<Vec<_>, PackageCompileError>>()?;
+            interfaces.push(ProviderPublicInstanceInterface {
+                interface: operation_row.interface().clone(),
+                methods,
+            });
+        }
+        if interfaces.is_empty() {
+            return Err(PackageCompileError::ContractValidation {
+                message: format!(
+                    "provider public instance `{public_root}` has no exact interface operation rows"
+                ),
+            });
+        }
+        roots.push(ProviderPublicInstanceRoot {
+            public_root: public_root.clone(),
+            const_module: instance.source_module.clone(),
+            const_symbol: instance.source_symbol.clone(),
+            receiver_type,
+            interfaces,
+        });
+    }
+    Ok(ProviderPublicInstanceFacts { roots })
+}
+
+fn file_ir_unit<'a>(
+    units: &'a [FileIrUnit],
+    module_path: &str,
+) -> Result<&'a FileIrUnit, PackageCompileError> {
+    units
+        .iter()
+        .find(|unit| unit.module_path == module_path)
+        .ok_or_else(|| PackageCompileError::ContractValidation {
+            message: format!("provider public-instance receiver module `{module_path}` is absent"),
+        })
+}
+
+fn receiver_source_symbol(
+    unit: &FileIrUnit,
+    ty: &TypeRefIr,
+) -> Result<SourceSymbolKey, PackageCompileError> {
+    let symbol = match ty {
+        TypeRefIr::LocalType { type_index } => {
+            let declaration = unit.type_table.get(*type_index as usize).ok_or_else(|| {
+                PackageCompileError::ContractValidation {
+                    message: format!(
+                        "provider public-instance receiver local type {type_index} is absent"
+                    ),
+                }
+            })?;
+            (unit.module_path.clone(), declaration.name.clone())
+        }
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => {
+            let declaration = unit.type_table.get(*type_index as usize).ok_or_else(|| {
+                PackageCompileError::ContractValidation {
+                    message: format!(
+                        "provider public-instance receiver publication type {type_index} is absent"
+                    ),
+                }
+            })?;
+            (module_path.clone(), declaration.name.clone())
+        }
+        TypeRefIr::ServiceSymbol { symbol } => {
+            (symbol.module_path.clone(), symbol.symbol.clone())
+        }
+        TypeRefIr::AppliedNominal { base, .. } => match base {
+            NominalTypeRefBaseIr::LocalType { type_index } => {
+                let declaration = unit.type_table.get(*type_index as usize).ok_or_else(|| {
+                    PackageCompileError::ContractValidation {
+                        message: format!(
+                            "provider public-instance receiver applied local type {type_index} is absent"
+                        ),
+                    }
+                })?;
+                (unit.module_path.clone(), declaration.name.clone())
+            }
+            NominalTypeRefBaseIr::PublicationType {
+                module_path,
+                type_index,
+            } => {
+                let declaration = unit.type_table.get(*type_index as usize).ok_or_else(|| {
+                    PackageCompileError::ContractValidation {
+                        message: format!(
+                            "provider public-instance receiver applied publication type {type_index} is absent"
+                        ),
+                    }
+                })?;
+                (module_path.clone(), declaration.name.clone())
+            }
+            NominalTypeRefBaseIr::ServiceSymbol { symbol } => {
+                (symbol.module_path.clone(), symbol.symbol.clone())
+            }
+            _ => {
+                return Err(PackageCompileError::ContractValidation {
+                    message: format!(
+                        "provider public-instance receiver applied nominal base {:?} is not package-local",
+                        base
+                    ),
+                })
+            }
+        },
+        _ => {
+            return Err(PackageCompileError::ContractValidation {
+                message: format!(
+                    "provider public-instance receiver type {:?} is not a nominal package-local type",
+                    ty
+                ),
+            })
+        }
+    };
+    Ok(SourceSymbolKey::new(symbol.0, symbol.1))
+}
+
+fn executable_index_for_source_symbol(
+    unit: &FileIrUnit,
+    symbol: &SourceSymbolKey,
+) -> Result<u32, PackageCompileError> {
+    if let Some(declaration) = unit.declarations.executables.get(symbol.symbol()) {
+        return Ok(declaration.executable_index);
+    }
+    unit.declarations
+        .executables
+        .values()
+        .find(|declaration| {
+            unit.executables
+                .get(declaration.executable_index as usize)
+                .is_some_and(|executable| {
+                    executable.symbol == symbol.to_source_symbol()
+                        || executable
+                            .symbol
+                            .strip_prefix(&format!("{}.", symbol.module_path()))
+                            == Some(symbol.symbol())
+                })
+        })
+        .map(|declaration| declaration.executable_index)
+        .ok_or_else(|| PackageCompileError::ContractValidation {
+            message: format!(
+                "provider public-instance implementation method `{}` is absent from File IR",
+                symbol.to_source_symbol()
+            ),
+        })
+}
+
 fn service_boundary_plans(
     compiled: &CompiledPackage,
 ) -> Result<BTreeMap<ServiceCallRef, ServiceBoundaryPlan>, PackageCompileError> {
@@ -258,8 +495,7 @@ fn service_boundary_plans(
                     .service_requirements()
                     .iter()
                     .find(|requirement| {
-                        requirement.service_binding_slot
-                            == site.call_ref().service_requirement_slot
+                        requirement.service_binding_slot == site.call_ref().service_requirement_slot
                     })?;
                 let contract = compiled
                     .compile_model()

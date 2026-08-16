@@ -1732,13 +1732,22 @@ impl<'a> FunctionLowerer<'a> {
                         contract_requirement.alias
                     ))
                 })?;
-            self.next_expression_key()?;
+            let placeholder_key = self.take_expression_key()?;
             let placeholder = self.push_expr(
                 ExprIr::Literal {
                     value: LiteralIr::Null,
                 },
                 TypeRefIr::builtin("null"),
             );
+            if let Some(key) = placeholder_key {
+                self.source_event_collector
+                    .record_expression(
+                        Some(key),
+                        placeholder.expression,
+                        ExpressionEventKind::Expression,
+                    )
+                    .map_err(source_event_error)?;
+            }
             return Ok(ExprIr::InterfaceBox {
                 value: placeholder,
                 interface: selector.instantiation_ref,

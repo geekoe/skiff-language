@@ -348,7 +348,6 @@ impl AstVisitor for TargetCollector<'_> {
             _ => walk_expr(self, expr),
         }
     }
-
 }
 
 impl TargetCollector<'_> {
@@ -391,21 +390,23 @@ impl TargetCollector<'_> {
                 return None;
             }
         };
-        let row = match instance
-            .interfaces
-            .iter()
-            .find(|row| row.interface == selector.instantiation_ref)
+        let row =
+            match instance.interfaces.iter().find(|row| {
+                interface_instantiations_match(&row.interface, &selector.instantiation_ref)
+            }) {
+                Some(row) => row,
+                None => {
+                    self.errors.push(format!(
+                        "{}: public instance `{}/{}` does not expose interface `{}`",
+                        self.module_path, source.dependency_ref, source.public_path, interface.name,
+                    ));
+                    return None;
+                }
+            };
+        let requirement = match self
+            .dependencies
+            .contract_requirement(&source.dependency_ref)
         {
-            Some(row) => row,
-            None => {
-                self.errors.push(format!(
-                    "{}: public instance `{}/{}` does not expose interface `{}`",
-                    self.module_path, source.dependency_ref, source.public_path, interface.name,
-                ));
-                return None;
-            }
-        };
-        let requirement = match self.dependencies.contract_requirement(&source.dependency_ref) {
             Ok(requirement) => requirement.clone(),
             Err(error) => {
                 self.errors.push(format!(
@@ -1014,4 +1015,30 @@ fn collect_pattern_bindings(pattern: &Pattern, scope: &mut BTreeSet<String>) {
 
 fn unknown(reason: UnknownCallTargetReason) -> ResolvedCallTarget {
     ResolvedCallTarget::Unknown { reason }
+}
+
+fn interface_instantiations_match(
+    left: &skiff_artifact_model::InterfaceInstantiationRef,
+    right: &skiff_artifact_model::InterfaceInstantiationRef,
+) -> bool {
+    left == right
+        || (interface_declaration_stable_key(left)
+            .zip(interface_declaration_stable_key(right))
+            .is_some_and(|(left, right)| left == right)
+            && left.canonical_type_args == right.canonical_type_args)
+}
+
+fn interface_declaration_stable_key(
+    interface: &skiff_artifact_model::InterfaceInstantiationRef,
+) -> Option<String> {
+    let declaration = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id).ok()?;
+    match declaration {
+        TypeRefIr::ServiceSymbol { symbol } => Some(symbol.symbol),
+        TypeRefIr::PackageSymbol { symbol } => symbol
+            .symbol_path
+            .rsplit_once('.')
+            .map(|(_, symbol)| symbol.to_string())
+            .or_else(|| Some(symbol.symbol_path)),
+        _ => None,
+    }
 }

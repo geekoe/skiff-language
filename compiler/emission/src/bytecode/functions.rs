@@ -1429,6 +1429,67 @@ impl<'a> FunctionEmitter<'a> {
             CallTargetIr::InterfaceMethod {
                 interface, slot, ..
             } => {
+                let remote = call
+                    .args
+                    .first()
+                    .and_then(|receiver| {
+                        self.local_interface_tables
+                            .remote_interface_facts_for_receiver(
+                                self.unit,
+                                self.function,
+                                *receiver,
+                            )
+                    })
+                    .or_else(|| {
+                        self.local_interface_tables.remote_interface_facts_for_call(
+                            self.unit,
+                            self.function,
+                            interface,
+                            *slot,
+                        )
+                    });
+                if let Some(remote) = remote {
+                    if &remote.interface != interface {
+                        return Err(unsupported(
+                            &self.key,
+                            "remote interface call target",
+                            "call interface facts diverge from the receiver remote table",
+                        ));
+                    }
+                    let methods = remote
+                        .methods
+                        .iter()
+                        .map(|method| RemoteInterfaceMethod {
+                            slot: method.slot,
+                            method_abi_id: method.method_abi_id.clone(),
+                            signature: qualified_interface_signature(
+                                self.unit.module_path.as_str(),
+                                &method.signature,
+                            ),
+                            contract_operation_id: method.contract_operation_id.clone(),
+                        })
+                        .collect::<Vec<_>>();
+                    let remote_ref = RemoteInterfaceRef {
+                        service_requirement_slot: remote.service_requirement_slot,
+                        public_instance_key: remote.public_instance_key.clone(),
+                        interface: qualified_interface_instantiation(
+                            self.unit.module_path.as_str(),
+                            &remote.interface,
+                        ),
+                        methods,
+                        callee_protocol_identity: remote.callee_protocol_identity.clone(),
+                    };
+                    let relocation = BytecodeRelocation::RemoteInterfaceRef {
+                        interface: remote_ref,
+                    };
+                    return self.emit_pending_call(
+                        expression,
+                        Opcode::CallInterface,
+                        relocation,
+                        Some(*slot),
+                        true,
+                    );
+                }
                 let table = super::admission::resolve_local_interface_table_for_call(
                     self.unit,
                     self.function,

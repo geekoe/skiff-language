@@ -1,16 +1,20 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_model::{GatewayAdapterKind, PackageCallableId};
+use skiff_artifact_model::{
+    GatewayAdapterKind, PackageCallableId, PackageLocalAbiSymbol, ReceiverCallAbi,
+};
 use skiff_runtime_linked_bytecode::{
     FunctionIndex, LinkedCallableSignature, LinkedFunction, LinkedGatewayCallable,
-    LinkedGatewayCallableRole, LinkedGatewayEntry, LinkedOperationEntry, LinkedParameterSlot,
-    SpecializationKey,
+    LinkedGatewayCallableRole, LinkedGatewayEntry, LinkedOperationEntry, LinkedOperationReceiver,
+    LinkedParameterSlot, SpecializationKey,
 };
 use skiff_runtime_loader::HydratedBytecodePackage;
 
 use crate::bytecode::{
     types::TypeLinker, BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation,
 };
+
+use super::constants::LinkedConstantTables;
 
 use super::{unsatisfied, DeploymentLinker};
 
@@ -147,6 +151,7 @@ impl DeploymentLinker<'_> {
         &self,
         indices: &BTreeMap<SpecializationKey, FunctionIndex>,
         functions: &[LinkedFunction],
+        constant_tables: &LinkedConstantTables,
     ) -> Result<Vec<LinkedOperationEntry>, BytecodeLinkError> {
         let implementation = self.implementation_package()?;
         let mut entries = self
@@ -167,23 +172,37 @@ impl DeploymentLinker<'_> {
                         "operation root is absent from the canonical closure".to_string(),
                     )
                 })?;
-                Ok(LinkedOperationEntry::new(
-                    binding.contract_operation_id.clone(),
-                    function,
-                    callable_signature(
-                        functions.get(function.get() as usize).ok_or_else(|| {
-                            unsatisfied(
-                                BytecodeLinkObligation::CanonicalRootSet,
-                                self.deployment_location(),
-                                format!(
-                                    "operation root function {} is out of bounds",
-                                    function.get()
-                                ),
-                            )
-                        })?,
-                        self.deployment_location(),
-                    )?,
-                ))
+                let signature = callable_signature(
+                    functions.get(function.get() as usize).ok_or_else(|| {
+                        unsatisfied(
+                            BytecodeLinkObligation::CanonicalRootSet,
+                            self.deployment_location(),
+                            format!(
+                                "operation root function {} is out of bounds",
+                                function.get()
+                            ),
+                        )
+                    })?,
+                    self.deployment_location(),
+                )?;
+                let receiver = self.operation_receiver(
+                    implementation,
+                    &binding.package_callable_id,
+                    constant_tables,
+                )?;
+                Ok(match receiver {
+                    Some(receiver) => LinkedOperationEntry::new_with_receiver(
+                        binding.contract_operation_id.clone(),
+                        function,
+                        signature,
+                        receiver,
+                    ),
+                    None => LinkedOperationEntry::new(
+                        binding.contract_operation_id.clone(),
+                        function,
+                        signature,
+                    ),
+                })
             })
             .collect::<Result<Vec<_>, BytecodeLinkError>>()?;
         entries.sort_by(|left, right| {
@@ -304,6 +323,105 @@ impl DeploymentLinker<'_> {
                 })
             })
             .collect()
+    }
+
+    fn operation_receiver(
+        &self,
+        implementation: &HydratedBytecodePackage,
+        callable_id: &PackageCallableId,
+        constant_tables: &LinkedConstantTables,
+    ) -> Result<Option<LinkedOperationReceiver>, BytecodeLinkError> {
+        let link_fact = implementation
+            .artifact()
+            .callable_links
+            .get(callable_id)
+            .ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::CanonicalRootSet,
+                    self.package_location(implementation),
+                    format!("operation callable {callable_id} has no exact link fact"),
+                )
+            })?;
+        if link_fact.target.callable_kind != skiff_artifact_model::OperationCallableKind::ImplMethod
+        {
+            return Ok(None);
+        }
+        let mut public_instances = implementation
+            .artifact()
+            .package_local_abi
+            .public_symbols
+            .iter()
+            .filter_map(|(public_path, symbol)| match symbol {
+                PackageLocalAbiSymbol::PublicInstance { methods, .. }
+                    if methods.values().any(|candidate| candidate == callable_id) =>
+                {
+                    Some(public_path)
+                }
+                _ => None,
+            });
+        let Some(public_path) = public_instances.next() else {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                self.package_location(implementation),
+                format!(
+                    "receiver operation callable {callable_id} has no exact public instance method row"
+                ),
+            ));
+        };
+        if public_instances.next().is_some() {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                self.package_location(implementation),
+                format!(
+                    "receiver operation callable {callable_id} is ambiguous across public instances"
+                ),
+            ));
+        }
+        let receiver_link = implementation
+            .artifact()
+            .implementation_links
+            .constants
+            .get(public_path)
+            .ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConstantInitializationPlan,
+                    self.package_location(implementation),
+                    format!("public instance {public_path} has no exact receiver constant link"),
+                )
+            })?;
+        let root = format!(
+            "{}.{}",
+            receiver_link.file.module_path, receiver_link.symbol
+        );
+        let artifact_constant = implementation
+            .bytecode()
+            .ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConstantInitializationPlan,
+                    self.package_location(implementation),
+                    format!("provider package has no admitted bytecode for receiver {root}"),
+                )
+            })?
+            .view()
+            .constant_roots()
+            .get(&root)
+            .copied()
+            .ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConstantInitializationPlan,
+                    self.package_location(implementation),
+                    format!("provider receiver constant root {root} is absent from bytecode"),
+                )
+            })?;
+        let constant = constant_tables.resolve(
+            implementation,
+            artifact_constant,
+            self.package_location(implementation),
+        )?;
+        Ok(Some(LinkedOperationReceiver::new(
+            constant,
+            ReceiverCallAbi::ExplicitSelfFirst,
+        )))
     }
 }
 

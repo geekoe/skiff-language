@@ -3,10 +3,10 @@ use std::fmt;
 
 use skiff_artifact_model::{
     ContractOperationId, GatewayAdapterPlan, GatewayEntryIdentity, GatewayEntryKey,
-    GatewayEntryProtocolSurface, PackageCallableId,
+    GatewayEntryProtocolSurface, PackageCallableId, ReceiverCallAbi,
 };
 
-use crate::{FunctionIndex, LinkedCallableSignature};
+use crate::{ConstantIndex, FunctionIndex, LinkedCallableSignature};
 
 /// Exact external operation entry facts joined from the hydrated deployment
 /// contract, concrete signature and referenced function.
@@ -15,6 +15,7 @@ pub struct LinkedOperationEntry {
     contract_operation_id: ContractOperationId,
     function: FunctionIndex,
     signature: LinkedCallableSignature,
+    receiver: Option<LinkedOperationReceiver>,
 }
 
 impl LinkedOperationEntry {
@@ -27,6 +28,21 @@ impl LinkedOperationEntry {
             contract_operation_id,
             function,
             signature,
+            receiver: None,
+        }
+    }
+
+    pub fn new_with_receiver(
+        contract_operation_id: ContractOperationId,
+        function: FunctionIndex,
+        signature: LinkedCallableSignature,
+        receiver: LinkedOperationReceiver,
+    ) -> Self {
+        Self {
+            contract_operation_id,
+            function,
+            signature,
+            receiver: Some(receiver),
         }
     }
 
@@ -40,6 +56,34 @@ impl LinkedOperationEntry {
 
     pub const fn signature(&self) -> &LinkedCallableSignature {
         &self.signature
+    }
+
+    pub const fn receiver(&self) -> Option<&LinkedOperationReceiver> {
+        self.receiver.as_ref()
+    }
+}
+
+/// Exact const receiver bound to one provider operation entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedOperationReceiver {
+    constant: ConstantIndex,
+    receiver_call_abi: ReceiverCallAbi,
+}
+
+impl LinkedOperationReceiver {
+    pub fn new(constant: ConstantIndex, receiver_call_abi: ReceiverCallAbi) -> Self {
+        Self {
+            constant,
+            receiver_call_abi,
+        }
+    }
+
+    pub const fn constant(&self) -> ConstantIndex {
+        self.constant
+    }
+
+    pub const fn receiver_call_abi(&self) -> ReceiverCallAbi {
+        self.receiver_call_abi
     }
 }
 

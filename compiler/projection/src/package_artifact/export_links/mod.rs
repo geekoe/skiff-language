@@ -6,8 +6,8 @@ mod tests;
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::{
-    ConstExport, ConstIr, ExecutableExport, ExecutableIr, FileIrUnit, PackageExportIndex,
-    PackageRequirement, TypeExport,
+    ConstExport, ConstIr, ExecutableExport, ExecutableIr, FileIrRef, FileIrUnit,
+    NominalTypeRefBaseIr, PackageExportIndex, PackageRequirement, TypeExport, TypeRefIr,
 };
 use skiff_compiler_core::package_interface_methods::{
     package_interface_method_signatures, PackageTypeSymbolIndex,
@@ -58,7 +58,7 @@ pub(super) fn project_package_export_links(
             .iter()
             .map(|unit| (unit.module_path.as_str(), unit)),
     );
-    let type_symbols = package_type_symbol_index(package, &file_units_by_module, dependencies)?;
+    let mut type_symbols = package_type_symbol_index(package, &file_units_by_module, dependencies)?;
     let mut exports = PackageExportIndex::default();
     let mut alias_types = BTreeSet::new();
 
@@ -190,12 +190,158 @@ pub(super) fn project_package_export_links(
         &package_type_names,
         &mut exports,
     )?;
+    project_public_instance_interface_types(
+        package,
+        &files_by_module,
+        &file_units_by_module,
+        &package_type_names,
+        &mut type_symbols,
+        &mut exports,
+        &public_instances,
+    )?;
 
     Ok(ProjectedPackageExportLinks {
         exports,
         public_instances,
         alias_types,
     })
+}
+
+fn project_public_instance_interface_types(
+    package: &PackageExportLinkProjectionInput<'_>,
+    files_by_module: &BTreeMap<String, FileIrRef>,
+    file_units_by_module: &BTreeMap<&str, &FileIrUnit>,
+    package_type_names: &crate::package_artifact::visible_types::PackageVisibleTypeNames,
+    type_symbols: &mut PackageTypeSymbolIndex,
+    exports: &mut PackageExportIndex,
+    public_instances: &[PackagePublicInstanceExecutionLink],
+) -> Result<(), ProjectionError> {
+    for instance in public_instances {
+        for interface in &instance.interfaces {
+            let Some((module, symbol)) = interface_source_ref(interface) else {
+                return Err(package_export_error(
+                    package,
+                    &instance.public_path,
+                    format!("public instance interface {interface:?} is not package-local"),
+                ));
+            };
+            let public_symbol = symbol.clone();
+            let package_symbol = package_scoped_export_symbol(package, &public_symbol);
+            if exports.types.contains_key(&package_symbol) {
+                continue;
+            }
+            let file_ref = files_by_module.get(&module).cloned().ok_or_else(|| {
+                package_export_error(
+                    package,
+                    &instance.public_path,
+                    format!("public instance interface module {module} is absent"),
+                )
+            })?;
+            let file_unit = file_units_by_module
+                .get(module.as_str())
+                .copied()
+                .ok_or_else(|| {
+                    package_export_error(
+                        package,
+                        &instance.public_path,
+                        format!("public instance interface module {module} is absent"),
+                    )
+                })?;
+            let type_index = file_unit
+                .declarations
+                .types
+                .get(&symbol)
+                .map(|declaration| declaration.type_index)
+                .or_else(|| type_link_target_index(file_unit, &symbol))
+                .ok_or_else(|| {
+                    package_export_error(
+                        package,
+                        &instance.public_path,
+                        format!("public instance interface type {module}.{symbol} is absent"),
+                    )
+                })?;
+            let ty = type_export_decl(package, &package_symbol, &module, file_unit, type_index)?;
+            let interface_decl =
+                file_unit
+                    .declarations
+                    .interfaces
+                    .get(&ty.name)
+                    .ok_or_else(|| {
+                        package_export_error(
+                    package,
+                    &instance.public_path,
+                    format!("public instance interface type {module}.{symbol} is not an interface"),
+                )
+                    })?;
+            type_symbols.insert_type(
+                module.clone(),
+                type_index,
+                ty.name.clone(),
+                public_symbol.clone(),
+            );
+            let interface_methods = package_interface_method_signatures(
+                package.package_id,
+                type_symbols,
+                &module,
+                interface_decl,
+            )
+            .map_err(|message| package_export_error(package, &package_symbol, message))?
+            .into_iter()
+            .map(|method| {
+                projection_visible_interface_method_signature(&module, &method, package_type_names)
+            })
+            .collect();
+            exports.types.insert(
+                package_symbol,
+                TypeExport {
+                    file: file_ref,
+                    type_index,
+                    symbol: ty.name.clone(),
+                    is_interface: true,
+                    descriptor: Some(projection_visible_type_descriptor(
+                        &module,
+                        &ty.descriptor,
+                        package_type_names,
+                    )),
+                    type_params: ty.type_params.clone(),
+                    interface_methods,
+                    actor: None,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
+fn interface_source_ref(ty: &TypeRefIr) -> Option<(String, String)> {
+    match ty {
+        TypeRefIr::PackageSymbol { symbol } => symbol
+            .symbol_path
+            .rsplit_once('.')
+            .map(|(module, symbol)| (module.to_string(), symbol.to_string())),
+        TypeRefIr::ServiceSymbol { symbol } => {
+            Some((symbol.module_path.clone(), symbol.symbol.clone()))
+        }
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index: _,
+        } => Some((module_path.clone(), String::new())),
+        TypeRefIr::AppliedNominal { base, .. } => match base {
+            NominalTypeRefBaseIr::PackageSymbol { symbol } => symbol
+                .symbol_path
+                .rsplit_once('.')
+                .map(|(module, symbol)| (module.to_string(), symbol.to_string())),
+            NominalTypeRefBaseIr::ServiceSymbol { symbol } => {
+                Some((symbol.module_path.clone(), symbol.symbol.clone()))
+            }
+            NominalTypeRefBaseIr::PublicationType {
+                module_path,
+                type_index: _,
+            } => Some((module_path.clone(), String::new())),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn type_declaration_is_alias(

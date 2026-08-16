@@ -157,6 +157,14 @@ fn validate_entry_references(
             parts.functions.len(),
         )?;
         validate_callable_signature(entry.signature(), location, parts)?;
+        if let Some(receiver) = entry.receiver() {
+            check_index(
+                location,
+                CandidateReferenceKind::Constant,
+                receiver.constant().get(),
+                parts.constants.len(),
+            )?;
+        }
     }
     for (position, entry) in parts.gateway_entries.iter().enumerate() {
         let location = table_location(CandidateTable::GatewayEntries, position, parts)?;

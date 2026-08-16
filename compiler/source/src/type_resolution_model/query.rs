@@ -530,7 +530,10 @@ impl TypeResolutionModel {
             }
             TypeRefIr::PackageSymbol { symbol } => {
                 let package_interface = self
-                    .package_interface_for_type_ref(&TypeRefIr::PackageSymbol { symbol })?
+                    .package_interface_for_type_ref(&TypeRefIr::PackageSymbol {
+                        symbol: symbol.clone(),
+                    })
+                    .or_else(|| self.service_api_interface_for_package_symbol(&symbol))?
                     .instantiate_methods(&interface.canonical_type_args)
                     .ok()?;
                 let (slot, operation) = package_interface

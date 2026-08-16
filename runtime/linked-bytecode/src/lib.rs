@@ -77,12 +77,13 @@ pub use targets::{
     LinkedInterfaceTextError, LinkedInterfaceTextKind, LinkedIntrinsicCanonicalKey,
     LinkedIntrinsicKind, LinkedIntrinsicTarget, LinkedIntrinsicTargetError,
     LinkedLocalInterfaceMethod, LinkedLocalInterfaceTable, LinkedOperationEntry,
-    LinkedPublicInstanceKey, LinkedRemoteInterfaceMethod, LinkedRemoteInterfaceTable,
-    LinkedRepresentationCarrier, LinkedServiceBoundaryErrorPlan, LinkedServiceBoundaryPlan,
-    LinkedServiceBoundaryValue, LinkedServiceCallbackPlan, LinkedServiceOperationTarget,
-    LinkedShapeEntry, LinkedShapeError, LinkedShapeField, LinkedStaticIntrinsicTarget,
-    LinkedSyntheticCallbackTarget, LinkedTaskPayloadParameter, LinkedTaskPayloadPlan,
-    LinkedTaskTarget, LinkedTaskTargetError, LinkedTaskTiming, LinkedTypeEntry,
+    LinkedOperationReceiver, LinkedPublicInstanceKey, LinkedRemoteInterfaceMethod,
+    LinkedRemoteInterfaceTable, LinkedRepresentationCarrier, LinkedServiceBoundaryErrorPlan,
+    LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue, LinkedServiceCallbackPlan,
+    LinkedServiceOperationTarget, LinkedShapeEntry, LinkedShapeError, LinkedShapeField,
+    LinkedStaticIntrinsicTarget, LinkedSyntheticCallbackTarget, LinkedTaskPayloadParameter,
+    LinkedTaskPayloadPlan, LinkedTaskTarget, LinkedTaskTargetError, LinkedTaskTiming,
+    LinkedTypeEntry,
 };
 
 #[cfg(test)]

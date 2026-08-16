@@ -22,7 +22,7 @@ pub use data::{
 };
 pub use entry::{
     LinkedGatewayCallable, LinkedGatewayCallableRole, LinkedGatewayEntry, LinkedGatewayEntryError,
-    LinkedOperationEntry,
+    LinkedOperationEntry, LinkedOperationReceiver,
 };
 pub use interface::{
     LinkedInterfaceInstantiation, LinkedInterfaceMethodAbiId, LinkedInterfaceRequirementMethod,

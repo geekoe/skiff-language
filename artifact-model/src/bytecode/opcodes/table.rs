@@ -348,7 +348,7 @@ macro_rules! opcode_rows {
             {
                 kind: CallInterface, opcode: 0x24, mnemonic: "call_interface",
                 operands: [
-                    (OperandKind::Reloc, OperandRole::InterfaceTarget, LinkedOperandKind::InterfaceTable, [RelocationKind::InterfaceRequirementRef]),
+                    (OperandKind::Reloc, OperandRole::InterfaceTarget, LinkedOperandKind::InterfaceTable, [RelocationKind::InterfaceRequirementRef, RelocationKind::RemoteInterfaceRef]),
                     (OperandKind::Immediate, OperandRole::MethodOrdinal, LinkedOperandKind::Immediate, []),
                     (OperandKind::Immediate, OperandRole::ArgCount, LinkedOperandKind::Immediate, []),
                     (OperandKind::Immediate, OperandRole::ResultCount, LinkedOperandKind::Immediate, []),

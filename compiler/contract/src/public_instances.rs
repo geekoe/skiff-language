@@ -230,15 +230,29 @@ pub(crate) struct ProjectedPublicInstances {
     instances: BTreeMap<String, ProjectedPublicInstance>,
 }
 
+impl ProjectedPublicInstances {
+    pub(crate) fn interfaces(&self) -> impl Iterator<Item = &ProjectedPublicInstanceInterface> {
+        self.instances
+            .values()
+            .flat_map(|instance| &instance.interfaces)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct ProjectedPublicInstance {
     interfaces: Vec<ProjectedPublicInstanceInterface>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct ProjectedPublicInstanceInterface {
+pub(crate) struct ProjectedPublicInstanceInterface {
     interface: InterfaceInstantiationRef,
     methods: Vec<ProjectedPublicInstanceMethod>,
+}
+
+impl ProjectedPublicInstanceInterface {
+    pub(crate) fn interface(&self) -> &InterfaceInstantiationRef {
+        &self.interface
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
