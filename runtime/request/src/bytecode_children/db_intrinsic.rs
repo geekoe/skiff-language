@@ -560,9 +560,9 @@ fn unique_shape_for_type_index<'a>(
         }
         return Ok(first);
     }
-    let mut canonical = shapes.iter().filter(|shape| {
-        shape.nominal_type() == ty && shape.origin().specialization().is_none()
-    });
+    let mut canonical = shapes
+        .iter()
+        .filter(|shape| shape.nominal_type() == ty && shape.origin().specialization().is_none());
     let first = canonical
         .next()
         .ok_or_else(|| format!("linked DB result type {} has no exact shape", ty.get()))?;

@@ -26,12 +26,20 @@ const hostChainSource = fileURLToPath(new URL(
   '../../runtime/host/tests/bytecode_vm_phase_6/host_chain.rs',
   import.meta.url,
 ));
+const hostRouterProofSource = fileURLToPath(new URL(
+  '../../runtime/host/tests/bytecode_vm_phase_6/host_router_proof.rs',
+  import.meta.url,
+));
 const recoverableCodecSource = fileURLToPath(new URL(
   '../../runtime/host/tests/bytecode_vm_phase_6/recoverable_codec.rs',
   import.meta.url,
 ));
 const routerRustSource = fileURLToPath(new URL(
   '../../router/tests/bytecode_vm_phase_6.rs',
+  import.meta.url,
+));
+const routerProductionPathSource = fileURLToPath(new URL(
+  '../../router/tests/bytecode_vm_phase_6/production_path.rs',
   import.meta.url,
 ));
 
@@ -144,8 +152,10 @@ test('every interface-local focused fixture has canonical authoring files', asyn
 
 test('Rust matrices expose every registered prefix with the exact expected red count', async () => {
   const host = await readFile(hostRustSource, 'utf8');
+  const hostRouterProof = await readFile(hostRouterProofSource, 'utf8');
   const recoverableCodec = await readFile(recoverableCodecSource, 'utf8');
   const router = await readFile(routerRustSource, 'utf8');
+  const routerProductionPath = await readFile(routerProductionPathSource, 'utf8');
   const expectedStageTests = new Map([
     ['service_', 10],
     ['interface_local_', 12],
@@ -153,8 +163,8 @@ test('Rust matrices expose every registered prefix with the exact expected red c
     ['callback_', 11],
     ['recoverable_', 10],
     ['db_', 10],
-    ['task_', 11],
-    ['actor_', 11],
+    ['task_', 13],
+    ['actor_', 12],
   ]);
   for (const [prefix, count] of expectedStageTests) {
     const stagePattern = new RegExp(`\\b${escapeRegExp(prefix)}s[1-6]\\b`, 'g');
@@ -171,12 +181,20 @@ test('Rust matrices expose every registered prefix with the exact expected red c
     }
     if (prefix === 'task_') {
       actual -= [...host.matchAll(/\bfn\s+task_submit_request\s*\(/g)].length;
+      actual += [...hostRouterProof.matchAll(
+        /\bfn\s+task_[a-z0-9_]+\s*\(/g,
+      )].length;
+    }
+    if (prefix === 'actor_') {
+      actual += [...hostRouterProof.matchAll(
+        /\bfn\s+actor_[a-z0-9_]+\s*\(/g,
+      )].length;
     }
     assert.equal(actual, count, `host prefix ${prefix} test count`);
   }
   for (const [prefix, count] of [
-    ['task_', 8],
-    ['actor_', 7],
+    ['task_', 9],
+    ['actor_', 8],
   ]) {
     const stagePattern = new RegExp(`\\b${escapeRegExp(prefix)}s[1-6]\\b`, 'g');
     const focusedPattern = new RegExp(
@@ -188,13 +206,25 @@ test('Rust matrices expose every registered prefix with the exact expected red c
     if (prefix === 'task_') {
       actual -= [...router.matchAll(/\bfn\s+task_record\s*\(/g)].length;
     }
+    actual += [...routerProductionPath.matchAll(
+      new RegExp(
+        `#\\[\\s*(?:tokio::)?test[^\\]]*\\]\\s+(?:async\\s+)?fn\\s+${escapeRegExp(prefix)}[a-z0-9_]+\\s*\\(`,
+        'g',
+      ),
+    )].length;
     assert.equal(actual, count, `router prefix ${prefix} test count`);
   }
   assert.equal([...host.matchAll(/\bcontainment_[a-z0-9_]+\b/g)].length, 8,
     'host containment test count');
   assert.equal([...host.matchAll(/\bphase_6_kernel_[a-z0-9_]+\b/g)].length, 6,
     'host kernel-focused test count');
-  for (const file of [hostRustSource, routerRustSource]) {
+  for (const file of [
+    hostRustSource,
+    hostRouterProofSource,
+    recoverableCodecSource,
+    routerRustSource,
+    routerProductionPathSource,
+  ]) {
     const source = await readFile(file, 'utf8');
     assert.doesNotMatch(source, /#\s*\[(?:ignore|skip)\s*\]/, `${file} ignore/skip`);
     assert.doesNotMatch(source, /\btodo!\s*\(/, `${file} todo`);

@@ -206,9 +206,7 @@ impl<R, S, O> ClaimedPendingWakeGuard<R, S, O> {
             .expect("one claimed wake maps its settlement exactly once");
         let source = settlement.source();
         let PendingOwner {
-            resume,
-            suspended,
-            ..
+            resume, suspended, ..
         } = &mut self.owner;
         let outcome = map(
             resume

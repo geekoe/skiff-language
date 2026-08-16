@@ -1,5 +1,7 @@
 use std::{
-    sync::Arc,
+    fs,
+    path::{Path, PathBuf},
+    sync::{Arc, OnceLock},
     task::{Context, Poll, Wake, Waker},
 };
 
@@ -447,26 +449,6 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
     request
 }
 
-fn callback_signature() -> skiff_runtime_linked_bytecode::LinkedCallableSignature {
-    use skiff_artifact_model::{CallableEffectSummary, ParamModeIr};
-    use skiff_runtime_linked_bytecode::{
-        LinkedCallableSignature, LinkedValueDropPlan, LinkedValueTransferPlan, TypeIndex,
-    };
-    LinkedCallableSignature::new(
-        Box::new([TypeIndex::new(0)]),
-        Box::new([ParamModeIr::Value]),
-        Box::new([LinkedValueTransferPlan::SnapshotShare {
-            drop: LinkedValueDropPlan::Trivial,
-        }]),
-        Box::new([TypeIndex::new(0)]),
-        Box::new([LinkedValueTransferPlan::SnapshotShare {
-            drop: LinkedValueDropPlan::Trivial,
-        }]),
-        CallableEffectSummary::analysis_pending(),
-    )
-    .expect("callback fixture signature has one mode and plan per type")
-}
-
 fn callback_interface(package_id: &str) -> skiff_artifact_model::InterfaceInstantiationRef {
     skiff_artifact_model::InterfaceInstantiationRef {
         interface_abi_id: format!(
@@ -478,6 +460,7 @@ fn callback_interface(package_id: &str) -> skiff_artifact_model::InterfaceInstan
 
 fn callback_local_table(
     method_abi: &str,
+    signature: &skiff_runtime_linked_bytecode::LinkedCallableSignature,
 ) -> skiff_runtime_linked_bytecode::LinkedLocalInterfaceTable {
     use skiff_artifact_model::ReceiverCallAbi;
     use skiff_runtime_linked_bytecode::{
@@ -488,7 +471,7 @@ fn callback_local_table(
         0,
         "handle",
         LinkedInterfaceMethodAbiId::parse(method_abi).expect("fixture method ABI"),
-        callback_signature(),
+        signature.clone(),
         FunctionIndex::new(1),
         ReceiverCallAbi::ExplicitSelfFirst,
     )
@@ -500,6 +483,7 @@ fn callback_local_table(
 fn callback_provider_table(
     interface: &skiff_artifact_model::InterfaceInstantiationRef,
     method_abi: &str,
+    signature: &skiff_runtime_linked_bytecode::LinkedCallableSignature,
 ) -> skiff_runtime_linked_bytecode::LinkedInterfaceTable {
     use skiff_runtime_linked_bytecode::{
         InterfaceTableIndex, LinkedInterfaceInstantiation, LinkedInterfaceMethodAbiId,
@@ -509,7 +493,7 @@ fn callback_provider_table(
     let method = LinkedInterfaceRequirementMethod::new(
         0,
         LinkedInterfaceMethodAbiId::parse(method_abi).expect("fixture method ABI"),
-        callback_signature(),
+        signature.clone(),
     );
     let requirement = LinkedInterfaceRequirementTable::new(Box::new([method]))
         .expect("fixture callback requirement is canonical");
@@ -522,46 +506,97 @@ fn callback_provider_table(
     )
 }
 
+fn callback_provider_facts(
+    image: &DeploymentExecutionImage,
+) -> (
+    &skiff_artifact_model::InterfaceInstantiationRef,
+    &skiff_runtime_linked_bytecode::LinkedInterfaceRequirementMethod,
+) {
+    image
+        .interface_tables()
+        .iter()
+        .find_map(|row| match row.kind() {
+            skiff_runtime_linked_bytecode::LinkedInterfaceTableKind::Callback(requirement) => {
+                requirement
+                    .methods()
+                    .first()
+                    .map(|method| (row.interface().artifact(), method))
+            }
+            _ => None,
+        })
+        .expect("callback provider fixture image has one callback method")
+}
+
 #[test]
 fn callback_methods_correlates_exact_interface_and_method_abi() {
-    let interface = callback_interface("example.com/provider");
-    let local = callback_local_table("method-abi:handle");
-    let provider = callback_provider_table(&interface, "method-abi:handle");
-    let correlation = callback_methods(&local, &interface, &[provider])
-        .expect("exact provider ABI should correlate");
-    assert_eq!(correlation.provider_interface, interface);
+    let images = callback_images();
+    let (interface, method) = callback_provider_facts(images.provider.as_ref());
+    let local = callback_local_table(method.method_abi_id().as_str(), method.signature());
+    let provider = callback_provider_table(
+        interface,
+        method.method_abi_id().as_str(),
+        method.signature(),
+    );
+    let correlation = callback_methods(
+        &local,
+        interface,
+        &[provider],
+        images.caller.as_ref(),
+        images.provider.as_ref(),
+    )
+    .expect("exact provider ABI should correlate");
+    assert_eq!(&correlation.provider_interface, interface);
     let binding = correlation
         .methods
-        .get(&(0, "method-abi:handle".to_string()))
+        .get(&(0, method.method_abi_id().as_str().to_string()))
         .expect("provider ABI key is exact");
     assert_eq!(
         binding.function,
         skiff_runtime_linked_bytecode::FunctionIndex::new(1)
     );
-    assert_eq!(binding.source_abi, "method-abi:handle");
+    assert_eq!(binding.source_abi, method.method_abi_id().as_str());
 }
 
 #[test]
 fn callback_methods_rejects_same_method_name_with_different_abi() {
-    let interface = callback_interface("example.com/provider");
-    let local = callback_local_table("method-abi:caller-handle");
-    let provider = callback_provider_table(&interface, "method-abi:provider-handle");
+    let images = callback_images();
+    let (interface, method) = callback_provider_facts(images.provider.as_ref());
+    let local = callback_local_table("method-abi:caller-handle", method.signature());
+    let provider =
+        callback_provider_table(interface, "method-abi:provider-handle", method.signature());
     // The provider method has the same slot and semantic name as the caller
     // method but a different exact ABI; suffix/name correlation must fail.
     assert!(matches!(
-        callback_methods(&local, &interface, &[provider]),
+        callback_methods(
+            &local,
+            interface,
+            &[provider],
+            images.caller.as_ref(),
+            images.provider.as_ref(),
+        ),
         Err(skiff_runtime_request::BytecodeCallbackChildError::WrongOperation { .. })
     ));
 }
 
 #[test]
 fn callback_methods_rejects_cross_package_interface_even_with_same_stable_key() {
+    let images = callback_images();
     let local_interface = callback_interface("example.com/caller");
-    let provider_interface = callback_interface("example.com/provider");
-    let local = callback_local_table("method-abi:handle");
-    let provider = callback_provider_table(&provider_interface, "method-abi:handle");
+    let (provider_interface, method) = callback_provider_facts(images.provider.as_ref());
+    let local = callback_local_table(method.method_abi_id().as_str(), method.signature());
+    let provider = callback_provider_table(
+        provider_interface,
+        method.method_abi_id().as_str(),
+        method.signature(),
+    );
     assert!(matches!(
-        callback_methods(&local, &local_interface, &[provider]),
+        callback_methods(
+            &local,
+            &local_interface,
+            &[provider],
+            images.caller.as_ref(),
+            images.provider.as_ref(),
+        ),
         Err(skiff_runtime_request::BytecodeCallbackChildError::MissingFacts { .. })
     ));
 }
@@ -575,8 +610,12 @@ fn callback_methods_rejects_provider_signature_drift() {
         LinkedInterfaceRequirementTable, LinkedInterfaceTable, LinkedInterfaceTableKind,
         LinkedValueDropPlan, LinkedValueTransferPlan, TypeIndex,
     };
-    let interface = callback_interface("example.com/provider");
-    let local = callback_local_table("method-abi:handle");
+    let images = callback_images();
+    let (interface, provider_method) = callback_provider_facts(images.provider.as_ref());
+    let local = callback_local_table(
+        provider_method.method_abi_id().as_str(),
+        provider_method.signature(),
+    );
     let drifted = LinkedCallableSignature::new(
         Box::new([TypeIndex::new(0), TypeIndex::new(1)]),
         Box::new([ParamModeIr::Value, ParamModeIr::Value]),
@@ -597,7 +636,8 @@ fn callback_methods_rejects_provider_signature_drift() {
     .expect("drifted fixture signature is valid");
     let method = LinkedInterfaceRequirementMethod::new(
         0,
-        LinkedInterfaceMethodAbiId::parse("method-abi:handle").expect("fixture method ABI"),
+        LinkedInterfaceMethodAbiId::parse(provider_method.method_abi_id().as_str())
+            .expect("fixture method ABI"),
         drifted,
     );
     let requirement = LinkedInterfaceRequirementTable::new(Box::new([method]))
@@ -610,7 +650,145 @@ fn callback_methods_rejects_provider_signature_drift() {
         LinkedInterfaceTableKind::Callback(requirement),
     );
     assert!(matches!(
-        callback_methods(&local, &interface, &[provider]),
+        callback_methods(
+            &local,
+            interface,
+            &[provider],
+            images.caller.as_ref(),
+            images.provider.as_ref(),
+        ),
         Err(skiff_runtime_request::BytecodeCallbackChildError::SignatureMismatch { .. })
     ));
+}
+
+struct CallbackImagePair {
+    caller: Arc<DeploymentExecutionImage>,
+    provider: Arc<DeploymentExecutionImage>,
+    _root: CallbackFixtureRoot,
+}
+
+struct CallbackFixtureRoot(PathBuf);
+
+impl CallbackFixtureRoot {
+    fn new(prefix: &str) -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let ordinal = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "skiff-bcvm-p6-callback-{prefix}-{}-{ordinal}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).expect("create callback adapter fixture root");
+        Self(path)
+    }
+}
+
+impl Drop for CallbackFixtureRoot {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn callback_images() -> &'static CallbackImagePair {
+    static IMAGES: OnceLock<CallbackImagePair> = OnceLock::new();
+    IMAGES.get_or_init(build_callback_images)
+}
+
+fn build_callback_images() -> CallbackImagePair {
+    use skiff_compiler::{authoring::seed_official_std_package, CompilerPlatformSources};
+    use skiff_deployment::storage::CanonicalArtifactStore;
+
+    let root = CallbackFixtureRoot::new("callback-adapter");
+    let repository = repository_root();
+    let sources = CompilerPlatformSources::new(&repository)
+        .expect("open repository compiler platform sources");
+    seed_official_std_package(&sources, &root.0)
+        .expect("seed canonical std into callback adapter fixture store");
+    let provider = publish_callback_package(
+        &sources,
+        &repository.join("runtime/host/tests/fixtures/bytecode-vm-phase-6/callback-provider"),
+        &root.0,
+    );
+    let caller = publish_callback_package(
+        &sources,
+        &repository.join("runtime/host/tests/fixtures/bytecode-vm-phase-6/callback-positive"),
+        &root.0,
+    );
+    let store = CanonicalArtifactStore::open(&root.0).expect("open callback adapter fixture store");
+    CallbackImagePair {
+        caller: callback_image(&store, &caller),
+        provider: callback_image(&store, &provider),
+        _root: root,
+    }
+}
+
+fn publish_callback_package(
+    sources: &skiff_compiler::CompilerPlatformSources,
+    fixture: &Path,
+    root: &Path,
+) -> skiff_artifact_model::ServiceDeploymentRef {
+    use skiff_compiler::authoring::{build_authoring_object, AuthoringObject};
+
+    let receipt = build_authoring_object(
+        sources,
+        AuthoringObject::Package,
+        fixture,
+        root,
+        "skiff-test",
+        true,
+    )
+    .expect("callback adapter fixture publishes through production authoring");
+    serde_json::from_value(
+        receipt
+            .pointer("/serviceDeploymentReceipt/deployment")
+            .cloned()
+            .expect("callback adapter authoring receipt has deployment"),
+    )
+    .expect("callback adapter deployment receipt remains typed")
+}
+
+fn callback_image(
+    store: &skiff_deployment::storage::CanonicalArtifactStore,
+    deployment: &skiff_artifact_model::ServiceDeploymentRef,
+) -> Arc<DeploymentExecutionImage> {
+    use skiff_runtime_linker::link_deployment_execution_image;
+    use skiff_runtime_loader::load_deployment_bytecode_from_store;
+
+    let hydrated = load_deployment_bytecode_from_store(store, deployment)
+        .expect("hydrate callback adapter fixture deployment");
+    Arc::new(
+        link_deployment_execution_image(hydrated, &callback_link_limits())
+            .expect("link callback adapter fixture deployment"),
+    )
+}
+
+fn repository_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("runtime/host is below repository root")
+        .to_path_buf()
+}
+
+fn callback_link_limits() -> skiff_runtime_linker::LinkLimits {
+    use skiff_runtime_linker::LinkLimits;
+
+    LinkLimits {
+        max_packages: 256,
+        max_root_specializations: 100_000,
+        max_specializations: 1_000_000,
+        max_code_words_per_function: 1_000_000,
+        max_total_code_words: 100_000_000,
+        max_relocations_per_function: 100_000,
+        max_total_relocations: 10_000_000,
+        max_image_table_entries: 1_000_000,
+        max_total_image_table_entries: 10_000_000,
+        max_total_function_table_entries: 10_000_000,
+        max_type_nesting_depth: 64,
+        max_expanded_type_nodes: 1_000_000,
+        max_expanded_type_bytes: 64 * 1024 * 1024,
+        max_constant_graph_nodes: 1_000_000,
+        max_constant_graph_edges: 1_000_000,
+    }
 }
