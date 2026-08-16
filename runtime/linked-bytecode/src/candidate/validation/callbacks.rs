@@ -35,14 +35,13 @@ pub(super) fn validate_synthetic_callback(
             );
         }
     }
-    if let Some(binding) = target.interface_method() {
-        check_index(
-            location,
-            CandidateReferenceKind::InterfaceTable,
-            binding.interface_table().get(),
-            parts.interface_tables.len(),
-        )?;
-    }
+    let binding = target.interface_method();
+    check_index(
+        location,
+        CandidateReferenceKind::InterfaceTable,
+        binding.interface_table().get(),
+        parts.interface_tables.len(),
+    )?;
     validate_callable_signature(target.signature(), location, parts)
 }
 

@@ -528,6 +528,43 @@ mod tests {
         assert!(interface.interface_abi_id.contains("Handler"));
         assert!(interface.canonical_type_args.is_empty());
     }
+
+    #[test]
+    fn callback_type_matching_rejects_cross_package_same_stable_key() {
+        let provider = any_interface("example.com/provider", Vec::new());
+        let linked = any_interface("example.com/caller", Vec::new());
+        assert!(!same_boundary_type(&provider, &linked));
+    }
+
+    #[test]
+    fn callback_type_matching_rejects_different_type_argument_plan() {
+        let provider = any_interface(
+            "example.com/provider",
+            vec![TypeRefIr::Builtin {
+                name: "string".to_string(),
+                args: Vec::new(),
+            }],
+        );
+        let linked = any_interface(
+            "example.com/provider",
+            vec![TypeRefIr::Builtin {
+                name: "number".to_string(),
+                args: Vec::new(),
+            }],
+        );
+        assert!(!same_boundary_type(&provider, &linked));
+    }
+
+    fn any_interface(package_id: &str, canonical_type_args: Vec<TypeRefIr>) -> TypeRefIr {
+        TypeRefIr::AnyInterface {
+            interface: InterfaceInstantiationRef {
+                interface_abi_id: format!(
+                    "{{\"symbol\":{{\"package\":{{\"packageId\":\"{package_id}\"}},\"symbolPath\":\"Handler\"}}}}"
+                ),
+                canonical_type_args,
+            },
+        }
+    }
 }
 
 /// Compares the compiler-emitted transfer fact without consuming it.
@@ -618,10 +655,8 @@ pub fn linked_callback_type_for_contract(
         let Some(actual_symbol_path) = symbol.get("symbolPath").and_then(Value::as_str) else {
             return None;
         };
-        let suffix = format!(".{stable_schema_key}");
-        (actual_package_id == package_id
-            && (actual_symbol_path == stable_schema_key || actual_symbol_path.ends_with(&suffix)))
-        .then_some(entry.index())
+        (actual_package_id == package_id && actual_symbol_path == stable_schema_key)
+            .then_some(entry.index())
     });
     let resolved = matches.next()?;
     if matches.next().is_some() {
@@ -723,42 +758,5 @@ fn contract_type_to_type_ref(ty: &ContractTypeRef) -> Result<TypeRefIr, VmMateri
 }
 
 fn same_boundary_type(provider: &TypeRefIr, linked: &TypeRefIr) -> bool {
-    if provider == linked {
-        return true;
-    }
-    let (
-        TypeRefIr::AnyInterface {
-            interface: provider_interface,
-        },
-        TypeRefIr::AnyInterface {
-            interface: linked_interface,
-        },
-    ) = (provider, linked)
-    else {
-        return false;
-    };
-    interface_stable_key(provider_interface) == interface_stable_key(linked_interface)
-}
-
-fn interface_stable_key(interface: &InterfaceInstantiationRef) -> Option<(String, String)> {
-    let identity: TypeRefIr = serde_json::from_str(&interface.interface_abi_id).ok()?;
-    match identity {
-        TypeRefIr::PackageSchema {
-            package_id,
-            stable_schema_key,
-            ..
-        } => Some((package_id, stable_schema_key)),
-        TypeRefIr::PackageSymbol { symbol } => {
-            let PackageRefIr::PackageId { package_id } = symbol.package else {
-                return None;
-            };
-            let stable_schema_key = symbol
-                .symbol_path
-                .rsplit_once('.')
-                .map(|(_, symbol)| symbol.to_string())
-                .unwrap_or(symbol.symbol_path);
-            Some((package_id, stable_schema_key))
-        }
-        _ => None,
-    }
+    provider == linked
 }

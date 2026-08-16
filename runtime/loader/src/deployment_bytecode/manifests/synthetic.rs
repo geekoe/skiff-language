@@ -78,6 +78,20 @@ impl SyntheticCallbackIndex {
                     format!("package callback owner manifest repeats site {site:?}"),
                 );
             }
+            if row.interface.interface_abi_id.is_empty()
+                || row.method_abi_id.is_empty()
+                || row.contract.package_id.is_empty()
+                || row.contract.stable_schema_key.is_empty()
+                || row.contract.package_schema_type_id.as_str().is_empty()
+            {
+                return manifest_error(
+                    reference,
+                    DeploymentBytecodeManifestKind::SyntheticCallback,
+                    format!(
+                        "synthetic callback site {site:?} lacks exact interface method or contract facts"
+                    ),
+                );
+            }
         }
         if functions_by_site.keys().ne(expected_by_site.keys()) {
             return manifest_error(

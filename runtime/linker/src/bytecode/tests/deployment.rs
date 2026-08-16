@@ -1092,18 +1092,20 @@ fn production_entry_rejects_entry_alias_to_canonical_effect_owner() {
 }
 
 #[test]
-fn production_entry_rejects_synthetic_callback_as_an_ordinary_local_target() {
-    let fixture = Fixture::synthetic_target();
-    let hydrated = fixture.hydrate();
-
-    assert!(matches!(
-        link_deployment(&hydrated, &generous_limits()),
-        Err(BytecodeLinkError::UnsatisfiedObligation {
-            obligation: BytecodeLinkObligation::RelocationResolution,
-            location: BytecodeLinkLocation::Function { .. },
-            detail,
-        }) if detail.contains("has no canonical callable")
-    ));
+fn production_entry_links_reachable_synthetic_callback_with_exact_interface_method() {
+    let candidate = link_deployment(&Fixture::synthetic_target().hydrate(), &generous_limits())
+        .expect("exact callback facts must link");
+    let [callback] = candidate.synthetic_callbacks() else {
+        panic!("reachable synthetic callback must enter the atomic candidate");
+    };
+    let method = callback.interface_method();
+    assert_eq!(method.method_slot(), 0);
+    assert_eq!(method.method_abi_id().as_str(), "method-abi:read");
+    assert_eq!(method.contract().stable_schema_key, "fixture.Reader");
+    assert!(candidate.interface_tables().iter().any(|table| {
+        table.index() == method.interface_table()
+            && matches!(table.kind(), LinkedInterfaceTableKind::Callback(_))
+    }));
 }
 
 #[test]
@@ -1176,11 +1178,9 @@ fn production_entry_rejects_drifted_service_boundary_plan() {
 
 #[test]
 fn production_entry_prunes_unreachable_private_interface_and_callback_authority() {
-    // A reachable MakeCallback currently fails earlier in ControlFlowAndStackMap:
-    // the artifact has no callback-interface correlation from which the linker
-    // could populate LinkedSyntheticCallbackTarget::interface_method. This test
-    // deliberately proves only that unreachable private callback authority is
-    // excluded; the reachable interface case below supplies the K0B rejection.
+    // Unreachable callback authority is excluded from the atomic candidate.
+    // The reachable synthetic callback case below proves exact
+    // interface_method/contract facts enter the image.
     for fixture in [
         Fixture::unreachable_interface(),
         Fixture::unreachable_callback(),

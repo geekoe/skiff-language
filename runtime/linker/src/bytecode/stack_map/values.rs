@@ -175,33 +175,28 @@ pub(super) fn source_values(
                         "synthetic callback target is absent".to_string(),
                     )
                 })?;
-            if let Some(binding) = callback.interface_method() {
-                let table = context
-                    .dispatch_tables
-                    .interface_tables
-                    .get(binding.interface_table().get() as usize)
-                    .ok_or_else(|| {
-                        obligation_error(
-                            location.clone(),
-                            "callback interface table is absent".to_string(),
-                        )
-                    })?;
-                let interface_ref = table.interface().artifact().clone();
-                let ty = context.type_linker.intern_concrete_type(
-                    context.source.package,
-                    context.source.specialization,
-                    &TypeRefIr::AnyInterface {
-                        interface: interface_ref,
-                    },
-                    context.substitutions,
-                    location.clone(),
-                )?;
-                return Ok(vec![value_with_linked_plan(context, ty, location)?]);
-            }
-            Err(obligation_error(
-                location,
-                "synthetic callback has no interface carrier type".to_string(),
-            ))
+            let binding = callback.interface_method();
+            let table = context
+                .dispatch_tables
+                .interface_tables
+                .get(binding.interface_table().get() as usize)
+                .ok_or_else(|| {
+                    obligation_error(
+                        location.clone(),
+                        "callback interface table is absent".to_string(),
+                    )
+                })?;
+            let interface_ref = table.interface().artifact().clone();
+            let ty = context.type_linker.intern_concrete_type(
+                context.source.package,
+                context.source.specialization,
+                &TypeRefIr::AnyInterface {
+                    interface: interface_ref,
+                },
+                context.substitutions,
+                location.clone(),
+            )?;
+            Ok(vec![value_with_linked_plan(context, ty, location)?])
         }
         ValueSource::ShapeFields { shape } => {
             let index = pool_index(instruction, shape, location.clone())?;

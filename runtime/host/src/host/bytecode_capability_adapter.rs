@@ -10,7 +10,8 @@ use std::{
 use serde_json::{Map, Value};
 use skiff_artifact_model::{
     boundary::{classify_boundary_callback_position, BoundaryCallbackPosition},
-    BoundaryValuePlan, ContractLiteral, ContractTypeRef, PackageSchemaTypeRef,
+    BoundaryValuePlan, ContractLiteral, ContractTypeRef, InterfaceInstantiationRef,
+    PackageSchemaTypeRef,
 };
 use skiff_runtime_boundary::package_schema_records::PackageSchemaRecords;
 use skiff_runtime_boundary::recoverable::FailClosedRecoverableBehaviorHooks;
@@ -319,20 +320,26 @@ fn ordinary_http_failure(error: RuntimeError) -> Box<dyn WirePayload> {
     )
 }
 
+#[derive(Clone)]
+struct CallbackMethodBinding {
+    function: FunctionIndex,
+    provider_abi: String,
+    source_abi: String,
+}
+
 struct HostCallbackCapabilityPayload {
     adapter: Arc<skiff_runtime_native::callback_adapter::InProcessCallbackAdapter>,
     contract: String,
     provider_image: Arc<DeploymentExecutionImage>,
-    methods: BTreeMap<(u32, String), FunctionIndex>,
-    source_abis: BTreeMap<(u32, String), String>,
+    provider_interface: InterfaceInstantiationRef,
+    methods: BTreeMap<(u32, String), CallbackMethodBinding>,
 }
 
 struct HostCallbackExecution {
     contract: String,
     adapter: Arc<skiff_runtime_native::callback_adapter::InProcessCallbackAdapter>,
     provider_image: Arc<DeploymentExecutionImage>,
-    function: FunctionIndex,
-    source_abis: BTreeMap<(u32, String), String>,
+    binding: CallbackMethodBinding,
 }
 
 impl CallbackExecution for HostCallbackExecution {
@@ -348,19 +355,18 @@ impl CallbackExecution for HostCallbackExecution {
         &skiff_runtime_model::callback_projection::CallbackContractOperationProjection,
         BytecodeCallbackChildError,
     > {
-        let source_abi = self
-            .source_abis
-            .get(&(slot, method_abi_id.to_string()))
-            .ok_or_else(|| BytecodeCallbackChildError::WrongOperation {
+        if self.binding.provider_abi != method_abi_id {
+            return Err(BytecodeCallbackChildError::WrongOperation {
                 slot,
                 method_abi_id: method_abi_id.to_string(),
-            })?;
-        self.adapter.operation(slot, source_abi).map_err(|_| {
-            BytecodeCallbackChildError::WrongOperation {
+            });
+        }
+        self.adapter
+            .operation(slot, &self.binding.source_abi)
+            .map_err(|_| BytecodeCallbackChildError::WrongOperation {
                 slot,
                 method_abi_id: method_abi_id.to_string(),
-            }
-        })
+            })
     }
 
     fn receiver(&self) -> &RuntimeValue {
@@ -373,7 +379,7 @@ impl CallbackExecution for HostCallbackExecution {
 
     fn provider_entry(&self) -> Result<DeploymentExecutionEntry, BytecodeCallbackChildError> {
         self.provider_image
-            .function_entry(self.function)
+            .function_entry(self.binding.function)
             .map_err(|error| BytecodeCallbackChildError::MissingFacts {
                 message: format!("callback provider function is absent: {error}"),
             })
@@ -400,22 +406,27 @@ impl BytecodeCallbackResolver for ProductionBytecodeCallbackResolver {
             .map_err(|_| BytecodeCallbackChildError::MissingFacts {
                 message: "callback table payload is not the VM host execution payload".to_string(),
             })?;
-        let function = payload
+        if payload.provider_interface != *table.interface().artifact() {
+            return Err(BytecodeCallbackChildError::MissingFacts {
+                message: format!(
+                    "callback provider interface drifts from the linked provider table"
+                ),
+            });
+        }
+        let binding = payload
             .methods
             .get(&(method_ordinal, method_abi_id.to_string()))
-            .copied()
+            .cloned()
             .ok_or_else(|| BytecodeCallbackChildError::WrongOperation {
                 slot: method_ordinal,
                 method_abi_id: method_abi_id.to_string(),
             })?;
         let _ = expected_runtime_replica_id;
-        let _ = table;
         Ok(Arc::new(HostCallbackExecution {
             contract: payload.contract.clone(),
             adapter: Arc::clone(&payload.adapter),
             provider_image: Arc::clone(&payload.provider_image),
-            function,
-            source_abis: payload.source_abis.clone(),
+            binding,
         }))
     }
 }
@@ -526,14 +537,18 @@ impl BytecodeCallbackProjector for ProductionBytecodeCallbackProjector {
         let contract = adapter
             .canonical_contract_identity()
             .map_err(|error| projection_error(error.to_string()))?;
-        let (methods, source_abis) = callback_methods(local.as_ref(), provider_image, plan)?;
+        let correlation = callback_methods(
+            local.as_ref(),
+            interface_row.interface().artifact(),
+            provider_image.interface_tables(),
+        )?;
         let payload: Arc<dyn std::any::Any + Send + Sync> =
             Arc::new(HostCallbackCapabilityPayload {
                 adapter: Arc::new(adapter),
                 contract: contract.clone(),
                 provider_image: Arc::clone(caller_image),
-                methods,
-                source_abis,
+                provider_interface: correlation.provider_interface,
+                methods: correlation.methods,
             });
         let lifetime = callback_lifetime(plan)?;
         let projection = self
@@ -647,67 +662,86 @@ fn callback_lifetime(
         .map_err(|error| projection_error(format!("callback lifetime is unsupported: {error}")))
 }
 
+struct CallbackMethodCorrelation {
+    provider_interface: InterfaceInstantiationRef,
+    methods: BTreeMap<(u32, String), CallbackMethodBinding>,
+}
+
 fn callback_methods(
     local: &LinkedLocalInterfaceTable,
-    provider_image: &DeploymentExecutionImage,
-    plan: &skiff_runtime_linked_bytecode::LinkedServiceBoundaryValue,
-) -> Result<
-    (
-        BTreeMap<(u32, String), FunctionIndex>,
-        BTreeMap<(u32, String), String>,
-    ),
-    BytecodeCallbackChildError,
-> {
-    let _ = plan;
-    let mut matched = Vec::new();
-    for row in provider_image.interface_tables() {
+    local_interface: &InterfaceInstantiationRef,
+    provider_tables: &[skiff_runtime_linked_bytecode::LinkedInterfaceTable],
+) -> Result<CallbackMethodCorrelation, BytecodeCallbackChildError> {
+    let mut candidates = provider_tables.iter().filter_map(|row| {
         let LinkedInterfaceTableKind::Callback(requirement) = row.kind() else {
-            continue;
+            return None;
         };
-        if requirement.methods().len() != local.methods().len() {
-            continue;
-        }
-        let mut methods = BTreeMap::new();
-        let mut source_abis = BTreeMap::new();
-        let mut exact = true;
-        for local_method in local.methods() {
-            let provider_method = requirement.methods().iter().find(|method| {
+        (row.interface().artifact() == local_interface).then_some((row, requirement))
+    });
+    let (row, requirement) =
+        candidates
+            .next()
+            .ok_or_else(|| BytecodeCallbackChildError::MissingFacts {
+                message: "provider callback interface table is absent".to_string(),
+            })?;
+    if candidates.next().is_some() {
+        return Err(BytecodeCallbackChildError::MissingFacts {
+            message: "provider callback interface table correlation is ambiguous".to_string(),
+        });
+    }
+    if requirement.methods().len() != local.methods().len() {
+        return Err(BytecodeCallbackChildError::SignatureMismatch {
+            message: format!(
+                "provider callback method count {} differs from caller method count {}",
+                requirement.methods().len(),
+                local.methods().len()
+            ),
+        });
+    }
+    let mut methods = BTreeMap::new();
+    for local_method in local.methods() {
+        let provider_method = requirement
+            .methods()
+            .iter()
+            .find(|method| {
                 method.method_slot() == local_method.method_slot()
-                    && method
-                        .method_abi_id()
-                        .as_str()
-                        .ends_with(&format!(":{}", local_method.method_name()))
+                    && method.method_abi_id().as_str() == local_method.method_abi_id().as_str()
+            })
+            .ok_or_else(|| BytecodeCallbackChildError::WrongOperation {
+                slot: local_method.method_slot(),
+                method_abi_id: local_method.method_abi_id().as_str().to_string(),
+            })?;
+        if provider_method.signature() != local_method.signature() {
+            return Err(BytecodeCallbackChildError::SignatureMismatch {
+                message: format!(
+                    "provider callback method {} signature drifts from caller method {}",
+                    provider_method.method_abi_id().as_str(),
+                    local_method.method_abi_id().as_str()
+                ),
             });
-            let Some(provider_method) = provider_method else {
-                exact = false;
-                break;
-            };
-            methods.insert(
-                (
-                    provider_method.method_slot(),
-                    provider_method.method_abi_id().as_str().to_string(),
-                ),
-                local_method.function(),
-            );
-            source_abis.insert(
-                (
-                    provider_method.method_slot(),
-                    provider_method.method_abi_id().as_str().to_string(),
-                ),
-                local_method.method_abi_id().as_str().to_string(),
-            );
         }
-        if exact {
-            matched.push((methods, source_abis));
+        let provider_abi = provider_method.method_abi_id().as_str().to_string();
+        let key = (provider_method.method_slot(), provider_abi.clone());
+        if methods
+            .insert(
+                key,
+                CallbackMethodBinding {
+                    function: local_method.function(),
+                    provider_abi,
+                    source_abi: local_method.method_abi_id().as_str().to_string(),
+                },
+            )
+            .is_some()
+        {
+            return Err(BytecodeCallbackChildError::MissingFacts {
+                message: "provider callback method table repeats an exact method".to_string(),
+            });
         }
     }
-    if matched.len() != 1 {
-        return Err(projection_error(format!(
-            "provider callback interface table correlation is ambiguous or absent: {} matches",
-            matched.len()
-        )));
-    }
-    Ok(matched.remove(0))
+    Ok(CallbackMethodCorrelation {
+        provider_interface: row.interface().artifact().clone(),
+        methods,
+    })
 }
 
 fn local_interface_value(

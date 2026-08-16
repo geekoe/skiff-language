@@ -12,11 +12,11 @@ use skiff_artifact_model::{
     PackageActorAbi, PackageActorImplementation, PackageCallableLinkFact, PackageCallableParameter,
     PackageCallableSignature, PackageConfigAccess, PackageConfigRequirement,
     PackageExecutableCoordinate, PackageImplementationLinks, PackageLocalInterfaceConformance,
-    PackageRefIr, PackageRequirement, PackageSchemaCanonicalDescriptor, PackageSchemaTypeRecord,
-    PackageSymbolRef, PackageSyntheticCallbackOwner, PackageTypeRef, ParamIr, ParamModeIr,
-    PendingEffectCategory, ServiceProtocolIdentity, ServiceRequirement, ServiceSymbolRef,
-    TypeDescriptorIr, TypeExport, TypeRefIr, ValueProvenance, ACTOR_RUNTIME_ABI_VERSION_V1,
-    PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    PackageRefIr, PackageRequirement, PackageSchemaCanonicalDescriptor, PackageSchemaTypeId,
+    PackageSchemaTypeRecord, PackageSchemaTypeRef, PackageSymbolRef, PackageSyntheticCallbackOwner,
+    PackageTypeRef, ParamIr, ParamModeIr, PendingEffectCategory, ServiceProtocolIdentity,
+    ServiceRequirement, ServiceSymbolRef, TypeDescriptorIr, TypeExport, TypeRefIr, ValueProvenance,
+    ACTOR_RUNTIME_ABI_VERSION_V1, PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 use super::*;
@@ -1675,6 +1675,17 @@ fn add_synthetic_callback_owner(
             owner,
             site_ordinal,
             package_callable_id: package_callable_id.clone(),
+            interface: InterfaceInstantiationRef {
+                interface_abi_id: "interface:reader".to_string(),
+                canonical_type_args: Vec::new(),
+            },
+            method_slot: 0,
+            method_abi_id: "method-abi:read".to_string(),
+            contract: PackageSchemaTypeRef {
+                package_id: artifact.package_id.clone(),
+                stable_schema_key: "Reader".to_string(),
+                package_schema_type_id: PackageSchemaTypeId::new("contract:reader"),
+            },
         });
     artifact
         .callable_semantic_facts

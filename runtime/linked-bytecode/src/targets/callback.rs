@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use skiff_artifact_model::{HostEffectExecutorIdentity, MetadataValue};
+use skiff_artifact_model::{HostEffectExecutorIdentity, MetadataValue, PackageSchemaTypeRef};
 
 use crate::{
     ArtifactCallbackCaptureIndex, ArtifactFunctionKey, CallbackCaptureLayoutIndex, FrameSlotIndex,
@@ -100,7 +100,7 @@ pub struct LinkedSyntheticCallbackTarget {
     index: SyntheticCallbackIndex,
     artifact_function_key: ArtifactFunctionKey,
     function: FunctionIndex,
-    interface_method: Option<LinkedCallbackInterfaceMethod>,
+    interface_method: LinkedCallbackInterfaceMethod,
     signature: LinkedCallableSignature,
 }
 
@@ -111,6 +111,7 @@ pub struct LinkedCallbackInterfaceMethod {
     interface_table: InterfaceTableIndex,
     method_slot: u32,
     method_abi_id: LinkedInterfaceMethodAbiId,
+    contract: PackageSchemaTypeRef,
 }
 
 impl LinkedCallbackInterfaceMethod {
@@ -118,11 +119,13 @@ impl LinkedCallbackInterfaceMethod {
         interface_table: InterfaceTableIndex,
         method_slot: u32,
         method_abi_id: LinkedInterfaceMethodAbiId,
+        contract: PackageSchemaTypeRef,
     ) -> Self {
         Self {
             interface_table,
             method_slot,
             method_abi_id,
+            contract,
         }
     }
 
@@ -137,6 +140,10 @@ impl LinkedCallbackInterfaceMethod {
     pub const fn method_abi_id(&self) -> &LinkedInterfaceMethodAbiId {
         &self.method_abi_id
     }
+
+    pub const fn contract(&self) -> &PackageSchemaTypeRef {
+        &self.contract
+    }
 }
 
 impl LinkedSyntheticCallbackTarget {
@@ -144,7 +151,7 @@ impl LinkedSyntheticCallbackTarget {
         index: SyntheticCallbackIndex,
         artifact_function_key: ArtifactFunctionKey,
         function: FunctionIndex,
-        interface_method: Option<LinkedCallbackInterfaceMethod>,
+        interface_method: LinkedCallbackInterfaceMethod,
         signature: LinkedCallableSignature,
     ) -> Self {
         Self {
@@ -168,8 +175,8 @@ impl LinkedSyntheticCallbackTarget {
         self.function
     }
 
-    pub const fn interface_method(&self) -> Option<&LinkedCallbackInterfaceMethod> {
-        self.interface_method.as_ref()
+    pub const fn interface_method(&self) -> &LinkedCallbackInterfaceMethod {
+        &self.interface_method
     }
 
     pub const fn signature(&self) -> &LinkedCallableSignature {

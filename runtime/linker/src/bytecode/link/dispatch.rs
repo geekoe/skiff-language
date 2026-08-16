@@ -15,15 +15,15 @@ use skiff_artifact_model::{
 use skiff_runtime_linked_bytecode::{
     ArtifactFunctionKey, FunctionIndex, InterfaceTableIndex, LinkedActorCreateTarget,
     LinkedActorImplementationRef, LinkedActorMethodTarget, LinkedCallableSignature,
-    LinkedFrameLayout, LinkedHostEffectAdapterTarget, LinkedInterfaceInstantiation,
-    LinkedInterfaceMethodAbiId, LinkedInterfaceRequirementMethod, LinkedInterfaceRequirementTable,
-    LinkedInterfaceTable, LinkedInterfaceTableKind, LinkedLocalInterfaceMethod,
-    LinkedLocalInterfaceTable, LinkedNativeCallableSignature, LinkedPublicInstanceKey,
-    LinkedRemoteInterfaceMethod, LinkedRemoteInterfaceTable, LinkedServiceBoundaryErrorPlan,
-    LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue, LinkedServiceCallbackPlan,
-    LinkedServiceOperationTarget, LinkedSyntheticCallbackTarget, LinkedTaskPayloadParameter,
-    LinkedTaskPayloadPlan, LinkedTaskTarget, LinkedTaskTiming, ServiceOperationIndex,
-    SpecializationKey, TaskTargetIndex,
+    LinkedCallbackInterfaceMethod, LinkedFrameLayout, LinkedHostEffectAdapterTarget,
+    LinkedInterfaceInstantiation, LinkedInterfaceMethodAbiId, LinkedInterfaceRequirementMethod,
+    LinkedInterfaceRequirementTable, LinkedInterfaceTable, LinkedInterfaceTableKind,
+    LinkedLocalInterfaceMethod, LinkedLocalInterfaceTable, LinkedNativeCallableSignature,
+    LinkedPublicInstanceKey, LinkedRemoteInterfaceMethod, LinkedRemoteInterfaceTable,
+    LinkedServiceBoundaryErrorPlan, LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue,
+    LinkedServiceCallbackPlan, LinkedServiceOperationTarget, LinkedSyntheticCallbackTarget,
+    LinkedTaskPayloadParameter, LinkedTaskPayloadPlan, LinkedTaskTarget, LinkedTaskTiming,
+    ServiceOperationIndex, SpecializationKey, TaskTargetIndex,
 };
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
@@ -60,15 +60,20 @@ impl DeploymentLinker<'_> {
         let service_operations = self.link_service_operations(reachable, type_linker)?;
         let (actor_creates, actor_methods) =
             self.link_actor_targets(indices, frames, type_linker)?;
-        let (interface_tables, requirement_keys) = self.link_interface_tables(
+        let (mut interface_tables, requirement_keys) = self.link_interface_tables(
             reachable,
             indices,
             frames,
             type_linker,
             &service_operations,
         )?;
-        let synthetic_callbacks =
-            self.link_synthetic_callbacks(reachable, indices, frames, type_linker)?;
+        let synthetic_callbacks = self.link_synthetic_callbacks(
+            reachable,
+            indices,
+            frames,
+            type_linker,
+            &mut interface_tables,
+        )?;
         let (host_effect_adapters, intrinsics, task_submit_indices) =
             self.link_host_and_intrinsics(reachable, indices, frames, type_linker)?;
 
@@ -2262,7 +2267,8 @@ impl DeploymentLinker<'_> {
         reachable: &[ReachableRelocation],
         indices: &BTreeMap<SpecializationKey, FunctionIndex>,
         frames: &[LinkedFrameLayout],
-        _type_linker: &mut TypeLinker<'_>,
+        type_linker: &mut TypeLinker<'_>,
+        interface_tables: &mut Vec<LinkedInterfaceTable>,
     ) -> Result<Vec<LinkedSyntheticCallbackTarget>, BytecodeLinkError> {
         let mut targets = Vec::new();
         let mut seen = BTreeSet::new();
@@ -2311,11 +2317,128 @@ impl DeploymentLinker<'_> {
                 location.clone(),
             )?;
             let signature = frame_signature(frame, effects, location)?;
+            let owner = package
+                .artifact()
+                .synthetic_callback_owners
+                .iter()
+                .find(|row| row.package_callable_id == *key.template_function_key())
+                .ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        self.package_location(package),
+                        format!(
+                            "synthetic callback {function_key} has no exact interface method fact"
+                        ),
+                    )
+                })?;
+            let method_abi = LinkedInterfaceMethodAbiId::parse(owner.method_abi_id.clone())
+                .map_err(|error| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        self.package_location(package),
+                        format!("synthetic callback {function_key} method ABI is invalid: {error}"),
+                    )
+                })?;
+            let table_index = if let Some(table) = interface_tables.iter().find(|table| {
+                table.interface().artifact() == &owner.interface
+                    && matches!(
+                        table.kind(),
+                        LinkedInterfaceTableKind::Callback(requirement)
+                            if requirement.methods().iter().any(|method| {
+                                method.method_slot() == owner.method_slot
+                                    && method.method_abi_id().as_str() == owner.method_abi_id
+                            })
+                    )
+            }) {
+                table.index()
+            } else {
+                let linked_interface = self.link_interface_instantiation(
+                    package,
+                    &reference.specialization,
+                    &owner.interface,
+                    type_linker,
+                    self.package_location(package),
+                )?;
+                let method = LinkedInterfaceRequirementMethod::new(
+                    owner.method_slot,
+                    method_abi.clone(),
+                    signature.clone(),
+                );
+                let requirement = LinkedInterfaceRequirementTable::new(Box::new([method]))
+                    .map_err(|error| {
+                        unsatisfied(
+                            BytecodeLinkObligation::ConcreteTargetTables,
+                            self.package_location(package),
+                            format!(
+                            "synthetic callback {function_key} interface table is invalid: {error}"
+                        ),
+                        )
+                    })?;
+                let index = InterfaceTableIndex::new(interface_tables.len() as u32);
+                interface_tables.push(LinkedInterfaceTable::new(
+                    index,
+                    linked_interface,
+                    LinkedInterfaceTableKind::Callback(requirement),
+                ));
+                index
+            };
+            let table = interface_tables
+                .get(table_index.get() as usize)
+                .filter(|table| table.index() == table_index)
+                .ok_or_else(|| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        self.package_location(package),
+                        format!("synthetic callback {function_key} interface table is absent"),
+                    )
+                })?;
+            let requirement_method = match table.kind() {
+                LinkedInterfaceTableKind::Callback(requirement) => requirement
+                    .methods()
+                    .iter()
+                    .find(|method| {
+                        method.method_slot() == owner.method_slot
+                            && method.method_abi_id().as_str() == owner.method_abi_id
+                    })
+                    .ok_or_else(|| {
+                        unsatisfied(
+                            BytecodeLinkObligation::ConcreteTargetTables,
+                            self.package_location(package),
+                            format!(
+                                "synthetic callback {function_key} method is absent from its exact interface table"
+                            ),
+                        )
+                    })?,
+                _ => {
+                    return Err(unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        self.package_location(package),
+                        format!(
+                            "synthetic callback {function_key} linked table is not a callback table"
+                        ),
+                    ));
+                }
+            };
+            if requirement_method.signature() != &signature {
+                return Err(unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    self.package_location(package),
+                    format!(
+                        "synthetic callback {function_key} signature drifts from its exact interface method"
+                    ),
+                ));
+            }
+            let interface_method = LinkedCallbackInterfaceMethod::new(
+                table_index,
+                owner.method_slot,
+                method_abi,
+                owner.contract.clone(),
+            );
             targets.push(LinkedSyntheticCallbackTarget::new(
                 skiff_runtime_linked_bytecode::SyntheticCallbackIndex::new(targets.len() as u32),
                 key.artifact_function_key().clone(),
                 function,
-                None,
+                interface_method,
                 signature,
             ));
         }

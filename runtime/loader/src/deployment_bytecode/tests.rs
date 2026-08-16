@@ -13,12 +13,12 @@ use skiff_artifact_model::{
     PackageExecutableCoordinate, PackageImplementationLinks, PackageLocalAbi,
     PackageLocalAbiIdentity, PackageLocalAbiSymbol, PackageRuntimeRequirements,
     PackageSchemaCanonicalDescriptor, PackageSchemaIndexIdentity, PackageSchemaIndexRef,
-    PackageSchemaTypeRecord, PackageSyntheticCallbackOwner, PackageTypeRef, ParameterSlotDecl,
-    RelocatableBytecodeFunction, ServiceProtocolIdentity, ServiceSelectorBinding, SourceMapEntry,
-    StatementAttributionId, StatementEntry, SyntheticInstructionSiteReason, TypeRefIr,
-    ValueDropPlan, ValueTransferPlan, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
-    BYTECODE_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    PackageSchemaTypeId, PackageSchemaTypeRecord, PackageSchemaTypeRef,
+    PackageSyntheticCallbackOwner, PackageTypeRef, ParameterSlotDecl, RelocatableBytecodeFunction,
+    ServiceProtocolIdentity, ServiceSelectorBinding, SourceMapEntry, StatementAttributionId,
+    StatementEntry, SyntheticInstructionSiteReason, TypeRefIr, ValueDropPlan, ValueTransferPlan,
+    BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 
 fn admitted_bytecode(seed: &str) -> Arc<ValidatedBytecodeArtifact> {
@@ -548,6 +548,17 @@ fn add_synthetic_callback_owner(
             owner: owner.clone(),
             site_ordinal: 0,
             package_callable_id: callback_callable.clone(),
+            interface: skiff_artifact_model::InterfaceInstantiationRef {
+                interface_abi_id: "interface:reader".to_string(),
+                canonical_type_args: Vec::new(),
+            },
+            method_slot: 0,
+            method_abi_id: "method-abi:read".to_string(),
+            contract: PackageSchemaTypeRef {
+                package_id: artifact.package_id.clone(),
+                stable_schema_key: "Reader".to_string(),
+                package_schema_type_id: PackageSchemaTypeId::new("contract:reader"),
+            },
         });
     artifact
         .callable_semantic_facts

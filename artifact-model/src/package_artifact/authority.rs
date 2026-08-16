@@ -7,7 +7,8 @@ use sha2::Digest;
 use crate::{
     validate_bytecode_statement_manifest_identity,
     validate_bytecode_statement_manifest_identity_lexical, PackageArtifact, PackageCallableId,
-    PackageExecutableCoordinate, PackageLocalAbiSymbol, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    PackageExecutableCoordinate, PackageLocalAbiSymbol, PackageSchemaTypeRef,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 pub const PACKAGE_SYNTHETIC_CALLBACK_CALLABLE_IDENTITY_SCHEMA_MARKER: &str =
@@ -16,12 +17,16 @@ pub const PACKAGE_SYNTHETIC_CALLBACK_CALLABLE_IDENTITY_PREFIX: &str =
     "skiff-package-synthetic-callback-callable-v1:sha256";
 pub const MAX_PACKAGE_SYNTHETIC_CALLBACK_OWNERS: u64 = 1_000_000;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PackageSyntheticCallbackOwner {
     pub owner: PackageExecutableCoordinate,
     pub site_ordinal: u32,
     pub package_callable_id: PackageCallableId,
+    pub interface: crate::InterfaceInstantiationRef,
+    pub method_slot: u32,
+    pub method_abi_id: String,
+    pub contract: PackageSchemaTypeRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -183,6 +188,17 @@ pub fn validate_package_build_authority(
     let mut synthetic_ids = BTreeSet::new();
     for row in &artifact.synthetic_callback_owners {
         validate_coordinate(&row.owner)?;
+        if row.interface.interface_abi_id.is_empty()
+            || row.method_abi_id.is_empty()
+            || row.contract.package_id.is_empty()
+            || row.contract.stable_schema_key.is_empty()
+            || row.contract.package_schema_type_id.as_str().is_empty()
+        {
+            return invalid(format!(
+                "synthetic callback at {:?}/{} lacks exact interface method or contract facts",
+                row.owner, row.site_ordinal
+            ));
+        }
         let key = (&row.owner, row.site_ordinal);
         if previous_site.is_some_and(|previous| previous >= key) {
             return invalid(

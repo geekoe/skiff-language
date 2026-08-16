@@ -257,6 +257,7 @@ fn root_function(program: RootProgram) -> RelocatableBytecodeFunction {
             | RootProgram::StreamNextLoop
             | RootProgram::StreamProducer
             | RootProgram::ReorderedStreamResumePool
+            | RootProgram::SyntheticTarget
             | RootProgram::Constant(_) => 1,
             _ => 0,
         },
@@ -359,7 +360,22 @@ fn callback_function(owner_index: u32) -> RelocatableBytecodeFunction {
         words: vec![0x25],
         relocations: Vec::new(),
         call_loan_layouts: Vec::new(),
-        frame_layout: empty_frame(),
+        frame_layout: FrameLayout {
+            slot_count: 1,
+            slot_type_refs: vec![0],
+            parameter_slots: vec![ParameterSlotDecl {
+                slot: 0,
+                mode: skiff_artifact_model::ParamModeIr::Value,
+                plan: snapshot_plan(),
+                dense_record_shape_ref: None,
+            }],
+            writable_local_slots: Vec::new(),
+            result_count: 0,
+            result_type_refs: Vec::new(),
+            result_plans: Vec::new(),
+            stream_result_type_ref: None,
+            slot_plans: vec![snapshot_plan()],
+        },
         max_operand_depth: 0,
         effect_summary_ref: synthetic_callback_callable_for(if owner_index == 0 {
             ROOT_CALLABLE
@@ -602,13 +618,9 @@ fn root_body(
             vec![source_map(0, 4)],
         ),
         RootProgram::SyntheticTarget => (
-            vec![0x20, 0, 0, 0, 0x25],
-            vec![BytecodeRelocation::LocalExecutableRef {
+            vec![0x32, 0, 0, 0, 0x08, 0x25],
+            vec![BytecodeRelocation::SyntheticCallbackRef {
                 function_key: CALLBACK_FUNCTION.to_string(),
-                specialization: BytecodeSpecialization {
-                    type_arguments: Vec::new(),
-                    concrete_receiver: None,
-                },
             }],
             None,
             vec![source_map(0, 4)],
@@ -914,6 +926,21 @@ fn pools(program: RootProgram) -> BytecodePools {
                     },
                 )]
             }
+            RootProgram::SyntheticTarget => vec![
+                type_entry(TypeRefIr::builtin("string"), snapshot_plan()),
+                type_entry(
+                    TypeRefIr::AnyInterface {
+                        interface: skiff_artifact_model::InterfaceInstantiationRef {
+                            interface_abi_id: interface_identity(),
+                            canonical_type_args: Vec::new(),
+                        },
+                    },
+                    snapshot_plan(),
+                ),
+            ],
+            RootProgram::UnreachableCallback => {
+                vec![type_entry(TypeRefIr::builtin("string"), snapshot_plan())]
+            }
             RootProgram::RemoteInterface => {
                 let record = super::records::std_service_internal_error_record();
                 vec![
@@ -982,15 +1009,18 @@ fn pools(program: RootProgram) -> BytecodePools {
                 .into_iter()
                 .collect(),
         },
-        callback_capture: (program == RootProgram::UnreachableCallback)
-            .then(|| {
-                BytecodePoolEntry::CallbackCaptureLayout(CallbackCaptureLayout {
-                    function_key: CALLBACK_FUNCTION.to_string(),
-                    captures: Vec::new(),
-                })
+        callback_capture: matches!(
+            program,
+            RootProgram::SyntheticTarget | RootProgram::UnreachableCallback
+        )
+        .then(|| {
+            BytecodePoolEntry::CallbackCaptureLayout(CallbackCaptureLayout {
+                function_key: CALLBACK_FUNCTION.to_string(),
+                captures: Vec::new(),
             })
-            .into_iter()
-            .collect(),
+        })
+        .into_iter()
+        .collect(),
         writable_paths: Vec::new(),
     }
 }

@@ -1,8 +1,23 @@
 use super::*;
 use crate::{
-    derive_synthetic_callback_callable_id, validate_package_build_authority,
+    derive_synthetic_callback_callable_id, validate_package_build_authority, PackageSchemaTypeRef,
     PackageSyntheticCallbackOwner, PACKAGE_SYNTHETIC_CALLBACK_CALLABLE_IDENTITY_PREFIX,
 };
+
+fn interface_method() -> crate::InterfaceInstantiationRef {
+    crate::InterfaceInstantiationRef {
+        interface_abi_id: "interface:reader".to_string(),
+        canonical_type_args: Vec::new(),
+    }
+}
+
+fn callback_contract() -> PackageSchemaTypeRef {
+    PackageSchemaTypeRef {
+        package_id: PACKAGE_ID.to_string(),
+        stable_schema_key: "Reader".to_string(),
+        package_schema_type_id: crate::PackageSchemaTypeId::new("contract:reader"),
+    }
+}
 
 fn add_synthetic(artifact: &mut PackageArtifact, site_ordinal: u32) -> PackageCallableId {
     let callable_id = derive_synthetic_callback_callable_id(
@@ -17,6 +32,10 @@ fn add_synthetic(artifact: &mut PackageArtifact, site_ordinal: u32) -> PackageCa
             owner: owner_coordinate(),
             site_ordinal,
             package_callable_id: callable_id.clone(),
+            interface: interface_method(),
+            method_slot: 0,
+            method_abi_id: "method-abi:read".to_string(),
+            contract: callback_contract(),
         });
     artifact
         .callable_semantic_facts
@@ -89,6 +108,29 @@ fn synthetic_owner_drift_unknown_owner_and_coverage_fail_closed() {
     artifact
         .callable_links
         .insert(synthetic_id.clone(), ordinary_link);
+    assert!(validate_package_build_authority(&artifact).is_err());
+}
+
+#[test]
+fn synthetic_owner_missing_or_drifted_interface_facts_fail_closed() {
+    let mut artifact = authority_artifact();
+    let synthetic_id = add_synthetic(&mut artifact, 0);
+    let row = artifact
+        .synthetic_callback_owners
+        .iter_mut()
+        .find(|row| row.package_callable_id == synthetic_id)
+        .expect("synthetic row exists");
+    row.method_abi_id.clear();
+    assert!(validate_package_build_authority(&artifact).is_err());
+
+    let mut artifact = authority_artifact();
+    let synthetic_id = add_synthetic(&mut artifact, 0);
+    let row = artifact
+        .synthetic_callback_owners
+        .iter_mut()
+        .find(|row| row.package_callable_id == synthetic_id)
+        .expect("synthetic row exists");
+    row.contract.package_schema_type_id = crate::PackageSchemaTypeId::new("");
     assert!(validate_package_build_authority(&artifact).is_err());
 }
 

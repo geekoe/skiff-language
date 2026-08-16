@@ -446,3 +446,171 @@ async fn read_http_request(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
     request.truncate(header_end + content_length);
     request
 }
+
+fn callback_signature() -> skiff_runtime_linked_bytecode::LinkedCallableSignature {
+    use skiff_artifact_model::{CallableEffectSummary, ParamModeIr};
+    use skiff_runtime_linked_bytecode::{
+        LinkedCallableSignature, LinkedValueDropPlan, LinkedValueTransferPlan, TypeIndex,
+    };
+    LinkedCallableSignature::new(
+        Box::new([TypeIndex::new(0)]),
+        Box::new([ParamModeIr::Value]),
+        Box::new([LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::Trivial,
+        }]),
+        Box::new([TypeIndex::new(0)]),
+        Box::new([LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::Trivial,
+        }]),
+        CallableEffectSummary::analysis_pending(),
+    )
+    .expect("callback fixture signature has one mode and plan per type")
+}
+
+fn callback_interface(package_id: &str) -> skiff_artifact_model::InterfaceInstantiationRef {
+    skiff_artifact_model::InterfaceInstantiationRef {
+        interface_abi_id: format!(
+            "{{\"symbol\":{{\"package\":{{\"packageId\":\"{package_id}\"}},\"symbolPath\":\"Reader\"}}}}"
+        ),
+        canonical_type_args: Vec::new(),
+    }
+}
+
+fn callback_local_table(
+    method_abi: &str,
+) -> skiff_runtime_linked_bytecode::LinkedLocalInterfaceTable {
+    use skiff_artifact_model::ReceiverCallAbi;
+    use skiff_runtime_linked_bytecode::{
+        FunctionIndex, LinkedInterfaceMethodAbiId, LinkedLocalInterfaceMethod,
+        LinkedLocalInterfaceTable, TypeIndex,
+    };
+    let method = LinkedLocalInterfaceMethod::new(
+        0,
+        "handle",
+        LinkedInterfaceMethodAbiId::parse(method_abi).expect("fixture method ABI"),
+        callback_signature(),
+        FunctionIndex::new(1),
+        ReceiverCallAbi::ExplicitSelfFirst,
+    )
+    .expect("fixture local method is canonical");
+    LinkedLocalInterfaceTable::new(TypeIndex::new(0), Box::new([method]))
+        .expect("fixture local table is canonical")
+}
+
+fn callback_provider_table(
+    interface: &skiff_artifact_model::InterfaceInstantiationRef,
+    method_abi: &str,
+) -> skiff_runtime_linked_bytecode::LinkedInterfaceTable {
+    use skiff_runtime_linked_bytecode::{
+        InterfaceTableIndex, LinkedInterfaceInstantiation, LinkedInterfaceMethodAbiId,
+        LinkedInterfaceRequirementMethod, LinkedInterfaceRequirementTable, LinkedInterfaceTable,
+        LinkedInterfaceTableKind,
+    };
+    let method = LinkedInterfaceRequirementMethod::new(
+        0,
+        LinkedInterfaceMethodAbiId::parse(method_abi).expect("fixture method ABI"),
+        callback_signature(),
+    );
+    let requirement = LinkedInterfaceRequirementTable::new(Box::new([method]))
+        .expect("fixture callback requirement is canonical");
+    let instantiation = LinkedInterfaceInstantiation::new(interface.clone(), Box::new([]))
+        .expect("fixture interface instantiation is canonical");
+    LinkedInterfaceTable::new(
+        InterfaceTableIndex::new(0),
+        instantiation,
+        LinkedInterfaceTableKind::Callback(requirement),
+    )
+}
+
+#[test]
+fn callback_methods_correlates_exact_interface_and_method_abi() {
+    let interface = callback_interface("example.com/provider");
+    let local = callback_local_table("method-abi:handle");
+    let provider = callback_provider_table(&interface, "method-abi:handle");
+    let correlation = callback_methods(&local, &interface, &[provider])
+        .expect("exact provider ABI should correlate");
+    assert_eq!(correlation.provider_interface, interface);
+    let binding = correlation
+        .methods
+        .get(&(0, "method-abi:handle".to_string()))
+        .expect("provider ABI key is exact");
+    assert_eq!(
+        binding.function,
+        skiff_runtime_linked_bytecode::FunctionIndex::new(1)
+    );
+    assert_eq!(binding.source_abi, "method-abi:handle");
+}
+
+#[test]
+fn callback_methods_rejects_same_method_name_with_different_abi() {
+    let interface = callback_interface("example.com/provider");
+    let local = callback_local_table("method-abi:caller-handle");
+    let provider = callback_provider_table(&interface, "method-abi:provider-handle");
+    // The provider method has the same slot and semantic name as the caller
+    // method but a different exact ABI; suffix/name correlation must fail.
+    assert!(matches!(
+        callback_methods(&local, &interface, &[provider]),
+        Err(skiff_runtime_request::BytecodeCallbackChildError::WrongOperation { .. })
+    ));
+}
+
+#[test]
+fn callback_methods_rejects_cross_package_interface_even_with_same_stable_key() {
+    let local_interface = callback_interface("example.com/caller");
+    let provider_interface = callback_interface("example.com/provider");
+    let local = callback_local_table("method-abi:handle");
+    let provider = callback_provider_table(&provider_interface, "method-abi:handle");
+    assert!(matches!(
+        callback_methods(&local, &local_interface, &[provider]),
+        Err(skiff_runtime_request::BytecodeCallbackChildError::MissingFacts { .. })
+    ));
+}
+
+#[test]
+fn callback_methods_rejects_provider_signature_drift() {
+    use skiff_artifact_model::{CallableEffectSummary, ParamModeIr};
+    use skiff_runtime_linked_bytecode::{
+        InterfaceTableIndex, LinkedCallableSignature, LinkedInterfaceInstantiation,
+        LinkedInterfaceMethodAbiId, LinkedInterfaceRequirementMethod,
+        LinkedInterfaceRequirementTable, LinkedInterfaceTable, LinkedInterfaceTableKind,
+        LinkedValueDropPlan, LinkedValueTransferPlan, TypeIndex,
+    };
+    let interface = callback_interface("example.com/provider");
+    let local = callback_local_table("method-abi:handle");
+    let drifted = LinkedCallableSignature::new(
+        Box::new([TypeIndex::new(0), TypeIndex::new(1)]),
+        Box::new([ParamModeIr::Value, ParamModeIr::Value]),
+        Box::new([
+            LinkedValueTransferPlan::SnapshotShare {
+                drop: LinkedValueDropPlan::Trivial,
+            },
+            LinkedValueTransferPlan::SnapshotShare {
+                drop: LinkedValueDropPlan::Trivial,
+            },
+        ]),
+        Box::new([TypeIndex::new(0)]),
+        Box::new([LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::Trivial,
+        }]),
+        CallableEffectSummary::analysis_pending(),
+    )
+    .expect("drifted fixture signature is valid");
+    let method = LinkedInterfaceRequirementMethod::new(
+        0,
+        LinkedInterfaceMethodAbiId::parse("method-abi:handle").expect("fixture method ABI"),
+        drifted,
+    );
+    let requirement = LinkedInterfaceRequirementTable::new(Box::new([method]))
+        .expect("drifted fixture requirement is canonical");
+    let instantiation = LinkedInterfaceInstantiation::new(interface.clone(), Box::new([]))
+        .expect("fixture interface instantiation is canonical");
+    let provider = LinkedInterfaceTable::new(
+        InterfaceTableIndex::new(0),
+        instantiation,
+        LinkedInterfaceTableKind::Callback(requirement),
+    );
+    assert!(matches!(
+        callback_methods(&local, &interface, &[provider]),
+        Err(skiff_runtime_request::BytecodeCallbackChildError::SignatureMismatch { .. })
+    ));
+}

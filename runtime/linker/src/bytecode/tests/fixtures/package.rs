@@ -9,8 +9,9 @@ use skiff_artifact_model::{
     PackageCallableLinkFact, PackageCallableSignature, PackageExecutableCoordinate,
     PackageImplementationLinks, PackageLocalAbi, PackageLocalAbiIdentity, PackageLocalAbiSymbol,
     PackageLocalInterfaceConformance, PackageRuntimeRequirements, PackageSchemaIndexIdentity,
-    PackageSchemaIndexRef, PackageSyntheticCallbackOwner, PackageTypeRef, TypeDescriptorIr,
-    TypeExport, TypeRefIr, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    PackageSchemaIndexRef, PackageSchemaTypeId, PackageSchemaTypeRef,
+    PackageSyntheticCallbackOwner, PackageTypeRef, TypeDescriptorIr, TypeExport, TypeRefIr,
+    PACKAGE_ARTIFACT_SCHEMA_VERSION,
 };
 
 use super::{
@@ -85,6 +86,8 @@ pub(super) fn package(
             | RootProgram::RemoteInterface
             | RootProgram::LocalInterface
             | RootProgram::UnreachableInterface
+            | RootProgram::SyntheticTarget
+            | RootProgram::UnreachableCallback
     ) {
         implementation_symbols.insert(
             "fixture.Reader".to_string(),
@@ -216,6 +219,8 @@ pub(super) fn package(
                         | RootProgram::RemoteInterface
                         | RootProgram::LocalInterface
                         | RootProgram::UnreachableInterface
+                        | RootProgram::SyntheticTarget
+                        | RootProgram::UnreachableCallback
                 ) {
                     types.insert(
                         "fixture.Reader".to_string(),
@@ -280,6 +285,17 @@ pub(super) fn package(
                 },
                 site_ordinal: 0,
                 package_callable_id,
+                interface: InterfaceInstantiationRef {
+                    interface_abi_id: interface_identity(),
+                    canonical_type_args: Vec::new(),
+                },
+                method_slot: 0,
+                method_abi_id: "method-abi:read".to_string(),
+                contract: PackageSchemaTypeRef {
+                    package_id: package_id.to_string(),
+                    stable_schema_key: "fixture.Reader".to_string(),
+                    package_schema_type_id: PackageSchemaTypeId::new("contract:reader"),
+                },
             })
             .into_iter()
             .collect(),

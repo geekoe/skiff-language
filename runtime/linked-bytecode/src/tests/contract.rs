@@ -9,8 +9,8 @@ use skiff_artifact_model::{
     ContractOperationId, ContractTypeDescriptor, ContractTypeRef, GatewayAdapterKind,
     GatewayAdapterPlan, HostEffectExecutorIdentity, InterfaceInstantiationRef,
     NativeValueAdapterRole, NativeValueLifecycleAdapter, PackageBuildId, PackageCallableId,
-    PackageSchemaCanonicalDescriptor, ReceiverCallAbi, ServiceProtocolIdentity,
-    ServiceRequirementKey, ServiceSymbolRef, TypeRefIr, ValueProvenance,
+    PackageSchemaCanonicalDescriptor, PackageSchemaTypeId, PackageSchemaTypeRef, ReceiverCallAbi,
+    ServiceProtocolIdentity, ServiceRequirementKey, ServiceSymbolRef, TypeRefIr, ValueProvenance,
 };
 
 use crate::{
@@ -493,22 +493,25 @@ fn callback_capture_and_interface_correlation_keep_full_plan() {
         2,
         LinkedInterfaceMethodAbiId::parse("method-abi:visit")
             .expect("fixture method ABI is canonical"),
+        PackageSchemaTypeRef {
+            package_id: "example.observer".to_string(),
+            stable_schema_key: "Observer".to_string(),
+            package_schema_type_id: PackageSchemaTypeId::new("contract:observer"),
+        },
     );
     let callback = LinkedSyntheticCallbackTarget::new(
         SyntheticCallbackIndex::new(0),
         artifact_function_key("module::callback"),
         FunctionIndex::new(0),
-        Some(method),
+        method,
         signature(),
     );
 
     assert_eq!(capture_layout.captures()[0].plan(), &snapshot_plan());
+    assert_eq!(callback.interface_method().method_slot(), 2);
     assert_eq!(
-        callback
-            .interface_method()
-            .expect("fixture has interface correlation")
-            .method_slot(),
-        2
+        callback.interface_method().contract().stable_schema_key,
+        "Observer"
     );
 }
 
