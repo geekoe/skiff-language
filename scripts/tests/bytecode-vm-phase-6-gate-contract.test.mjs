@@ -80,7 +80,7 @@ test('r1 matrix commands pin exact expected-red counts for every new prefix', ()
   const expectedTests = {
     'p6-service-matrix': 6,
     'p6-interface-local-matrix': 12,
-    'p6-interface-remote-matrix': 6,
+    'p6-interface-remote-matrix': 8,
     'p6-callback-matrix': 7,
     'p6-recoverable-matrix': 8,
     'p6-db-matrix': 6,

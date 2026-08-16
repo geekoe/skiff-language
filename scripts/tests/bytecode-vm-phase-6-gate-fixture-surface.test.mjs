@@ -120,7 +120,7 @@ test('J2 focused fixtures use unary owner-internal production paths', async () =
   assert.match(localHttp, /path: \/phase-6\/interface-local\n/);
   assert.match(
     hostChain,
-    /Capability::Service\s*\|\s*Capability::InterfaceLocal\s*\|\s*Capability::Recoverable\s*\|\s*Capability::Db\s*\|\s*Capability::Task\s*\|\s*Capability::Callback\s*\|\s*Capability::Actor/,
+    /Capability::Service\s*\|\s*Capability::InterfaceLocal\s*\|\s*Capability::InterfaceRemote\s*\|\s*Capability::Recoverable\s*\|\s*Capability::Db\s*\|\s*Capability::Task\s*\|\s*Capability::Callback\s*\|\s*Capability::Actor/,
   );
   assert.match(hostChain, /let mode = if unary_json \{ "unary" \}/);
   assert.match(hostChain, /let body = if unary_json \{\s*b"7"\.as_slice\(\)/);
@@ -149,7 +149,7 @@ test('Rust matrices expose every registered prefix with the exact expected red c
   const expectedStageTests = new Map([
     ['service_', 6],
     ['interface_local_', 12],
-    ['interface_remote_', 6],
+    ['interface_remote_', 8],
     ['callback_', 7],
     ['recoverable_', 8],
     ['db_', 6],
