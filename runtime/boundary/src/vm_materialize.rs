@@ -547,14 +547,22 @@ pub fn release_boundary_source(
         .map_err(VmMaterializeError::from)
 }
 
-/// Converts a canonical contract type to a linked type row when the image
-/// carries the exact compiler-owned type fact.
-pub fn linked_type_for_contract(
+/// Checks the provider signature's exact type row against the linker-carried
+/// boundary value TypeRefIr. Same-type rows may appear more than once in an
+/// image, so the provider index is authoritative rather than a first match.
+pub fn boundary_value_matches_linked_type(
     image: &DeploymentExecutionImage,
-    contract_type: &ContractTypeRef,
-) -> Option<TypeIndex> {
-    let ty = contract_type_to_type_ref(contract_type).ok()?;
-    find_type_index_by_ref(image, &ty)
+    provider_type: TypeIndex,
+    value: &LinkedServiceBoundaryValue,
+) -> bool {
+    let position = usize::try_from(provider_type.get()).ok();
+    let Some(entry) = position
+        .and_then(|position| image.types().get(position))
+        .filter(|entry| entry.index() == provider_type)
+    else {
+        return false;
+    };
+    same_boundary_type(entry.type_ref(), value.linked_type_ref())
 }
 
 /// Resolves the exact provider-side callback carrier type when the contract's
@@ -711,5 +719,44 @@ fn contract_type_to_type_ref(ty: &ContractTypeRef) -> Result<TypeRefIr, VmMateri
         ContractTypeRef::TypeParam { name } => Err(VmMaterializeError::UnsupportedType {
             message: format!("{name:?}"),
         }),
+
+fn same_boundary_type(provider: &TypeRefIr, linked: &TypeRefIr) -> bool {
+    if provider == linked {
+        return true;
+    }
+    let (
+        TypeRefIr::AnyInterface {
+            interface: provider_interface,
+        },
+        TypeRefIr::AnyInterface {
+            interface: linked_interface,
+        },
+    ) = (provider, linked)
+    else {
+        return false;
+    };
+    interface_stable_key(provider_interface) == interface_stable_key(linked_interface)
+}
+
+fn interface_stable_key(interface: &InterfaceInstantiationRef) -> Option<(String, String)> {
+    let identity: TypeRefIr = serde_json::from_str(&interface.interface_abi_id).ok()?;
+    match identity {
+        TypeRefIr::PackageSchema {
+            package_id,
+            stable_schema_key,
+            ..
+        } => Some((package_id, stable_schema_key)),
+        TypeRefIr::PackageSymbol { symbol } => {
+            let PackageRefIr::PackageId { package_id } = symbol.package else {
+                return None;
+            };
+            let stable_schema_key = symbol
+                .symbol_path
+                .rsplit_once('.')
+                .map(|(_, symbol)| symbol.to_string())
+                .unwrap_or(symbol.symbol_path);
+            Some((package_id, stable_schema_key))
+        }
+        _ => None,
     }
 }

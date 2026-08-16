@@ -833,7 +833,7 @@ fn validate_actor_manifests(
         .types
         .values()
         .filter(|export| export.actor.is_some())
-        .map(|export| (export.file.module_path.as_str(), export.symbol.as_str()))
+        .map(actor_export_root)
         .collect::<BTreeSet<_>>();
     let implemented = artifact
         .actor_implementations
@@ -999,6 +999,17 @@ fn validate_actor_manifests(
     Ok(())
 }
 
+fn actor_export_root(export: &skiff_artifact_model::TypeExport) -> (&str, &str) {
+    (
+        export.file.module_path.as_str(),
+        export
+            .actor
+            .as_ref()
+            .map(|actor| actor.abi.actor_name.as_str())
+            .expect("actor link filter guarantees actor metadata"),
+    )
+}
+
 fn validate_conformance_manifests(
     reference: &PackageArtifactRef,
     bytecode: &ValidatedBytecodeArtifact,
@@ -1068,7 +1079,11 @@ fn actor_abi<'a>(
         .types
         .values()
         .filter(|export| {
-            export.file.module_path == actor.module_path && export.symbol == actor.symbol
+            export.file.module_path == actor.module_path
+                && export
+                    .actor
+                    .as_ref()
+                    .is_some_and(|abi| abi.abi.actor_name == actor.symbol)
         })
         .filter_map(|export| export.actor.as_ref());
     let selected = matches.next().ok_or_else(|| {
@@ -2579,5 +2594,46 @@ fn manifest_mismatch(
         package: Box::new(package.clone()),
         kind,
         detail,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skiff_artifact_model::{
+        ActorAbiIdentity, ActorAbiInput, ActorFieldEncodingIr, FileIrRef, PackageActorAbi,
+        TypeExport, ACTOR_RUNTIME_ABI_VERSION_V1,
+    };
+
+    #[test]
+    fn actor_export_root_uses_actor_name_not_symbol_spelling() {
+        let actor = PackageActorAbi {
+            actor_abi_identity: ActorAbiIdentity::new("actor-abi:test"),
+            abi: ActorAbiInput {
+                actor_name: "Counter".to_string(),
+                actor_id_type: TypeRefIr::builtin("string"),
+                key_field: "id".to_string(),
+                fields: vec![skiff_artifact_model::ActorFieldIr {
+                    name: "id".to_string(),
+                    ty: TypeRefIr::builtin("string"),
+                    encoding: ActorFieldEncodingIr::CanonicalValueV1,
+                }],
+                create: None,
+                public_methods: Vec::new(),
+                actor_runtime_abi_version: ACTOR_RUNTIME_ABI_VERSION_V1.to_string(),
+            },
+        };
+        let export = TypeExport {
+            file: FileIrRef::new("file-ir:actor", "main"),
+            type_index: 0,
+            symbol: "main.Counter".to_string(),
+            is_interface: false,
+            descriptor: None,
+            type_params: Vec::new(),
+            interface_methods: Vec::new(),
+            actor: Some(actor),
+        };
+
+        assert_eq!(actor_export_root(&export), ("main", "Counter"));
     }
 }

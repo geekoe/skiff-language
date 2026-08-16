@@ -16,6 +16,11 @@ pub(super) fn validate_package_type(
     packages: &BTreeMap<PackageBuildId, HydratedBytecodePackage>,
 ) -> Result<(), DeploymentBytecodeHydrationError> {
     let target = resolve_package_ref(caller, &symbol.package, deployment, packages)?;
+    if target.reference().package_id == "skiff.run/std"
+        && unique_actor_handle_owner(symbol.symbol_path.as_str(), packages).is_some()
+    {
+        return Ok(());
+    }
     validate_abi_expectation(caller, symbol, target)?;
     let abi = &target.artifact().package_local_abi;
     let public = abi.public_symbols.get(&symbol.symbol_path);
@@ -53,6 +58,24 @@ pub(super) fn validate_package_type(
             target.reference().package_build_id
         ),
     )
+}
+
+fn unique_actor_handle_owner<'a>(
+    symbol_path: &str,
+    packages: &'a BTreeMap<PackageBuildId, HydratedBytecodePackage>,
+) -> Option<&'a HydratedBytecodePackage> {
+    let mut owners = packages.values().filter(|package| {
+        package
+            .artifact()
+            .actor_implementations
+            .iter()
+            .any(|row| row.actor.symbol_path() == symbol_path)
+    });
+    let owner = owners.next()?;
+    if owners.next().is_some() {
+        return None;
+    }
+    Some(owner)
 }
 
 fn require_type_symbol(

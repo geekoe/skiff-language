@@ -176,6 +176,7 @@ fn service_boundary_plan() -> LinkedServiceBoundaryPlan {
         BoundaryDropPlan::SnapshotRelease,
         ValueProvenance::Fresh,
         TypeIndex::new(0),
+        TypeRefIr::builtin("string"),
     );
     LinkedServiceBoundaryPlan::new(
         Vec::new(),
@@ -197,6 +198,49 @@ fn service_boundary_plan() -> LinkedServiceBoundaryPlan {
         None,
         LinkedServiceCallbackPlan::None,
     )
+}
+
+#[test]
+fn linked_service_boundary_value_retains_exact_linked_type_ref() {
+    let linked_type = TypeRefIr::AnyInterface {
+        interface: InterfaceInstantiationRef {
+            interface_abi_id: "interface-abi:handler".to_string(),
+            canonical_type_args: Vec::new(),
+        },
+    };
+    let value = LinkedServiceBoundaryValue::new(
+        ContractTypeRef::AnyInterface {
+            interface: Box::new(ContractTypeRef::package_schema(
+                "example.com/callback".to_string(),
+                "Handler".to_string(),
+                derive_package_schema_type_id(
+                    "example.com/callback",
+                    "Handler",
+                    &PackageSchemaCanonicalDescriptor {
+                        type_params: Vec::new(),
+                        descriptor: ContractTypeDescriptor::Record {
+                            fields: BTreeMap::new(),
+                        },
+                    },
+                )
+                .unwrap(),
+            )),
+            arguments: Vec::new(),
+        },
+        BoundaryValuePlan::Linkable {
+            carrier: BoundaryValueCarrier::CallbackCapability,
+            encoding: BoundaryValueEncoding::OpaqueCapability,
+            owner: BoundaryValueOwner::CapabilityOwner,
+            lifetime: BoundaryValueLifetime::Request,
+        },
+        BoundaryTransfer::Copy,
+        BoundaryDropPlan::SnapshotRelease,
+        ValueProvenance::CallerParameter { index: 0 },
+        TypeIndex::new(0),
+        linked_type.clone(),
+    );
+
+    assert_eq!(value.linked_type_ref(), &linked_type);
 }
 
 fn std_service_internal_error() -> ContractTypeRef {

@@ -353,8 +353,20 @@ impl DeploymentLinker<'_> {
             specialization,
             &type_ref,
             &BTreeMap::new(),
-            location,
+            location.clone(),
         )?;
+        let linked_type_ref = type_linker
+            .linked_type_ref(caller_type)
+            .cloned()
+            .ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    format!(
+                        "service boundary contract type {contract_type:?} has no linked type row"
+                    ),
+                )
+            })?;
         Ok(LinkedServiceBoundaryValue::new(
             contract_type.clone(),
             value_plan.clone(),
@@ -362,6 +374,7 @@ impl DeploymentLinker<'_> {
             drop.clone(),
             source.clone(),
             caller_type,
+            linked_type_ref,
         ))
     }
 
@@ -384,7 +397,10 @@ impl DeploymentLinker<'_> {
                     .values()
                     .find(|export| {
                         export.file.module_path == actor.actor.module_path
-                            && export.symbol == actor.actor.symbol
+                            && export
+                                .actor
+                                .as_ref()
+                                .is_some_and(|abi| abi.abi.actor_name == actor.actor.symbol)
                     })
                     .and_then(|export| export.actor.as_ref())
                     .ok_or_else(|| {
@@ -3397,7 +3413,11 @@ impl DeploymentLinker<'_> {
             .types
             .values()
             .find(|export| {
-                export.file.module_path == actor.module_path && export.symbol == actor.symbol
+                export.file.module_path == actor.module_path
+                    && export
+                        .actor
+                        .as_ref()
+                        .is_some_and(|abi| abi.abi.actor_name == actor.symbol)
             })
             .and_then(|export| export.actor.as_ref())
             .is_some_and(|abi| abi.actor_abi_identity == *actor_abi_identity);

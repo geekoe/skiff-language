@@ -18,8 +18,10 @@ use skiff_artifact_identity::{
     ReleasePointerPath, ServiceContractPointerPath, ServiceDeploymentPointerPath,
 };
 use skiff_artifact_model::{
-    ContractRequirement, PackageArtifact, PackageRequirement, ServiceAuthoringKind,
+    BytecodePoolEntry, ContractRequirement, PackageArtifact, PackageRefIr, PackageRequirement,
+    ServiceAuthoringKind, TypeRefIr,
 };
+use skiff_compiler_core::type_ref::any_type_ref;
 use skiff_compiler_input::{
     package_config::{read_user_package_manifest, PackageManifest, PACKAGE_CONFIG_FILE},
     package_sources::read_package_sources,
@@ -218,6 +220,11 @@ fn build_package_after_platform_context_guard(
         }
         (published, bytecode, None, None)
     };
+    ensure_platform_std_bytecode_requirement(
+        &available,
+        &mut published.artifact,
+        bytecode.handoff(),
+    )?;
     for dependency in &contracts {
         if dependency.contract.package_type_requirements.is_empty() {
             continue;
@@ -592,6 +599,61 @@ fn read_optional_platform_std(
         );
     }
     Ok(())
+}
+
+fn ensure_platform_std_bytecode_requirement(
+    available: &[PackageArtifact],
+    artifact: &mut PackageArtifact,
+    bytecode: Option<&skiff_compiler_compiled::BytecodeCompilationHandoff>,
+) -> AuthoringResult<()> {
+    let Some(bytecode) = bytecode else {
+        return Ok(());
+    };
+    let references_std = bytecode.artifact().image.pools.types.iter().any(|entry| {
+        let BytecodePoolEntry::TypeRef { ty, .. } = entry else {
+            return false;
+        };
+        any_type_ref(ty, &mut |candidate| {
+            type_ref_owns_package(candidate, "skiff.run/std")
+        })
+    });
+    if !references_std
+        || artifact
+            .package_requirements
+            .iter()
+            .any(|requirement| requirement.package_id == "skiff.run/std")
+    {
+        return Ok(());
+    }
+    let std = available
+        .iter()
+        .find(|candidate| candidate.package_id == "skiff.run/std")
+        .ok_or_else(|| {
+            invalid_input(
+                "bytecode references skiff.run/std, but the exact std package is not available",
+            )
+        })?;
+    artifact.package_requirements.push(PackageRequirement {
+        alias: "std".to_string(),
+        package_id: std.package_id.clone(),
+        exact_version: std.package_version.clone(),
+        expected_local_abi: std.package_local_abi.local_abi_identity.clone(),
+        expected_package_build: None,
+    });
+    Ok(())
+}
+
+fn type_ref_owns_package(ty: &TypeRefIr, package_id: &str) -> bool {
+    match ty {
+        TypeRefIr::PackageSymbol { symbol } => matches!(
+            &symbol.package,
+            PackageRefIr::PackageId { package_id: owner } if owner == package_id
+        ),
+        TypeRefIr::PackageSchema {
+            package_id: owner, ..
+        } => owner == package_id,
+        _ => false,
+    }
 }
 
 fn reachable_package_closure(

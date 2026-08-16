@@ -76,6 +76,19 @@ impl TypeNormalizer<'_> {
         &self,
         symbol: &PackageSymbolRef,
     ) -> Result<TypeRefIr, BytecodeLinkError> {
+        if matches!(
+            &symbol.package,
+            PackageRefIr::PackageId { package_id } if package_id == "skiff.run/std"
+        ) && self.has_unique_actor_handle_owner(&symbol.symbol_path)
+        {
+            return Ok(TypeRefIr::PackageSymbol {
+                symbol: PackageSymbolRef {
+                    package: symbol.package.clone(),
+                    symbol_path: symbol.symbol_path.clone(),
+                    abi_expectation: symbol.abi_expectation.clone(),
+                },
+            });
+        }
         let target = match &symbol.package {
             PackageRefIr::Dependency { dependency_ref } => {
                 let (target, has_exact_build_authority) =
@@ -106,6 +119,17 @@ impl TypeNormalizer<'_> {
             }
         };
         Ok(self.exact_package_symbol(target, symbol.symbol_path.clone()))
+    }
+
+    fn has_unique_actor_handle_owner(&self, symbol_path: &str) -> bool {
+        let mut owners = self.deployment.packages().values().filter(|package| {
+            package
+                .artifact()
+                .actor_implementations
+                .iter()
+                .any(|row| row.actor.symbol_path() == symbol_path)
+        });
+        owners.next().is_some() && owners.next().is_none()
     }
 
     fn resolve_dependency(

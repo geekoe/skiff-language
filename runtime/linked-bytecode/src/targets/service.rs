@@ -1,6 +1,6 @@
 use skiff_artifact_model::{
     BoundaryDropPlan, BoundaryErrorPlan, BoundaryTransfer, BoundaryValuePlan, ContractTypeRef,
-    ValueProvenance,
+    TypeRefIr, ValueProvenance,
 };
 
 use crate::TypeIndex;
@@ -8,7 +8,7 @@ use crate::TypeIndex;
 /// Linked form of one compiler-emitted service boundary value. The canonical
 /// contract type remains available for provider-side matching; the caller
 /// runtime tag is the exact caller-image type row selected by the linker.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LinkedServiceBoundaryValue {
     contract_type: ContractTypeRef,
     value_plan: BoundaryValuePlan,
@@ -16,6 +16,7 @@ pub struct LinkedServiceBoundaryValue {
     drop: BoundaryDropPlan,
     source: ValueProvenance,
     caller_type: TypeIndex,
+    linked_type_ref: TypeRefIr,
 }
 
 impl LinkedServiceBoundaryValue {
@@ -26,6 +27,7 @@ impl LinkedServiceBoundaryValue {
         drop: BoundaryDropPlan,
         source: ValueProvenance,
         caller_type: TypeIndex,
+        linked_type_ref: TypeRefIr,
     ) -> Self {
         Self {
             contract_type,
@@ -34,6 +36,7 @@ impl LinkedServiceBoundaryValue {
             drop,
             source,
             caller_type,
+            linked_type_ref,
         }
     }
 
@@ -60,10 +63,14 @@ impl LinkedServiceBoundaryValue {
     pub const fn caller_type(&self) -> TypeIndex {
         self.caller_type
     }
+
+    pub const fn linked_type_ref(&self) -> &TypeRefIr {
+        &self.linked_type_ref
+    }
 }
 
 /// Linked ordinary-error plan with the exact compiler-emitted fallback policy.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LinkedServiceBoundaryErrorPlan {
     plan: BoundaryErrorPlan,
     fallback: LinkedServiceBoundaryValue,
@@ -98,7 +105,7 @@ pub enum LinkedServiceCallbackPlan {
 /// materialization. The linker copies every fact from the compiler-emitted
 /// artifact plan; it never derives argument/result/error behavior from names
 /// or type shapes.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LinkedServiceBoundaryPlan {
     arguments: Box<[LinkedServiceBoundaryValue]>,
     results: Box<[LinkedServiceBoundaryValue]>,

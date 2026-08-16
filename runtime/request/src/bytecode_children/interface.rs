@@ -11,7 +11,7 @@ use std::sync::{
 
 use skiff_artifact_model::Opcode;
 use skiff_runtime_boundary::vm_materialize::{
-    linked_type_for_contract, materialize_linked_value, release_boundary_source,
+    boundary_value_matches_linked_type, materialize_linked_value, release_boundary_source,
 };
 use skiff_runtime_linked_bytecode::{
     InterfaceTableIndex, LinkedCallableSignature, LinkedInterfaceTableKind,
@@ -696,12 +696,7 @@ fn validate_remote_boundary_types(
         .zip(provider_signature.parameter_types())
         .enumerate()
     {
-        let Some(linked) = linked_type_for_contract(provider_image, plan.contract_type()) else {
-            return Err(BytecodeSchedulerError::Port(format!(
-                "remote provider image lacks the linked service boundary type for argument {index}"
-            )));
-        };
-        if linked != *provider_type {
+        if !boundary_value_matches_linked_type(provider_image, *provider_type, plan) {
             return Err(BytecodeSchedulerError::Port(format!(
                 "remote provider parameter {index} type differs from the linked service boundary plan"
             )));
@@ -713,12 +708,7 @@ fn validate_remote_boundary_types(
         .zip(provider_signature.result_types())
         .enumerate()
     {
-        let Some(linked) = linked_type_for_contract(provider_image, plan.contract_type()) else {
-            return Err(BytecodeSchedulerError::Port(format!(
-                "remote provider image lacks the linked service boundary type for result {index}"
-            )));
-        };
-        if linked != *provider_type {
+        if !boundary_value_matches_linked_type(provider_image, *provider_type, plan) {
             return Err(BytecodeSchedulerError::Port(format!(
                 "remote provider result {index} type differs from the linked service boundary plan"
             )));

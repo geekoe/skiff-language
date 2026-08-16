@@ -33,7 +33,7 @@ impl LinkedExactLocalTarget {
 
 /// Activation-relative service target. It intentionally contains no provider
 /// deployment, build identity, executable address, or function index.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LinkedServiceOperationTarget {
     index: ServiceOperationIndex,
     service_requirement_key: ServiceRequirementKey,
