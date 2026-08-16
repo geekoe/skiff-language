@@ -49,6 +49,7 @@ mod tests {
             .expect("test constants evaluate");
         let mir = MirUnit {
             file_ir_identity: file_ir.file_ir_identity.clone(),
+            package_id: "test.package".to_string(),
             module_path: file_ir.module_path.clone(),
             actor_declarations: file_ir.actor_declarations.clone(),
             external_refs: file_ir.external_refs.clone(),

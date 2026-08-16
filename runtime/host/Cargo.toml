@@ -41,8 +41,10 @@ skiff-runtime-native = { path = "../native" }
 skiff-runtime-native-contract = { path = "../native-contract" }
 skiff-runtime-package-test = { path = "../package-test" }
 skiff-runtime-request = { path = "../request" }
+skiff-runtime-scheduler = { path = "../scheduler" }
 skiff-runtime-service-db = { path = "../service-db" }
 skiff-runtime-transport = { path = "../transport" }
+skiff-runtime-vm = { path = "../vm" }
 skiff-deployment = { path = "../../deployment" }
 thiserror = "2.0"
 time = { version = "0.3.47", features = ["formatting", "parsing"] }

@@ -9,6 +9,7 @@ use skiff_runtime_capability_context::{
 use skiff_runtime_model::{
     bytecode_execution_observation::BytecodeExecutionEventSink, request_heap::RequestHeapLimits,
 };
+use skiff_runtime_request::BytecodeActorExecutor;
 use skiff_runtime_transport::protocol::RouterBootstrapServiceDbFrameHeader;
 use tokio::sync::Mutex;
 
@@ -17,6 +18,7 @@ use crate::{
     loader::bytecode_admission::BytecodeDeploymentRegistry,
 };
 
+use super::bytecode_actor_executor::{ActorHostContext, ProductionBytecodeActorExecutor};
 use super::{
     blob_store::BlobStore,
     bytecode_execution_observation::TelemetryBytecodeExecutionEventSink,
@@ -82,6 +84,7 @@ pub struct RuntimeHost {
     pub(crate) outbound_requests: Arc<OutboundRequestRegistry>,
     pub(crate) connection_requests: Arc<ConnectionRequestRegistry>,
     pub(crate) actor_method_outbound: Arc<ActorMethodOutboundRegistry>,
+    pub(crate) bytecode_actor_executor: Arc<dyn BytecodeActorExecutor>,
 }
 
 impl RuntimeHost {
@@ -192,6 +195,18 @@ impl RuntimeHost {
             telemetry.clone(),
             base_runtime_id.clone(),
         ));
+        let memory_budgets = RuntimeMemoryBudgets::default();
+        let artifact_root = Arc::new(StdMutex::new(None));
+        let actor_context = ActorHostContext {
+            artifact_root: Arc::clone(&artifact_root),
+            request_heap_limits: RequestHeapLimits {
+                max_estimated_bytes: memory_budgets.request_heap_bytes,
+                ..RequestHeapLimits::default()
+            },
+            arena_lease_root: format!("{base_runtime_id}-actor-arena"),
+        };
+        let bytecode_actor_executor: Arc<dyn BytecodeActorExecutor> =
+            Arc::new(ProductionBytecodeActorExecutor::new(actor_context));
         Ok(Self {
             router_url,
             base_runtime_id: base_runtime_id.clone(),
@@ -201,10 +216,10 @@ impl RuntimeHost {
             frozen_profile,
             default_http_response_max_bytes: http_response_max_bytes,
             http_runtime_options,
-            memory_budgets: RuntimeMemoryBudgets::default(),
+            memory_budgets,
             bytecode_only,
             bytecode_deployments: Arc::new(BytecodeDeploymentRegistry::new()),
-            artifact_root: Arc::new(StdMutex::new(None)),
+            artifact_root,
             blob_store: Arc::new(StdMutex::new(None)),
             request_supervisor: Arc::new(RequestSupervisor::new()),
             bytecode_execution_event_sink,
@@ -214,6 +229,7 @@ impl RuntimeHost {
             outbound_requests: Arc::new(OutboundRequestRegistry::default()),
             connection_requests: Arc::new(ConnectionRequestRegistry::new(1024)),
             actor_method_outbound: Arc::new(ActorMethodOutboundRegistry::default()),
+            bytecode_actor_executor,
         })
     }
 

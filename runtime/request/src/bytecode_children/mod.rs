@@ -38,7 +38,7 @@ use skiff_runtime_vm::{
 
 use crate::{memory_ledger::MemoryLedgerError, vm_heap::RequestVmHeap, RequestMemoryLedger};
 
-pub use actor::{ActorChildError, BytecodeActorChildComposition};
+pub use actor::{ActorChildError, BytecodeActorChildComposition, BytecodeActorExecutor};
 pub(crate) use callback::execute_callback_child;
 pub use callback::{
     BytecodeCallbackChildComposition, BytecodeCallbackChildError, BytecodeCallbackProjector,
@@ -93,13 +93,14 @@ impl BytecodeChildLane {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_actor_child(
     invocation: ChildInvocation,
-    _heap: &mut dyn VmHeap,
-    _budget: &mut dyn VmBudget,
+    heap: &mut dyn VmHeap,
+    budget: &mut dyn VmBudget,
     actor_composition: &BytecodeActorChildComposition,
-    _child_heap_factory: Arc<dyn BytecodeChildHeapFactory>,
-    _resources: RequestResourceTable,
-    _observer: BytecodeExecutionObserver,
-    _limits: VmLimits,
+    child_heap_factory: Arc<dyn BytecodeChildHeapFactory>,
+    resources: RequestResourceTable,
+    memory_ledger: Arc<RequestMemoryLedger>,
+    observer: BytecodeExecutionObserver,
+    limits: VmLimits,
 ) -> Result<BytecodeChildHandoff<VmFiber>, BytecodePortFailure<ChildInvocation, VmResumeToken>> {
     let ChildTarget::Actor(index) = invocation.target() else {
         return Err(BytecodePortFailure::input(
@@ -108,6 +109,31 @@ pub(crate) fn execute_actor_child(
         ));
     };
     let _ = index;
+    if let Some(executor) = actor_composition.executor.as_ref() {
+        let build_id = invocation.resume().image().owner().build_id().as_str();
+        if let Err(error) = actor_composition.require_exact_build(build_id) {
+            return Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::Port(error.to_string()),
+                invocation,
+            ));
+        }
+        if let Err(error) = actor_composition.require_arena_lease() {
+            return Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::Port(error.to_string()),
+                invocation,
+            ));
+        }
+        return executor.execute_method(
+            invocation,
+            heap,
+            budget,
+            child_heap_factory,
+            resources,
+            memory_ledger,
+            observer,
+            limits,
+        );
+    }
     let reason = if !actor_composition.is_available() {
         "Actor child requires exact build and arena lease facts before execution".to_string()
     } else {

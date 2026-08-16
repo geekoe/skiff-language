@@ -1932,7 +1932,7 @@ impl<'a> FunctionEmitter<'a> {
     }
 
     fn normalize_host_signature_type(&self, ty: &TypeRefIr) -> TypeRefIr {
-        let symbol_path = match ty {
+        match ty {
             TypeRefIr::PublicationType {
                 module_path,
                 type_index,
@@ -1940,48 +1940,25 @@ impl<'a> FunctionEmitter<'a> {
                 .unit
                 .type_table
                 .get(*type_index as usize)
-                .map(|declaration| format!("{module_path}.{}", declaration.name)),
+                .map(|_| ty.clone())
+                .unwrap_or_else(|| ty.clone()),
             TypeRefIr::LocalType { type_index } => self
                 .unit
                 .type_table
                 .get(*type_index as usize)
-                .map(|declaration| format!("{}.{}", self.unit.module_path, declaration.name)),
-            _ => None,
-        };
-        match symbol_path {
-            Some(symbol_path) => {
-                let abi_expectation = self
-                    .unit
-                    .external_refs
-                    .package_symbols
-                    .iter()
-                    .find(|symbol| symbol.symbol_path == symbol_path)
-                    .and_then(|symbol| symbol.abi_expectation.clone())
-                    .or_else(|| {
-                        self.unit
-                            .external_refs
-                            .package_symbols
-                            .iter()
-                            .find(|symbol| {
-                                matches!(
-                                    &symbol.package,
-                                    skiff_artifact_model::PackageRefIr::PackageId { package_id }
-                                        if package_id == "skiff.run/std"
-                                )
-                            })
-                            .and_then(|symbol| symbol.abi_expectation.clone())
-                    });
-                TypeRefIr::PackageSymbol {
-                    symbol: skiff_artifact_model::PackageSymbolRef {
-                        package: skiff_artifact_model::PackageRefIr::PackageId {
-                            package_id: "skiff.run/std".to_string(),
-                        },
-                        symbol_path,
-                        abi_expectation,
-                    },
-                }
-            }
-            None => ty.clone(),
+                .map(|_| ty.clone())
+                .unwrap_or_else(|| ty.clone()),
+            TypeRefIr::ServiceSymbol { symbol } | TypeRefIr::DbObjectSymbol { symbol } => self
+                .unit
+                .type_table
+                .iter()
+                .position(|declaration| declaration.name == symbol.symbol)
+                .map(|type_index| TypeRefIr::PublicationType {
+                    module_path: symbol.module_path.clone(),
+                    type_index: u32::try_from(type_index).expect("symbol type index fits u32"),
+                })
+                .unwrap_or_else(|| ty.clone()),
+            _ => ty.clone(),
         }
     }
 
@@ -5947,6 +5924,7 @@ mod tests {
             .expect("test bundle evaluates");
         let unit = MirUnit {
             file_ir_identity: file_ir.file_ir_identity.clone(),
+            package_id: "test.package".to_string(),
             module_path: file_ir.module_path.clone(),
             actor_declarations: file_ir.actor_declarations.clone(),
             external_refs: file_ir.external_refs.clone(),
@@ -6150,6 +6128,7 @@ mod tests {
             .expect("test bundle evaluates");
         let unit = MirUnit {
             file_ir_identity: file_ir.file_ir_identity.clone(),
+            package_id: "test.package".to_string(),
             module_path: file_ir.module_path.clone(),
             actor_declarations: file_ir.actor_declarations.clone(),
             external_refs: file_ir.external_refs.clone(),
@@ -6292,6 +6271,7 @@ mod tests {
             .expect("test bundle evaluates");
         let unit = MirUnit {
             file_ir_identity: file_ir.file_ir_identity.clone(),
+            package_id: "test.package".to_string(),
             module_path: file_ir.module_path.clone(),
             actor_declarations: file_ir.actor_declarations.clone(),
             external_refs: file_ir.external_refs.clone(),
@@ -6454,6 +6434,7 @@ mod tests {
             .expect("test bundle evaluates");
         let unit = MirUnit {
             file_ir_identity: file_ir.file_ir_identity.clone(),
+            package_id: "test.package".to_string(),
             module_path: file_ir.module_path.clone(),
             actor_declarations: file_ir.actor_declarations.clone(),
             external_refs: file_ir.external_refs.clone(),

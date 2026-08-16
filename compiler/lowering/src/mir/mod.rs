@@ -136,6 +136,7 @@ use skiff_artifact_model::{
 /// must not reopen the source `FileIrUnit` for any of these facts.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MirUnit {
+    pub package_id: String,
     pub file_ir_identity: String,
     pub module_path: String,
     /// Complete File IR actor authority retained for checked joins with the

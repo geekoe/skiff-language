@@ -410,10 +410,15 @@ fn resume_value_matches(
                         | LinkedValueTransferPlan::MoveOnly { .. }
                 )
         }
-        ValueKind::ConstRef
-        | ValueKind::ResourceRef
-        | ValueKind::ActorStateRef
-        | ValueKind::CallbackClosureRef => false,
+        ValueKind::ActorStateRef => {
+            runtime_tag_matches(value, expected)
+                && matches!(
+                    plan,
+                    LinkedValueTransferPlan::SnapshotShare { .. }
+                        | LinkedValueTransferPlan::MoveOnly { .. }
+                )
+        }
+        ValueKind::ConstRef | ValueKind::ResourceRef | ValueKind::CallbackClosureRef => false,
     }
 }
 
@@ -1268,6 +1273,20 @@ impl VmTerminalEscrow {
 
     pub fn is_empty(&self) -> bool {
         self.owners.is_empty()
+    }
+
+    /// Removes one exact live root from terminal cleanup without releasing it.
+    ///
+    /// Actor execution uses this to keep the updated self record live in its
+    /// arena heap after synchronous create/method completion while releasing
+    /// every other terminal root exactly once.
+    pub fn retain_root(&mut self, value: &ValueSlot) -> bool {
+        if let Some(index) = self.owners.iter().position(|owner| owner.value == *value) {
+            self.owners.remove(index);
+            true
+        } else {
+            false
+        }
     }
 
     /// Consumes a root result that cannot be delivered (for example because a

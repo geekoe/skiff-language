@@ -1245,6 +1245,7 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                 &self.child_composition.actor_child,
                 Arc::clone(&self.child_heap_factory),
                 self.runtime.resources.clone(),
+                Arc::clone(&self.child_composition.memory_ledger),
                 self.observer.clone(),
                 vm_limits(),
             ),
@@ -1281,6 +1282,23 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                 invocation,
             ));
         };
+        if identity == HostEffectExecutorIdentity::ActorGet {
+            let Some(executor) = self.child_composition.actor_child.executor.as_ref() else {
+                return Err(BytecodePortFailure::input(
+                    BytecodeSchedulerError::Port(
+                        "typed Actor get executor is unavailable".to_string(),
+                    ),
+                    invocation,
+                ));
+            };
+            return executor.execute_get(
+                invocation,
+                heap,
+                _budget,
+                self.observer.clone(),
+                vm_limits(),
+            );
+        }
         let (_adapter, arguments, resume) = invocation.into_parts();
         match identity {
             HostEffectExecutorIdentity::Sleep => {
@@ -1468,6 +1486,9 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                             BytecodePortFailure::continuation(reason, resume)
                         }),
                 }
+            }
+            HostEffectExecutorIdentity::ActorGet => {
+                unreachable!("Actor get is handled before parts")
             }
         }
     }

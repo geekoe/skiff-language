@@ -1025,7 +1025,15 @@ pub(crate) fn bytecode_request_child_composition(
         runtime_id: host.base_runtime_id.clone(),
         activation_identity,
     };
-    bytecode_request_child_composition_with_parts(host, db_child, request_id, task_child)
+    let mut composition =
+        bytecode_request_child_composition_with_parts(host, db_child, request_id, task_child);
+    let actor_executor = Arc::clone(&host.bytecode_actor_executor);
+    composition.actor_child = BytecodeActorChildComposition {
+        exact_build: Some(image.owner().build_id().as_str().to_string()),
+        arena_lease_root: Some(actor_executor.arena_lease_root()),
+        executor: Some(actor_executor),
+    };
+    composition
 }
 
 pub(crate) fn bytecode_request_child_composition_with_db_child(

@@ -1670,6 +1670,7 @@ fn phase_2_bytecode_admission_source_facts_export_local_and_publication_nominals
     };
     let unit = skiff_compiler_lowering::mir::MirUnit {
         file_ir_identity: "file:facts".to_string(),
+        package_id: "test.package".to_string(),
         module_path: "facts".to_string(),
         actor_declarations: Vec::new(),
         external_refs: skiff_artifact_model::ExternalRefTable::default(),
@@ -1874,6 +1875,7 @@ fn package_fact_unit(
     };
     skiff_compiler_lowering::mir::MirUnit {
         file_ir_identity: format!("file:{owner}"),
+        package_id: "test.package".to_string(),
         module_path: "main".to_string(),
         actor_declarations: Vec::new(),
         external_refs: skiff_artifact_model::ExternalRefTable {

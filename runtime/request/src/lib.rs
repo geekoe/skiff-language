@@ -17,14 +17,14 @@ mod runner;
 pub mod vm_heap;
 
 pub use bytecode_children::{
-    ActorChildError, BytecodeActorChildComposition, BytecodeCallbackChildComposition,
-    BytecodeCallbackChildError, BytecodeCallbackProjector, BytecodeCallbackResolver,
-    BytecodeChildError, BytecodeChildHeapFactory, BytecodeDbChildComposition, BytecodeDbChildError,
-    BytecodeRequestChildComposition, BytecodeServiceChildError, BytecodeServiceResolver,
-    BytecodeTaskChildComposition, BytecodeTaskSubmitError, BytecodeTaskSubmitter,
-    CallbackExecution, DbObjectTargetId, DbTransactionSession,
-    FailClosedServiceChildThrowMaterializer, FailClosedTaskSubmitter, RequestChildHeapFactory,
-    ServiceChildThrowMaterializer,
+    ActorChildError, BytecodeActorChildComposition, BytecodeActorExecutor,
+    BytecodeCallbackChildComposition, BytecodeCallbackChildError, BytecodeCallbackProjector,
+    BytecodeCallbackResolver, BytecodeChildError, BytecodeChildHeapFactory,
+    BytecodeDbChildComposition, BytecodeDbChildError, BytecodeRequestChildComposition,
+    BytecodeServiceChildError, BytecodeServiceResolver, BytecodeTaskChildComposition,
+    BytecodeTaskSubmitError, BytecodeTaskSubmitter, CallbackExecution, DbObjectTargetId,
+    DbTransactionSession, FailClosedServiceChildThrowMaterializer, FailClosedTaskSubmitter,
+    RequestChildHeapFactory, ServiceChildThrowMaterializer,
 };
 pub use bytecode_host_effects::{
     BytecodeHttpClientPort, BytecodeHttpFailure, BytecodeHttpFuture, BytecodeHttpRequest,

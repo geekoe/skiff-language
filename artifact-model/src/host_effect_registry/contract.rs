@@ -43,6 +43,7 @@ pub enum HostEffectExecutorIdentity {
     Sleep,
     HttpClientRequest,
     HttpClientStream,
+    ActorGet,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -756,6 +756,7 @@ fn project_executor_category(
         HostEffectExecutorIdentity::Sleep => PendingEffectCategory::NativeCall,
         HostEffectExecutorIdentity::HttpClientRequest
         | HostEffectExecutorIdentity::HttpClientStream => PendingEffectCategory::HostEffect,
+        HostEffectExecutorIdentity::ActorGet => PendingEffectCategory::ActorCall,
     };
     effects.pending_effect_categories.retain(|candidate| {
         !matches!(

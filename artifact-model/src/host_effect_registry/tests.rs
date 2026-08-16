@@ -92,7 +92,7 @@ fn built_in_registry_is_sorted_sparse_and_frozen() {
     assert_eq!(registry.identity().version, HOST_EFFECT_REGISTRY_VERSION);
     assert_eq!(
         HOST_EFFECT_REGISTRY_FINGERPRINT,
-        "50a4a5fb71b5cd47eac78942be6db46f44544d00529d495e1587319125809c97"
+        "d75a8ef9e8cd5428c6b6e207b4e9492dce528627a29e3e72584155242f8b082f"
     );
     assert_eq!(
         registry.identity().fingerprint,
@@ -125,6 +125,7 @@ fn bytecode_executor_identity_is_closed_exact_and_registry_owned() {
     assert_eq!(
         executable,
         vec![
+            ("std.actor.get", Executor::ActorGet),
             ("std.http.client.request", Executor::HttpClientRequest),
             ("std.http.client.stream", Executor::HttpClientStream),
             ("std.time.sleep", Executor::Sleep),

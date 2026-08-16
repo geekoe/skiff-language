@@ -16,7 +16,7 @@ use skiff_runtime_linked_bytecode::{LinkedLocalInterfaceTable, LinkedRemoteInter
 use skiff_runtime_model::{
     error::RuntimeModelError as RuntimeError,
     request_heap::{RequestHeap, RequestHeapLimits},
-    runtime_value::{HeapHandle, HeapNode, RuntimeValue, RuntimeValueCarrier},
+    runtime_value::{ActorRef, HeapHandle, HeapNode, RuntimeValue, RuntimeValueCarrier},
     service_error::CatchIdentity,
     vm_heap::{
         PinnedWritablePathSegment, VmContainerElement, VmContainerElements, VmContainerShape,
@@ -91,6 +91,7 @@ pub struct RequestVmHeap {
     representation_slots: HashMap<HeapHandle, ValueSlot>,
     local_interface_slots: HashMap<HeapHandle, RequestLocalInterfaceCarrier>,
     remote_interface_slots: HashMap<HeapHandle, RequestRemoteInterfaceCarrier>,
+    actor_state_slots: HashMap<VmHandle, (CompactTypeTag, ActorRef)>,
 }
 
 impl RequestVmHeap {
@@ -135,6 +136,7 @@ impl RequestVmHeap {
             representation_slots: HashMap::new(),
             local_interface_slots: HashMap::new(),
             remote_interface_slots: HashMap::new(),
+            actor_state_slots: HashMap::new(),
         }
     }
 
@@ -276,6 +278,46 @@ impl RequestVmHeap {
             ));
         }
         self.register_handle(heap_handle, compact_type_tag, flags)
+    }
+
+    /// Allocates an immutable Actor-state reference rooted in this request
+    /// heap. The Actor arena and its epoch stay owned by the host executor;
+    /// this slot only carries the logical actor identity across the VM.
+    pub fn alloc_actor_state_ref(
+        &mut self,
+        actor_ref: ActorRef,
+        compact_type_tag: CompactTypeTag,
+        flags: ValueFlags,
+    ) -> Result<ValueSlot, VmHeapError> {
+        let operation = VmHeapOperation::AllocateRepresentation;
+        self.ensure_serial_available(operation)?;
+        let serial = self.alloc_serial(operation)?;
+        let handle = encode_handle(self.domain, serial);
+        self.actor_state_slots
+            .insert(handle, (compact_type_tag, actor_ref));
+        Ok(ValueSlot::actor_state_ref(handle, compact_type_tag, flags))
+    }
+
+    /// Recovers the exact Actor identity behind one live Actor-state slot.
+    pub fn actor_state_ref_value(&self, value: &ValueSlot) -> Result<ActorRef, VmHeapError> {
+        let handle = value
+            .as_actor_state_ref()
+            .ok_or(VmHeapError::InvalidValueMetadata)?;
+        let compact_type_tag = value
+            .compact_type_tag()
+            .ok_or(VmHeapError::InvalidValueMetadata)?;
+        let (expected, actor_ref) =
+            self.actor_state_slots
+                .get(&handle)
+                .ok_or(VmHeapError::InvalidHandle {
+                    kind: ValueKind::ActorStateRef,
+                    handle,
+                    reason: VmHandleInvalidReason::StaleGenerationOrEpoch,
+                })?;
+        if *expected != compact_type_tag {
+            return Err(VmHeapError::InvalidValueMetadata);
+        }
+        Ok(actor_ref.clone())
     }
 
     fn alloc_string_with_metadata(
@@ -1137,6 +1179,8 @@ impl VmHeap for RequestVmHeap {
             ValueKind::ResourceRef => self
                 .validate_resource_slot(value, VmHeapOperation::ValidateLive)
                 .map(|_| ()),
+            ValueKind::ActorStateRef => self.actor_state_ref_value(value).map(|_| ()),
+            ValueKind::ConstRef => Ok(()),
             kind => Err(VmHeapError::OperationKindMismatch {
                 operation: VmHeapOperation::ValidateLive,
                 kind,
@@ -1158,6 +1202,14 @@ impl VmHeap for RequestVmHeap {
             }
             Some(ValueKind::RequestHeapRef) => {
                 self.live_entry_mut(source)?.snapshot_owners += 1;
+                Ok(*source)
+            }
+            Some(ValueKind::ActorStateRef) => {
+                self.validate_live(source)?;
+                Ok(*source)
+            }
+            Some(ValueKind::ConstRef) => {
+                self.validate_live(source)?;
                 Ok(*source)
             }
             Some(kind) => Err(VmHeapError::OperationKindMismatch {
@@ -1188,6 +1240,14 @@ impl VmHeap for RequestVmHeap {
                 self.validate_resource_slot(source, VmHeapOperation::TransferOwner)?;
                 Ok(*source)
             }
+            Some(ValueKind::ActorStateRef) => {
+                self.validate_live(source)?;
+                Ok(*source)
+            }
+            Some(ValueKind::ConstRef) => {
+                self.validate_live(source)?;
+                Ok(*source)
+            }
             Some(kind) => Err(VmHeapError::OperationKindMismatch {
                 operation: VmHeapOperation::TransferOwner,
                 kind,
@@ -1211,6 +1271,8 @@ impl VmHeap for RequestVmHeap {
                 self.commit_owner_consume(prepared);
                 Ok(())
             }
+            Some(ValueKind::ActorStateRef) => Ok(()),
+            Some(ValueKind::ConstRef) => Ok(()),
             Some(kind) => Err(VmHeapError::OperationKindMismatch {
                 operation: VmHeapOperation::ReleaseSnapshot,
                 kind,

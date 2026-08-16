@@ -256,6 +256,7 @@ fn build_mir_unit_with_catalog(
     let package_type_authority =
         project_package_type_authority(&unit.external_refs, package_type_records);
     let mir = MirUnit {
+        package_id: package_id.to_string(),
         file_ir_identity: unit.file_ir_identity.clone(),
         module_path: unit.module_path.clone(),
         actor_declarations: unit.actor_declarations.clone(),

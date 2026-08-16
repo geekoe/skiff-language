@@ -370,6 +370,7 @@ fn unit(functions: Vec<MirFunction>) -> MirUnit {
     file_ir.file_ir_identity = "file:main".to_string();
     MirUnit {
         file_ir_identity: file_ir.file_ir_identity,
+        package_id: "test.package".to_string(),
         module_path: file_ir.module_path,
         actor_declarations: file_ir.actor_declarations,
         external_refs: file_ir.external_refs,

@@ -17,7 +17,7 @@ use super::contract::*;
 pub const HOST_EFFECT_REGISTRY_ID: &str = "skiff-host-effect-registry";
 pub const HOST_EFFECT_REGISTRY_VERSION: &str = "skiff-host-effect-registry-v4";
 pub const HOST_EFFECT_REGISTRY_FINGERPRINT: &str =
-    "50a4a5fb71b5cd47eac78942be6db46f44544d00529d495e1587319125809c97";
+    "d75a8ef9e8cd5428c6b6e207b4e9492dce528627a29e3e72584155242f8b082f";
 
 #[derive(Debug)]
 pub struct HostEffectRegistry {
@@ -134,6 +134,7 @@ fn executor_identity(binding_key: &str) -> Option<HostEffectExecutorIdentity> {
         "std.time.sleep" => HostEffectExecutorIdentity::Sleep,
         "std.http.client.request" => HostEffectExecutorIdentity::HttpClientRequest,
         "std.http.client.stream" => HostEffectExecutorIdentity::HttpClientStream,
+        "std.actor.get" => HostEffectExecutorIdentity::ActorGet,
         _ => return None,
     })
 }

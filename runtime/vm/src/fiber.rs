@@ -87,7 +87,26 @@ impl Vm {
         limits: VmLimits,
         observer: BytecodeExecutionObserver,
     ) -> Result<VmFiber, VmError> {
-        VmFiber::start(entry, arguments, limits, observer)
+        VmFiber::start_with_retained(entry, arguments, limits, observer, &[])
+    }
+
+    /// Starts a fiber whose first parameter root is retained by the caller.
+    ///
+    /// Actor method frames use this for the self record: the host Actor arena
+    /// owns that root, so frame exit must not release it.
+    pub fn start_with_retained_parameter(
+        entry: DeploymentExecutionEntry,
+        arguments: Box<[ValueSlot]>,
+        limits: VmLimits,
+        observer: BytecodeExecutionObserver,
+    ) -> Result<VmFiber, VmError> {
+        VmFiber::start_with_retained(
+            entry,
+            arguments,
+            limits,
+            observer,
+            &[FrameSlotIndex::new(0)],
+        )
     }
 }
 
@@ -117,6 +136,7 @@ pub struct VmFiber {
     resume_sequence: u64,
     projection_sequence: u64,
     observer: BytecodeExecutionObserver,
+    retained_slots: Vec<FrameSlotIndex>,
 }
 
 struct UnwindState {
@@ -186,11 +206,12 @@ struct OperandWindowReplacementReservation {
 }
 
 impl VmFiber {
-    fn start(
+    fn start_with_retained(
         entry: DeploymentExecutionEntry,
         arguments: Box<[ValueSlot]>,
         limits: VmLimits,
         observer: BytecodeExecutionObserver,
+        retained_slots: &[FrameSlotIndex],
     ) -> Result<Self, VmError> {
         let function_index = entry.function();
         let program = entry.image();
@@ -267,6 +288,7 @@ impl VmFiber {
             resume_sequence: 0,
             projection_sequence: 0,
             observer,
+            retained_slots: retained_slots.to_vec(),
         };
         if let Ok(slot_count) = u32::try_from(slot_count) {
             if fiber.observer.claim_root_frame_entry() {
@@ -299,6 +321,22 @@ impl VmFiber {
 
     pub fn allocated_value_slot_count(&self) -> usize {
         self.values.len()
+    }
+
+    /// Reads a live slot from the current frame while the fiber is runnable.
+    ///
+    /// Actor create execution captures the updated self root after
+    /// `SetWritablePath` before the frame is retired.
+    pub fn frame_slot_value(&self, slot: FrameSlotIndex) -> Result<ValueSlot, VmError> {
+        let frame = self.current_frame()?;
+        let slot_count = self.function(frame.function())?.frame().slot_types().len();
+        let index = Self::slot_index(&frame, slot_count, slot, frame.function())?;
+        if !self.live_values[index] {
+            return Err(VmError::DeadValueRead {
+                location: VmValueLocation::FrameSlot(slot),
+            });
+        }
+        Ok(self.values[index])
     }
 
     /// Supplies the request-local error correlation used when constructing
@@ -3011,7 +3049,15 @@ impl VmFiber {
             .frame()
             .writable_local_slots()
             .binary_search(&root_slot)
-            .is_ok();
+            .is_ok()
+            || self
+                .function(frame.function())?
+                .frame()
+                .parameters()
+                .iter()
+                .any(|parameter| {
+                    parameter.slot() == root_slot && root.kind() == Some(ValueKind::RequestHeapRef)
+                });
         if !writable {
             return Err(VmError::LiveDestination {
                 function,
@@ -5345,6 +5391,15 @@ impl VmFiber {
             let index = frame.slot_base() + ordinal;
             if self.live_values.get(index).copied() == Some(true) {
                 let value = self.values[index];
+                let slot = FrameSlotIndex::new(u32::try_from(ordinal).map_err(|_| {
+                    VmError::VerifiedEntryInvariant {
+                        invariant: VmVerifiedInvariant::FrameLayoutOverflow,
+                    }
+                })?);
+                if self.retained_slots.contains(&slot) {
+                    self.clear_value(index);
+                    continue;
+                }
                 let plan = slot_plans[ordinal].clone();
                 if !is_discardable_root(&value) {
                     executor.release(&value, &plan).map_err(|error| {

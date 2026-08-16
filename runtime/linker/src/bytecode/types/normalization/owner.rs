@@ -79,15 +79,24 @@ impl TypeNormalizer<'_> {
         if matches!(
             &symbol.package,
             PackageRefIr::PackageId { package_id } if package_id == "skiff.run/std"
-        ) && self.has_unique_actor_handle_owner(&symbol.symbol_path)
-        {
-            return Ok(TypeRefIr::PackageSymbol {
-                symbol: PackageSymbolRef {
-                    package: symbol.package.clone(),
-                    symbol_path: symbol.symbol_path.clone(),
-                    abi_expectation: symbol.abi_expectation.clone(),
-                },
-            });
+        ) {
+            if let Some(owner) = self.unique_actor_handle_owner(&symbol.symbol_path) {
+                return Ok(TypeRefIr::PackageSymbol {
+                    symbol: PackageSymbolRef {
+                        package: PackageRefIr::PackageId {
+                            package_id: owner.reference().package_id.clone(),
+                        },
+                        symbol_path: symbol.symbol_path.clone(),
+                        abi_expectation: Some(
+                            owner
+                                .reference()
+                                .package_local_abi_identity
+                                .as_str()
+                                .to_string(),
+                        ),
+                    },
+                });
+            }
         }
         let target = match &symbol.package {
             PackageRefIr::Dependency { dependency_ref } => {
@@ -121,7 +130,7 @@ impl TypeNormalizer<'_> {
         Ok(self.exact_package_symbol(target, symbol.symbol_path.clone()))
     }
 
-    fn has_unique_actor_handle_owner(&self, symbol_path: &str) -> bool {
+    fn unique_actor_handle_owner(&self, symbol_path: &str) -> Option<&HydratedBytecodePackage> {
         let mut owners = self.deployment.packages().values().filter(|package| {
             package
                 .artifact()
@@ -129,7 +138,8 @@ impl TypeNormalizer<'_> {
                 .iter()
                 .any(|row| row.actor.symbol_path() == symbol_path)
         });
-        owners.next().is_some() && owners.next().is_none()
+        let owner = owners.next()?;
+        owners.next().is_none().then_some(owner)
     }
 
     fn resolve_dependency(

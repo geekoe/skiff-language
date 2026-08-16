@@ -10,6 +10,7 @@ use skiff_runtime_linked_bytecode::{
 use skiff_runtime_model::{
     addr::{FileAddr, TypeAddr, UnitAddr},
     request_heap::RequestHeapLimits,
+    runtime_value::ActorRef,
     service_error::{CatchIdentity, LocalExecutionTypeIdentity, NominalTypeIdentity},
     vm_heap::{
         VmHandleInvalidReason, VmHeap, VmHeapError, VmHeapOperation, VmHeapPathSegment,
@@ -48,6 +49,37 @@ fn resource_ref(handle: u64) -> ValueSlot {
         RESOURCE_TAG,
         RESOURCE_FLAGS,
     )
+}
+
+#[test]
+fn actor_state_ref_round_trips_and_release_keeps_logical_identity() {
+    let mut heap = heap();
+    let actor_ref = ActorRef::new(
+        "svc",
+        "Counter",
+        "id",
+        "skiff-canonical-v1",
+        b"\"phase6\"".to_vec(),
+        "sha256:actor-id",
+        Some(1),
+    );
+    let slot = heap
+        .alloc_actor_state_ref(actor_ref.clone(), TAG, FLAGS)
+        .expect("alloc actor state ref");
+    assert_eq!(
+        heap.actor_state_ref_value(&slot).expect("read actor ref"),
+        actor_ref
+    );
+    assert!(heap.validate_live(&slot).is_ok());
+
+    let shared = heap.snapshot_share(&slot).expect("share actor ref");
+    assert!(shared == slot);
+    heap.release_snapshot(&slot).expect("release actor ref");
+    assert_eq!(
+        heap.actor_state_ref_value(&slot)
+            .expect("read after release"),
+        actor_ref
+    );
 }
 
 #[test]

@@ -733,6 +733,7 @@ impl HostEffectAdmissions {
                 HostEffectExecutorIdentity::Sleep => PendingEffectCategory::NativeCall,
                 HostEffectExecutorIdentity::HttpClientRequest
                 | HostEffectExecutorIdentity::HttpClientStream => PendingEffectCategory::HostEffect,
+                HostEffectExecutorIdentity::ActorGet => PendingEffectCategory::ActorCall,
             });
         }
         if stream_pending {
@@ -947,7 +948,8 @@ fn match_executable_call(
     match executor_identity {
         HostEffectExecutorIdentity::Sleep
         | HostEffectExecutorIdentity::HttpClientRequest
-        | HostEffectExecutorIdentity::HttpClientStream => {}
+        | HostEffectExecutorIdentity::HttpClientStream
+        | HostEffectExecutorIdentity::ActorGet => {}
     }
 
     if call.args.len() != entry.signature.parameter_types.len() {

@@ -717,6 +717,7 @@ mod tests {
     ) -> MirUnit {
         MirUnit {
             file_ir_identity: "file:authority".to_string(),
+            package_id: "test.package".to_string(),
             module_path: "main".to_string(),
             actor_declarations: Vec::new(),
             external_refs: ExternalRefTable {

@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
-use skiff_artifact_model::{
-    ExprIr, PackageRefIr, PackageSymbolRef, TypeRefIr, ValueDropPlan, ValueTransferPlan,
-};
+use skiff_artifact_model::{ExprIr, PackageRefIr, TypeRefIr, ValueDropPlan, ValueTransferPlan};
 use skiff_compiler_core::type_ref::walk_type_ref;
 use skiff_compiler_lowering::mir::{MirSlot, MirUnit};
 
@@ -256,7 +254,7 @@ fn collect_exact_type_plans(
                         )?;
                     }
                     if is_std_actor_registry_get_call(call) {
-                        actor_handles.extend(actor_registry_handle_types(module_path, call));
+                        actor_handles.extend(actor_registry_handle_types(unit, call));
                     }
                 }
                 match &expression.expression {
@@ -373,7 +371,7 @@ fn collect_exact_type_plans(
 }
 
 fn actor_registry_handle_types(
-    module_path: &str,
+    unit: &MirUnit,
     call: &skiff_artifact_model::CallIr,
 ) -> Vec<TypeValueTransferPlan> {
     let mut handles = Vec::new();
@@ -381,20 +379,22 @@ fn actor_registry_handle_types(
         let skiff_artifact_model::TypeRefIr::ServiceSymbol { symbol } = ty else {
             continue;
         };
-        let handle = TypeRefIr::PackageSymbol {
-            symbol: PackageSymbolRef {
-                package: PackageRefIr::PackageId {
-                    package_id: "skiff.run/std".to_string(),
-                },
-                symbol_path: format!("{}.{}", symbol.module_path, symbol.symbol),
-                abi_expectation: None,
-            },
+        let Some(type_index) = unit
+            .type_table
+            .iter()
+            .position(|declaration| declaration.name == symbol.symbol)
+        else {
+            continue;
+        };
+        let handle = TypeRefIr::PublicationType {
+            module_path: symbol.module_path.clone(),
+            type_index: u32::try_from(type_index).expect("actor type index fits u32"),
         };
         handles.push(TypeValueTransferPlan {
-            module_path: module_path.to_string(),
+            module_path: unit.module_path.clone(),
             ty: handle,
             plan: ValueTransferPlan::SnapshotShare {
-                drop: ValueDropPlan::Trivial,
+                drop: ValueDropPlan::SnapshotRelease,
             },
         });
     }
@@ -820,6 +820,7 @@ mod tests {
     fn unit(module_path: &str, function: MirFunction, constants: Vec<MirConst>) -> MirUnit {
         MirUnit {
             file_ir_identity: format!("file:{module_path}"),
+            package_id: "test.package".to_string(),
             module_path: module_path.to_string(),
             actor_declarations: Vec::new(),
             external_refs: ExternalRefTable::default(),
