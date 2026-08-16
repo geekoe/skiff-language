@@ -87,6 +87,9 @@ const OWNER_INVENTORY = Object.freeze({
     pending: FROZEN_OWNER_DOMAIN,
     resource: FROZEN_OWNER_DOMAIN,
     child: FROZEN_OWNER_DOMAIN,
+    childHeap: FROZEN_OWNER_DOMAIN,
+    boundary: FROZEN_OWNER_DOMAIN,
+    actor: FROZEN_OWNER_DOMAIN,
   }),
 });
 

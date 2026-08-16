@@ -28,6 +28,9 @@ function ownerInventory(overrides = {}) {
     pending: { current: 0, everCreated: false },
     resource: { current: 0, everCreated: false },
     child: { current: 0, everCreated: false },
+    childHeap: { current: 0, everCreated: false },
+    boundary: { current: 0, everCreated: false },
+    actor: { current: 0, everCreated: false },
     ...overrides,
   };
 }
@@ -177,14 +180,26 @@ test('nested cleanup wire shape is validated exactly', () => {
 
   assert.equal(validatePhase1ObservationStream([cleanup]).valid, true);
 
-  const missingDomain = structuredClone(cleanup);
-  delete missingDomain.payload.ownerInventory.resource;
-  const missingDomainResult = validatePhase1ObservationStream([missingDomain]);
-  assert.equal(missingDomainResult.valid, false);
-  assert.equal(
-    missingDomainResult.failures.some((message) => /payload.ownerInventory.resource is missing/.test(message)),
-    true,
-  );
+  const rustSnapshot = structuredClone(cleanup);
+  rustSnapshot.payload.ownerInventory = ownerInventory({
+    pending: { current: 1, everCreated: true },
+    child: { current: 2, everCreated: true },
+    childHeap: { current: 1, everCreated: true },
+    boundary: { current: 3, everCreated: true },
+    actor: { current: 0, everCreated: true },
+  });
+  assert.equal(validatePhase1ObservationStream([rustSnapshot]).valid, true);
+
+  for (const domain of ['pending', 'resource', 'child', 'childHeap', 'boundary', 'actor']) {
+    const missingDomain = structuredClone(cleanup);
+    delete missingDomain.payload.ownerInventory[domain];
+    const missingDomainResult = validatePhase1ObservationStream([missingDomain]);
+    assert.equal(missingDomainResult.valid, false);
+    assert.equal(
+      missingDomainResult.failures.some((message) => new RegExp(`payload.ownerInventory.${domain} is missing`).test(message)),
+      true,
+    );
+  }
 
   const wrongCurrent = structuredClone(cleanup);
   wrongCurrent.payload.ownerInventory.child.current = '0';
@@ -253,9 +268,9 @@ test('schema declaration matches the adjudicated nine-kind, eleven-event sequenc
   );
   assert.deepEqual(
     Object.keys(PHASE1_OBSERVATION_KINDS.RequestCleanupComplete.fields.ownerInventory.fields),
-    ['pending', 'resource', 'child'],
+    ['pending', 'resource', 'child', 'childHeap', 'boundary', 'actor'],
   );
-  for (const domain of ['pending', 'resource', 'child']) {
+  for (const domain of ['pending', 'resource', 'child', 'childHeap', 'boundary', 'actor']) {
     assert.deepEqual(
       Object.keys(PHASE1_OBSERVATION_KINDS.RequestCleanupComplete.fields.ownerInventory.fields[domain].fields),
       ['current', 'everCreated'],
@@ -271,6 +286,7 @@ test('schema identity is a stable versioned sha256 of the canonical content', ()
   const identity = phase1ObservationSchemaIdentity();
   assert.equal(identity.version, PHASE1_OBSERVATION_SCHEMA_VERSION);
   assert.equal(validSha256(identity.sha256), true);
+  assert.equal(identity.sha256, 'dfeb19b9a25aa9758c654cfba7a4d989f12eb27caab3cd7c838003cdd74e85b9');
   assert.deepEqual(phase1ObservationSchemaIdentity(), identity);
   assert.deepEqual(phase1ObservationSchemaContent(), phase1ObservationSchemaContent());
   assert.equal(phase1ObservationSchemaContent().productionMax, 11);
