@@ -13,8 +13,9 @@ use skiff_artifact_identity::{
 };
 use skiff_artifact_model::{
     bytecode::dto::DbOperationKind, contract_for_opcode,
-    derive_bytecode_statement_manifest_identity, BytecodeFunctionStatementManifest,
-    ContractTypeRef, HostEffectExecutorIdentity, InstructionSourceSite, Opcode, PendingContract,
+    derive_bytecode_statement_manifest_identity, ActorMethodIdentity,
+    BytecodeFunctionStatementManifest, ContractTypeRef, HostEffectExecutorIdentity,
+    InstructionSourceSite, Opcode, PackageCallableId, PendingContract,
     PrivilegedAffineCompositeIdentity, ServiceDeploymentRef, SourcePosition, SourceSpanRef,
     StatementAttributionId, StatementContract, StructuralValidationError,
     SyntheticInstructionSiteReason, TypeRefIr, ValueTransferPlanKind,
@@ -37,14 +38,15 @@ use skiff_runtime_loader::{
     HydratedDeploymentBytecode,
 };
 
-use crate::bytecode::types::{
-    reset_resume_descriptor_index_lookups, resume_descriptor_index_lookups,
-};
 use crate::bytecode::{
     execution_image::{build_resume_sites, build_statement_schedule},
     link_deployment, link_deployment_execution_image, BytecodeLinkError, BytecodeLinkLocation,
     BytecodeLinkObligation, CodeEntryLookupError, DeploymentExecutionImage,
     ExecutionImageConstructionError, ExecutionResumeKind,
+};
+use crate::bytecode::{
+    link::DeploymentLinker,
+    types::{reset_resume_descriptor_index_lookups, resume_descriptor_index_lookups, TypeLinker},
 };
 
 use super::{
@@ -1521,6 +1523,167 @@ fn linked_image_carries_exact_db_object_target_facts() {
     assert_eq!(
         operation.result_plan().kind(),
         ValueTransferPlanKind::SnapshotShare
+    );
+}
+
+#[test]
+fn actor_closure_carries_all_declared_create_and_method_targets() {
+    let hydrated = production_hydrated_deployment(
+        "runtime/linker/src/bytecode/tests/fixtures/actor-closure-positive",
+        "p6-actor-closure-positive",
+    );
+    let package = hydrated
+        .packages()
+        .values()
+        .find(|package| {
+            package.reference().package_id == "test.skiff/bytecode-vm-phase-6-actor-closure"
+        })
+        .expect("actor closure fixture owns its exact package");
+    let actor = package
+        .artifact()
+        .actor_implementations
+        .iter()
+        .find(|actor| actor.actor.symbol == "Counter")
+        .expect("actor closure fixture declares Counter");
+    let expected_create = actor
+        .create
+        .as_ref()
+        .map(|create| create.method_identity.clone());
+    let expected_methods = actor.methods.keys().cloned().collect::<Vec<_>>();
+
+    let image = Arc::new(
+        link_deployment_execution_image(hydrated, &super::generous_execution_limits()).unwrap(),
+    );
+    assert_eq!(
+        image.actor_creates().len(),
+        usize::from(expected_create.is_some())
+    );
+    if let (Some(create), Some(expected_create)) = (image.actor_creates().first(), expected_create)
+    {
+        assert_eq!(create.create_identity(), &expected_create);
+        assert!(
+            image
+                .functions()
+                .get(create.function().get() as usize)
+                .is_some(),
+            "actor create target must remain reachable in the linked function closure"
+        );
+    }
+    assert_eq!(image.actor_methods().len(), expected_methods.len());
+    for (method, expected) in image.actor_methods().iter().zip(expected_methods) {
+        assert_eq!(method.method_identity(), &expected);
+        assert!(
+            image
+                .functions()
+                .get(method.function().get() as usize)
+                .is_some(),
+            "actor method target must remain reachable in the linked function closure"
+        );
+    }
+}
+
+#[test]
+fn actor_closure_missing_method_identity_fails_closed() {
+    let hydrated = production_hydrated_deployment(
+        "runtime/linker/src/bytecode/tests/fixtures/actor-closure-positive",
+        "p6-actor-closure-missing-method",
+    );
+    let limits = generous_limits();
+    let linker = DeploymentLinker::new(&hydrated, &limits);
+    let mut type_linker = TypeLinker::new(&hydrated, &limits);
+    let package = hydrated
+        .packages()
+        .values()
+        .find(|package| {
+            package.reference().package_id == "test.skiff/bytecode-vm-phase-6-actor-closure"
+        })
+        .expect("actor closure fixture owns its exact package");
+    let actor = package
+        .artifact()
+        .actor_implementations
+        .iter()
+        .find(|actor| actor.actor.symbol == "Counter")
+        .expect("actor closure fixture declares Counter");
+    let actor_abi = package
+        .artifact()
+        .implementation_links
+        .types
+        .values()
+        .find(|export| {
+            export.file.module_path == actor.actor.module_path
+                && export
+                    .actor
+                    .as_ref()
+                    .is_some_and(|abi| abi.abi.actor_name == actor.actor.symbol)
+        })
+        .and_then(|export| export.actor.as_ref())
+        .expect("actor closure fixture has an exact ABI");
+    let missing = ActorMethodIdentity::new("skiff-actor-method-v1:sha256:missing");
+
+    let error = linker
+        .key_for_actor_method(
+            package,
+            &actor.actor,
+            &actor_abi.actor_abi_identity,
+            &actor.actor_implementation_identity,
+            &missing,
+            &mut type_linker,
+        )
+        .expect_err("unknown actor method identity must fail before a target is minted");
+    assert!(
+        matches!(
+            &error,
+            BytecodeLinkError::UnsatisfiedObligation {
+                obligation: BytecodeLinkObligation::ConcreteTargetTables,
+                detail,
+                ..
+            } if detail.contains("actor relocation method") && detail.contains("is absent")
+        ),
+        "missing actor method identity must fail closed: {error}"
+    );
+}
+
+#[test]
+fn actor_closure_missing_create_callable_fails_closed() {
+    let hydrated = production_hydrated_deployment(
+        "runtime/linker/src/bytecode/tests/fixtures/actor-closure-positive",
+        "p6-actor-closure-missing-create",
+    );
+    let limits = generous_limits();
+    let linker = DeploymentLinker::new(&hydrated, &limits);
+    let mut type_linker = TypeLinker::new(&hydrated, &limits);
+    let package = hydrated
+        .packages()
+        .values()
+        .find(|package| {
+            package.reference().package_id == "test.skiff/bytecode-vm-phase-6-actor-closure"
+        })
+        .expect("actor closure fixture owns its exact package");
+    let actor = package
+        .artifact()
+        .actor_implementations
+        .iter()
+        .find(|actor| actor.actor.symbol == "Counter")
+        .expect("actor closure fixture declares Counter");
+    assert!(
+        actor.create.is_some(),
+        "fixture must declare an actor create"
+    );
+    let missing = PackageCallableId::new("pkg-callable:missing:actor:create");
+
+    let error = linker
+        .key_for_receiver_callable(package, &missing, &mut type_linker)
+        .expect_err("unknown actor create callable must fail before a target is minted");
+    assert!(
+        matches!(
+            &error,
+            BytecodeLinkError::UnsatisfiedObligation {
+                obligation: BytecodeLinkObligation::ConcreteTargetTables,
+                detail,
+                ..
+            } if detail.contains("callable") && detail.contains("no function key")
+        ),
+        "missing actor create callable must fail closed: {error}"
     );
 }
 

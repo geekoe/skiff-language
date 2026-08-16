@@ -43,7 +43,7 @@ impl<'a> DeploymentLinker<'a> {
         self.validate_exact_package_closure()?;
         let packages = self.link_package_provenance()?;
         let mut type_linker = TypeLinker::new(self.deployment, self.limits);
-        let roots = self.canonical_roots()?;
+        let roots = self.canonical_roots(&mut type_linker)?;
         let keys = self.discover_closure(roots, &mut type_linker)?;
         let reachable_relocations = self.reachable_relocations(&keys)?;
         let function_indices = canonical_function_indices(&keys, deployment_location.clone())?;

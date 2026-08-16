@@ -58,7 +58,7 @@ impl DeploymentLinker<'_> {
     ) -> Result<LinkedDispatchTables, BytecodeLinkError> {
         let service_operations = self.link_service_operations(reachable, type_linker)?;
         let (actor_creates, actor_methods) =
-            self.link_actor_targets(reachable, indices, frames, type_linker)?;
+            self.link_actor_targets(indices, frames, type_linker)?;
         let (interface_tables, requirement_keys) = self.link_interface_tables(
             reachable,
             indices,
@@ -380,7 +380,6 @@ impl DeploymentLinker<'_> {
 
     fn link_actor_targets(
         &self,
-        reachable: &[ReachableRelocation],
         indices: &BTreeMap<SpecializationKey, FunctionIndex>,
         frames: &[LinkedFrameLayout],
         type_linker: &mut TypeLinker<'_>,
@@ -455,39 +454,7 @@ impl DeploymentLinker<'_> {
                         signature,
                     ));
                 }
-                let has_reachable_method = reachable.iter().any(|reference| {
-                    matches!(
-                        &reference.relocation,
-                        BytecodeRelocation::ActorMethodRef {
-                            actor: target_actor,
-                            actor_implementation_identity,
-                            ..
-                        } if reference.specialization.package_build_id()
-                            == &package.reference().package_build_id
-                            && target_actor == &actor.actor
-                            && actor_implementation_identity == &actor.actor_implementation_identity
-                    )
-                });
-                if !has_reachable_method {
-                    continue;
-                }
                 for (method_identity, callable) in &actor.methods {
-                    let referenced = reachable.iter().any(|reference| matches!(
-                        &reference.relocation,
-                        BytecodeRelocation::ActorMethodRef {
-                            actor: target_actor,
-                            actor_abi_identity,
-                            actor_implementation_identity,
-                            method_identity: target_method,
-                        } if reference.specialization.package_build_id() == &package.reference().package_build_id
-                            && target_actor == &actor.actor
-                            && actor_abi_identity == &actor_abi.actor_abi_identity
-                            && actor_implementation_identity == &actor.actor_implementation_identity
-                            && target_method == method_identity
-                    ));
-                    if !referenced {
-                        continue;
-                    }
                     let key = self.key_for_receiver_callable(package, callable, type_linker)?;
                     let function = indices.get(&key).copied().ok_or_else(|| {
                         unsatisfied(
@@ -2622,7 +2589,7 @@ impl DeploymentLinker<'_> {
         ))
     }
 
-    pub(super) fn key_for_receiver_callable(
+    pub(in crate::bytecode) fn key_for_receiver_callable(
         &self,
         package: &HydratedBytecodePackage,
         callable: &skiff_artifact_model::PackageCallableId,
@@ -3382,7 +3349,7 @@ fn resolver_error(message: impl Into<String>) -> ValueLifecycleResolverError {
 }
 
 impl DeploymentLinker<'_> {
-    pub(super) fn key_for_actor_method(
+    pub(in crate::bytecode) fn key_for_actor_method(
         &self,
         package: &HydratedBytecodePackage,
         actor: &skiff_artifact_model::ServiceSymbolRef,

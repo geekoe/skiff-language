@@ -8,12 +8,17 @@ use skiff_runtime_linked_bytecode::{
 };
 use skiff_runtime_loader::HydratedBytecodePackage;
 
-use crate::bytecode::{BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation};
+use crate::bytecode::{
+    types::TypeLinker, BytecodeLinkError, BytecodeLinkLocation, BytecodeLinkObligation,
+};
 
 use super::{unsatisfied, DeploymentLinker};
 
 impl DeploymentLinker<'_> {
-    pub(super) fn canonical_roots(&self) -> Result<Vec<SpecializationKey>, BytecodeLinkError> {
+    pub(super) fn canonical_roots(
+        &self,
+        type_linker: &mut TypeLinker<'_>,
+    ) -> Result<Vec<SpecializationKey>, BytecodeLinkError> {
         let implementation = self.implementation_package()?;
         let mut roots = Vec::new();
         for binding in &self.deployment.deployment().operation_bindings {
@@ -38,6 +43,59 @@ impl DeploymentLinker<'_> {
                     callable,
                     self.deployment_location(),
                 )?);
+            }
+        }
+        roots.extend(self.actor_roots(type_linker)?);
+        Ok(roots)
+    }
+
+    fn actor_roots(
+        &self,
+        type_linker: &mut TypeLinker<'_>,
+    ) -> Result<Vec<SpecializationKey>, BytecodeLinkError> {
+        let mut roots = Vec::new();
+        for package in self.deployment.packages().values() {
+            for actor in &package.artifact().actor_implementations {
+                let actor_abi = package
+                    .artifact()
+                    .implementation_links
+                    .types
+                    .values()
+                    .find(|export| {
+                        export.file.module_path == actor.actor.module_path
+                            && export
+                                .actor
+                                .as_ref()
+                                .is_some_and(|abi| abi.abi.actor_name == actor.actor.symbol)
+                    })
+                    .and_then(|export| export.actor.as_ref())
+                    .ok_or_else(|| {
+                        unsatisfied(
+                            BytecodeLinkObligation::ConcreteTargetTables,
+                            self.package_location(package),
+                            format!(
+                                "actor {} has no package ABI authority",
+                                actor.actor.symbol_path()
+                            ),
+                        )
+                    })?;
+                if let Some(create) = &actor.create {
+                    roots.push(self.key_for_receiver_callable(
+                        package,
+                        &create.package_callable_id,
+                        type_linker,
+                    )?);
+                }
+                for (method_identity, _) in &actor.methods {
+                    roots.push(self.key_for_actor_method(
+                        package,
+                        &actor.actor,
+                        &actor_abi.actor_abi_identity,
+                        &actor.actor_implementation_identity,
+                        method_identity,
+                        type_linker,
+                    )?);
+                }
             }
         }
         Ok(roots)

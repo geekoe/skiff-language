@@ -1,0 +1,24 @@
+type Counter {
+  id: string,
+  count: number,
+}
+
+actor Counter {
+  key(id)
+  create()
+}
+
+impl Counter {
+  function create() -> void {
+    self.count = 0
+  }
+
+  function increment() -> number {
+    self.count = self.count + 1
+    return self.count
+  }
+}
+
+function run(seed: number) -> number {
+  return seed
+}
