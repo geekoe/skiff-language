@@ -50,7 +50,7 @@ use skiff_runtime_request::{
     BytecodeHttpResponse, BytecodeHttpStreamRegistrar, BytecodeHttpStreamResponse,
     BytecodeRequestChildComposition, BytecodeServiceChildError, BytecodeServiceResolver,
     BytecodeTaskChildComposition, BytecodeTaskSubmitError, BytecodeTaskSubmitter,
-    CallbackExecution, FailClosedServiceChildThrowMaterializer, HttpNameValue,
+    CallbackExecution, CrossImageServiceChildThrowMaterializer, HttpNameValue,
     OwnedExecutionControl, RequestMemoryLedger, RequestVmHeap,
 };
 use skiff_runtime_transport::protocol::TaskSubmitResponseFrameHeader;
@@ -1068,7 +1068,7 @@ fn bytecode_request_child_composition_with_parts(
         service_resolver: Arc::new(ProductionBytecodeServiceResolver::new(host.clone())),
         child_heap_factory: None,
         heap_limits: limits,
-        throw_materializer: Arc::new(FailClosedServiceChildThrowMaterializer),
+        throw_materializer: Arc::new(CrossImageServiceChildThrowMaterializer),
         unary_response_start: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         callback_hooks: Some(Arc::new(callback_hooks.clone())),
         callback_child: BytecodeCallbackChildComposition {

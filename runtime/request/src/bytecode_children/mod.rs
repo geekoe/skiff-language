@@ -19,8 +19,9 @@ use std::sync::{
     Arc,
 };
 
-use skiff_artifact_model::{ContractOperationId, ServiceProtocolIdentity};
+use skiff_artifact_model::{ContractOperationId, Opcode, ServiceProtocolIdentity};
 use skiff_runtime_boundary::service_linkable::ServiceLinkableCapabilityHooks;
+use skiff_runtime_boundary::vm_materialize::materialize_linked_value;
 use skiff_runtime_deployment_image::{DeploymentOwnerIdentity, ServiceDependencySlot};
 use skiff_runtime_linked_bytecode::ServiceOperationIndex;
 use skiff_runtime_linker::DeploymentExecutionImage;
@@ -33,8 +34,8 @@ use skiff_runtime_scheduler::{
     ChildHeapCarrier, ChildHeapOwnerRegistration, OwnerCreationError, RequestResourceTable,
 };
 use skiff_runtime_vm::{
-    ChildInvocation, ChildTarget, ResumeOutcome, VmBudget, VmCompletion, VmFiber, VmLimits,
-    VmResumeToken,
+    ChildInvocation, ChildTarget, ResumeOutcome, VmBudget, VmCompletion, VmFiber, VmLifecycleSite,
+    VmLimits, VmOwnedException, VmResumeToken,
 };
 
 use crate::{memory_ledger::MemoryLedgerError, vm_heap::RequestVmHeap, RequestMemoryLedger};
@@ -48,6 +49,7 @@ pub use callback::{
 pub use db::{
     BytecodeDbChildComposition, BytecodeDbChildError, DbObjectTargetId, DbTransactionSession,
 };
+pub(crate) use db::{DbPendingCarrier, DbPendingRoots};
 pub(crate) use db_intrinsic::{
     linked_db_target, materialize_db_result_to_vm, require_db_operation,
 };
@@ -183,14 +185,13 @@ pub enum BytecodeChildError {
 
 /// Cross-image service-throw materialization authority.
 ///
-/// K6's cross-image `VmOwnedException` mint is not available to X6 yet.
-/// The production composition therefore keeps a fail-closed default that
-/// preserves the child completion and lets the scheduler retain the exact
-/// exception owner. A later K6-backed implementation can replace this trait
-/// without changing the request authority path.
+/// The concrete implementation materializes the provider exception payload
+/// through the linked service error plan and mints a caller-owned
+/// [`VmOwnedException`] bound to the exact service call resume site.
 pub trait ServiceChildThrowMaterializer: Send + Sync + 'static {
     fn materialize_throw(
         &self,
+        resume: &VmResumeToken,
         child_result: VmCompletion,
         child_heap: &mut ChildHeapCarrier,
         parent_heap: &mut dyn VmHeap,
@@ -199,14 +200,15 @@ pub trait ServiceChildThrowMaterializer: Send + Sync + 'static {
     ) -> Result<ResumeOutcome, ChildFinishError<VmFiber>>;
 }
 
-/// Fail-closed service throw materializer used until K6 provides the
-/// cross-image exception mint.
+/// Fail-closed service throw materializer retained for unconfigured
+/// compositions and negative tests.
 #[derive(Default)]
 pub struct FailClosedServiceChildThrowMaterializer;
 
 impl ServiceChildThrowMaterializer for FailClosedServiceChildThrowMaterializer {
     fn materialize_throw(
         &self,
+        _resume: &VmResumeToken,
         child_result: VmCompletion,
         _child_heap: &mut ChildHeapCarrier,
         _parent_heap: &mut dyn VmHeap,
@@ -220,6 +222,112 @@ impl ServiceChildThrowMaterializer for FailClosedServiceChildThrowMaterializer {
             ),
             child_result,
         ))
+    }
+}
+
+/// Production cross-image service throw materializer.
+#[derive(Default)]
+pub struct CrossImageServiceChildThrowMaterializer;
+
+impl ServiceChildThrowMaterializer for CrossImageServiceChildThrowMaterializer {
+    fn materialize_throw(
+        &self,
+        resume: &VmResumeToken,
+        child_result: VmCompletion,
+        child_heap: &mut ChildHeapCarrier,
+        parent_heap: &mut dyn VmHeap,
+        parent_image: &DeploymentExecutionImage,
+        boundary_plan: &skiff_runtime_linked_bytecode::LinkedServiceBoundaryPlan,
+    ) -> Result<ResumeOutcome, ChildFinishError<VmFiber>> {
+        let diagnostic = child_result
+            .thrown_diagnostic()
+            .expect("throw branch is selected only when a thrown diagnostic exists")
+            .clone();
+        let (outcome, mut residual) = match child_result.into_resume() {
+            Ok(parts) => parts,
+            Err(_) => {
+                return Err(ChildFinishError::failure(BytecodeSchedulerError::Port(
+                    "service throw completion lacks the exact owned exception".to_string(),
+                )));
+            }
+        };
+        let ResumeOutcome::Throw(mut child_exception) = outcome else {
+            let _ = residual.release_all(child_heap.heap_mut());
+            return Err(ChildFinishError::failure(BytecodeSchedulerError::Port(
+                "service thrown completion did not carry an owned exception".to_string(),
+            )));
+        };
+        let Some(source_payload) = child_exception.vm_local_payload() else {
+            let _ = child_exception.release_all(child_heap.heap_mut());
+            let _ = residual.release_all(child_heap.heap_mut());
+            return Err(ChildFinishError::failure(BytecodeSchedulerError::Port(
+                "service thrown completion has no VM-local payload".to_string(),
+            )));
+        };
+        let fallback = boundary_plan.error().fallback();
+        let caller_type = fallback.caller_type();
+        let caller_payload = match materialize_linked_value(
+            child_heap.heap_mut(),
+            &source_payload,
+            parent_heap,
+            parent_image,
+            caller_type,
+            fallback,
+        ) {
+            Ok(payload) => payload,
+            Err(error) => {
+                let _ = child_exception.release_all(child_heap.heap_mut());
+                let _ = residual.release_all(child_heap.heap_mut());
+                return Err(ChildFinishError::failure(BytecodeSchedulerError::Port(
+                    format!("service throw materialization failed: {error}"),
+                )));
+            }
+        };
+        if let Err(error) = child_exception.release_all(child_heap.heap_mut()) {
+            let _ = parent_heap.release_snapshot(&caller_payload);
+            let _ = residual.release_all(child_heap.heap_mut());
+            return Err(ChildFinishError::failure(BytecodeSchedulerError::Vm(error)));
+        }
+        let plan = match parent_image.type_plan(caller_type).cloned() {
+            Some(plan) => plan,
+            None => {
+                let _ = parent_heap.release_snapshot(&caller_payload);
+                let _ = residual.release_all(child_heap.heap_mut());
+                return Err(ChildFinishError::failure(BytecodeSchedulerError::Port(
+                    "service throw caller payload has no linked transfer plan".to_string(),
+                )));
+            }
+        };
+        let site = VmLifecycleSite {
+            function: resume.function(),
+            instruction: resume.instruction(),
+            opcode: Opcode::CallService,
+        };
+        let caller_exception = match VmOwnedException::try_from_caller_resume(
+            Arc::clone(resume.image()),
+            resume,
+            parent_heap,
+            Some(caller_payload),
+            &diagnostic,
+            plan,
+            site,
+        ) {
+            Ok(exception) => exception,
+            Err(rejected) => {
+                let (error, payload) = rejected.into_parts();
+                if let Some(payload) = payload {
+                    let _ = parent_heap.release_snapshot(&payload);
+                }
+                let _ = residual.release_all(child_heap.heap_mut());
+                return Err(ChildFinishError::failure(BytecodeSchedulerError::Port(
+                    error.to_string(),
+                )));
+            }
+        };
+        if let Err(error) = residual.release_all(child_heap.heap_mut()) {
+            return Err(ChildFinishError::failure(BytecodeSchedulerError::Vm(error)));
+        }
+        Ok(ResumeOutcome::Throw(caller_exception))
     }
 }
 
@@ -268,8 +376,7 @@ pub struct BytecodeRequestChildComposition {
     pub service_resolver: Arc<dyn BytecodeServiceResolver>,
     pub child_heap_factory: Option<Arc<dyn BytecodeChildHeapFactory>>,
     pub heap_limits: RequestHeapLimits,
-    /// Cross-image throw materialization seam. The default is fail-closed and
-    /// preserves the child completion until K6 supplies a real mint.
+    /// Cross-image throw materialization seam.
     pub throw_materializer: Arc<dyn ServiceChildThrowMaterializer>,
     /// Set only after a service child has successfully materialized its result
     /// back into the caller. The host uses this to classify a successful unary
@@ -305,7 +412,7 @@ impl Default for BytecodeRequestChildComposition {
             service_resolver: Arc::new(FailClosedServiceResolver),
             child_heap_factory: None,
             heap_limits: RequestHeapLimits::default(),
-            throw_materializer: Arc::new(FailClosedServiceChildThrowMaterializer),
+            throw_materializer: Arc::new(CrossImageServiceChildThrowMaterializer),
             unary_response_start: Arc::new(AtomicBool::new(false)),
             callback_hooks: None,
             callback_child: BytecodeCallbackChildComposition::default(),

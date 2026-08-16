@@ -801,6 +801,7 @@ impl ChildFinish<VmFiber, VmResumeToken> for RemoteInterfaceChildFinish {
     ) -> Result<ResumeOutcome, ChildFinishError<VmFiber>> {
         if child_result.thrown_diagnostic().is_some() {
             return self.throw_materializer.materialize_throw(
+                resume,
                 child_result,
                 child_heap,
                 parent_heap,

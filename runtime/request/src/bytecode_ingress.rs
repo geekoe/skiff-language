@@ -62,7 +62,8 @@ use crate::{
         execute_service_child, is_task_request, linked_db_target, materialize_db_result_to_vm,
         require_db_operation, task_arguments, task_submit_message_from_composition,
         task_target_by_dispatch_index, task_timing_control, BytecodeChildHeapFactory,
-        BytecodeChildLane, BytecodeRequestChildComposition, RequestChildHeapFactory,
+        BytecodeChildLane, BytecodeRequestChildComposition, DbPendingCarrier, DbPendingRoots,
+        DbTransactionSession, RequestChildHeapFactory,
     },
     bytecode_host_effects::{
         BytecodeHttpFailure, BytecodeHttpRequest, BytecodeHttpResponse,
@@ -533,6 +534,21 @@ impl VmRootSource for RequestPendingOutcome {
     }
 }
 
+fn lock_db_pending(
+    carrier: &Arc<Mutex<DbPendingCarrier>>,
+) -> std::sync::MutexGuard<'_, DbPendingCarrier> {
+    carrier
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn take_db_pending_session(carrier: &Arc<Mutex<DbPendingCarrier>>) -> DbTransactionSession {
+    lock_db_pending(carrier)
+        .session
+        .take()
+        .expect("DB transaction session remains in pending carrier")
+}
+
 pub(super) type RequestPendingRegistry =
     PendingRegistry<VmResumeToken, VmSuspended, RequestPendingOutcome>;
 type RequestCompletionHandle = CompletionHandle<VmResumeToken, VmSuspended, RequestPendingOutcome>;
@@ -855,6 +871,30 @@ impl RequestPendingRuntime {
         F: Future<Output = T> + Send + 'static + ?Sized,
         M: FnOnce(T) -> RequestPendingOutcome + Send + 'static,
     {
+        self.begin_pending_with_policy_and_roots(
+            resume,
+            RootEscrow::empty(),
+            future,
+            allow_manual_sleep_completion,
+            terminal_policy,
+            map,
+        )
+    }
+
+    fn begin_pending_with_policy_and_roots<T, F, M>(
+        &self,
+        resume: VmResumeToken,
+        roots: RootEscrow,
+        future: Pin<Box<F>>,
+        allow_manual_sleep_completion: bool,
+        terminal_policy: PendingFutureTerminalPolicy,
+        map: M,
+    ) -> Result<PendingOperation, BeginPendingFailure>
+    where
+        T: Send + 'static,
+        F: Future<Output = T> + Send + 'static + ?Sized,
+        M: FnOnce(T) -> RequestPendingOutcome + Send + 'static,
+    {
         let spawner = match tokio::runtime::Handle::try_current() {
             Ok(spawner) => spawner,
             Err(_) => {
@@ -869,7 +909,7 @@ impl RequestPendingRuntime {
         };
         let completion = match self
             .registry
-            .begin_with_resource_roots(RootEscrow::empty(), self.resources.root_pin())
+            .begin_with_resource_roots(roots, self.resources.root_pin())
         {
             Ok(completion) => completion,
             Err(error) => {
@@ -1143,13 +1183,24 @@ impl BytecodeHostExecutor {
         }
 
         let ledger = Arc::clone(&self.child_composition.memory_ledger);
+        let pending_carrier = Arc::new(Mutex::new(DbPendingCarrier::new(child_heap)));
+        let pending_roots = RootEscrow::new(Box::new(DbPendingRoots {
+            carrier: Arc::clone(&pending_carrier),
+        }));
         let future = async move {
             let result = async {
-                let mut session = match db_composition.begin_transaction(ledger.as_ref()).await {
+                let session = match db_composition.begin_transaction(ledger.as_ref()).await {
                     Ok(session) => session,
                     Err(error) => return Err(format!("DB transaction begin failed: {error}")),
                 };
+                lock_db_pending(&pending_carrier).session = Some(session);
+
                 let prepared = {
+                    let mut child_heap = lock_db_pending(&pending_carrier)
+                        .child_heap
+                        .take()
+                        .expect("DB child heap remains in pending carrier");
+                    let mut session = take_db_pending_session(&pending_carrier);
                     let child_vm = match child_heap
                         .heap_mut()
                         .as_any_mut()
@@ -1157,25 +1208,39 @@ impl BytecodeHostExecutor {
                     {
                         Some(heap) => heap,
                         None => {
+                            session.abort().await;
+                            lock_db_pending(&pending_carrier).child_heap = Some(child_heap);
                             return Err("DB child heap is not a request VM heap".to_string());
                         }
                     };
-                    match session.prepared_create(child_vm.request_heap_mut(), &child_runtime) {
+                    let prepared = match session
+                        .prepared_create(child_vm.request_heap_mut(), &child_runtime)
+                    {
                         Ok(prepared) => prepared,
                         Err(error) => {
                             session.abort().await;
+                            lock_db_pending(&pending_carrier).child_heap = Some(child_heap);
                             return Err(format!("DB create preparation failed: {error}"));
                         }
-                    }
+                    };
+                    lock_db_pending(&pending_carrier).child_heap = Some(child_heap);
+                    lock_db_pending(&pending_carrier).session = Some(session);
+                    prepared
                 };
+
                 let finalizer = match prepared.into_wait().await {
                     Ok(finalizer) => finalizer,
                     Err(error) => {
+                        let mut session = take_db_pending_session(&pending_carrier);
                         session.abort().await;
                         return Err(format!("DB create wait failed: {error}"));
                     }
                 };
                 let created = {
+                    let mut child_heap = lock_db_pending(&pending_carrier)
+                        .child_heap
+                        .take()
+                        .expect("DB child heap remains in pending carrier");
                     let child_vm = match child_heap
                         .heap_mut()
                         .as_any_mut()
@@ -1183,32 +1248,48 @@ impl BytecodeHostExecutor {
                     {
                         Some(heap) => heap,
                         None => {
+                            let mut session = take_db_pending_session(&pending_carrier);
+                            session.abort().await;
+                            lock_db_pending(&pending_carrier).child_heap = Some(child_heap);
                             return Err("DB child heap is not a request VM heap".to_string());
                         }
                     };
-                    match finalizer.finalize(child_vm.request_heap_mut()) {
+                    let created = match finalizer.finalize(child_vm.request_heap_mut()) {
                         Ok(value) => value,
                         Err(error) => {
+                            let mut session = take_db_pending_session(&pending_carrier);
                             session.abort().await;
+                            lock_db_pending(&pending_carrier).child_heap = Some(child_heap);
                             return Err(format!("DB create finalization failed: {error}"));
                         }
-                    }
+                    };
+                    lock_db_pending(&pending_carrier).child_heap = Some(child_heap);
+                    created
                 };
+
+                let mut session = take_db_pending_session(&pending_carrier);
                 if let Err(error) = session.commit().await {
                     session.abort().await;
                     return Err(format!("DB commit failed: {error}"));
                 }
+                lock_db_pending(&pending_carrier).session = Some(session);
                 Ok(created)
             }
             .await;
+            let child_heap = lock_db_pending(&pending_carrier)
+                .child_heap
+                .take()
+                .expect("DB child heap remains in pending carrier");
             (result, child_heap)
         };
 
         self.runtime
-            .begin_pending(
+            .begin_pending_with_policy_and_roots(
                 resume,
+                pending_roots,
                 Box::pin(future),
                 false,
+                PendingFutureTerminalPolicy::DropFuture,
                 move |(result, child_heap)| RequestPendingOutcome::Db {
                     operation,
                     child_heap,

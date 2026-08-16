@@ -7,13 +7,20 @@
 //! any provider call and the leaf never reconstructs a target from a type
 //! name.
 
+use std::sync::{Arc, Mutex};
+
 use skiff_runtime_capability_context::{
     DbCapabilityContext, DbCapabilityStore, DbCapabilityTarget, DbKey, DbOneSelector,
     DbRecoverableRuntimeContext, DbRuntimeChange, FieldPath, PreparedDbOptionalRuntimeOperation,
     PreparedDbValueRuntimeOperation,
 };
-use skiff_runtime_model::{request_heap::RequestHeap, runtime_value::RuntimeValue};
-use skiff_runtime_scheduler::{ChildHeapCarrier, ChildHeapCleanupError};
+use skiff_runtime_model::{
+    request_heap::RequestHeap,
+    runtime_value::RuntimeValue,
+    vm_heap::VmHeapError,
+    vm_root::{VmRootSource, VmRootVisitor},
+};
+use skiff_runtime_scheduler::{ChildHeapCarrier, RootDisposition, RootEscrowBacking};
 
 use crate::{
     memory_ledger::{RequestTransactionToken, TransactionLedgerError},
@@ -41,8 +48,6 @@ pub enum BytecodeDbChildError {
     TransactionLedger(#[from] TransactionLedgerError),
     #[error("db child commit has no active transaction")]
     CommitWithoutActiveTransaction,
-    #[error("db child pending cleanup could not be attached: {0}")]
-    PendingCleanup(ChildHeapCleanupError),
 }
 
 /// Request-scoped DB child registration.
@@ -179,18 +184,20 @@ impl BytecodeDbChildComposition {
         let store = self.require_store()?;
         let recoverable_context = self.recoverable_context()?;
         let token = memory_ledger.begin_transaction(cleanup)?;
-        if let Err(error) = store.begin_transaction().await {
-            token.finish();
-            return Err(BytecodeDbChildError::Provider {
-                message: format!("db begin transaction failed: {error}"),
-            });
-        }
-        Ok(DbTransactionSession {
+        let mut session = DbTransactionSession {
             store,
             target,
             recoverable_context,
             token: Some(token),
-        })
+            abort_runtime: tokio::runtime::Handle::try_current().ok(),
+        };
+        if let Err(error) = session.store.begin_transaction().await {
+            session.abort().await;
+            return Err(BytecodeDbChildError::Provider {
+                message: format!("db begin transaction failed: {error}"),
+            });
+        }
+        Ok(session)
     }
 }
 
@@ -206,6 +213,7 @@ pub struct DbTransactionSession {
     target: DbCapabilityTarget,
     recoverable_context: DbRecoverableRuntimeContext,
     token: Option<RequestTransactionToken>,
+    abort_runtime: Option<tokio::runtime::Handle>,
 }
 
 impl DbTransactionSession {
@@ -288,49 +296,95 @@ impl DbTransactionSession {
     }
 
     pub async fn commit(&mut self) -> Result<(), BytecodeDbChildError> {
-        let token = self
-            .token
-            .take()
-            .ok_or(BytecodeDbChildError::CommitWithoutActiveTransaction)?;
+        if self.token.is_none() {
+            return Err(BytecodeDbChildError::CommitWithoutActiveTransaction);
+        }
         let result = self.store.commit_transaction().await;
-        token.finish();
+        if let Some(token) = self.token.take() {
+            token.finish();
+        }
         result.map_err(|error| BytecodeDbChildError::Provider {
             message: format!("db commit transaction failed: {error}"),
         })
     }
 
     pub async fn abort(&mut self) {
+        self.store.abort_transaction().await;
         if let Some(token) = self.token.take() {
-            self.store.abort_transaction().await;
             token.finish();
         }
     }
+}
 
-    /// Moves the transaction token cleanup into a child heap carrier.
-    ///
-    /// This is the D6R seam for actual `Pending` commit/abort: once the owner
-    /// publishes a pending DB completion, the carrier owns the token and the
-    /// Phase 4 pending owner graph runs the bounded cleanup at terminal.
-    pub fn attach_pending_cleanup(
-        mut self,
-        child_heap: &mut ChildHeapCarrier,
-    ) -> Result<(), BytecodeDbChildError> {
-        let token = self
-            .token
-            .take()
-            .ok_or(BytecodeDbChildError::CommitWithoutActiveTransaction)?;
-        child_heap
-            .attach_pending_cleanup(Box::new(move || token.finish()))
-            .map_err(BytecodeDbChildError::PendingCleanup)
-    }
-
-    /// Runs the exact successful pending cleanup path when the carrier still
-    /// owns it.
-    pub fn finish_pending_cleanup(child_heap: &mut ChildHeapCarrier) {
-        if let Some(cleanup) = child_heap.take_pending_cleanup() {
-            cleanup();
+impl Drop for DbTransactionSession {
+    fn drop(&mut self) {
+        let Some(token) = self.token.take() else {
+            return;
+        };
+        let store = self.store.clone();
+        let abort_runtime = self.abort_runtime.clone();
+        drop(token);
+        if let Some(handle) = abort_runtime {
+            let _ = handle.spawn(async move {
+                store.abort_transaction().await;
+            });
         }
     }
+}
+
+/// Pending owner graph carrier for one DB child operation.
+///
+/// The child heap and transaction session stay behind a stable `Arc` so the
+/// Phase 4 pending registry can enumerate the child heap while the provider
+/// future is parked. Request terminal settles the pending cell before the
+/// carrier is dropped; dropping an active session spawns the bounded provider
+/// abort through the runtime captured at transaction begin.
+pub(crate) struct DbPendingCarrier {
+    pub(crate) child_heap: Option<ChildHeapCarrier>,
+    pub(crate) session: Option<DbTransactionSession>,
+}
+
+impl DbPendingCarrier {
+    pub(crate) fn new(child_heap: ChildHeapCarrier) -> Self {
+        Self {
+            child_heap: Some(child_heap),
+            session: None,
+        }
+    }
+}
+
+impl VmRootSource for DbPendingCarrier {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        if let Some(child_heap) = &self.child_heap {
+            child_heap.visit_roots(visitor)?;
+        }
+        Ok(())
+    }
+}
+
+/// Root escrow backing that retains the DB pending carrier for the lifetime
+/// of the pending cell.
+pub(crate) struct DbPendingRoots {
+    pub(crate) carrier: Arc<Mutex<DbPendingCarrier>>,
+}
+
+impl VmRootSource for DbPendingRoots {
+    fn visit_roots(&self, visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+        self.carrier
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .visit_roots(visitor)
+    }
+}
+
+impl RootEscrowBacking for DbPendingRoots {
+    fn root_count(&self) -> usize {
+        0
+    }
+
+    fn restore_roots(self: Box<Self>) {}
+
+    fn drop_roots(self: Box<Self>, _disposition: RootDisposition) {}
 }
 
 #[cfg(test)]
@@ -350,6 +404,7 @@ mod tests {
             atomic::{AtomicUsize, Ordering},
             Arc, Mutex,
         },
+        time::Duration,
     };
 
     use serde_json::{json, Value};
@@ -373,6 +428,7 @@ mod tests {
         },
         request_heap::{RequestHeap, RequestHeapLimits},
         runtime_value::RuntimeValue,
+        vm_value::ValueSlot,
     };
     use skiff_runtime_scheduler::{
         BytecodeSchedulerPorts, ChildHeapCarrier, RequestExecutionContext,
@@ -699,52 +755,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn db_pending_cleanup_follows_child_heap_carrier_owner_graph() {
+    async fn db_pending_carrier_is_root_source_and_drop_aborts_active_transaction() {
         let store = RecordingDbStore::default();
         let composition = test_composition(store.clone());
         let ledger = RequestMemoryLedger::new(1024);
-        let cleanups = Arc::new(AtomicUsize::new(0));
         let session = composition
-            .begin_transaction_with_cleanup(&ledger, {
-                let cleanups = Arc::clone(&cleanups);
-                move || {
-                    cleanups.fetch_add(1, Ordering::SeqCst);
-                }
-            })
+            .begin_transaction(&ledger)
             .await
             .expect("transaction begins");
         let mut carrier = child_heap_carrier();
+        carrier
+            .publish_staging_root(ValueSlot::integer(7))
+            .expect("publish immediate pending root");
+        let pending = Arc::new(Mutex::new(DbPendingCarrier::new(carrier)));
+        pending.lock().unwrap().session = Some(session);
 
-        session
-            .attach_pending_cleanup(&mut carrier)
-            .expect("pending cleanup attaches to child heap carrier");
+        let mut roots = CountingRootVisitor::default();
+        pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .visit_roots(&mut roots)
+            .expect("pending DB child heap remains root enumerable");
+        assert_eq!(roots.count, 1);
         assert!(ledger.transaction_ledger().has_active());
-        let cleanup = carrier
-            .take_pending_cleanup()
-            .expect("cleanup is owned by the child heap carrier");
-        assert!(ledger.transaction_ledger().has_active());
-        cleanup();
-        assert!(!ledger.transaction_ledger().has_active());
-        assert_eq!(cleanups.load(Ordering::SeqCst), 1);
 
-        // Re-attach through a fresh transaction so the Drop path is exercised.
-        let session = composition
-            .begin_transaction_with_cleanup(&ledger, {
-                let cleanups = Arc::clone(&cleanups);
-                move || {
-                    cleanups.fetch_add(1, Ordering::SeqCst);
-                }
-            })
-            .await
-            .expect("second transaction begins");
-        session
-            .attach_pending_cleanup(&mut carrier)
-            .expect("second pending cleanup attaches");
-        drop(carrier);
+        drop(pending);
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(1)).await;
 
         assert!(!ledger.transaction_ledger().has_active());
-        assert_eq!(cleanups.load(Ordering::SeqCst), 2);
-        assert_eq!(store.begins.load(Ordering::SeqCst), 2);
+        assert_eq!(store.begins.load(Ordering::SeqCst), 1);
+        assert_eq!(store.aborts.load(Ordering::SeqCst), 1);
+    }
+
+    #[derive(Default)]
+    struct CountingRootVisitor {
+        count: usize,
+    }
+
+    impl VmRootVisitor for CountingRootVisitor {
+        fn visit_root(&mut self, _root: &ValueSlot) -> Result<(), VmHeapError> {
+            self.count += 1;
+            Ok(())
+        }
     }
 
     fn child_heap_carrier() -> ChildHeapCarrier {

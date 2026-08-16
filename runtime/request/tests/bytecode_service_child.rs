@@ -27,7 +27,8 @@ mod tests {
     };
     use skiff_runtime_request::{
         BytecodeRequestChildComposition, BytecodeServiceChildError, BytecodeServiceResolver,
-        FailClosedServiceChildThrowMaterializer, ServiceChildThrowMaterializer,
+        CrossImageServiceChildThrowMaterializer, FailClosedServiceChildThrowMaterializer,
+        ServiceChildThrowMaterializer,
     };
 
     static NEXT_PROVIDER_TEMP: AtomicU64 = AtomicU64::new(0);
@@ -268,6 +269,13 @@ mod tests {
     fn fail_closed_throw_materializer_is_injectable_into_composition() {
         let mut composition = BytecodeRequestChildComposition::default();
         composition.throw_materializer = Arc::new(FailClosedServiceChildThrowMaterializer);
+        let _: Arc<dyn ServiceChildThrowMaterializer> = Arc::clone(&composition.throw_materializer);
+    }
+
+    #[test]
+    fn cross_image_throw_materializer_is_injectable_into_composition() {
+        let mut composition = BytecodeRequestChildComposition::default();
+        composition.throw_materializer = Arc::new(CrossImageServiceChildThrowMaterializer);
         let _: Arc<dyn ServiceChildThrowMaterializer> = Arc::clone(&composition.throw_materializer);
     }
 

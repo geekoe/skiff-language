@@ -22,9 +22,10 @@ pub use bytecode_children::{
     BytecodeCallbackResolver, BytecodeChildError, BytecodeChildHeapFactory,
     BytecodeDbChildComposition, BytecodeDbChildError, BytecodeRequestChildComposition,
     BytecodeServiceChildError, BytecodeServiceResolver, BytecodeTaskChildComposition,
-    BytecodeTaskSubmitError, BytecodeTaskSubmitter, CallbackExecution, DbObjectTargetId,
-    DbTransactionSession, FailClosedServiceChildThrowMaterializer, FailClosedTaskSubmitter,
-    RequestChildHeapFactory, ServiceChildThrowMaterializer,
+    BytecodeTaskSubmitError, BytecodeTaskSubmitter, CallbackExecution,
+    CrossImageServiceChildThrowMaterializer, DbObjectTargetId, DbTransactionSession,
+    FailClosedServiceChildThrowMaterializer, FailClosedTaskSubmitter, RequestChildHeapFactory,
+    ServiceChildThrowMaterializer,
 };
 pub use bytecode_host_effects::{
     BytecodeHttpClientPort, BytecodeHttpFailure, BytecodeHttpFuture, BytecodeHttpRequest,

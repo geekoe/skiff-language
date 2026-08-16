@@ -39,8 +39,11 @@ pub(crate) fn linked_db_target(operation: &LinkedDbOperation) -> DbCapabilityTar
 pub(crate) fn require_db_operation(operation: &LinkedDbOperation) -> Result<(), String> {
     if operation.op() != DbOperationKind::Insert {
         return Err(format!(
-            "K6 DB intrinsic seam currently admits linked DB insert only; got {:?}",
-            operation.op()
+            "K6 DB intrinsic seam currently admits linked DB insert only; got {:?}. \
+             Full DB read/write/commit/abort routing needs F6 to emit the exact \
+             DbOperationKind/operand plan and K6 to accept op-specific intrinsic \
+             arity before X6 can dispatch the leaf",
+            operation.op(),
         ));
     }
     Ok(())
