@@ -551,12 +551,24 @@ fn unique_shape_for_type_index<'a>(
             && shape.plan() == plan
             && shape.origin().specialization() == specialization
     });
-    let first = matches
+    if let Some(first) = matches.next() {
+        if matches.next().is_some() {
+            return Err(format!(
+                "linked DB result type {} matches more than one exact shape",
+                ty.get()
+            ));
+        }
+        return Ok(first);
+    }
+    let mut canonical = shapes.iter().filter(|shape| {
+        shape.nominal_type() == ty && shape.origin().specialization().is_none()
+    });
+    let first = canonical
         .next()
         .ok_or_else(|| format!("linked DB result type {} has no exact shape", ty.get()))?;
-    if matches.next().is_some() {
+    if canonical.next().is_some() {
         return Err(format!(
-            "linked DB result type {} matches more than one exact shape",
+            "linked DB result type {} matches more than one canonical exact shape",
             ty.get()
         ));
     }

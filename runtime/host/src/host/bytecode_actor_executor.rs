@@ -60,6 +60,40 @@ pub(crate) struct ActorHostContext {
 
 impl ActorHostContext {}
 
+fn exact_actor_method_parameter_plan<'a>(
+    target: &'a LinkedActorMethodTarget,
+    source_argument_count: usize,
+) -> Result<
+    (
+        &'a TypeIndex,
+        &'a [TypeIndex],
+        &'a [LinkedServiceBoundaryValue],
+    ),
+    String,
+> {
+    let parameter_types = target.signature().parameter_types();
+    let Some((actor_type, method_parameter_types)) = parameter_types.split_first() else {
+        return Err("Actor method signature must carry its self parameter".to_string());
+    };
+    let parameter_boundaries = target.parameter_boundaries();
+    if parameter_boundaries.len() != parameter_types.len() {
+        return Err(
+            "Actor method parameter boundary count drifts from its linked signature".to_string(),
+        );
+    }
+    if source_argument_count != parameter_types.len() {
+        return Err(format!(
+            "Actor method invocation carries {source_argument_count} arguments but linked signature expects {} (self plus method arguments)",
+            parameter_types.len()
+        ));
+    }
+    Ok((
+        actor_type,
+        method_parameter_types,
+        &parameter_boundaries[1..],
+    ))
+}
+
 pub(crate) struct ProductionBytecodeActorExecutor {
     context: ActorHostContext,
     instances: ActorInstanceRegistry,
@@ -285,26 +319,18 @@ impl BytecodeActorExecutor for ProductionBytecodeActorExecutor {
                 ));
             }
         };
-        let [actor_type] = target.signature().parameter_types() else {
-            return Err(BytecodePortFailure::input(
-                BytecodeSchedulerError::Port(
-                    "Actor method signature must carry its self parameter".to_string(),
-                ),
-                invocation,
-            ));
-        };
         let source_arguments = invocation.arguments().values().to_vec();
-        let actor_value = match source_arguments.first() {
-            Some(value) => *value,
-            None => {
-                return Err(BytecodePortFailure::input(
-                    BytecodeSchedulerError::Port(
-                        "Actor method invocation is missing its receiver".to_string(),
-                    ),
-                    invocation,
-                ));
-            }
-        };
+        let (actor_type, method_parameter_types, method_parameter_boundaries) =
+            match exact_actor_method_parameter_plan(target, source_arguments.len()) {
+                Ok(plan) => plan,
+                Err(error) => {
+                    return Err(BytecodePortFailure::input(
+                        BytecodeSchedulerError::Port(error),
+                        invocation,
+                    ));
+                }
+            };
+        let actor_value = source_arguments[0];
         let parent_heap_typed = match parent_heap
             .as_any()
             .and_then(|heap| heap.downcast_ref::<RequestVmHeap>())
@@ -363,30 +389,18 @@ impl BytecodeActorExecutor for ProductionBytecodeActorExecutor {
                 ));
             }
         };
-
         let key_field = target.actor_implementation().key_field().to_string();
         let needs_create = instance
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .state_root
             .is_none();
-        let mut parameter_values =
-            Vec::with_capacity(target.signature().parameter_types().len().saturating_sub(1));
-        let parameter_boundaries = target.parameter_boundaries();
-        if parameter_boundaries.len() != target.signature().parameter_types().len() {
-            return Err(BytecodePortFailure::input(
-                BytecodeSchedulerError::Port(
-                    "Actor method parameter boundary count drifts from its linked signature"
-                        .to_string(),
-                ),
-                invocation,
-            ));
-        }
+        let mut parameter_values = Vec::with_capacity(method_parameter_types.len());
         for (index, ((source, parameter_type), boundary)) in source_arguments
             .iter()
             .skip(1)
-            .zip(target.signature().parameter_types().iter().skip(1))
-            .zip(parameter_boundaries.iter().skip(1))
+            .zip(method_parameter_types.iter())
+            .zip(method_parameter_boundaries.iter())
             .enumerate()
         {
             let value = match materialize_linked_value(
@@ -664,6 +678,12 @@ struct ActorCreateChildFinish {
     suspended_lease: Option<ActorSuspendedContinuationLease>,
 }
 
+fn release_actor_segment_lease(lease: &mut Option<ActorSegmentLease>) {
+    if let Some(lease) = lease.take() {
+        lease.release();
+    }
+}
+
 impl ChildFinish<VmFiber, VmResumeToken> for ActorCreateChildFinish {
     fn finish(
         &self,
@@ -864,9 +884,7 @@ impl ChildFinish<VmFiber, VmResumeToken> for ActorCreateChildFinish {
 
 impl Drop for ActorCreateChildFinish {
     fn drop(&mut self) {
-        if let Some(lease) = self.segment_lease.take() {
-            lease.release();
-        }
+        release_actor_segment_lease(&mut self.segment_lease);
         if let Some(lease) = self.suspended_lease.take() {
             lease.release();
         }
@@ -1000,9 +1018,7 @@ impl ChildFinish<VmFiber, VmResumeToken> for ActorMethodChildFinish {
 
 impl Drop for ActorMethodChildFinish {
     fn drop(&mut self) {
-        if let Some(lease) = self.segment_lease.take() {
-            lease.release();
-        }
+        release_actor_segment_lease(&mut self.segment_lease);
         if let Some(lease) = self.suspended_lease.take() {
             lease.release();
         }

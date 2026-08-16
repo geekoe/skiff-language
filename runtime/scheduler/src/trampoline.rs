@@ -794,6 +794,10 @@ impl<U: BytecodeUnit, R> SuspendedTrampoline<U, R> {
         self.active_heap.as_ref()
     }
 
+    pub fn active_heap_mut(&mut self) -> Option<&mut ChildHeapCarrier> {
+        self.active_heap.as_mut()
+    }
+
     pub fn resume(mut self) -> FlatTrampoline<U, R> {
         if let Some(blocked) = self.blocked.last_mut() {
             if let Some(finish) = blocked.finish.as_mut() {

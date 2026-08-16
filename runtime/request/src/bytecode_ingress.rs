@@ -3522,10 +3522,15 @@ impl ParkedBytecodeRequest {
         // before heap materialization so the request budget remains the one
         // terminal authority and a late heap-free payload is only dropped.
         let terminal_winner = self.refresh_pending_terminal_winner();
-        let resumed = BytecodeScheduler::<VmFiber>::resume_from_claimed_pending_wake_with(
+        let resumed = BytecodeScheduler::<VmFiber>::resume_from_claimed_pending_wake_with_heap_map(
             wake,
             self.context.ports(),
-            |resume, outcome| {
+            |resume, outcome, suspended| {
+                let root_heap = &mut *self.heap;
+                let materialization_heap = suspended
+                    .active_heap_mut()
+                    .map(ChildHeapCarrier::heap_mut)
+                    .unwrap_or(root_heap);
                 materialize_pending_outcome_after_terminal_check(
                     terminal_winner,
                     outcome,
@@ -3536,7 +3541,7 @@ impl ParkedBytecodeRequest {
                             outcome,
                             &self.runtime.cleanup_roots,
                             &self.runtime.materialization_escrows,
-                            &mut *self.heap,
+                            materialization_heap,
                         )
                     },
                 )

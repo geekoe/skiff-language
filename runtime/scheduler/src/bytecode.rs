@@ -1834,8 +1834,31 @@ where
         O: VmRootSource,
         U::ResumeOutcome: VmRootSource,
     {
+        Self::resume_from_claimed_pending_wake_with_heap_map(
+            wake,
+            ports,
+            |resume, outcome, _suspended| map(resume, outcome),
+        )
+    }
+
+    /// Maps a claimed wake while the suspended invocation chain is still
+    /// available, so heap-bearing outcomes can be materialized into the
+    /// active child heap instead of the request root heap.
+    pub fn resume_from_claimed_pending_wake_with_heap_map<O>(
+        wake: ClaimedPendingWakeGuard<U::ResumeToken, SuspendedTrampoline<U, U::ResumeToken>, O>,
+        ports: BytecodeSchedulerPorts<U>,
+        map: impl FnOnce(
+            &U::ResumeToken,
+            O,
+            &mut SuspendedTrampoline<U, U::ResumeToken>,
+        ) -> U::ResumeOutcome,
+    ) -> Result<Self, BytecodeSchedulerFailure<U>>
+    where
+        O: VmRootSource,
+        U::ResumeOutcome: VmRootSource,
+    {
         let mapped = wake
-            .map(|resume, outcome, _roots| map(resume, outcome))
+            .map_with_suspended(|resume, outcome, suspended| map(resume, outcome, suspended))
             .map_suspended(SuspendedTrampoline::resume);
         let failure_ports = ports.clone();
         let resumed = mapped.resume_and_commit(

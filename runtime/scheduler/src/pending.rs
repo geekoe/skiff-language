@@ -190,6 +190,39 @@ impl<R, S, O> ClaimedPendingWakeGuard<R, S, O> {
             outcome: Some(outcome),
         }
     }
+
+    pub(crate) fn map_with_suspended<M>(
+        mut self,
+        map: impl FnOnce(&R, O, &mut S) -> M,
+    ) -> MappedPendingWakeGuard<R, S, M>
+    where
+        S: VmRootSource,
+        O: VmRootSource,
+        M: VmRootSource,
+    {
+        let settlement = self
+            .settlement
+            .take()
+            .expect("one claimed wake maps its settlement exactly once");
+        let source = settlement.source();
+        let PendingOwner {
+            resume,
+            suspended,
+            ..
+        } = &mut self.owner;
+        let outcome = map(
+            resume
+                .as_ref()
+                .expect("a pending owner retains its resume token until install"),
+            settlement.into_outcome(),
+            suspended,
+        );
+        MappedPendingWakeGuard {
+            owner: self.owner,
+            source,
+            outcome: Some(outcome),
+        }
+    }
 }
 
 impl<R, S, O> VmRootSource for ClaimedPendingWakeGuard<R, S, O>
