@@ -491,7 +491,14 @@ impl<'a, 'deployment, 'limits> RelocationContext<'a, 'deployment, 'limits> {
                 } else {
                     InterfaceKind::Requirement
                 };
-                let key = serde_json::to_string(&(interface, methods)).map_err(|error| {
+                let normalized = self.linker.normalize_interface_instantiation(
+                    self.source.package,
+                    self.source.specialization,
+                    interface,
+                    self.type_linker,
+                    location.clone(),
+                )?;
+                let key = serde_json::to_string(&(normalized, methods)).map_err(|error| {
                     unsatisfied(
                         BytecodeLinkObligation::RelocationResolution,
                         location.clone(),
@@ -510,20 +517,28 @@ impl<'a, 'deployment, 'limits> RelocationContext<'a, 'deployment, 'limits> {
                         )
                     })
             }
-            BytecodeRelocation::LocalInterfaceRef { interface } => self
-                .dispatch_tables
-                .interface_index(&interface.interface, &InterfaceKind::Local)
-                .map(LinkedInstructionTarget::InterfaceTable)
-                .ok_or_else(|| {
-                    unsatisfied(
-                        BytecodeLinkObligation::RelocationResolution,
-                        location,
-                        "local interface target is absent from the linked dispatch table"
-                            .to_string(),
-                    )
-                }),
+            BytecodeRelocation::LocalInterfaceRef { interface } => {
+                let normalized = self.linker.normalize_interface_instantiation(
+                    self.source.package,
+                    self.source.specialization,
+                    &interface.interface,
+                    self.type_linker,
+                    location.clone(),
+                )?;
+                self.dispatch_tables
+                    .interface_index(&normalized, &InterfaceKind::Local)
+                    .map(LinkedInstructionTarget::InterfaceTable)
+                    .ok_or_else(|| {
+                        unsatisfied(
+                            BytecodeLinkObligation::RelocationResolution,
+                            location,
+                            "local interface target is absent from the linked dispatch table"
+                                .to_string(),
+                        )
+                    })
+            }
             BytecodeRelocation::RemoteInterfaceRef { interface } => {
-                let normalized = self.linker.normalize_remote_interface_instantiation(
+                let normalized = self.linker.normalize_interface_instantiation(
                     self.source.package,
                     self.source.specialization,
                     &interface.interface,

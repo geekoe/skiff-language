@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use skiff_artifact_identity::canonical_interface_method_abi_id;
 use skiff_artifact_model::bytecode::dto::DbOperationReference;
 use skiff_artifact_model::{
     self, BoundaryDropPlan, BoundaryTransfer, BoundaryValueCarrier, BoundaryValueEncoding,
@@ -1365,6 +1366,14 @@ fn remote_method_signature_matches_operation(
         && method.effect_summary() == operation.effect_summary()
 }
 
+fn canonical_method_abi_id(
+    interface: &InterfaceInstantiationRef,
+    method_abi_id: &str,
+) -> Option<String> {
+    let (_, method_name) = method_abi_id.rsplit_once(':')?;
+    Some(canonical_interface_method_abi_id(interface, method_name))
+}
+
 fn linked_service_operation_facts_match(
     left: &LinkedServiceOperationTarget,
     right: &LinkedServiceOperationTarget,
@@ -2083,10 +2092,17 @@ impl DeploymentLinker<'_> {
                             )
                         })?;
                     let location = self.reachable_relocation_location(reference);
-                    let linked_interface = self.link_interface_instantiation(
+                    let normalized_interface = self.normalize_interface_instantiation(
                         package,
                         &reference.specialization,
                         &interface.interface,
+                        type_linker,
+                        location.clone(),
+                    )?;
+                    let linked_interface = self.link_interface_instantiation(
+                        package,
+                        &reference.specialization,
+                        &normalized_interface,
                         type_linker,
                         location.clone(),
                     )?;
@@ -2125,14 +2141,17 @@ impl DeploymentLinker<'_> {
                             location.clone(),
                         )?;
                         let method_abi =
-                            LinkedInterfaceMethodAbiId::parse(method.method_abi_id.clone())
-                                .map_err(|error| {
-                                    unsatisfied(
-                                        BytecodeLinkObligation::ConcreteTargetTables,
-                                        location.clone(),
-                                        error.to_string(),
-                                    )
-                                })?;
+                            LinkedInterfaceMethodAbiId::parse(canonical_interface_method_abi_id(
+                                &normalized_interface,
+                                &method.method_name,
+                            ))
+                            .map_err(|error| {
+                                unsatisfied(
+                                    BytecodeLinkObligation::ConcreteTargetTables,
+                                    location.clone(),
+                                    error.to_string(),
+                                )
+                            })?;
                         methods.push(
                             LinkedLocalInterfaceMethod::new(
                                 method.slot,
@@ -2161,7 +2180,7 @@ impl DeploymentLinker<'_> {
                             )
                         })?;
                     if let Some(existing) = tables.iter().find(|table| {
-                        table.interface().artifact() == &interface.interface
+                        table.interface().artifact() == &normalized_interface
                             && matches!(
                                 table.kind(),
                                 LinkedInterfaceTableKind::Local(row)
@@ -2199,15 +2218,22 @@ impl DeploymentLinker<'_> {
                             )
                         })?;
                     let location = self.reachable_relocation_location(reference);
-                    let linked_interface = self.link_interface_instantiation(
+                    let normalized_interface = self.normalize_interface_instantiation(
                         package,
                         &reference.specialization,
                         interface,
                         type_linker,
                         location.clone(),
                     )?;
+                    let linked_interface = self.link_interface_instantiation(
+                        package,
+                        &reference.specialization,
+                        &normalized_interface,
+                        type_linker,
+                        location.clone(),
+                    )?;
                     let receiver_type = TypeRefIr::AnyInterface {
-                        interface: interface.clone(),
+                        interface: normalized_interface.clone(),
                     };
                     let mut linked_methods = Vec::with_capacity(methods.len());
                     for method in methods {
@@ -2220,15 +2246,26 @@ impl DeploymentLinker<'_> {
                             type_linker,
                             location.clone(),
                         )?;
-                        let method_abi =
-                            LinkedInterfaceMethodAbiId::parse(method.method_abi_id.clone())
-                                .map_err(|error| {
-                                    unsatisfied(
-                                        BytecodeLinkObligation::ConcreteTargetTables,
-                                        location.clone(),
-                                        error.to_string(),
-                                    )
-                                })?;
+                        let method_abi = LinkedInterfaceMethodAbiId::parse(
+                            canonical_method_abi_id(&normalized_interface, &method.method_abi_id)
+                                .ok_or_else(|| {
+                                unsatisfied(
+                                    BytecodeLinkObligation::ConcreteTargetTables,
+                                    location.clone(),
+                                    format!(
+                                        "interface method ABI id {:?} has no method name",
+                                        method.method_abi_id
+                                    ),
+                                )
+                            })?,
+                        )
+                        .map_err(|error| {
+                            unsatisfied(
+                                BytecodeLinkObligation::ConcreteTargetTables,
+                                location.clone(),
+                                error.to_string(),
+                            )
+                        })?;
                         linked_methods.push(LinkedInterfaceRequirementMethod::new(
                             method.slot,
                             method_abi,
@@ -2249,12 +2286,11 @@ impl DeploymentLinker<'_> {
                     } else {
                         LinkedInterfaceTableKind::Requirement(requirement)
                     };
-                    let key = self.requirement_table_key(interface, methods)?;
+                    let key = self.requirement_table_key(&normalized_interface, methods)?;
                     if let Some(existing) = requirement_keys.get(&key) {
-                        if tables
-                            .get(existing.get() as usize)
-                            .is_none_or(|table| table.interface().artifact() != interface)
-                        {
+                        if tables.get(existing.get() as usize).is_none_or(|table| {
+                            table.interface().artifact() != &normalized_interface
+                        }) {
                             return Err(unsatisfied(
                                 BytecodeLinkObligation::ConcreteTargetTables,
                                 location.clone(),
@@ -2264,7 +2300,7 @@ impl DeploymentLinker<'_> {
                         continue;
                     }
                     if let Some(existing) = tables.iter().find(|table| {
-                        table.interface().artifact() == interface
+                        table.interface().artifact() == &normalized_interface
                             && matches!(
                                 (table.kind(), &kind),
                                 (LinkedInterfaceTableKind::Requirement(a), LinkedInterfaceTableKind::Requirement(b))
@@ -2325,7 +2361,7 @@ impl DeploymentLinker<'_> {
                                 .to_string(),
                         ));
                     }
-                    let normalized_interface = self.normalize_remote_interface_instantiation(
+                    let normalized_interface = self.normalize_interface_instantiation(
                         package,
                         &reference.specialization,
                         &interface.interface,
@@ -2391,15 +2427,26 @@ impl DeploymentLinker<'_> {
                                     .to_string(),
                             ));
                         }
-                        let method_abi =
-                            LinkedInterfaceMethodAbiId::parse(method.method_abi_id.clone())
-                                .map_err(|error| {
-                                    unsatisfied(
-                                        BytecodeLinkObligation::ConcreteTargetTables,
-                                        location.clone(),
-                                        error.to_string(),
-                                    )
-                                })?;
+                        let method_abi = LinkedInterfaceMethodAbiId::parse(
+                            canonical_method_abi_id(&normalized_interface, &method.method_abi_id)
+                                .ok_or_else(|| {
+                                unsatisfied(
+                                    BytecodeLinkObligation::ConcreteTargetTables,
+                                    location.clone(),
+                                    format!(
+                                        "interface method ABI id {:?} has no method name",
+                                        method.method_abi_id
+                                    ),
+                                )
+                            })?,
+                        )
+                        .map_err(|error| {
+                            unsatisfied(
+                                BytecodeLinkObligation::ConcreteTargetTables,
+                                location.clone(),
+                                error.to_string(),
+                            )
+                        })?;
                         methods.push(
                             LinkedRemoteInterfaceMethod::new(
                                 method.slot,
@@ -2511,7 +2558,7 @@ impl DeploymentLinker<'_> {
         )
     }
 
-    pub(in crate::bytecode::link) fn normalize_remote_interface_instantiation(
+    pub(in crate::bytecode::link) fn normalize_interface_instantiation(
         &self,
         package: &HydratedBytecodePackage,
         specialization: &SpecializationKey,
@@ -2536,14 +2583,14 @@ impl DeploymentLinker<'_> {
                 unsatisfied(
                     BytecodeLinkObligation::ConcreteTypeAndShapeTables,
                     location.clone(),
-                    "remote interface carrier type row is absent after interning".to_string(),
+                    "interface carrier type row is absent after interning".to_string(),
                 )
             })?
         else {
             return Err(unsatisfied(
                 BytecodeLinkObligation::ConcreteTypeAndShapeTables,
                 location,
-                "remote interface carrier type row is not AnyInterface".to_string(),
+                "interface carrier type row is not AnyInterface".to_string(),
             ));
         };
         Ok(interface)

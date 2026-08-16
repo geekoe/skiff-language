@@ -327,8 +327,13 @@ fn validate_boundary_types(
         if !boundary_value_matches_linked_type(provider_image, *provider_type, plan) {
             return Err(BytecodeSchedulerError::Port(format!(
                 "provider parameter {index} type differs from the linked service boundary plan: \
-                 contract type {contract_type:?}",
-                contract_type = plan.contract_type()
+                 contract type {contract_type:?}, provider type {provider_ref:?}, linked type {linked_type:?}",
+                contract_type = plan.contract_type(),
+                provider_ref = provider_image
+                    .types()
+                    .get(usize::try_from(provider_type.get()).unwrap_or(usize::MAX))
+                    .map(|entry| entry.type_ref()),
+                linked_type = plan.linked_type_ref()
             )));
         }
     }

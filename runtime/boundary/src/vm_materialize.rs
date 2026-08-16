@@ -602,6 +602,21 @@ mod tests {
     }
 
     #[test]
+    fn callback_type_matching_rejects_package_symbol_vs_schema_drift() {
+        let provider = any_interface("example.com/phase-6-callback-provider", Vec::new());
+        let linked = contract_type_to_type_ref(&ContractTypeRef::AnyInterface {
+            interface: Box::new(ContractTypeRef::package_schema(
+                "example.com/phase-6-callback-provider",
+                "Handler",
+                PackageSchemaTypeId::new("contract:handler"),
+            )),
+            arguments: Vec::new(),
+        })
+        .expect("callback AnyInterface contract must project to a linked type");
+        assert!(!same_boundary_type(&provider, &linked));
+    }
+
+    #[test]
     fn duplicate_type_ref_with_different_plans_and_carriers_fails_closed() {
         let type_ref = TypeRefIr::Builtin {
             name: "string".to_string(),

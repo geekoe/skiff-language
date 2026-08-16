@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 use skiff_artifact_model::{
     boundary::{classify_boundary_callback_position, BoundaryCallbackPosition},
     BoundaryValuePlan, ContractLiteral, ContractTypeRef, InterfaceInstantiationRef,
-    PackageSchemaTypeRef,
+    PackageSchemaTypeRef, TypeRefIr,
 };
 use skiff_runtime_boundary::package_schema_records::PackageSchemaRecords;
 use skiff_runtime_boundary::recoverable::FailClosedRecoverableBehaviorHooks;
@@ -24,7 +24,7 @@ use skiff_runtime_capability_context::{
     TaskSubmitResponseControl,
 };
 use skiff_runtime_linked_bytecode::{
-    FunctionIndex, LinkedInterfaceTableKind, LinkedLocalInterfaceTable,
+    FunctionIndex, LinkedCallableSignature, LinkedInterfaceTableKind, LinkedLocalInterfaceTable,
 };
 use skiff_runtime_linker::{DeploymentExecutionEntry, DeploymentExecutionImage};
 use skiff_runtime_model::{
@@ -541,6 +541,8 @@ impl BytecodeCallbackProjector for ProductionBytecodeCallbackProjector {
             local.as_ref(),
             interface_row.interface().artifact(),
             provider_image.interface_tables(),
+            caller_image.as_ref(),
+            provider_image,
         )?;
         let payload: Arc<dyn std::any::Any + Send + Sync> =
             Arc::new(HostCallbackCapabilityPayload {
@@ -671,6 +673,8 @@ fn callback_methods(
     local: &LinkedLocalInterfaceTable,
     local_interface: &InterfaceInstantiationRef,
     provider_tables: &[skiff_runtime_linked_bytecode::LinkedInterfaceTable],
+    caller_image: &DeploymentExecutionImage,
+    provider_image: &DeploymentExecutionImage,
 ) -> Result<CallbackMethodCorrelation, BytecodeCallbackChildError> {
     let mut candidates = provider_tables.iter().filter_map(|row| {
         let LinkedInterfaceTableKind::Callback(requirement) = row.kind() else {
@@ -711,7 +715,16 @@ fn callback_methods(
                 slot: local_method.method_slot(),
                 method_abi_id: local_method.method_abi_id().as_str().to_string(),
             })?;
-        if provider_method.signature() != local_method.signature() {
+        if !callback_provider_receiver_matches(
+            provider_image,
+            provider_method.signature(),
+            local_interface,
+        ) || !linked_signatures_types_match(
+            caller_image,
+            local_method.signature(),
+            provider_image,
+            provider_method.signature(),
+        ) {
             return Err(BytecodeCallbackChildError::SignatureMismatch {
                 message: format!(
                     "provider callback method {} signature drifts from caller method {}",
@@ -742,6 +755,79 @@ fn callback_methods(
         provider_interface: row.interface().artifact().clone(),
         methods,
     })
+}
+
+fn callback_provider_receiver_matches(
+    provider_image: &DeploymentExecutionImage,
+    provider: &LinkedCallableSignature,
+    interface: &InterfaceInstantiationRef,
+) -> bool {
+    let Some(&receiver) = provider.parameter_types().first() else {
+        return false;
+    };
+    matches!(
+        linked_type_ref(provider_image, receiver),
+        Some(TypeRefIr::AnyInterface {
+            interface: actual,
+        }) if actual == interface
+    )
+}
+
+fn linked_signatures_types_match(
+    caller_image: &DeploymentExecutionImage,
+    caller: &LinkedCallableSignature,
+    provider_image: &DeploymentExecutionImage,
+    provider: &LinkedCallableSignature,
+) -> bool {
+    let parameters_match = caller.parameter_types().len() == provider.parameter_types().len()
+        && linked_callback_parameters_match(caller_image, caller, provider_image, provider);
+    let results_match = caller.result_types().len() == provider.result_types().len()
+        && caller.result_plans() == provider.result_plans()
+        && caller
+            .result_types()
+            .iter()
+            .zip(provider.result_types())
+            .all(|(caller_type, provider_type)| {
+                linked_type_ref(caller_image, *caller_type)
+                    == linked_type_ref(provider_image, *provider_type)
+            });
+    parameters_match && results_match
+}
+
+fn linked_callback_parameters_match(
+    caller_image: &DeploymentExecutionImage,
+    caller: &LinkedCallableSignature,
+    provider_image: &DeploymentExecutionImage,
+    provider: &LinkedCallableSignature,
+) -> bool {
+    let Some(caller_types) = caller.parameter_types().get(1..) else {
+        return provider.parameter_types().get(1..).is_none();
+    };
+    let Some(provider_types) = provider.parameter_types().get(1..) else {
+        return false;
+    };
+    caller_types.len() == provider_types.len()
+        && caller.parameter_modes().get(1..) == provider.parameter_modes().get(1..)
+        && caller.parameter_plans().get(1..) == provider.parameter_plans().get(1..)
+        && caller_types
+            .iter()
+            .zip(provider_types)
+            .all(|(caller_type, provider_type)| {
+                linked_type_ref(caller_image, *caller_type)
+                    == linked_type_ref(provider_image, *provider_type)
+            })
+}
+
+fn linked_type_ref(
+    image: &DeploymentExecutionImage,
+    index: skiff_runtime_linked_bytecode::TypeIndex,
+) -> Option<&TypeRefIr> {
+    let position = usize::try_from(index.get()).ok()?;
+    image
+        .types()
+        .get(position)
+        .filter(|entry| entry.index() == index)
+        .map(|entry| entry.type_ref())
 }
 
 fn local_interface_value(

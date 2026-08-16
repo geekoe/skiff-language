@@ -14,6 +14,7 @@ use fixture::Capability;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skiff_artifact_model::{ContractTypeRef, TypeRefIr};
     use skiff_runtime_model::{
         request_heap::RequestHeapLimits,
         vm_heap::{HeapDomainId, HeapEpoch, VmHeap, VmHeapError},
@@ -272,6 +273,69 @@ mod tests {
     #[test]
     fn callback_negative_rejected() {
         stages::assert_callback_negative_rejected("callback-negative");
+    }
+
+    #[test]
+    fn callback_boundary_any_interface_agreement() {
+        let image = linked_image(
+            Capability::Callback,
+            "callback-boundary-any-interface-agreement",
+        );
+        let boundary = image
+            .service_operations()
+            .iter()
+            .find_map(|operation| {
+                operation
+                    .boundary_plan()
+                    .arguments()
+                    .iter()
+                    .find(|argument| {
+                        matches!(
+                            argument.contract_type(),
+                            ContractTypeRef::AnyInterface { .. }
+                        )
+                    })
+            })
+            .expect("callback service boundary plan must carry an AnyInterface argument");
+        let linked = boundary.linked_type_ref().clone();
+        let TypeRefIr::AnyInterface { interface } = &linked else {
+            panic!("linked callback boundary type must remain AnyInterface");
+        };
+        assert!(interface
+            .interface_abi_id
+            .contains("\"kind\":\"packageSchema\""));
+        assert!(interface
+            .interface_abi_id
+            .contains("example.com/phase-6-callback-provider"));
+        assert!(interface
+            .interface_abi_id
+            .contains("\"stableSchemaKey\":\"Handler\""));
+
+        let matching_rows = image
+            .types()
+            .iter()
+            .filter(|entry| {
+                let TypeRefIr::AnyInterface { interface } = entry.type_ref() else {
+                    return false;
+                };
+                interface
+                    .interface_abi_id
+                    .contains("example.com/phase-6-callback-provider")
+                    && interface
+                        .interface_abi_id
+                        .contains("\"stableSchemaKey\":\"Handler\"")
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !matching_rows.is_empty(),
+            "callback image must retain provider/caller AnyInterface Handler type rows"
+        );
+        assert!(
+            matching_rows
+                .iter()
+                .all(|entry| entry.type_ref() == &linked),
+            "provider/caller callback AnyInterface rows must agree with the linked boundary plan exactly"
+        );
     }
 
     capability_matrix!(
