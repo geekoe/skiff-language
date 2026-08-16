@@ -10,8 +10,9 @@ use skiff_artifact_model::{
     validate_platform_error_projection_registry_ref_shape, ActorMethodIdentity,
     BoundaryCallableProjection, BoundaryOperationDescriptor, BoundaryUnavailableReason,
     CallableEffectSummary, CallableProvenanceSummary, ContractDiagnosticText, PackageArtifact,
-    PackageLocalAbiSymbol, ServiceContract, ServiceProtocolIdentity, ValueProjectionPath,
-    ValueProvenance, PACKAGE_ARTIFACT_SCHEMA_VERSION, SERVICE_CONTRACT_SCHEMA_VERSION,
+    PackageLocalAbiSymbol, ParamModeIr, ServiceContract, ServiceProtocolIdentity,
+    ValueProjectionPath, ValueProvenance, PACKAGE_ARTIFACT_SCHEMA_VERSION,
+    SERVICE_CONTRACT_SCHEMA_VERSION,
 };
 use skiff_compiler_core::{implementation_package_callable_id, ImplementationCallableKind};
 
@@ -375,7 +376,7 @@ fn ordinary_and_service_package_projection_share_artifact_and_local_abi() {
 }
 
 #[test]
-fn exact_typed_signatures_reach_local_abi_and_public_instance_receiver_is_trimmed() {
+fn exact_typed_signatures_reach_local_abi_and_public_instance_receiver_is_retained() {
     let artifact = project_fixture(SignatureSet::ExactTyped).unwrap();
     assert!(artifact
         .package_local_abi
@@ -392,14 +393,67 @@ fn exact_typed_signatures_reach_local_abi_and_public_instance_receiver_is_trimme
     assert_eq!(run_signature, &exact_typed_signature());
 
     let PackageLocalAbiSymbol::Callable {
+        callable_id: instance_callable_id,
         signature: instance_signature,
+    } = &artifact.package_local_abi.public_symbols["worker.handle"]
+    else {
+        panic!("public-instance operation must be a Local ABI callable");
+    };
+    assert_eq!(
+        instance_signature
+            .parameters
+            .iter()
+            .map(|parameter| parameter.name.as_str())
+            .collect::<Vec<_>>(),
+        ["self", "value"]
+    );
+    assert_eq!(instance_signature.parameters[0].mode, ParamModeIr::Value);
+    let BoundaryCallableProjection::Available {
+        operation_contract, ..
+    } = &artifact.boundary_projections[instance_callable_id]
+    else {
+        panic!("public-instance operation must remain boundary available");
+    };
+    assert_eq!(
+        operation_contract
+            .parameters
+            .iter()
+            .map(|parameter| parameter.name.as_str())
+            .collect::<Vec<_>>(),
+        ["value"],
+        "the provider receiver must stay internal to the operation"
+    );
+}
+
+#[test]
+fn public_instance_local_abi_equals_implementation_method_abi() {
+    let artifact = project_fixture(SignatureSet::Complete).unwrap();
+    let PackageLocalAbiSymbol::Callable {
+        signature: public_signature,
         ..
     } = &artifact.package_local_abi.public_symbols["worker.handle"]
     else {
         panic!("public-instance operation must be a Local ABI callable");
     };
-    assert_eq!(instance_signature.parameters.len(), 1);
-    assert_eq!(instance_signature.parameters[0].name, "value");
+    let PackageLocalAbiSymbol::Callable {
+        signature: implementation_signature,
+        ..
+    } = &artifact.package_local_abi.implementation_symbols["api.Worker.handle"]
+    else {
+        panic!("implementation method must be a Local ABI callable");
+    };
+    assert_eq!(
+        public_signature, implementation_signature,
+        "public-instance ABI must exactly match the impl function ABI"
+    );
+    assert_eq!(
+        public_signature
+            .parameters
+            .iter()
+            .map(|parameter| parameter.name.as_str())
+            .collect::<Vec<_>>(),
+        ["self", "value"]
+    );
 }
 
 #[test]

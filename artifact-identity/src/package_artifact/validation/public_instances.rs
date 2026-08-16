@@ -243,9 +243,11 @@ fn validate_public_instance_receiver(
     };
     if source_const_link.file != receiver_link.file
         || source_const_link.const_index != receiver_link.const_index
-        || (source_const_link.symbol != source_const_path
-            && !(source_const_path == public_path
-                && source_const_link.symbol == receiver_link.symbol))
+        || source_const_link.symbol
+            != source_const_path
+                .rsplit_once('.')
+                .map(|(_, symbol)| symbol)
+                .unwrap_or_default()
     {
         return invalid_artifact(format!(
             "public instance {public_path} receiver constant link disagrees with source constant {source_const_path}"
@@ -549,8 +551,28 @@ fn validate_public_instance_method_signature(
             ));
         }
     };
+    let Some(public_self) = public_signature.parameters.first() else {
+        return invalid_artifact(format!(
+            "public instance {public_path} method {} has no explicit-self receiver parameter",
+            interface_method.name
+        ));
+    };
+    if public_self.name != "self"
+        || public_self.mode != ParamModeIr::Value
+        || !package_type_matches_implementation(
+            artifact,
+            &public_self.ty,
+            implementation_receiver_type,
+            None,
+        )?
+    {
+        return invalid_artifact(format!(
+            "public instance {public_path} method {} explicit-self receiver disagrees with its implementation receiver",
+            interface_method.name
+        ));
+    }
     if interface_params.len() != implementation_params.len()
-        || interface_params.len() != public_signature.parameters.len()
+        || interface_params.len() != public_signature.parameters.len().saturating_sub(1)
     {
         return invalid_artifact(format!(
             "public instance {public_path} method {} parameter count disagrees with its interface",
@@ -560,7 +582,7 @@ fn validate_public_instance_method_signature(
     for ((interface_param, implementation_param), public_param) in interface_params
         .iter()
         .zip(implementation_params)
-        .zip(&public_signature.parameters)
+        .zip(&public_signature.parameters[1..])
     {
         if interface_param.name != implementation_param.name
             || interface_param.name != public_param.name

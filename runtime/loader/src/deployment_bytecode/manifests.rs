@@ -1140,8 +1140,19 @@ fn validate_constant_roots(
         .iter()
         .map(|file| (file.file_ir_identity.as_str(), file.module_path.as_str()))
         .collect::<BTreeSet<_>>();
+    let public_instance_roots = artifact
+        .package_local_abi
+        .public_symbols
+        .iter()
+        .filter_map(|(path, symbol)| {
+            matches!(symbol, PackageLocalAbiSymbol::PublicInstance { .. }).then_some(path.as_str())
+        })
+        .collect::<BTreeSet<_>>();
     let mut coordinates = BTreeMap::<(String, String, u32), String>::new();
     for (source_path, export) in &artifact.implementation_links.constants {
+        if public_instance_roots.contains(source_path.as_str()) {
+            continue;
+        }
         if export.symbol.is_empty()
             || !file_owners.contains(&(
                 export.file.file_ir_identity.as_str(),
@@ -1986,7 +1997,7 @@ fn validate_remote_interface(
     let declared = instance
         .interfaces
         .iter()
-        .find(|declared| declared.interface == interface.interface)
+        .find(|declared| interface_instantiations_match(&declared.interface, &interface.interface))
         .ok_or_else(|| {
             manifest_mismatch(
                 package.reference(),
@@ -2001,7 +2012,7 @@ fn validate_remote_interface(
         || declared.methods.iter().enumerate().any(|(slot, expected)| {
             interface.methods.get(slot).is_none_or(|actual| {
                 actual.slot != slot as u32
-                    || actual.method_abi_id != expected.method_abi_id
+                    || !interface_method_abi_matches(&actual.method_abi_id, &expected.method_abi_id)
                     || actual.contract_operation_id != expected.contract_operation_id
                     || !dependency
                         .used_operations()
@@ -2022,6 +2033,39 @@ fn validate_remote_interface(
         );
     }
     Ok(())
+}
+
+fn interface_instantiations_match(
+    left: &InterfaceInstantiationRef,
+    right: &InterfaceInstantiationRef,
+) -> bool {
+    left == right
+        || (interface_declaration_stable_key(left)
+            .zip(interface_declaration_stable_key(right))
+            .is_some_and(|(left, right)| left == right)
+            && left.canonical_type_args == right.canonical_type_args)
+}
+
+fn interface_declaration_stable_key(interface: &InterfaceInstantiationRef) -> Option<String> {
+    let declaration = serde_json::from_str::<TypeRefIr>(&interface.interface_abi_id).ok()?;
+    match declaration {
+        TypeRefIr::ServiceSymbol { symbol } => Some(symbol.symbol),
+        TypeRefIr::PackageSymbol { symbol } => symbol
+            .symbol_path
+            .rsplit_once('.')
+            .map(|(_, symbol)| symbol.to_string())
+            .or_else(|| Some(symbol.symbol_path)),
+        _ => None,
+    }
+}
+
+fn interface_method_abi_matches(left: &str, right: &str) -> bool {
+    left == right
+        || left
+            .rsplit(':')
+            .next()
+            .zip(right.rsplit(':').next())
+            .is_some_and(|(left, right)| left == right)
 }
 
 fn validate_service_operation(

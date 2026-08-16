@@ -199,7 +199,7 @@ fn public_instance_surface_requires_exact_receiver_interface_and_method_provenan
     };
     let applied_implementation_receiver = TypeRefIr::AppliedNominal {
         base: NominalTypeRefBaseIr::PackageSymbol {
-            symbol: implementation_receiver_symbol,
+            symbol: implementation_receiver_symbol.clone(),
         },
         arguments: vec![TypeRefIr::builtin("string")],
     };
@@ -224,7 +224,7 @@ fn public_instance_surface_requires_exact_receiver_interface_and_method_provenan
         unreachable!()
     };
     *ty = PackageTypeRef::Local {
-        local_type: applied_implementation_receiver,
+        local_type: applied_implementation_receiver.clone(),
     };
     let PackageLocalAbiSymbol::Type { type_params, .. } = generic_receiver
         .package_local_abi
@@ -251,6 +251,16 @@ fn public_instance_surface_requires_exact_receiver_interface_and_method_provenan
             unreachable!()
         };
         signature.type_params = vec!["T".to_string()];
+        signature.parameters[0].ty = PackageTypeRef::Local {
+            local_type: TypeRefIr::AppliedNominal {
+                base: NominalTypeRefBaseIr::PackageSymbol {
+                    symbol: implementation_receiver_symbol.clone(),
+                },
+                arguments: vec![TypeRefIr::TypeParam {
+                    name: "T".to_string(),
+                }],
+            },
+        };
         let mut method_link = generic_receiver
             .implementation_links
             .impl_methods

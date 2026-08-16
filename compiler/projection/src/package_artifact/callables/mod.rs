@@ -13,6 +13,7 @@ use skiff_artifact_model::{
     PackageCallableParameter, PackageCallableSignature, PackageExecutableCoordinate,
     PackageImplementationLinks, PackageLocalAbiSymbol, PackageLocalInterfaceConformance,
     PackageRequirement, PackageRuntimeRequirements, PackageTypeRef, ParamModeIr, TypeExport,
+    TypeRefIr,
 };
 use skiff_compiler_core::{
     canonical_implementation_callable_source_path, implementation_package_callable_id,
@@ -65,10 +66,11 @@ pub(super) fn project_package_callable_surface(
     let mut callable_links = BTreeMap::new();
     let mut semantic_facts = BTreeMap::new();
     let mut boundary_projections = BTreeMap::new();
-    for mut callable in local_surface.callables {
+    for callable in local_surface.callables {
+        let mut boundary_signature = callable.signature.clone();
         normalization::normalize_public_signature(
             &callable.owner_module,
-            &mut callable.signature,
+            &mut boundary_signature,
             file_ir_units,
             package_schema_refs,
             resolved_package_schemas,
@@ -82,12 +84,22 @@ pub(super) fn project_package_callable_surface(
                 ),
             )
         })?;
+        let abi_signature = if callable.target.callable_kind == OperationCallableKind::ImplMethod {
+            project_public_instance_abi_signature(
+                package_id,
+                &callable.owner_module,
+                callable.executable_index,
+                file_ir_units,
+            )?
+        } else {
+            boundary_signature.clone()
+        };
         surface::insert_public_symbol(
             &mut local_surface.public_symbols,
             callable.public_path.clone(),
             PackageLocalAbiSymbol::Callable {
                 callable_id: callable.callable_id.clone(),
-                signature: callable.signature.clone(),
+                signature: abi_signature,
             },
         )?;
         let executable_key =
@@ -107,7 +119,7 @@ pub(super) fn project_package_callable_surface(
         let facts = normalization::normalize_semantic_facts(facts);
         let projection = project_boundary_callable_with_package_schemas(
             &callable.owner_module,
-            &callable.signature,
+            &boundary_signature,
             &facts,
             runtime_requirements,
             file_ir_units,
@@ -164,6 +176,114 @@ pub(super) fn project_package_callable_surface(
         local_interface_conformances: manifests.local_interface_conformances,
         semantic_facts,
         boundary_projections,
+    })
+}
+
+fn project_public_instance_abi_signature(
+    package_id: &str,
+    owner_module: &str,
+    executable_index: u32,
+    file_ir_units: &[FileIrUnit],
+) -> Result<PackageCallableSignature, ProjectionError> {
+    let unit = file_ir_units
+        .iter()
+        .find(|unit| unit.module_path == owner_module)
+        .ok_or_else(|| {
+            projection_error(
+                package_id,
+                format!("public instance method target module {owner_module} is absent"),
+            )
+        })?;
+    let executable = unit
+        .executables
+        .get(executable_index as usize)
+        .ok_or_else(|| {
+            projection_error(
+                package_id,
+                format!(
+                    "public instance method target {owner_module}#{executable_index} is absent"
+                ),
+            )
+        })?;
+    if executable.kind != ExecutableKind::ImplMethod {
+        return Err(projection_error(
+            package_id,
+            format!(
+                "public instance method target {owner_module}#{executable_index} is not an impl method"
+            ),
+        ));
+    }
+    let self_type = executable.self_type.as_ref().ok_or_else(|| {
+        projection_error(
+            package_id,
+            format!(
+                "public instance method target {owner_module}#{executable_index} has no receiver"
+            ),
+        )
+    })?;
+    let explicit_self = executable
+        .params
+        .first()
+        .filter(|parameter| parameter.name == "self");
+    if let Some(self_parameter) = explicit_self {
+        if self_parameter.mode != ParamModeIr::Value || &self_parameter.ty != self_type {
+            return Err(projection_error(
+                package_id,
+                format!(
+                    "public instance method target {owner_module}#{executable_index} explicit receiver does not exactly match selfType"
+                ),
+            ));
+        }
+    }
+    let explicit_parameters = &executable.params[usize::from(explicit_self.is_some())..];
+    if explicit_parameters
+        .iter()
+        .any(|parameter| parameter.name == "self")
+    {
+        return Err(projection_error(
+            package_id,
+            format!(
+                "public instance method target {owner_module}#{executable_index} has a non-leading receiver"
+            ),
+        ));
+    }
+    let normalize = |ty: &TypeRefIr| {
+        normalization::normalize_implementation_type(package_id, owner_module, ty, file_ir_units)
+            .map_err(|message| {
+                projection_error(
+                    package_id,
+                    format!("public instance method ABI type: {message}"),
+                )
+            })
+    };
+    let mut parameters = vec![PackageCallableParameter {
+        name: "self".to_string(),
+        ty: PackageTypeRef::Local {
+            local_type: normalize(self_type)?,
+        },
+        mode: ParamModeIr::Value,
+    }];
+    parameters.extend(
+        explicit_parameters
+            .iter()
+            .map(|parameter| {
+                Ok(PackageCallableParameter {
+                    name: parameter.name.clone(),
+                    ty: PackageTypeRef::Local {
+                        local_type: normalize(&parameter.ty)?,
+                    },
+                    mode: parameter.mode,
+                })
+            })
+            .collect::<Result<Vec<_>, ProjectionError>>()?,
+    );
+    Ok(PackageCallableSignature {
+        type_params: executable.type_params.clone(),
+        parameters,
+        return_type: PackageTypeRef::Local {
+            local_type: normalize(&executable.return_type)?,
+        },
+        may_suspend: executable.may_suspend,
     })
 }
 
@@ -658,7 +778,7 @@ fn project_implementation_constants(
         let link = ConstExport {
             file: implementation_file_ref(unit),
             const_index: declaration.const_index,
-            symbol: declaration.symbol.clone(),
+            symbol: name.clone(),
             ty,
         };
         if let Some(existing) = links.constants.get(&source_path) {

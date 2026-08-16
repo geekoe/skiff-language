@@ -2006,16 +2006,36 @@ fn implementation_only_impl_callable_fixture(
         "pkg-callable:{}:top-level:api.Worker.run",
         artifact.package_id
     ));
+    let receiver_type = TypeRefIr::ServiceSymbol {
+        symbol: ServiceSymbolRef {
+            module_path: "api".to_string(),
+            symbol: "Worker".to_string(),
+        },
+    };
 
     let mut public_symbol = artifact
         .package_local_abi
         .public_symbols
         .remove("run")
         .unwrap();
-    let PackageLocalAbiSymbol::Callable { callable_id, .. } = &mut public_symbol else {
+    let PackageLocalAbiSymbol::Callable {
+        callable_id,
+        signature,
+    } = &mut public_symbol
+    else {
         unreachable!()
     };
     *callable_id = public_id.clone();
+    signature.parameters.insert(
+        0,
+        PackageCallableParameter {
+            name: "self".to_string(),
+            ty: PackageTypeRef::Local {
+                local_type: receiver_type.clone(),
+            },
+            mode: ParamModeIr::Value,
+        },
+    );
     let implementation_symbol = match &public_symbol {
         PackageLocalAbiSymbol::Callable { signature, .. } => PackageLocalAbiSymbol::Callable {
             callable_id: implementation_id.clone(),
@@ -2052,12 +2072,6 @@ fn implementation_only_impl_callable_fixture(
         .boundary_projections
         .insert(public_id.clone(), boundary);
 
-    let receiver_type = TypeRefIr::ServiceSymbol {
-        symbol: ServiceSymbolRef {
-            module_path: "api".to_string(),
-            symbol: "Worker".to_string(),
-        },
-    };
     let implementation_receiver_type = TypeRefIr::PackageSymbol {
         symbol: PackageSymbolRef {
             package: PackageRefIr::PackageId {
@@ -2163,7 +2177,7 @@ fn implementation_only_impl_callable_fixture(
         ConstExport {
             file: file.clone(),
             const_index: 0,
-            symbol: "api.worker".to_string(),
+            symbol: "worker".to_string(),
             ty: implementation_receiver_type,
         },
     );
@@ -2317,11 +2331,22 @@ fn shared_impl_callable_scope_fixture() -> (PackageArtifact, PackageCallableId, 
     else {
         unreachable!()
     };
+    let mut public_signature = signature.clone();
+    public_signature.parameters.insert(
+        0,
+        PackageCallableParameter {
+            name: "self".to_string(),
+            ty: PackageTypeRef::Local {
+                local_type: TypeRefIr::builtin("string"),
+            },
+            mode: ParamModeIr::Value,
+        },
+    );
     artifact.package_local_abi.public_symbols.insert(
         "run".to_string(),
         PackageLocalAbiSymbol::Callable {
             callable_id: public_id.clone(),
-            signature: signature.clone(),
+            signature: public_signature,
         },
     );
     let mut link = artifact.callable_links[&implementation_id].clone();

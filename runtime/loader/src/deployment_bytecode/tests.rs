@@ -945,6 +945,86 @@ fn canonical_callable_index_rejects_public_effect_summary_drift() {
 }
 
 #[test]
+fn public_instance_callable_abi_matches_receiver_function() {
+    let (bytecode, coordinate, canonical) = callable_bytecode(true);
+    let mut artifact = callable_package(
+        &bytecode,
+        &coordinate,
+        &canonical,
+        OperationCallableKind::ImplMethod,
+    )
+    .as_ref()
+    .clone();
+    let public = PackageCallableId::new("callable:public:manifest:reader.label");
+    add_callable_alias(
+        &mut artifact,
+        &canonical,
+        &public,
+        "reader.label",
+        OperationCallableKind::ImplMethod,
+        false,
+    );
+    artifact.package_local_abi.public_symbols.insert(
+        "reader".to_string(),
+        PackageLocalAbiSymbol::PublicInstance {
+            instance_id: "reader".to_string(),
+            declared_receiver_type: TypeRefIr::builtin("string"),
+            interfaces: Vec::new(),
+            methods: BTreeMap::from([("label".to_string(), public.clone())]),
+        },
+    );
+    let artifact = Arc::new(artifact);
+
+    let hydrated =
+        HydratedBytecodePackage::checked(package_reference(&artifact), artifact, bytecode)
+            .expect("public-instance callable ABI must exactly match the receiver function");
+    assert_eq!(
+        hydrated.function_key_for_callable(&public),
+        Some("manifest::run")
+    );
+}
+
+#[test]
+fn public_instance_callable_abi_mismatch_fails_closed() {
+    let (bytecode, coordinate, canonical) = callable_bytecode(true);
+    let mut artifact = callable_package(
+        &bytecode,
+        &coordinate,
+        &canonical,
+        OperationCallableKind::ImplMethod,
+    )
+    .as_ref()
+    .clone();
+    let public = PackageCallableId::new("callable:public:manifest:reader.label");
+    add_callable_alias(
+        &mut artifact,
+        &canonical,
+        &public,
+        "reader.label",
+        OperationCallableKind::ImplMethod,
+        false,
+    );
+    let PackageLocalAbiSymbol::Callable { signature, .. } = artifact
+        .package_local_abi
+        .public_symbols
+        .get_mut("reader.label")
+        .expect("public callable row")
+    else {
+        panic!("public callable row must be a callable");
+    };
+    signature.parameters.clear();
+    let artifact = Arc::new(artifact);
+
+    assert!(matches!(
+        HydratedBytecodePackage::checked(package_reference(&artifact), artifact, bytecode,),
+        Err(DeploymentBytecodeHydrationError::ManifestMismatch {
+            kind: DeploymentBytecodeManifestKind::Callable,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn canonical_callable_index_rejects_ambiguous_implementation_owners() {
     let (bytecode, coordinate, canonical) = callable_bytecode(true);
     let mut artifact = callable_package(

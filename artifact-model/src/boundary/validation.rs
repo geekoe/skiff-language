@@ -180,7 +180,9 @@ fn validate_boundary_callable_projection(
             ))
         })?;
     }
-    let expected = canonical_boundary_callable_projection(signature, facts, runtime_requirements);
+    let boundary_signature = service_boundary_signature(callable_id, signature)?;
+    let expected =
+        canonical_boundary_callable_projection(&boundary_signature, facts, runtime_requirements);
     if projection == &expected {
         return Ok(());
     }
@@ -212,6 +214,32 @@ fn validate_boundary_callable_projection(
     Err(BoundaryProjectionValidationError::new(format!(
         "boundary projection {callable_id} is not canonical for its signature, semantic facts, and runtime requirements; expected={expected:?}, actual={projection:?}"
     )))
+}
+
+fn service_boundary_signature(
+    callable_id: &PackageCallableId,
+    signature: &PackageCallableSignature,
+) -> Result<PackageCallableSignature, BoundaryProjectionValidationError> {
+    if signature
+        .parameters
+        .first()
+        .is_none_or(|parameter| parameter.name != "self")
+    {
+        return Ok(signature.clone());
+    }
+    let Some(self_parameter) = signature.parameters.first() else {
+        return Err(BoundaryProjectionValidationError::new(format!(
+            "receiver callable {callable_id} has no explicit-self receiver parameter"
+        )));
+    };
+    if self_parameter.name != "self" || self_parameter.mode != crate::ParamModeIr::Value {
+        return Err(BoundaryProjectionValidationError::new(format!(
+            "receiver callable {callable_id} has a non-canonical explicit-self receiver parameter"
+        )));
+    }
+    let mut boundary_signature = signature.clone();
+    boundary_signature.parameters.remove(0);
+    Ok(boundary_signature)
 }
 
 /// Compiler projection can saturate transitive type-closure reasons from File

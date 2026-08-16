@@ -3,8 +3,9 @@ use std::collections::BTreeMap;
 use skiff_artifact_model::{
     ConstExport, ExecutableExport, ExecutableSignatureIr, FunctionTypeParamIr,
     InterfaceMethodSignature, OperationCallableKind, PackageArtifact, PackageCallableId,
-    PackageLocalAbiSymbol, PackageRefIr, PackageSymbolRef, PackageTypeRef, ParamIr, ParamModeIr,
-    ServiceSymbolRef, TypeDescriptorIr, TypeExport, TypeRefIr,
+    PackageCallableParameter, PackageLocalAbiSymbol, PackageRefIr, PackageSymbolRef,
+    PackageTypeRef, ParamIr, ParamModeIr, ServiceSymbolRef, TypeDescriptorIr, TypeExport,
+    TypeRefIr,
 };
 
 use super::super::{assign_package_artifact_identities, two_callable_fixture};
@@ -29,6 +30,26 @@ pub(super) fn public_instance_fixture() -> PackageArtifact {
             abi_expectation: None,
         },
     };
+    for method in ["worker.run", "worker.stop"] {
+        let PackageLocalAbiSymbol::Callable { signature, .. } = artifact
+            .package_local_abi
+            .public_symbols
+            .get_mut(method)
+            .expect("public instance method callable")
+        else {
+            unreachable!()
+        };
+        signature.parameters.insert(
+            0,
+            PackageCallableParameter {
+                name: "self".to_string(),
+                ty: PackageTypeRef::Local {
+                    local_type: implementation_receiver_type.clone(),
+                },
+                mode: ParamModeIr::Value,
+            },
+        );
+    }
     let interface_methods = vec![
         public_instance_interface_method("run"),
         public_instance_interface_method("stop"),
@@ -110,7 +131,7 @@ pub(super) fn public_instance_fixture() -> PackageArtifact {
         ConstExport {
             file: file.clone(),
             const_index: 0,
-            symbol: "api.worker".to_string(),
+            symbol: "worker".to_string(),
             ty: implementation_receiver_type,
         },
     );
