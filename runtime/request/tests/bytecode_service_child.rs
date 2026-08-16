@@ -423,4 +423,11 @@ mod tests {
             .expect("callback provider must resolve its linked callback carrier type");
         assert_eq!(resolved, provider_type);
     }
+
+    #[test]
+    fn default_callback_projector_fails_closed_without_host_composition() {
+        let composition = BytecodeRequestChildComposition::default();
+        assert!(composition.callback_projector.is_none());
+        assert!(!composition.callback_child.is_available());
+    }
 }

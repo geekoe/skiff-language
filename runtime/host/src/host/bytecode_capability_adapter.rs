@@ -1,14 +1,19 @@
 //! Typed bytecode host-effect adapters over the production capability lowers.
 
 use std::{
+    collections::BTreeMap,
     future::{self, Future},
     pin::Pin,
     sync::Arc,
 };
 
 use serde_json::{Map, Value};
+use skiff_artifact_model::{
+    boundary::{classify_boundary_callback_position, BoundaryCallbackPosition},
+    BoundaryValuePlan, ContractLiteral, ContractTypeRef, PackageSchemaTypeRef,
+};
+use skiff_runtime_boundary::package_schema_records::PackageSchemaRecords;
 use skiff_runtime_boundary::recoverable::FailClosedRecoverableBehaviorHooks;
-use skiff_runtime_boundary::service_linkable::ServiceLinkableCapabilityHooks;
 use skiff_runtime_boundary::value::{bytes_payload, bytes_value};
 use skiff_runtime_capability_context::{
     ActivationIdentityControl, CancellationToken, DbCapabilitySource, DbRecoverableRuntimeContext,
@@ -17,32 +22,45 @@ use skiff_runtime_capability_context::{
     OutboundResponse, RequestCancelControl, RouterWriterMessage, TaskSubmitControlMessage,
     TaskSubmitResponseControl,
 };
-use skiff_runtime_linker::DeploymentExecutionImage;
+use skiff_runtime_linked_bytecode::{
+    FunctionIndex, LinkedInterfaceTableKind, LinkedLocalInterfaceTable,
+};
+use skiff_runtime_linker::{DeploymentExecutionEntry, DeploymentExecutionImage};
 use skiff_runtime_model::{
+    addr::ExecutableAddr,
+    callback_projection::CallbackLifetime,
     error::WirePayload,
     recoverable::{
         RuntimeRecoverableBoundaryContext, RuntimeRecoverableBoundaryKind,
         RuntimeRecoverableServiceRef, RuntimeRecoverableStorageLane,
         RuntimeRecoverableTrustBoundary,
     },
+    request_heap::{deep_clone_runtime_value_between_heaps, RequestHeap},
+    runtime_value::{
+        InterfaceCarrier, InterfaceMethodTable, InterfaceMethodTarget, InterfaceMethodType,
+        InterfaceReceiverCallAbi, InterfaceValue, RuntimeValue,
+    },
     type_plan::leaf_bytes_plan,
+    vm_value::{CompactTypeTag, ValueFlags, ValueSlot},
 };
 use skiff_runtime_request::{
-    BytecodeActorChildComposition, BytecodeCallbackChildComposition, BytecodeDbChildComposition,
+    BytecodeActorChildComposition, BytecodeCallbackChildComposition, BytecodeCallbackChildError,
+    BytecodeCallbackProjector, BytecodeCallbackResolver, BytecodeDbChildComposition,
     BytecodeHttpClientPort, BytecodeHttpFailure, BytecodeHttpFuture, BytecodeHttpRequest,
     BytecodeHttpResponse, BytecodeHttpStreamRegistrar, BytecodeHttpStreamResponse,
     BytecodeRequestChildComposition, BytecodeServiceChildError, BytecodeServiceResolver,
     BytecodeTaskChildComposition, BytecodeTaskSubmitError, BytecodeTaskSubmitter,
-    FailClosedServiceChildThrowMaterializer, HttpNameValue, OwnedExecutionControl,
-    RequestMemoryLedger,
+    CallbackExecution, FailClosedServiceChildThrowMaterializer, HttpNameValue,
+    OwnedExecutionControl, RequestMemoryLedger, RequestVmHeap,
 };
 use skiff_runtime_transport::protocol::TaskSubmitResponseFrameHeader;
 use tokio::sync::mpsc;
 
 use crate::{
     capability_context::{
-        BytecodeCallbackCapabilityHooks, BytecodeCallbackCapabilityTable, EffectDispatchContext,
-        HttpClientCapabilityContext, HttpEffectContext, TelemetryCapabilityContext,
+        BytecodeCallbackCapabilityHooks, BytecodeCallbackCapabilityTable, BytecodeCallbackError,
+        EffectDispatchContext, HttpClientCapabilityContext, HttpEffectContext,
+        TelemetryCapabilityContext,
     },
     error::{OrdinaryRuntimeError, RuntimeError},
 };
@@ -301,6 +319,486 @@ fn ordinary_http_failure(error: RuntimeError) -> Box<dyn WirePayload> {
     )
 }
 
+struct HostCallbackCapabilityPayload {
+    adapter: Arc<skiff_runtime_native::callback_adapter::InProcessCallbackAdapter>,
+    contract: String,
+    provider_image: Arc<DeploymentExecutionImage>,
+    methods: BTreeMap<(u32, String), FunctionIndex>,
+    source_abis: BTreeMap<(u32, String), String>,
+}
+
+struct HostCallbackExecution {
+    contract: String,
+    adapter: Arc<skiff_runtime_native::callback_adapter::InProcessCallbackAdapter>,
+    provider_image: Arc<DeploymentExecutionImage>,
+    function: FunctionIndex,
+    source_abis: BTreeMap<(u32, String), String>,
+}
+
+impl CallbackExecution for HostCallbackExecution {
+    fn canonical_contract(&self) -> &str {
+        &self.contract
+    }
+
+    fn operation(
+        &self,
+        slot: u32,
+        method_abi_id: &str,
+    ) -> Result<
+        &skiff_runtime_model::callback_projection::CallbackContractOperationProjection,
+        BytecodeCallbackChildError,
+    > {
+        let source_abi = self
+            .source_abis
+            .get(&(slot, method_abi_id.to_string()))
+            .ok_or_else(|| BytecodeCallbackChildError::WrongOperation {
+                slot,
+                method_abi_id: method_abi_id.to_string(),
+            })?;
+        self.adapter.operation(slot, source_abi).map_err(|_| {
+            BytecodeCallbackChildError::WrongOperation {
+                slot,
+                method_abi_id: method_abi_id.to_string(),
+            }
+        })
+    }
+
+    fn receiver(&self) -> &RuntimeValue {
+        self.adapter.receiver()
+    }
+
+    fn owner_heap_arena(&self) -> Arc<tokio::sync::Mutex<RequestHeap>> {
+        self.adapter.owner_heap_arena()
+    }
+
+    fn provider_entry(&self) -> Result<DeploymentExecutionEntry, BytecodeCallbackChildError> {
+        self.provider_image
+            .function_entry(self.function)
+            .map_err(|error| BytecodeCallbackChildError::MissingFacts {
+                message: format!("callback provider function is absent: {error}"),
+            })
+    }
+}
+
+#[derive(Clone)]
+struct ProductionBytecodeCallbackResolver {
+    table: BytecodeCallbackCapabilityTable,
+}
+
+impl BytecodeCallbackResolver for ProductionBytecodeCallbackResolver {
+    fn resolve_callback(
+        &self,
+        carrier: &skiff_runtime_model::runtime_value::CallbackCapabilityCarrier,
+        expected_runtime_replica_id: &str,
+        table: &skiff_runtime_linked_bytecode::LinkedInterfaceTable,
+        method_ordinal: u32,
+        method_abi_id: &str,
+    ) -> Result<Arc<dyn CallbackExecution>, BytecodeCallbackChildError> {
+        let payload = self.table.lookup(carrier).map_err(callback_lookup_error)?;
+        let payload = payload
+            .downcast::<HostCallbackCapabilityPayload>()
+            .map_err(|_| BytecodeCallbackChildError::MissingFacts {
+                message: "callback table payload is not the VM host execution payload".to_string(),
+            })?;
+        let function = payload
+            .methods
+            .get(&(method_ordinal, method_abi_id.to_string()))
+            .copied()
+            .ok_or_else(|| BytecodeCallbackChildError::WrongOperation {
+                slot: method_ordinal,
+                method_abi_id: method_abi_id.to_string(),
+            })?;
+        let _ = expected_runtime_replica_id;
+        let _ = table;
+        Ok(Arc::new(HostCallbackExecution {
+            contract: payload.contract.clone(),
+            adapter: Arc::clone(&payload.adapter),
+            provider_image: Arc::clone(&payload.provider_image),
+            function,
+            source_abis: payload.source_abis.clone(),
+        }))
+    }
+}
+
+fn callback_lookup_error(error: BytecodeCallbackError) -> BytecodeCallbackChildError {
+    match error {
+        BytecodeCallbackError::CrossRuntimeRejected { expected, actual } => {
+            BytecodeCallbackChildError::CrossRuntimeRejected { expected, actual }
+        }
+        BytecodeCallbackError::CapabilityExpired | BytecodeCallbackError::Cancelled => {
+            BytecodeCallbackChildError::CapabilityExpired
+        }
+        BytecodeCallbackError::WrongContract => BytecodeCallbackChildError::WrongContract,
+        BytecodeCallbackError::CapabilityUnavailable => {
+            BytecodeCallbackChildError::CapabilityUnavailable
+        }
+        other => BytecodeCallbackChildError::MissingFacts {
+            message: other.to_string(),
+        },
+    }
+}
+
+#[derive(Clone)]
+struct ProductionBytecodeCallbackProjector {
+    hooks: BytecodeCallbackCapabilityHooks,
+}
+
+impl BytecodeCallbackProjector for ProductionBytecodeCallbackProjector {
+    fn project_callback_argument(
+        &self,
+        source_heap: &mut dyn skiff_runtime_model::vm_heap::VmHeap,
+        source: &ValueSlot,
+        caller_image: &Arc<DeploymentExecutionImage>,
+        destination_heap: &mut dyn skiff_runtime_model::vm_heap::VmHeap,
+        provider_image: &DeploymentExecutionImage,
+        provider_type: skiff_runtime_linked_bytecode::TypeIndex,
+        plan: &skiff_runtime_linked_bytecode::LinkedServiceBoundaryValue,
+    ) -> Result<ValueSlot, BytecodeCallbackChildError> {
+        let source_vm = source_heap
+            .as_any()
+            .and_then(|heap| heap.downcast_ref::<RequestVmHeap>())
+            .ok_or_else(|| projection_error("callback source heap is not a request VM heap"))?;
+        let local = source_vm
+            .local_interface_linked_table(source)
+            .map_err(|error| projection_error(error.to_string()))?;
+        let vm_table = source_heap
+            .local_interface_table(source)
+            .map_err(|error| projection_error(error.to_string()))?;
+        let interface_row = caller_image
+            .interface_tables()
+            .iter()
+            .find(|row| {
+                row.index().get() == vm_table.table_index()
+                    && matches!(row.kind(), LinkedInterfaceTableKind::Local(_))
+            })
+            .ok_or_else(|| projection_error("callback local interface row is absent"))?;
+        let payload_slot = source_heap
+            .local_interface_payload(source)
+            .map_err(|error| projection_error(error.to_string()))?;
+        let payload_value = source_vm
+            .runtime_value_for_slot(&payload_slot)
+            .map_err(|error| projection_error(error.to_string()))?;
+        let mut temporary_heap = RequestHeap::new(source_vm.limits().clone());
+        let cloned_payload = deep_clone_runtime_value_between_heaps(
+            source_vm.request_heap(),
+            &mut temporary_heap,
+            &payload_value,
+        )
+        .map_err(|error| projection_error(error.to_string()))?;
+
+        let records: PackageSchemaRecords = provider_image
+            .schema_records()
+            .iter()
+            .map(|(type_id, record)| (type_id.clone(), Arc::new(record.clone())))
+            .collect();
+        let package_schema = package_schema_type(plan.contract_type())?;
+        let operations = callback_operations(plan.contract_type(), &records)?;
+        let interface_value = local_interface_value(
+            &local,
+            interface_row
+                .interface()
+                .artifact()
+                .interface_abi_id
+                .as_str(),
+            &operations,
+            cloned_payload,
+        )?;
+        let temporary_handle = temporary_heap
+            .alloc_interface(interface_value)
+            .map_err(|error| projection_error(error.to_string()))?;
+        let temporary_interface = match temporary_heap.get(temporary_handle) {
+            Ok(skiff_runtime_model::value::HeapNode::Interface(value)) => value,
+            _ => {
+                return Err(projection_error(
+                    "temporary callback interface allocation is absent",
+                ));
+            }
+        };
+        let adapter =
+            skiff_runtime_native::callback_adapter::InProcessCallbackAdapter::from_local_interface(
+                package_schema,
+                temporary_interface,
+                &operations,
+                &records,
+                &temporary_heap,
+            )
+            .map_err(|error| projection_error(error.to_string()))?;
+        let contract = adapter
+            .canonical_contract_identity()
+            .map_err(|error| projection_error(error.to_string()))?;
+        let (methods, source_abis) = callback_methods(local.as_ref(), provider_image, plan)?;
+        let payload: Arc<dyn std::any::Any + Send + Sync> =
+            Arc::new(HostCallbackCapabilityPayload {
+                adapter: Arc::new(adapter),
+                contract: contract.clone(),
+                provider_image: Arc::clone(caller_image),
+                methods,
+                source_abis,
+            });
+        let lifetime = callback_lifetime(plan)?;
+        let projection = self
+            .hooks
+            .register_payload(
+                lifetime,
+                contract,
+                interface_row
+                    .interface()
+                    .artifact()
+                    .interface_abi_id
+                    .clone(),
+                payload,
+            )
+            .map_err(callback_registration_error)?;
+
+        let destination_vm = destination_heap
+            .as_any_mut()
+            .and_then(|heap| heap.downcast_mut::<RequestVmHeap>())
+            .ok_or_else(|| {
+                projection_error("callback destination heap is not a request VM heap")
+            })?;
+        let tag = CompactTypeTag::try_from_type_index(provider_type.get()).ok_or_else(|| {
+            projection_error(format!(
+                "callback provider type {} does not fit compact tag",
+                provider_type.get()
+            ))
+        })?;
+        let capability = projection.capability().clone();
+        let receiver_abi = projection.receiver_interface_abi_id().to_string();
+        let handle = destination_vm
+            .request_heap_mut()
+            .alloc_interface(InterfaceValue::new(
+                receiver_abi,
+                InterfaceCarrier::CallbackCapability(capability),
+            ))
+            .map_err(|error| projection_error(error.to_string()))?;
+        let slot = destination_vm
+            .heap_ref(handle, tag, ValueFlags::new(0))
+            .map_err(|error| projection_error(error.to_string()))?;
+        projection.commit();
+        Ok(slot)
+    }
+}
+
+fn projection_error(message: impl Into<String>) -> BytecodeCallbackChildError {
+    BytecodeCallbackChildError::Materialization {
+        message: message.into(),
+    }
+}
+
+fn callback_registration_error(error: BytecodeCallbackError) -> BytecodeCallbackChildError {
+    match error {
+        BytecodeCallbackError::CrossRuntimeRejected { expected, actual } => {
+            BytecodeCallbackChildError::CrossRuntimeRejected { expected, actual }
+        }
+        BytecodeCallbackError::CapabilityExpired | BytecodeCallbackError::Cancelled => {
+            BytecodeCallbackChildError::CapabilityExpired
+        }
+        BytecodeCallbackError::WrongContract => BytecodeCallbackChildError::WrongContract,
+        BytecodeCallbackError::CapabilityUnavailable => {
+            BytecodeCallbackChildError::CapabilityUnavailable
+        }
+        other => BytecodeCallbackChildError::MissingFacts {
+            message: other.to_string(),
+        },
+    }
+}
+
+fn package_schema_type(
+    ty: &ContractTypeRef,
+) -> Result<PackageSchemaTypeRef, BytecodeCallbackChildError> {
+    match classify_boundary_callback_position(ty) {
+        BoundaryCallbackPosition::Exact { interface_type } => Ok(interface_type),
+        _ => Err(projection_error(
+            "callback capability requires an exact non-generic any interface",
+        )),
+    }
+}
+
+fn callback_operations(
+    ty: &ContractTypeRef,
+    records: &PackageSchemaRecords,
+) -> Result<
+    BTreeMap<String, skiff_artifact_model::BoundaryCallbackOperation>,
+    BytecodeCallbackChildError,
+> {
+    let reference = package_schema_type(ty)?;
+    let record = records
+        .get(&reference.package_schema_type_id)
+        .ok_or_else(|| projection_error("callback package schema record is absent"))?;
+    let skiff_artifact_model::ContractTypeDescriptor::CallbackInterface { operations } =
+        &record.canonical_descriptor.descriptor
+    else {
+        return Err(projection_error(
+            "package schema type is not a callback interface",
+        ));
+    };
+    Ok(operations.clone())
+}
+
+fn callback_lifetime(
+    plan: &skiff_runtime_linked_bytecode::LinkedServiceBoundaryValue,
+) -> Result<CallbackLifetime, BytecodeCallbackChildError> {
+    let BoundaryValuePlan::Linkable { lifetime, .. } = plan.value_plan() else {
+        return Err(projection_error(
+            "callback service argument has no linkable boundary plan",
+        ));
+    };
+    CallbackLifetime::from_boundary(*lifetime)
+        .map_err(|error| projection_error(format!("callback lifetime is unsupported: {error}")))
+}
+
+fn callback_methods(
+    local: &LinkedLocalInterfaceTable,
+    provider_image: &DeploymentExecutionImage,
+    plan: &skiff_runtime_linked_bytecode::LinkedServiceBoundaryValue,
+) -> Result<
+    (
+        BTreeMap<(u32, String), FunctionIndex>,
+        BTreeMap<(u32, String), String>,
+    ),
+    BytecodeCallbackChildError,
+> {
+    let _ = plan;
+    let mut matched = Vec::new();
+    for row in provider_image.interface_tables() {
+        let LinkedInterfaceTableKind::Callback(requirement) = row.kind() else {
+            continue;
+        };
+        if requirement.methods().len() != local.methods().len() {
+            continue;
+        }
+        let mut methods = BTreeMap::new();
+        let mut source_abis = BTreeMap::new();
+        let mut exact = true;
+        for local_method in local.methods() {
+            let provider_method = requirement.methods().iter().find(|method| {
+                method.method_slot() == local_method.method_slot()
+                    && method
+                        .method_abi_id()
+                        .as_str()
+                        .ends_with(&format!(":{}", local_method.method_name()))
+            });
+            let Some(provider_method) = provider_method else {
+                exact = false;
+                break;
+            };
+            methods.insert(
+                (
+                    provider_method.method_slot(),
+                    provider_method.method_abi_id().as_str().to_string(),
+                ),
+                local_method.function(),
+            );
+            source_abis.insert(
+                (
+                    provider_method.method_slot(),
+                    provider_method.method_abi_id().as_str().to_string(),
+                ),
+                local_method.method_abi_id().as_str().to_string(),
+            );
+        }
+        if exact {
+            matched.push((methods, source_abis));
+        }
+    }
+    if matched.len() != 1 {
+        return Err(projection_error(format!(
+            "provider callback interface table correlation is ambiguous or absent: {} matches",
+            matched.len()
+        )));
+    }
+    Ok(matched.remove(0))
+}
+
+fn local_interface_value(
+    local: &LinkedLocalInterfaceTable,
+    interface_abi_id: &str,
+    operations: &BTreeMap<String, skiff_artifact_model::BoundaryCallbackOperation>,
+    payload: RuntimeValue,
+) -> Result<InterfaceValue, BytecodeCallbackChildError> {
+    let mut slots = Vec::with_capacity(local.methods().len());
+    for method in local.methods() {
+        let contract_operation = operations
+            .get(method.method_name())
+            .ok_or_else(|| projection_error("callback local method has no contract operation"))?;
+        let mut parameters = Vec::with_capacity(contract_operation.parameters.len() + 1);
+        parameters.push(InterfaceMethodType::builtin("Self"));
+        parameters.extend(
+            contract_operation
+                .parameters
+                .iter()
+                .map(contract_type_to_interface_method_type)
+                .collect::<Result<Vec<_>, _>>()?,
+        );
+        let signature = skiff_runtime_model::runtime_value::InterfaceMethodSignature::new(
+            parameters,
+            contract_type_to_interface_method_type(&contract_operation.return_type)?,
+        );
+        slots.push(
+            skiff_runtime_model::runtime_value::InterfaceMethodSlot::from_admitted_metadata(
+                method.method_slot(),
+                method.method_name().to_string(),
+                method.method_abi_id().as_str().to_string(),
+                signature,
+                InterfaceMethodTarget::LocalExecutable {
+                    executable: ExecutableAddr::service(0, method.method_slot() as usize),
+                    receiver_call_abi: InterfaceReceiverCallAbi::ExplicitSelfFirst,
+                },
+            ),
+        );
+    }
+    let method_table = InterfaceMethodTable::new(
+        interface_abi_id.to_string(),
+        interface_abi_id.to_string(),
+        slots,
+    );
+    Ok(InterfaceValue::new(
+        interface_abi_id.to_string(),
+        InterfaceCarrier::Local {
+            concrete_type: format!("local:{}", local.concrete_type().get()),
+            method_table,
+            payload,
+        },
+    ))
+}
+
+fn contract_type_to_interface_method_type(
+    ty: &ContractTypeRef,
+) -> Result<InterfaceMethodType, BytecodeCallbackChildError> {
+    match ty {
+        ContractTypeRef::Builtin { name, arguments } => Ok(InterfaceMethodType::Builtin {
+            name: name.clone(),
+            arguments: arguments
+                .iter()
+                .map(contract_type_to_interface_method_type)
+                .collect::<Result<Vec<_>, _>>()?,
+        }),
+        ContractTypeRef::Record { fields } => Ok(InterfaceMethodType::Record(
+            fields
+                .iter()
+                .map(|(name, ty)| Ok((name.clone(), contract_type_to_interface_method_type(ty)?)))
+                .collect::<Result<BTreeMap<_, _>, BytecodeCallbackChildError>>()?,
+        )),
+        ContractTypeRef::StructuralUnion { variants } => Ok(InterfaceMethodType::Union(
+            variants
+                .iter()
+                .map(contract_type_to_interface_method_type)
+                .collect::<Result<Vec<_>, _>>()?,
+        )),
+        ContractTypeRef::Nullable { inner } => Ok(InterfaceMethodType::Nullable(Box::new(
+            contract_type_to_interface_method_type(inner)?,
+        ))),
+        ContractTypeRef::Literal {
+            value: ContractLiteral::String { value },
+        } => Ok(InterfaceMethodType::Literal(
+            skiff_runtime_model::runtime_value::InterfaceMethodLiteral::String(value.clone()),
+        )),
+        other => Err(projection_error(format!(
+            "callback contract type is not supported by the local method projection: {other:?}"
+        ))),
+    }
+}
+
 pub(crate) struct ProductionBytecodeServiceResolver {
     host: RuntimeHost,
 }
@@ -550,18 +1048,30 @@ fn bytecode_request_child_composition_with_parts(
     task_child: BytecodeTaskChildComposition,
 ) -> BytecodeRequestChildComposition {
     let limits = host.request_heap_limits();
+    let callback_hooks = bytecode_callback_hooks(host, request_id);
+    let callback_table = callback_hooks.table().clone();
+    // A same-Runtime callback is a nested child heap: the provider service
+    // child and the callback child are both live while the callback executes.
+    // Keep the aggregate cap bounded but allow more than one owner-local heap
+    // to be live at once.
+    let aggregate_hard_cap = limits.max_estimated_bytes.saturating_mul(4);
     BytecodeRequestChildComposition {
-        memory_ledger: Arc::new(RequestMemoryLedger::new(limits.max_estimated_bytes)),
+        memory_ledger: Arc::new(RequestMemoryLedger::new(aggregate_hard_cap)),
         service_resolver: Arc::new(ProductionBytecodeServiceResolver::new(host.clone())),
         child_heap_factory: None,
         heap_limits: limits,
         throw_materializer: Arc::new(FailClosedServiceChildThrowMaterializer),
         unary_response_start: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        callback_hooks: Some(bytecode_callback_hooks(host, request_id)),
+        callback_hooks: Some(Arc::new(callback_hooks.clone())),
         callback_child: BytecodeCallbackChildComposition {
             runtime_replica_id: host.base_runtime_id.clone(),
-            resolver: None,
+            resolver: Some(Arc::new(ProductionBytecodeCallbackResolver {
+                table: callback_table,
+            })),
         },
+        callback_projector: Some(Arc::new(ProductionBytecodeCallbackProjector {
+            hooks: callback_hooks,
+        })),
         actor_child: BytecodeActorChildComposition::default(),
         db_child,
         task_child,
@@ -571,12 +1081,12 @@ fn bytecode_request_child_composition_with_parts(
 fn bytecode_callback_hooks(
     host: &RuntimeHost,
     request_id: &str,
-) -> Arc<dyn ServiceLinkableCapabilityHooks> {
+) -> BytecodeCallbackCapabilityHooks {
     let table = BytecodeCallbackCapabilityTable::new(
         host.base_runtime_id.clone(),
         format!("{}-{}", host.base_runtime_id, request_id),
     );
-    Arc::new(BytecodeCallbackCapabilityHooks::new(table, 1))
+    BytecodeCallbackCapabilityHooks::new(table, 1)
 }
 
 fn bytecode_db_recoverable_context(

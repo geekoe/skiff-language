@@ -41,8 +41,8 @@ use crate::{memory_ledger::MemoryLedgerError, vm_heap::RequestVmHeap, RequestMem
 pub use actor::{ActorChildError, BytecodeActorChildComposition};
 pub(crate) use callback::execute_callback_child;
 pub use callback::{
-    BytecodeCallbackChildComposition, BytecodeCallbackChildError, BytecodeCallbackResolver,
-    CallbackExecution,
+    BytecodeCallbackChildComposition, BytecodeCallbackChildError, BytecodeCallbackProjector,
+    BytecodeCallbackResolver, CallbackExecution,
 };
 pub use db::{
     BytecodeDbChildComposition, BytecodeDbChildError, DbObjectTargetId, DbTransactionSession,
@@ -252,6 +252,9 @@ pub struct BytecodeRequestChildComposition {
     /// C6 child resolver. It stays fail-closed until the host can provide an
     /// exact same-Runtime provider entry from the F6 callback table.
     pub callback_child: BytecodeCallbackChildComposition,
+    /// C6 service-boundary VM projector. The concrete host type registers the
+    /// exact caller image/function facts with the callback table.
+    pub callback_projector: Option<Arc<dyn BytecodeCallbackProjector>>,
     /// A6 child composition. It stays fail-closed until exact build and arena
     /// lease facts are joined.
     pub actor_child: BytecodeActorChildComposition,
@@ -276,6 +279,7 @@ impl Default for BytecodeRequestChildComposition {
             unary_response_start: Arc::new(AtomicBool::new(false)),
             callback_hooks: None,
             callback_child: BytecodeCallbackChildComposition::default(),
+            callback_projector: None,
             actor_child: BytecodeActorChildComposition::default(),
             db_child: BytecodeDbChildComposition::default(),
             task_child: BytecodeTaskChildComposition::default(),

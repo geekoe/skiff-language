@@ -157,17 +157,48 @@ pub(crate) fn execute_service_child(
                 invocation,
             ));
         }
-        if is_callback_capability {
-            return Err(BytecodePortFailure::input(
-                BytecodeSchedulerError::Port(format!(
-                    "callback argument {index} materialization requires C6 callback hook and F6 \
-                     linked callback execution facts; X6 resolved the provider boundary type but \
-                     the VM callback carrier projection is not installed"
-                )),
-                invocation,
-            ));
-        }
         let provider_type = provider_signature.parameter_types()[index];
+        if is_callback_capability {
+            let Some(projector) = &composition.callback_projector else {
+                return Err(BytecodePortFailure::input(
+                    BytecodeSchedulerError::Port(format!(
+                        "callback argument {index} materialization requires C6 callback projector \
+                         and F6 linked callback execution facts; X6 resolved the provider \
+                         boundary type but the VM callback carrier projection is not installed"
+                    )),
+                    invocation,
+                ));
+            };
+            let materialized = match projector.project_callback_argument(
+                heap,
+                source,
+                &caller_image,
+                child_heap.heap_mut(),
+                &provider_image,
+                provider_type,
+                value,
+            ) {
+                Ok(value) => value,
+                Err(error) => {
+                    return Err(BytecodePortFailure::input(
+                        BytecodeSchedulerError::Port(format!(
+                            "callback argument {index} materialization failed: {error}"
+                        )),
+                        invocation,
+                    ));
+                }
+            };
+            if let Err(error) = child_heap.publish_staging_root(materialized) {
+                return Err(BytecodePortFailure::input(
+                    BytecodeSchedulerError::Port(format!(
+                        "callback argument {index} staging failed: {error}"
+                    )),
+                    invocation,
+                ));
+            }
+            provider_arguments.push(materialized);
+            continue;
+        }
         let materialized = match materialize_linked_value(
             heap,
             source,

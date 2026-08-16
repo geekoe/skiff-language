@@ -9,9 +9,10 @@ use std::sync::Arc;
 
 use skiff_artifact_model::Opcode;
 use skiff_runtime_linked_bytecode::{
-    LinkedCallableSignature, LinkedInterfaceTable, LinkedInterfaceTableKind, TypeIndex,
+    LinkedCallableSignature, LinkedInterfaceTable, LinkedInterfaceTableKind,
+    LinkedServiceBoundaryValue, TypeIndex,
 };
-use skiff_runtime_linker::DeploymentExecutionEntry;
+use skiff_runtime_linker::{DeploymentExecutionEntry, DeploymentExecutionImage};
 use skiff_runtime_model::{
     bytecode_execution_observation::BytecodeExecutionObserver,
     callback_projection::CallbackContractOperationProjection,
@@ -90,6 +91,26 @@ pub trait CallbackExecution: Send + Sync {
     fn owner_heap_arena(&self) -> Arc<Mutex<RequestHeap>>;
 
     fn provider_entry(&self) -> Result<DeploymentExecutionEntry, BytecodeCallbackChildError>;
+}
+
+/// Host-backed projection from a VM local-interface carrier into an opaque
+/// same-Runtime callback capability in the provider child heap.
+///
+/// The projector is the service-boundary materialization half of C6. It must
+/// register the exact caller image/function facts with the callback table so
+/// later `InvokeCallback` dispatch can resolve a provider entry without
+/// guessing from a method table or executable address.
+pub trait BytecodeCallbackProjector: Send + Sync + 'static {
+    fn project_callback_argument(
+        &self,
+        source_heap: &mut dyn VmHeap,
+        source: &ValueSlot,
+        caller_image: &Arc<DeploymentExecutionImage>,
+        destination_heap: &mut dyn VmHeap,
+        provider_image: &DeploymentExecutionImage,
+        provider_type: TypeIndex,
+        plan: &LinkedServiceBoundaryValue,
+    ) -> Result<ValueSlot, BytecodeCallbackChildError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -280,6 +301,7 @@ pub(crate) fn execute_callback_child(
         }
     };
     let provider_signature = provider_entry.signature().clone();
+    let provider_image = Arc::clone(provider_entry.image());
     if provider_signature.parameter_types().len() != caller_signature.parameter_types().len()
         || provider_signature.result_types().len() != caller_signature.result_types().len()
         || provider_signature.result_plans() != caller_signature.result_plans()
@@ -293,7 +315,7 @@ pub(crate) fn execute_callback_child(
     }
 
     let mut child_heap = match child_heap_factory.create_child_heap(
-        image.owner(),
+        provider_image.owner(),
         request_composition.heap_limits.clone(),
         resources,
         Arc::clone(&request_composition.memory_ledger),
@@ -325,7 +347,7 @@ pub(crate) fn execute_callback_child(
         &owner_guard,
         execution.receiver(),
         child_heap.heap_mut(),
-        &image,
+        &provider_image,
         provider_signature.parameter_types()[0],
         &provider_signature.parameter_plans()[0],
     ) {
@@ -352,7 +374,7 @@ pub(crate) fn execute_callback_child(
             heap,
             source,
             child_heap.heap_mut(),
-            &image,
+            &provider_image,
             provider_type,
             plan,
         ) {

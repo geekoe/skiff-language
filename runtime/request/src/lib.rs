@@ -18,8 +18,8 @@ pub mod vm_heap;
 
 pub use bytecode_children::{
     ActorChildError, BytecodeActorChildComposition, BytecodeCallbackChildComposition,
-    BytecodeCallbackChildError, BytecodeCallbackResolver, BytecodeChildError,
-    BytecodeChildHeapFactory, BytecodeDbChildComposition, BytecodeDbChildError,
+    BytecodeCallbackChildError, BytecodeCallbackProjector, BytecodeCallbackResolver,
+    BytecodeChildError, BytecodeChildHeapFactory, BytecodeDbChildComposition, BytecodeDbChildError,
     BytecodeRequestChildComposition, BytecodeServiceChildError, BytecodeServiceResolver,
     BytecodeTaskChildComposition, BytecodeTaskSubmitError, BytecodeTaskSubmitter,
     CallbackExecution, DbObjectTargetId, DbTransactionSession,

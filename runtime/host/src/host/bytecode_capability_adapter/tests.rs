@@ -141,11 +141,12 @@ fn host_composition_injects_real_db_child_composition() {
     assert!(composition.db_child.is_available());
     assert!(composition.db_child.exact_target().is_ok());
     assert!(composition.callback_hooks.is_some());
+    assert!(composition.callback_projector.is_some());
     assert_eq!(
         composition.callback_child.runtime_replica_id,
         host.base_runtime_id.as_str()
     );
-    assert!(!composition.callback_child.is_available());
+    assert!(composition.callback_child.is_available());
     assert!(!composition.actor_child.is_available());
 }
 

@@ -186,3 +186,26 @@ fn callback_invocation_state_pending_cancel_is_terminal_once() {
     assert!(!state.cancel());
     assert!(!state.expire());
 }
+
+#[test]
+fn callback_register_payload_rolls_back_when_destination_projection_is_dropped() {
+    let table = test_table();
+    let hooks = BytecodeCallbackCapabilityHooks::new(table.clone(), 21);
+    let projection = hooks
+        .register_payload(
+            CallbackLifetime::Request,
+            "contract:reader",
+            "receiver:reader",
+            Arc::new(String::from("payload")),
+        )
+        .expect("host payload should register");
+    assert_eq!(table.active_count(), 1);
+    assert_eq!(
+        projection.capability().interface_or_adapter_contract(),
+        "contract:reader"
+    );
+    assert_eq!(projection.receiver_interface_abi_id(), "receiver:reader");
+    drop(projection);
+    assert_eq!(table.active_count(), 0);
+    assert_eq!(table.tombstone_count(), 1);
+}

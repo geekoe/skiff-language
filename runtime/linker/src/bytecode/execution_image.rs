@@ -2,8 +2,9 @@ use std::{collections::BTreeMap, fmt, sync::Arc};
 
 use skiff_artifact_model::{
     ContractOperationId, DeploymentIngressBinding, GatewayAdapterPlan, GatewayEntryIdentity,
-    GatewayEntryKey, HostEffectExecutorIdentity, IngressSelector, Opcode, ServiceProtocolIdentity,
-    ServiceRequirementKey, StatementAttributionClass,
+    GatewayEntryKey, HostEffectExecutorIdentity, IngressSelector, Opcode, PackageSchemaTypeId,
+    PackageSchemaTypeRecord, ServiceProtocolIdentity, ServiceRequirementKey,
+    StatementAttributionClass,
 };
 use skiff_runtime_deployment_image::{
     DeploymentCacheValue, DeploymentOwnerIdentity, ServiceDependencySlot,
@@ -46,6 +47,7 @@ pub struct DeploymentExecutionImage {
     operation_entries: BTreeMap<ContractOperationId, CallableEntryFacts>,
     http_gateway_entries: BTreeMap<GatewayEntryKey, HttpGatewayEntryFacts>,
     function_entries: BTreeMap<FunctionIndex, CallableEntryFacts>,
+    schema_records: BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord>,
     constant_heap: ExecutionConstantHeap,
     statement_schedule: ExecutionStatementSchedule,
     resume_sites: ExecutionResumeSites,
@@ -246,6 +248,14 @@ impl DeploymentExecutionImage {
 
     pub fn callback_capture_layouts(&self) -> &[LinkedCallbackCaptureLayout] {
         self.linked.callback_capture_layouts()
+    }
+
+    /// Exact admitted package-schema records retained for capability
+    /// materialization. The linker keeps these facts because the VM boundary
+    /// needs the callback contract surface after the hydrated package
+    /// artifacts are no longer present in the image.
+    pub fn schema_records(&self) -> &BTreeMap<PackageSchemaTypeId, PackageSchemaTypeRecord> {
+        &self.schema_records
     }
 
     pub fn operation_entry(
@@ -549,6 +559,8 @@ pub enum DeploymentExecutionImageError {
     Dependency(#[from] ServiceDependencySlotError),
     #[error("deployment image has duplicate dependency key {0:?}")]
     DuplicateDependency(ServiceRequirementKey),
+    #[error("deployment image package schema record {0:?} conflicts across package artifacts")]
+    ConflictingSchemaRecord(PackageSchemaTypeId),
 }
 
 pub fn link_deployment_execution_image(
@@ -617,6 +629,18 @@ pub fn link_deployment_execution_image(
             ))
         })
         .collect::<Result<BTreeMap<_, _>, DeploymentExecutionImageError>>()?;
+    let mut schema_records = BTreeMap::new();
+    for package in hydrated.packages().values() {
+        for (type_id, record) in &package.artifact().bytecode_schema_records {
+            if let Some(existing) = schema_records.insert(type_id.clone(), record.clone()) {
+                if existing != *record {
+                    return Err(DeploymentExecutionImageError::ConflictingSchemaRecord(
+                        type_id.clone(),
+                    ));
+                }
+            }
+        }
+    }
     Ok(DeploymentExecutionImage {
         linked,
         owner,
@@ -626,6 +650,7 @@ pub fn link_deployment_execution_image(
         operation_entries,
         http_gateway_entries,
         function_entries,
+        schema_records,
         constant_heap,
         statement_schedule,
         resume_sites,

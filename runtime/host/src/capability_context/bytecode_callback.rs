@@ -47,7 +47,7 @@ pub enum BytecodeCallbackError {
     MissingOwnerIdentity,
 }
 
-type CallbackCapabilityPayload = Arc<dyn Any + Send + Sync>;
+pub(crate) type CallbackCapabilityPayload = Arc<dyn Any + Send + Sync>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct CallbackCapabilityKey {
@@ -333,6 +333,46 @@ impl BytecodeCallbackCapabilityHooks {
 
     pub fn table(&self) -> &BytecodeCallbackCapabilityTable {
         &self.table
+    }
+
+    /// Registers an exact host-owned callback execution payload and returns a
+    /// rollback-protected projection for the destination boundary allocation.
+    pub fn register_payload(
+        &self,
+        lifetime: CallbackLifetime,
+        contract: impl Into<String>,
+        receiver_interface_abi_id: impl Into<String>,
+        payload: CallbackCapabilityPayload,
+    ) -> Result<ServiceLinkableCapabilityProjection, BytecodeCallbackError> {
+        let contract = contract.into();
+        let receiver_interface_abi_id = receiver_interface_abi_id.into();
+        if contract.is_empty() || receiver_interface_abi_id.is_empty() {
+            return Err(BytecodeCallbackError::InvalidRegistration);
+        }
+        let opaque_id = format!(
+            "callback:{}:{}",
+            self.request_generation,
+            self.next_opaque_id
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
+        let carrier = self.table.register(
+            self.request_generation,
+            lifetime,
+            contract,
+            opaque_id,
+            payload,
+        )?;
+        let rollback_carrier = carrier.clone();
+        let table = self.table.clone();
+        Ok(
+            ServiceLinkableCapabilityProjection::new_with_receiver_interface(
+                carrier,
+                receiver_interface_abi_id,
+                move || {
+                    let _ = table.expire(&rollback_carrier);
+                },
+            ),
+        )
     }
 
     fn project(

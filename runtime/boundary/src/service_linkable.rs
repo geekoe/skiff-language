@@ -220,7 +220,7 @@ impl ServiceLinkableCapabilityProjection {
         &self.receiver_interface_abi_id
     }
 
-    fn commit(mut self) {
+    pub fn commit(mut self) {
         self.rollback.take();
     }
 }
