@@ -5,10 +5,11 @@ use std::{
     sync::Arc,
 };
 
+use sha2::{Digest, Sha256};
 use skiff_artifact_identity::ValidatedBytecodeArtifact;
 use skiff_artifact_model::{
-    GatewayEntryIdentity, IngressProtocol, PackageArtifact, PackageArtifactRef, ServiceDeployment,
-    ServiceDeploymentRef,
+    AssemblyIdentity, DeploymentRevision, GatewayEntryIdentity, IngressProtocol, PackageArtifact,
+    PackageArtifactRef, ServiceDeployment, ServiceDeploymentRef, RUNTIME_ASSEMBLY_IDENTITY_PREFIX,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, seed_official_std_package, AuthoringObject},
@@ -103,6 +104,46 @@ pub struct PublishedFixture {
 
 pub struct GatewayFacts {
     pub identity: GatewayEntryIdentity,
+}
+
+/// Each Phase 6 fixture publishes one deterministic immutable activation.
+pub const G6_FIXTURE_ASSEMBLY_GENERATION: u64 = 1;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RequestRoutingFacts {
+    pub assembly_identity: AssemblyIdentity,
+    pub assembly_generation: u64,
+    pub deployment_revision: DeploymentRevision,
+    pub runtime_replica_id: String,
+    pub runtime_id: String,
+    pub caller_request_id: String,
+}
+
+impl PublishedFixture {
+    pub fn assembly_identity(&self) -> AssemblyIdentity {
+        // Deterministic fixture identity from the exact published deployment build.
+        let digest = Sha256::digest(self.deployment.deployment_artifact_identity.as_str());
+        AssemblyIdentity::new(format!(
+            "{RUNTIME_ASSEMBLY_IDENTITY_PREFIX}:{}",
+            hex::encode(digest)
+        ))
+    }
+
+    pub fn request_routing_facts(
+        &self,
+        runtime_replica_id: impl Into<String>,
+        request_id: impl Into<String>,
+    ) -> RequestRoutingFacts {
+        let runtime_replica_id = runtime_replica_id.into();
+        RequestRoutingFacts {
+            assembly_identity: self.assembly_identity(),
+            assembly_generation: G6_FIXTURE_ASSEMBLY_GENERATION,
+            deployment_revision: self.deployment.deployment_revision.clone(),
+            runtime_replica_id: runtime_replica_id.clone(),
+            runtime_id: runtime_replica_id,
+            caller_request_id: request_id.into(),
+        }
+    }
 }
 
 pub fn build_capability(capability: Capability, negative: bool, prefix: &str) -> BuildOutcome {

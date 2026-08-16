@@ -29,7 +29,7 @@ use tokio::{
 };
 use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
 
-use super::fixture::PublishedFixture;
+use super::fixture::{PublishedFixture, RequestRoutingFacts};
 
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 static NEXT_RUNTIME_HOME: AtomicU64 = AtomicU64::new(0);
@@ -37,6 +37,7 @@ static NEXT_RUNTIME_HOME: AtomicU64 = AtomicU64::new(0);
 pub(super) struct RuntimeHostHarness {
     fixture: PublishedFixture,
     websocket: WebSocketStream<TcpStream>,
+    runtime_replica_id: String,
     _host_task: AbortOnDrop,
     _runtime_home: RuntimeHome,
 }
@@ -59,10 +60,11 @@ impl RuntimeHostHarness {
             .expect("bind Phase 6 RuntimeHost peer");
         let router_address = listener.local_addr().expect("RuntimeHost peer address");
         let runtime_home = RuntimeHome::new(prefix);
+        let runtime_replica_id = format!("runtime-phase-6-{prefix}");
         let host = RuntimeHost::new(RuntimeConfig {
             db_provider: DbProviderSource::new(InMemoryDbProviderFactory::new()),
             router_url: format!("ws://{router_address}"),
-            base_runtime_id: format!("runtime-phase-6-{prefix}"),
+            base_runtime_id: runtime_replica_id.clone(),
             runtime_home: runtime_home.path().to_path_buf(),
             profile: "skiff-test".to_string(),
             bytecode_only: true,
@@ -80,9 +82,15 @@ impl RuntimeHostHarness {
         Self {
             fixture,
             websocket,
+            runtime_replica_id,
             _host_task: host_task,
             _runtime_home: runtime_home,
         }
+    }
+
+    pub(super) fn request_routing(&self, request_id: &str) -> RequestRoutingFacts {
+        self.fixture
+            .request_routing_facts(&self.runtime_replica_id, request_id)
     }
 
     pub async fn send_http_request(
@@ -93,6 +101,7 @@ impl RuntimeHostHarness {
         body: &[u8],
     ) {
         let gateway = self.fixture.gateway(ingress_path);
+        let routing = self.request_routing(request_id);
         let header = BytecodeRequestStartFrameHeader {
             schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
             frame_type: "request.start".to_string(),
@@ -103,8 +112,8 @@ impl RuntimeHostHarness {
             },
             routing: BytecodeRequestRoutingFrameHeader {
                 kind: "runtimeAssembly".to_string(),
-                assembly_identity: None,
-                assembly_generation: None,
+                assembly_identity: Some(routing.assembly_identity),
+                assembly_generation: Some(routing.assembly_generation),
                 deployment: self.fixture.deployment.clone(),
                 build_id: Some(
                     self.fixture

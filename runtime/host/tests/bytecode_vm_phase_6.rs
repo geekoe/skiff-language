@@ -253,6 +253,33 @@ mod tests {
         actor_s6
     );
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn task_request_routing_carries_exact_activation_identity_fields() {
+        let prefix = "task-routing-exact";
+        let request_id = "phase-6-task-routing-exact";
+        let fixture = published_positive(Capability::Task, prefix);
+        let expected_deployment_revision = fixture.deployment.deployment_revision.clone();
+        let expected = fixture
+            .request_routing_facts(format!("runtime-phase-6-{prefix}"), request_id.to_string());
+        let host = host_harness::RuntimeHostHarness::start(prefix, fixture).await;
+        let actual = host.request_routing(request_id);
+
+        assert_eq!(actual, expected);
+        assert_eq!(actual.assembly_generation, 1);
+        assert_eq!(actual.deployment_revision, expected_deployment_revision);
+        assert_eq!(
+            actual.runtime_replica_id,
+            format!("runtime-phase-6-{prefix}")
+        );
+        assert_eq!(actual.runtime_id, actual.runtime_replica_id);
+        assert_eq!(actual.caller_request_id, request_id);
+        assert!(actual
+            .assembly_identity
+            .as_str()
+            .starts_with("skiff-runtime-assembly-v3:sha256:"));
+        host.close().await;
+    }
+
     #[test]
     fn containment_disabled_surfaces_fail_closed() {
         stages::assert_containment_rejected("containment-positive");
