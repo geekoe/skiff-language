@@ -68,7 +68,7 @@ const TASK_HOST_TESTS = 10;
 const ROUTER_MATRIX_TESTS = 6;
 const CONTAINMENT_TESTS = 2;
 const KERNEL_TESTS = 6;
-const CALLBACK_MATRIX_TESTS = 7;
+const CALLBACK_MATRIX_TESTS = 8;
 
 export function phase6ScenarioSpecs(root) {
   return Object.freeze([
