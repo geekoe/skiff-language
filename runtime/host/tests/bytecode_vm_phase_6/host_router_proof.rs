@@ -178,6 +178,37 @@ async fn post(
     (status, bytes)
 }
 
+async fn post_with_headers(
+    addr: std::net::SocketAddr,
+    path: &str,
+    service_id: &str,
+    version: &str,
+    body: &[u8],
+) -> (u16, Vec<(String, String)>, Vec<u8>) {
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{addr}{path}"))
+        .header("X-Skiff-Service", service_id)
+        .header("X-Skiff-Version", version)
+        .body(body.to_vec())
+        .send()
+        .await
+        .expect("HTTP request through production Router");
+    let status = response.status().as_u16();
+    let headers = response
+        .headers()
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.to_string(),
+                value.to_str().expect("HTTP header is UTF-8").to_string(),
+            )
+        })
+        .collect();
+    let bytes = response.bytes().await.expect("HTTP response body").to_vec();
+    (status, headers, bytes)
+}
+
 async fn wait_for_records(store: &MemoryTaskStore) -> Vec<skiff_task_control::model::TaskRecord> {
     for _ in 0..200 {
         let records = store.records().await;
@@ -210,6 +241,38 @@ async fn wait_for_status(store: &MemoryTaskStore, task_id: &str, expected: TaskS
 mod tests {
     use super::*;
     use skiff_task_control::model::TaskState;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn task_typed_json_unary_http_metadata_maps_router_response() {
+        let fixture = published_positive(Capability::Task, "host-router-metadata");
+        let store = Arc::new(MemoryTaskStore::new());
+        let (supervisor, listeners) = start_router(&fixture, Arc::clone(&store)).await;
+        let control_addr = listeners.runtime_control.addr();
+        let public_addr = listeners.public_http.addr();
+        let (_host, _home) = start_host(control_addr.port(), "metadata");
+        wait_for_registered(&supervisor).await;
+
+        let (status, headers, body) = post_with_headers(
+            public_addr,
+            "/phase-6/task",
+            fixture.deployment.service_id.as_str(),
+            fixture.deployment.contract_version.as_str(),
+            b"7",
+        )
+        .await;
+        assert_eq!(status, 200, "host HTTP terminal: {body:?}");
+        assert!(!body.is_empty());
+        assert!(
+            headers.iter().any(|(name, value)| {
+                name.eq_ignore_ascii_case("content-type")
+                    && value == "application/json; charset=utf-8"
+            }),
+            "typedJson unary HTTP metadata must carry canonical JSON content-type: {headers:?}"
+        );
+
+        listeners.shutdown().await.expect("listeners shutdown");
+        supervisor.shutdown().await;
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn task_host_router_proof_accepted_record_claim_fresh_request_and_settlement() {

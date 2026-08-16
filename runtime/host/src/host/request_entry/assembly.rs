@@ -4,7 +4,7 @@ use serde_json::Value;
 use skiff_artifact_model::{IngressProtocol, IngressSelector};
 use skiff_runtime_request::{
     self as request_runner, BinaryHttpRequest, BinaryHttpRequestMetadata, BoundaryResponse,
-    BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput, HttpNameValue,
+    BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput, HttpAdapterKind, HttpNameValue,
     HttpResponseMetadata, RequestEnvelope, RequestError, RequestExecutionOwnerInventorySnapshot,
     ResponseEnd, ResponseEvent, ResponseStreamEvent, RouterWriterMessage,
 };
@@ -111,6 +111,11 @@ impl RuntimeHost {
             sender.clone(),
             response_terminal,
         ));
+        let typed_json_unary = request_envelope
+            .http_adapter
+            .as_ref()
+            .is_some_and(|adapter| adapter.kind == HttpAdapterKind::TypedJson)
+            && request_envelope.mode.as_str() == "unary";
         let request_id = header.request_id.clone();
         let host = self.clone();
         let child_composition = production_bytecode_request_child_composition(
@@ -157,6 +162,7 @@ impl RuntimeHost {
                     owner_inventory,
                     http_response_max_bytes,
                     unary_response_start,
+                    typed_json_unary,
                     &response_sink,
                 )
                 .await;
@@ -496,6 +502,7 @@ impl RuntimeHost {
         owner_inventory: RequestExecutionOwnerInventorySnapshot,
         http_response_max_bytes: usize,
         unary_response_start: bool,
+        typed_json_unary: bool,
         response_sink: &HostHttpGatewayResponseSink,
     ) -> Option<CleanupPermit> {
         match result {
@@ -527,6 +534,36 @@ impl RuntimeHost {
                     return permit;
                 }
 
+                let unary_http_response = if !unary_response_start {
+                    unary_http_response_parts(
+                        &response,
+                        typed_json_unary.then(typed_json_unary_metadata),
+                    )
+                } else {
+                    None
+                };
+                if let Some(Err(response_error)) = unary_http_response.as_ref() {
+                    let response_event = OrdinaryResponseEvent::try_error(response_error)
+                        .expect("unary HTTP metadata failure is ordinary");
+                    let response_error = response_error
+                        .ordinary_response_error()
+                        .expect("unary HTTP metadata failure is ordinary");
+                    let permit = self
+                        .request_supervisor
+                        .complete_error(
+                            supervised_request,
+                            "request.error",
+                            &response_error,
+                            owner_inventory,
+                            CompletionTrace::RUNTIME,
+                        )
+                        .await;
+                    if allow_http_candidate_response(permit.as_ref(), request_id, response_sink) {
+                        response_sink.send_terminal_response(request_id, response_event);
+                    }
+                    return permit;
+                }
+
                 let permit = self
                     .request_supervisor
                     .complete_success(
@@ -536,6 +573,10 @@ impl RuntimeHost {
                     )
                     .await;
                 if !allow_http_candidate_response(permit.as_ref(), request_id, response_sink) {
+                    return permit;
+                }
+                if let Some(Ok((metadata, payload))) = unary_http_response {
+                    response_sink.send_unary_http_response(request_id, metadata, payload);
                     return permit;
                 }
                 if unary_response_start {
@@ -1081,6 +1122,9 @@ fn bytecode_deadline_extra(
     extra
 }
 
+const TYPED_JSON_UNARY_CONTENT_TYPE_NAME: &str = "content-type";
+const TYPED_JSON_UNARY_CONTENT_TYPE_VALUE: &str = "application/json; charset=utf-8";
+
 struct HostHttpGatewayResponseSink {
     sender: mpsc::UnboundedSender<RouterWriterMessage>,
     terminal: Arc<HttpGatewayTerminalArbiter>,
@@ -1098,6 +1142,18 @@ impl HostHttpGatewayResponseSink {
         if let Ok(message) = response_event_into_transport_message(request_id.to_string(), event) {
             self.send_encoded_terminal(message);
         }
+    }
+
+    fn send_unary_http_response(
+        &self,
+        request_id: &str,
+        metadata: HttpResponseMetadata,
+        payload: Vec<u8>,
+    ) {
+        self.send_terminal_response(
+            request_id,
+            OrdinaryResponseEvent::End(ResponseEnd::Http { payload, metadata }),
+        );
     }
 
     fn send_encoded_terminal(&self, message: RouterWriterMessage) {
@@ -1151,6 +1207,38 @@ fn unary_response_parts(response: &BoundaryResponse) -> Option<(HttpResponseMeta
         }
         BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Http { payload, metadata })) => {
             Some((metadata.clone(), payload.clone()))
+        }
+        BoundaryResponse::Event(ResponseEvent::FixedServiceFailure(_))
+        | BoundaryResponse::Event(ResponseEvent::Error(_))
+        | BoundaryResponse::StreamSent => None,
+    }
+}
+
+fn typed_json_unary_metadata() -> HttpResponseMetadata {
+    HttpResponseMetadata::new(
+        200,
+        vec![HttpNameValue {
+            name: TYPED_JSON_UNARY_CONTENT_TYPE_NAME.to_string(),
+            value: TYPED_JSON_UNARY_CONTENT_TYPE_VALUE.to_string(),
+        }],
+    )
+}
+
+fn unary_http_response_parts(
+    response: &BoundaryResponse,
+    default_metadata: Option<HttpResponseMetadata>,
+) -> Option<Result<(HttpResponseMetadata, Vec<u8>), RequestError>> {
+    match response {
+        BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Http { payload, metadata })) => {
+            Some(Ok((metadata.clone(), payload.clone())))
+        }
+        BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Payload(payload))) => {
+            Some(match default_metadata {
+                Some(metadata) => Ok((metadata, payload.clone())),
+                None => Err(RequestError::Decode(
+                    "HTTP unary response is missing required status/headers metadata".to_string(),
+                )),
+            })
         }
         BoundaryResponse::Event(ResponseEvent::FixedServiceFailure(_))
         | BoundaryResponse::Event(ResponseEvent::Error(_))
@@ -1214,5 +1302,96 @@ mod tests {
         assert!(!end.payload_present);
         assert!(end_payload.is_empty());
         assert_eq!(end.metadata, ResponseEndFrameMetadata::None);
+    }
+
+    #[test]
+    fn typed_json_unary_payload_gets_canonical_http_metadata() {
+        let response = BoundaryResponse::payload(b"7".to_vec());
+        let parts = unary_http_response_parts(&response, Some(typed_json_unary_metadata()))
+            .expect("typedJson payload is a unary HTTP end candidate")
+            .expect("typedJson payload must receive canonical metadata");
+        let (metadata, payload) = parts;
+
+        assert_eq!(metadata.status, 200);
+        assert_eq!(
+            metadata.headers,
+            vec![HttpNameValue {
+                name: TYPED_JSON_UNARY_CONTENT_TYPE_NAME.to_string(),
+                value: TYPED_JSON_UNARY_CONTENT_TYPE_VALUE.to_string(),
+            }]
+        );
+        assert_eq!(payload, b"7");
+    }
+
+    #[test]
+    fn unary_http_response_preserves_explicit_metadata() {
+        let metadata = HttpResponseMetadata::new(
+            201,
+            vec![HttpNameValue {
+                name: "x-phase-6".to_string(),
+                value: "exact".to_string(),
+            }],
+        );
+        let response = BoundaryResponse::http(b"ok".to_vec(), metadata.clone());
+        let parts = unary_http_response_parts(&response, Some(typed_json_unary_metadata()))
+            .expect("explicit HTTP end is a unary HTTP end candidate")
+            .expect("explicit HTTP metadata must pass through");
+
+        assert_eq!(parts.0, metadata);
+        assert_eq!(parts.1, b"ok");
+    }
+
+    #[test]
+    fn unary_http_response_missing_metadata_fails_closed() {
+        let response = BoundaryResponse::payload(b"7".to_vec());
+        let result = unary_http_response_parts(&response, None)
+            .expect("payload end is a unary HTTP end candidate")
+            .expect_err("missing HTTP metadata must fail closed");
+
+        assert!(result
+            .to_string()
+            .contains("HTTP unary response is missing"));
+    }
+
+    #[tokio::test]
+    async fn typed_json_unary_sink_emits_single_http_end() {
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let sink =
+            HostHttpGatewayResponseSink::new(sender, Arc::new(HttpGatewayTerminalArbiter::new()));
+
+        sink.send_unary_http_response(
+            "phase-6-typed-json",
+            typed_json_unary_metadata(),
+            b"7".to_vec(),
+        );
+
+        let RouterWriterMessage::Binary(frame) = receiver
+            .recv()
+            .await
+            .expect("typedJson unary sink emits response.end")
+        else {
+            panic!("typedJson unary end must be a binary Router frame");
+        };
+        let (end, payload) = decode_response_end_frame(&frame).expect("canonical response.end");
+        assert_eq!(end.request_id, "phase-6-typed-json");
+        assert!(end.payload_present);
+        assert_eq!(payload, b"7");
+        let ResponseEndFrameMetadata::Http(http) = end.metadata else {
+            panic!("typedJson unary response.end must carry HTTP metadata");
+        };
+        assert_eq!(http.status, 200);
+        assert_eq!(
+            http.headers,
+            vec![
+                skiff_runtime_transport::protocol::RuntimeHttpNameValueFrameHeader {
+                    name: TYPED_JSON_UNARY_CONTENT_TYPE_NAME.to_string(),
+                    value: TYPED_JSON_UNARY_CONTENT_TYPE_VALUE.to_string(),
+                }
+            ]
+        );
+        assert!(
+            receiver.try_recv().is_err(),
+            "typedJson unary sink must emit exactly one terminal frame"
+        );
     }
 }

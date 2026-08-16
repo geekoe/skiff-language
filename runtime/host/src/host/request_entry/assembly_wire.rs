@@ -629,10 +629,7 @@ fn admit_synchronous_http_lane(header: &BytecodeRequestStartFrameWireHeader) -> 
                     .to_string(),
             ),
         ),
-        BytecodeRequestStartFrameWireHeader::Task(_) => Err(RuntimeError::Unsupported(
-            "bytecode request admission supports only exact HTTP gateway requests; the task request lane is disabled"
-                .to_string(),
-        )),
+        BytecodeRequestStartFrameWireHeader::Task(_) => Ok(()),
     }
 }
 

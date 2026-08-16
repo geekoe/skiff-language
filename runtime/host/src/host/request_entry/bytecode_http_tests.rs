@@ -26,8 +26,6 @@ use skiff_runtime_transport::{
         BytecodeRequestIngressFrameHeader, BytecodeRequestIngressProtocol,
         BytecodeRequestRoutingFrameHeader, BytecodeRequestStartFrameHeader,
         BytecodeRequestStartFrameWireHeader, BytecodeRequestTraceFrameHeader,
-        BytecodeTaskInvocationFrameHeader, BytecodeTaskRequestCallerFrameHeader,
-        BytecodeTaskRequestRoutingFrameHeader, BytecodeTaskRequestStartFrameHeader,
         BytecodeWebSocketConnectIngressFrameHeader, BytecodeWebSocketConnectIngressProtocol,
         BytecodeWebSocketConnectRequestFrameHeader,
         BytecodeWebSocketConnectRequestStartFrameHeader,
@@ -169,49 +167,6 @@ fn canonical_header_for_deployment(
         test_effects_enabled: false,
         test_case_capability: None,
         test_case_parent_request_id: None,
-    }
-}
-
-fn task_header(
-    fixture: &PublishedFixture,
-    request_id: &str,
-) -> BytecodeTaskRequestStartFrameHeader {
-    BytecodeTaskRequestStartFrameHeader {
-        schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
-        frame_type: "request.start".to_string(),
-        request_id: request_id.to_string(),
-        mode: "unary".to_string(),
-        caller: BytecodeTaskRequestCallerFrameHeader {
-            kind: "service".to_string(),
-        },
-        routing: BytecodeTaskRequestRoutingFrameHeader {
-            kind: "runtimeAssembly".to_string(),
-            assembly_identity: None,
-            assembly_generation: None,
-            deployment: fixture.deployment.clone(),
-            build_id: Some(
-                fixture
-                    .deployment
-                    .deployment_artifact_identity
-                    .as_str()
-                    .to_string(),
-            ),
-        },
-        invocation: BytecodeTaskInvocationFrameHeader {
-            kind: "task".to_string(),
-            target_kind: "function".to_string(),
-            target: "function:run".to_string(),
-        },
-        deadline: None,
-        trace: BytecodeRequestTraceFrameHeader {
-            trace_id: format!("trace-{request_id}"),
-            span_id: "span-bytecode-task".to_string(),
-            parent_span_id: None,
-            sampled: None,
-        },
-        test_effects_enabled: false,
-        test_case_capability: None,
-        task_attempt: None,
     }
 }
 
@@ -713,17 +668,6 @@ async fn canonical_http_bytecode_only_rejects_non_bytecode_deployment_before_leg
 #[tokio::test(flavor = "current_thread")]
 async fn phase_1_request_lane_containment() {
     let fixture = fixture();
-
-    let header = task_header(fixture, "bytecode-task-42");
-    assert_disabled_request_lane(
-        fixture,
-        "task",
-        &header.request_id,
-        BytecodeRequestStartFrameWireHeader::Task(header.clone()),
-        b"{}".to_vec(),
-        "bytecode request admission supports only exact HTTP gateway requests; the task request lane is disabled",
-    )
-    .await;
 
     let header = websocket_connect_header(fixture, "bytecode-websocket-connect-42");
     assert_disabled_request_lane(

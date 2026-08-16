@@ -520,7 +520,9 @@ fn resolve_package_function(
                 .functions()
                 .iter()
                 .filter(|function| {
-                    function.key().artifact_function_key().as_str() == symbol
+                    let key = function.key().artifact_function_key().as_str();
+                    key == symbol
+                        || key == symbol.replace('.', "::")
                         || function.key().template_function_key().as_str() == symbol
                 })
                 .map(|function| function.index())
