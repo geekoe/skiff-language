@@ -719,6 +719,8 @@ fn contract_type_to_type_ref(ty: &ContractTypeRef) -> Result<TypeRefIr, VmMateri
         ContractTypeRef::TypeParam { name } => Err(VmMaterializeError::UnsupportedType {
             message: format!("{name:?}"),
         }),
+    }
+}
 
 fn same_boundary_type(provider: &TypeRefIr, linked: &TypeRefIr) -> bool {
     if provider == linked {
