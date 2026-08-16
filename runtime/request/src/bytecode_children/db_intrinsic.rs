@@ -249,11 +249,24 @@ fn shape_for_type<'a>(
     image: &'a DeploymentExecutionImage,
     ty: TypeIndex,
 ) -> Result<&'a LinkedShapeEntry, String> {
-    image
-        .shapes()
-        .iter()
-        .find(|shape| shape.nominal_type() == ty)
-        .ok_or_else(|| format!("linked DB result type {} has no exact shape", ty.get()))
+    unique_shape_for_type_index(image.shapes(), ty)
+}
+
+fn unique_shape_for_type_index<'a>(
+    shapes: &'a [LinkedShapeEntry],
+    ty: TypeIndex,
+) -> Result<&'a LinkedShapeEntry, String> {
+    let mut matches = shapes.iter().filter(|shape| shape.nominal_type() == ty);
+    let first = matches
+        .next()
+        .ok_or_else(|| format!("linked DB result type {} has no exact shape", ty.get()))?;
+    if matches.next().is_some() {
+        return Err(format!(
+            "linked DB result type {} matches more than one exact shape",
+            ty.get()
+        ));
+    }
+    Ok(first)
 }
 
 fn heap_error(error: VmHeapError) -> String {

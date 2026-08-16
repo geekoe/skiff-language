@@ -20,9 +20,9 @@ use skiff_artifact_model::{
     BoundaryValueOwner, BoundaryValuePlan, BuiltinReceiverMethod, BuiltinReceiverRoot,
     CallableMayEffects, ContractOperationId, ContractTypeRef, DeploymentArtifactIdentity,
     DeploymentDiagnosticText, DeploymentOperationBinding, DeploymentRevision, GatewayEntryIdentity,
-    IngressProtocol, IngressSelector, InstructionSourceSite, Opcode, PackageArtifact, ParamModeIr,
-    ServiceContract, ServiceDeployment, TypeRefIr, SERVICE_CONTRACT_SCHEMA_VERSION,
-    SERVICE_DEPLOYMENT_SCHEMA_VERSION,
+    IngressProtocol, IngressSelector, InstructionSourceSite, InterfaceInstantiationRef, Opcode,
+    PackageArtifact, PackageBuildId, ParamModeIr, ServiceContract, ServiceDeployment, TypeRefIr,
+    SERVICE_CONTRACT_SCHEMA_VERSION, SERVICE_DEPLOYMENT_SCHEMA_VERSION,
 };
 use skiff_compiler::{
     authoring::{build_authoring_object, seed_official_std_package, AuthoringObject},
@@ -31,10 +31,11 @@ use skiff_compiler::{
     SourceTree, SourceTreeFile,
 };
 use skiff_runtime_linked_bytecode::{
-    FrameSlotIndex, FunctionIndex, InstructionBoundaryIndex, InstructionIndex, IntrinsicIndex,
-    LinkedCatchMatcher, LinkedExceptionRegion, LinkedInstructionTarget, LinkedIntrinsicKind,
-    LinkedIntrinsicTarget, LinkedNativeCallableSignature, LinkedValueDropPlan,
-    LinkedValueTransferPlan, ResumeSiteIndex, TypeIndex,
+    ArtifactTypeIndex, FrameSlotIndex, FunctionIndex, InstructionBoundaryIndex, InstructionIndex,
+    IntrinsicIndex, LinkedArtifactPoolOrigin, LinkedCatchMatcher, LinkedExceptionRegion,
+    LinkedInstructionTarget, LinkedIntrinsicKind, LinkedIntrinsicTarget,
+    LinkedNativeCallableSignature, LinkedTypeEntry, LinkedValueDropPlan, LinkedValueTransferPlan,
+    ResumeSiteIndex, TypeIndex,
 };
 use skiff_runtime_linker::{
     link_deployment_execution_image, DeploymentExecutionEntry, DeploymentExecutionImage, LinkLimits,
@@ -62,7 +63,8 @@ use super::{
     allocate_store_string_constant, catch_matches, compact_record_type_tags, compact_type_tag,
     comparable_equality, comparable_equality_with_string_resolver, find_exception_region,
     linked_type_catch_identity, materialize_intrinsic_result, nominal_type_index, opcode_supported,
-    runtime_leaf_catch_identity, store_slot_string_constant_authorized, DispatchOutcome,
+    runtime_leaf_catch_identity, store_slot_string_constant_authorized,
+    unique_any_interface_carrier_type, DispatchOutcome, InterfaceCarrierLookup,
     IntrinsicResultPayload, Vm, VmFiber,
 };
 use crate::control::VmResumeAuthority;
@@ -81,6 +83,48 @@ type VmStartFn = fn(
 
 fn compact_tag(type_index: u32) -> CompactTypeTag {
     CompactTypeTag::try_from_type_index(type_index).expect("type index must fit compact tag")
+}
+
+fn linked_any_interface(index: u32, interface: InterfaceInstantiationRef) -> LinkedTypeEntry {
+    let origin = LinkedArtifactPoolOrigin::new(
+        PackageBuildId::new("build:fiber"),
+        ArtifactTypeIndex::new(index),
+        None,
+    )
+    .expect("fixture type origin is canonical");
+    LinkedTypeEntry::new(
+        TypeIndex::new(index),
+        origin,
+        TypeRefIr::AnyInterface { interface },
+        LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::Trivial,
+        },
+        None,
+        None,
+    )
+}
+
+#[test]
+fn duplicate_any_interface_carrier_rows_fail_closed() {
+    let interface = InterfaceInstantiationRef {
+        interface_abi_id: "interface-abi:chat".to_string(),
+        canonical_type_args: Vec::new(),
+    };
+    let types = vec![
+        linked_any_interface(0, interface.clone()),
+        linked_any_interface(1, interface.clone()),
+    ];
+
+    assert!(matches!(
+        unique_any_interface_carrier_type(&types, &interface),
+        InterfaceCarrierLookup::Ambiguous
+    ));
+
+    let single = vec![linked_any_interface(2, interface.clone())];
+    assert!(matches!(
+        unique_any_interface_carrier_type(&single, &interface),
+        InterfaceCarrierLookup::Resolved(index) if index == TypeIndex::new(2)
+    ));
 }
 
 #[test]

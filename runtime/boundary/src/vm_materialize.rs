@@ -34,6 +34,8 @@ pub enum VmMaterializeError {
     UnsupportedType { message: String },
     #[error("service boundary value type row is absent from image {image}")]
     MissingType { image: String, type_index: u32 },
+    #[error("service boundary value type ref {type_ref} matches more than one linked type row")]
+    AmbiguousType { type_ref: String },
     #[error("service boundary value type row {type_index} does not match image index")]
     TypeIndexMismatch { type_index: u32 },
     #[error("service boundary source value has no runtime kind")]
@@ -44,6 +46,10 @@ pub enum VmMaterializeError {
     },
     #[error("service boundary plan source owner/lifetime/carrier mismatch")]
     PlanMismatch,
+    #[error("service boundary value type {type_index} has no exact linked shape")]
+    MissingShape { type_index: u32 },
+    #[error("service boundary value type {type_index} matches more than one linked shape")]
+    AmbiguousShape { type_index: u32 },
     #[error("service boundary value heap operation failed: {0}")]
     Heap(#[from] VmHeapError),
     #[error("service boundary catch identity is unavailable for type {type_index}")]
@@ -292,20 +298,19 @@ fn materialize_array(
     tag: CompactTypeTag,
     session: &mut MaterializeSession,
 ) -> Result<ValueSlot, VmMaterializeError> {
-    let element_type = destination_entry
-        .container_layout()
-        .and_then(|layout| {
-            (layout.kind() == LinkedContainerLayoutKind::Array)
-                .then(|| layout.element().map(|element| element.ty()))
-                .flatten()
-        })
-        .or_else(|| {
+    let element_type = match destination_entry.container_layout().and_then(|layout| {
+        (layout.kind() == LinkedContainerLayoutKind::Array)
+            .then(|| layout.element().map(|element| element.ty()))
+            .flatten()
+    }) {
+        Some(element_type) => element_type,
+        None => {
             let TypeRefIr::Builtin { args, .. } = destination_entry.type_ref() else {
-                return None;
+                return Err(unsupported_type(destination_entry.type_ref()));
             };
-            find_type_index_by_ref(destination_image, &args[0])
-        })
-        .ok_or_else(|| unsupported_type(destination_entry.type_ref()))?;
+            unique_type_index_by_ref(destination_image.types(), &args[0])?
+        }
+    };
     let elements = source_heap.container_elements(source)?;
     if elements.shape != VmContainerShape::Array {
         return Err(VmMaterializeError::UnsupportedKind {
@@ -423,17 +428,11 @@ fn record_fields(
         return fields
             .iter()
             .map(|(name, ty)| {
-                find_type_index_by_ref(image, ty)
-                    .map(|index| (name.clone(), index))
-                    .ok_or_else(|| unsupported_type(ty))
+                unique_type_index_by_ref(image.types(), ty).map(|index| (name.clone(), index))
             })
             .collect();
     }
-    let shape = image
-        .shapes()
-        .iter()
-        .find(|shape: &&LinkedShapeEntry| shape.nominal_type() == entry.index())
-        .ok_or_else(|| unsupported_type(entry.type_ref()))?;
+    let shape = unique_shape_for_type_index(image.shapes(), entry.index())?;
     Ok(shape
         .fields()
         .iter()
@@ -441,12 +440,39 @@ fn record_fields(
         .collect())
 }
 
-fn find_type_index_by_ref(image: &DeploymentExecutionImage, ty: &TypeRefIr) -> Option<TypeIndex> {
-    image
-        .types()
+fn unique_type_index_by_ref(
+    types: &[LinkedTypeEntry],
+    ty: &TypeRefIr,
+) -> Result<TypeIndex, VmMaterializeError> {
+    let mut matches = types
         .iter()
-        .find(|entry| entry.type_ref() == ty)
-        .map(LinkedTypeEntry::index)
+        .filter(|entry| entry.type_ref() == ty)
+        .map(LinkedTypeEntry::index);
+    let first = matches.next().ok_or_else(|| unsupported_type(ty))?;
+    if matches.next().is_some() {
+        return Err(VmMaterializeError::AmbiguousType {
+            type_ref: format!("{ty:?}"),
+        });
+    }
+    Ok(first)
+}
+
+fn unique_shape_for_type_index<'a>(
+    shapes: &'a [LinkedShapeEntry],
+    type_index: TypeIndex,
+) -> Result<&'a LinkedShapeEntry, VmMaterializeError> {
+    let mut matches = shapes
+        .iter()
+        .filter(|shape| shape.nominal_type() == type_index);
+    let first = matches.next().ok_or(VmMaterializeError::MissingShape {
+        type_index: type_index.get(),
+    })?;
+    if matches.next().is_some() {
+        return Err(VmMaterializeError::AmbiguousShape {
+            type_index: type_index.get(),
+        });
+    }
+    Ok(first)
 }
 
 fn unsupported_type(ty: &TypeRefIr) -> VmMaterializeError {
@@ -503,7 +529,27 @@ fn catch_identity_for_type(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skiff_artifact_model::PackageSchemaTypeId;
+    use skiff_artifact_model::{PackageBuildId, PackageSchemaTypeId};
+    use skiff_runtime_linked_bytecode::{
+        ArtifactShapeIndex, ArtifactTypeIndex, LinkedArtifactPoolOrigin,
+        LinkedRepresentationCarrier, LinkedShapeField, LinkedValueDropPlan,
+        LinkedValueTransferPlan,
+    };
+
+    fn linked_type(
+        index: u32,
+        type_ref: TypeRefIr,
+        plan: LinkedValueTransferPlan,
+        carrier: Option<LinkedRepresentationCarrier>,
+    ) -> LinkedTypeEntry {
+        let origin = LinkedArtifactPoolOrigin::new(
+            PackageBuildId::new("build:boundary"),
+            ArtifactTypeIndex::new(index),
+            None,
+        )
+        .expect("fixture type origin is canonical");
+        LinkedTypeEntry::new(TypeIndex::new(index), origin, type_ref, plan, carrier, None)
+    }
 
     #[test]
     fn callback_any_interface_maps_to_linked_interface_identity() {
@@ -553,6 +599,87 @@ mod tests {
             }],
         );
         assert!(!same_boundary_type(&provider, &linked));
+    }
+
+    #[test]
+    fn duplicate_type_ref_with_different_plans_and_carriers_fails_closed() {
+        let type_ref = TypeRefIr::Builtin {
+            name: "string".to_string(),
+            args: Vec::new(),
+        };
+        let types = vec![
+            linked_type(
+                0,
+                type_ref.clone(),
+                LinkedValueTransferPlan::SnapshotShare {
+                    drop: LinkedValueDropPlan::Trivial,
+                },
+                None,
+            ),
+            linked_type(
+                1,
+                type_ref.clone(),
+                LinkedValueTransferPlan::MoveOnly {
+                    drop: LinkedValueDropPlan::SnapshotRelease,
+                },
+                Some(LinkedRepresentationCarrier::new(
+                    TypeIndex::new(1),
+                    TypeIndex::new(2),
+                )),
+            ),
+        ];
+
+        let error = unique_type_index_by_ref(&types, &type_ref)
+            .expect_err("duplicate type refs must not select the first row");
+        assert!(matches!(error, VmMaterializeError::AmbiguousType { .. }));
+    }
+
+    #[test]
+    fn duplicate_nominal_shape_fails_closed() {
+        let shape_origin = |index| {
+            LinkedArtifactPoolOrigin::new(
+                PackageBuildId::new("build:boundary"),
+                ArtifactShapeIndex::new(index),
+                None,
+            )
+            .expect("fixture shape origin is canonical")
+        };
+        let shape = |index: u32, plan: LinkedValueTransferPlan| {
+            LinkedShapeEntry::new(
+                skiff_runtime_linked_bytecode::ShapeIndex::new(index),
+                shape_origin(index),
+                TypeIndex::new(0),
+                plan,
+                None,
+                Box::new([LinkedShapeField::new(
+                    "value",
+                    TypeIndex::new(1),
+                    LinkedValueTransferPlan::SnapshotShare {
+                        drop: LinkedValueDropPlan::Trivial,
+                    },
+                )
+                .expect("fixture shape field is canonical")]),
+            )
+            .expect("fixture shape is canonical")
+        };
+        let shapes = vec![
+            shape(
+                0,
+                LinkedValueTransferPlan::SnapshotShare {
+                    drop: LinkedValueDropPlan::Trivial,
+                },
+            ),
+            shape(
+                1,
+                LinkedValueTransferPlan::MoveOnly {
+                    drop: LinkedValueDropPlan::SnapshotRelease,
+                },
+            ),
+        ];
+
+        let error = unique_shape_for_type_index(&shapes, TypeIndex::new(0))
+            .expect_err("duplicate nominal shapes must not select the first row");
+        assert!(matches!(error, VmMaterializeError::AmbiguousShape { .. }));
     }
 
     fn any_interface(package_id: &str, canonical_type_args: Vec<TypeRefIr>) -> TypeRefIr {

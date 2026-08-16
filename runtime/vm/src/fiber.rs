@@ -12,9 +12,9 @@ use std::{
 };
 
 use skiff_artifact_model::{
-    descriptor_for_opcode, LiteralIr, NativeResourceDropPlan, NativeValueDropPlan,
-    NativeValueEmbedding, NativeValueLifecycleConcrete, Opcode, PackageRefIr, ParamModeIr,
-    PrivilegedAffineCompositeIdentity, PrivilegedAffineFieldAccess, TypeRefIr,
+    descriptor_for_opcode, InterfaceInstantiationRef, LiteralIr, NativeResourceDropPlan,
+    NativeValueDropPlan, NativeValueEmbedding, NativeValueLifecycleConcrete, Opcode, PackageRefIr,
+    ParamModeIr, PrivilegedAffineCompositeIdentity, PrivilegedAffineFieldAccess, TypeRefIr,
     NATIVE_VALUE_LIFECYCLE_REGISTRY,
 };
 use skiff_runtime_deployment_image::DeploymentOwnerIdentity;
@@ -23,8 +23,9 @@ use skiff_runtime_linked_bytecode::{
     InstructionIndex, LinkedCallableSignature, LinkedCatchMatcher, LinkedExceptionRegion,
     LinkedFrozenConstantValue, LinkedFunction, LinkedInstruction, LinkedInstructionTarget,
     LinkedInterfaceTable, LinkedInterfaceTableKind, LinkedIntrinsicKind,
-    LinkedNativeCallableSignature, LinkedResourceDropPlan, LinkedTaskTiming, LinkedValueDropPlan,
-    LinkedValueTransferPlan, LinkedWritablePathSegment, ResumeSiteIndex, TypeIndex,
+    LinkedNativeCallableSignature, LinkedResourceDropPlan, LinkedTaskTiming, LinkedTypeEntry,
+    LinkedValueDropPlan, LinkedValueTransferPlan, LinkedWritablePathSegment, ResumeSiteIndex,
+    TypeIndex,
 };
 use skiff_runtime_linker::ExecutionResumeSite;
 use skiff_runtime_linker::{DeploymentExecutionEntry, DeploymentExecutionImage};
@@ -4033,12 +4034,9 @@ impl VmFiber {
             });
         };
         let local = local.clone();
-        // The linked local table carries the exact concrete payload type. The
-        // stack-map carrier type is normalized into an owner-form PackageSymbol
-        // while the relocation keeps its publication form; fall back only to
-        // the exact table fact when that normalized carrier row is unavailable.
-        let carrier_type =
-            interface_carrier_type(self.execution_image(), row).unwrap_or(local.concrete_type());
+        // The linked local table carries the exact concrete carrier type. Do
+        // not re-derive it by scanning AnyInterface rows.
+        let carrier_type = local.concrete_type();
         let exact: Arc<dyn Any + Send + Sync> = Arc::new(local.clone());
         let table = VmLocalInterfaceTable::new(
             table_index.get(),
@@ -4088,14 +4086,16 @@ impl VmFiber {
                 opcode: Opcode::InterfaceBoxRemote,
             });
         };
-        let carrier_type =
-            interface_carrier_type(self.execution_image(), row).ok_or_else(|| {
-                VmError::FullValueLifecyclePlanUnavailable {
+        let carrier_type = match interface_carrier_lookup(self.execution_image(), row) {
+            InterfaceCarrierLookup::Resolved(type_index) => type_index,
+            InterfaceCarrierLookup::Missing | InterfaceCarrierLookup::Ambiguous => {
+                return Err(VmError::FullValueLifecyclePlanUnavailable {
                     function,
                     instruction,
                     opcode: Opcode::InterfaceBoxRemote,
-                }
-            })?;
+                });
+            }
+        };
         let exact: Arc<dyn Any + Send + Sync> = Arc::new(remote.clone());
         let table = VmRemoteInterfaceTable::new(table_index.get(), remote.methods().len(), exact);
         let carrier = heap
@@ -5914,16 +5914,39 @@ fn nominal_type_index(value: &ValueSlot) -> Option<TypeIndex> {
     }
 }
 
-fn interface_carrier_type(
+enum InterfaceCarrierLookup {
+    Resolved(TypeIndex),
+    Missing,
+    Ambiguous,
+}
+
+fn interface_carrier_lookup(
     image: &DeploymentExecutionImage,
     table: &LinkedInterfaceTable,
-) -> Option<TypeIndex> {
-    image.types().iter().find_map(|row| {
-        let TypeRefIr::AnyInterface { interface } = row.type_ref() else {
+) -> InterfaceCarrierLookup {
+    unique_any_interface_carrier_type(image.types(), table.interface().artifact())
+}
+
+fn unique_any_interface_carrier_type(
+    types: &[LinkedTypeEntry],
+    interface: &InterfaceInstantiationRef,
+) -> InterfaceCarrierLookup {
+    let mut matches = types.iter().filter_map(|row| {
+        let TypeRefIr::AnyInterface {
+            interface: row_interface,
+        } = row.type_ref()
+        else {
             return None;
         };
-        (interface == table.interface().artifact()).then_some(row.index())
-    })
+        (row_interface == interface).then_some(row.index())
+    });
+    let Some(first) = matches.next() else {
+        return InterfaceCarrierLookup::Missing;
+    };
+    if matches.next().is_some() {
+        return InterfaceCarrierLookup::Ambiguous;
+    }
+    InterfaceCarrierLookup::Resolved(first)
 }
 
 #[allow(clippy::too_many_arguments)]

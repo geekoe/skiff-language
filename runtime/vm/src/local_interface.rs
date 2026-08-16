@@ -12,7 +12,7 @@ use std::fmt;
 use skiff_artifact_model::{PackageRefIr, TypeRefIr};
 use skiff_runtime_linked_bytecode::{
     LinkedContainerLayoutKind, LinkedResourceDropPlan, LinkedShapeEntry, LinkedTypeEntry,
-    LinkedValueDropPlan, LinkedValueTransferPlan, TypeIndex,
+    LinkedValueDropPlan, LinkedValueTransferPlan, ShapeIndex, TypeIndex,
 };
 use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_model::{
@@ -36,6 +36,8 @@ pub enum LocalInterfaceMaterializeError {
     UnsupportedKind { kind: Option<ValueKind> },
     UnsupportedType { type_ref: String },
     MissingShape { type_index: u32 },
+    AmbiguousShape { type_index: u32 },
+    ShapeMismatch { type_index: u32, shape: u32 },
     MissingCatchIdentity { type_index: u32 },
     Heap(VmHeapError),
 }
@@ -74,6 +76,14 @@ impl fmt::Display for LocalInterfaceMaterializeError {
             Self::MissingShape { type_index } => write!(
                 formatter,
                 "local interface type {type_index} has no exact linked shape"
+            ),
+            Self::AmbiguousShape { type_index } => write!(
+                formatter,
+                "local interface type {type_index} matches more than one linked shape"
+            ),
+            Self::ShapeMismatch { type_index, shape } => write!(
+                formatter,
+                "local interface type {type_index} does not own exact linked shape {shape}"
             ),
             Self::MissingCatchIdentity { type_index } => write!(
                 formatter,
@@ -342,7 +352,7 @@ fn copy_request_heap_ref(
     destination_heap: &mut dyn VmHeap,
     image: &DeploymentExecutionImage,
     destination_type: TypeIndex,
-    _plan: &LinkedValueTransferPlan,
+    plan: &LinkedValueTransferPlan,
     destination_entry: &LinkedTypeEntry,
     session: &mut MaterializeSession,
 ) -> Result<ValueSlot, LocalInterfaceMaterializeError> {
@@ -431,6 +441,7 @@ fn copy_request_heap_ref(
             destination_heap,
             image,
             destination_entry,
+            plan,
             tag,
             session,
         ),
@@ -563,22 +574,34 @@ fn copy_record(
     destination_heap: &mut dyn VmHeap,
     image: &DeploymentExecutionImage,
     destination_entry: &LinkedTypeEntry,
+    plan: &LinkedValueTransferPlan,
     tag: CompactTypeTag,
     session: &mut MaterializeSession,
 ) -> Result<ValueSlot, LocalInterfaceMaterializeError> {
-    let shape = image
-        .shapes()
-        .iter()
-        .find(|shape: &&LinkedShapeEntry| {
-            image
+    let shape = match recursive_shape_index(plan) {
+        Some(shape_index) => {
+            let shape = image
+                .shapes()
+                .get(usize::try_from(shape_index.get()).unwrap_or(usize::MAX))
+                .filter(|shape| shape.index() == shape_index)
+                .ok_or(LocalInterfaceMaterializeError::MissingShape {
+                    type_index: destination_entry.index().get(),
+                })?;
+            let shape_type_matches = image
                 .types()
                 .get(usize::try_from(shape.nominal_type().get()).unwrap_or(usize::MAX))
                 .filter(|entry| entry.index() == shape.nominal_type())
-                .is_some_and(|entry| entry.type_ref() == destination_entry.type_ref())
-        })
-        .ok_or_else(|| LocalInterfaceMaterializeError::MissingShape {
-            type_index: destination_entry.index().get(),
-        })?;
+                .is_some_and(|entry| entry.type_ref() == destination_entry.type_ref());
+            if !shape_type_matches || shape.plan() != destination_entry.plan() {
+                return Err(LocalInterfaceMaterializeError::ShapeMismatch {
+                    type_index: destination_entry.index().get(),
+                    shape: shape_index.get(),
+                });
+            }
+            shape
+        }
+        None => unique_shape_for_linked_type(image.types(), image.shapes(), destination_entry)?,
+    };
     let start_len = session.roots.len();
     let mut fields = Vec::with_capacity(shape.fields().len());
     for field in shape.fields() {
@@ -601,6 +624,51 @@ fn copy_record(
     session.roots.truncate(start_len);
     session.commit(record);
     Ok(record)
+}
+
+fn recursive_shape_index(plan: &LinkedValueTransferPlan) -> Option<ShapeIndex> {
+    match plan {
+        LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::RecursiveShape { shape },
+        }
+        | LinkedValueTransferPlan::MoveOnly {
+            drop: LinkedValueDropPlan::RecursiveShape { shape },
+        }
+        | LinkedValueTransferPlan::AffineResource {
+            drop: LinkedResourceDropPlan::RecursiveShape { shape },
+        }
+        | LinkedValueTransferPlan::ExplicitCloneLease {
+            drop: LinkedResourceDropPlan::RecursiveShape { shape },
+            ..
+        } => Some(*shape),
+        _ => None,
+    }
+}
+
+fn unique_shape_for_linked_type<'a>(
+    types: &'a [LinkedTypeEntry],
+    shapes: &'a [LinkedShapeEntry],
+    entry: &LinkedTypeEntry,
+) -> Result<&'a LinkedShapeEntry, LocalInterfaceMaterializeError> {
+    let mut matches = shapes.iter().filter(|shape| {
+        let nominal_type = types
+            .get(usize::try_from(shape.nominal_type().get()).unwrap_or(usize::MAX))
+            .filter(|nominal| nominal.index() == shape.nominal_type());
+        nominal_type.is_some_and(|nominal| {
+            nominal.type_ref() == entry.type_ref() && shape.plan() == entry.plan()
+        })
+    });
+    let first = matches
+        .next()
+        .ok_or(LocalInterfaceMaterializeError::MissingShape {
+            type_index: entry.index().get(),
+        })?;
+    if matches.next().is_some() {
+        return Err(LocalInterfaceMaterializeError::AmbiguousShape {
+            type_index: entry.index().get(),
+        });
+    }
+    Ok(first)
 }
 
 pub(crate) fn catch_identity_for_type(
@@ -645,5 +713,93 @@ pub(crate) fn catch_identity_for_type(
             )))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use skiff_artifact_model::PackageBuildId;
+    use skiff_runtime_linked_bytecode::{
+        ArtifactShapeIndex, ArtifactTypeIndex, LinkedArtifactPoolOrigin, LinkedShapeField,
+    };
+
+    fn linked_type(
+        index: u32,
+        type_ref: TypeRefIr,
+        plan: LinkedValueTransferPlan,
+    ) -> LinkedTypeEntry {
+        let origin = LinkedArtifactPoolOrigin::new(
+            PackageBuildId::new("build:local-interface"),
+            ArtifactTypeIndex::new(index),
+            None,
+        )
+        .expect("fixture type origin is canonical");
+        LinkedTypeEntry::new(TypeIndex::new(index), origin, type_ref, plan, None, None)
+    }
+
+    fn shape(
+        index: u32,
+        nominal_type: TypeIndex,
+        plan: LinkedValueTransferPlan,
+    ) -> LinkedShapeEntry {
+        let origin = LinkedArtifactPoolOrigin::new(
+            PackageBuildId::new("build:local-interface"),
+            ArtifactShapeIndex::new(index),
+            None,
+        )
+        .expect("fixture shape origin is canonical");
+        LinkedShapeEntry::new(
+            ShapeIndex::new(index),
+            origin,
+            nominal_type,
+            plan,
+            None,
+            Box::new([LinkedShapeField::new(
+                "value",
+                TypeIndex::new(1),
+                LinkedValueTransferPlan::SnapshotShare {
+                    drop: LinkedValueDropPlan::Trivial,
+                },
+            )
+            .expect("fixture shape field is canonical")]),
+        )
+        .expect("fixture shape is canonical")
+    }
+
+    #[test]
+    fn duplicate_nominal_shape_fails_closed() {
+        let plan = LinkedValueTransferPlan::SnapshotShare {
+            drop: LinkedValueDropPlan::Trivial,
+        };
+        let types = vec![linked_type(
+            0,
+            TypeRefIr::Builtin {
+                name: "string".to_string(),
+                args: Vec::new(),
+            },
+            plan.clone(),
+        )];
+        let shapes = vec![
+            shape(0, TypeIndex::new(0), plan.clone()),
+            shape(1, TypeIndex::new(0), plan.clone()),
+        ];
+
+        let error = unique_shape_for_linked_type(&types, &shapes, &types[0])
+            .expect_err("duplicate nominal shapes must fail closed");
+        assert!(matches!(
+            error,
+            LocalInterfaceMaterializeError::AmbiguousShape { .. }
+        ));
+    }
+
+    #[test]
+    fn recursive_plan_retains_its_exact_shape_index() {
+        let plan = LinkedValueTransferPlan::MoveOnly {
+            drop: LinkedValueDropPlan::RecursiveShape {
+                shape: ShapeIndex::new(7),
+            },
+        };
+        assert_eq!(recursive_shape_index(&plan), Some(ShapeIndex::new(7)));
     }
 }

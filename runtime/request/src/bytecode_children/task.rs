@@ -17,7 +17,8 @@ use skiff_runtime_capability_context::{
     TaskSubmitResponseControl, TaskSubmitTimingControl,
 };
 use skiff_runtime_linked_bytecode::{
-    LinkedTaskPayloadPlan, LinkedTaskTarget, LinkedTaskTiming, LinkedTypeEntry, TypeIndex,
+    LinkedShapeEntry, LinkedTaskPayloadPlan, LinkedTaskTarget, LinkedTaskTiming, LinkedTypeEntry,
+    TypeIndex,
 };
 use skiff_runtime_linker::{DeploymentExecutionEntry, DeploymentExecutionImage};
 use skiff_runtime_model::{
@@ -297,16 +298,7 @@ fn runtime_nominal_type_plan(
     type_index: TypeIndex,
 ) -> Result<RuntimeTypePlan, BytecodeTaskSubmitError> {
     let entry = checked_linked_type_entry(image, type_index)?;
-    let shape = image
-        .shapes()
-        .iter()
-        .find(|shape| shape.nominal_type() == type_index)
-        .ok_or_else(|| {
-            task_error(format!(
-                "linked recoverable nominal type {} has no exact shape",
-                type_index.get()
-            ))
-        })?;
+    let shape = unique_shape_for_type_index(image.shapes(), type_index)?;
     let label = artifact_type_ref_label(entry.type_ref()).to_string();
     let fields = shape
         .fields()
@@ -327,6 +319,28 @@ fn runtime_nominal_type_plan(
             boundary_record_kind: Some(label),
         },
     ))
+}
+
+fn unique_shape_for_type_index<'a>(
+    shapes: &'a [LinkedShapeEntry],
+    type_index: TypeIndex,
+) -> Result<&'a LinkedShapeEntry, BytecodeTaskSubmitError> {
+    let mut matches = shapes
+        .iter()
+        .filter(|shape| shape.nominal_type() == type_index);
+    let first = matches.next().ok_or_else(|| {
+        task_error(format!(
+            "linked recoverable nominal type {} has no exact shape",
+            type_index.get()
+        ))
+    })?;
+    if matches.next().is_some() {
+        return Err(task_error(format!(
+            "linked recoverable nominal type {} matches more than one exact shape",
+            type_index.get()
+        )));
+    }
+    Ok(first)
 }
 
 pub(crate) fn task_payload_runtime_plan(
@@ -582,8 +596,8 @@ mod tests {
 
     use serde_json::json;
     use skiff_artifact_model::{
-        CallableEffectSummary, DeploymentArtifactIdentity, DeploymentRevision, ParamModeIr,
-        ServiceDeploymentRef,
+        CallableEffectSummary, DeploymentArtifactIdentity, DeploymentRevision, PackageBuildId,
+        ParamModeIr, ServiceDeploymentRef,
     };
     use skiff_compiler::{
         authoring::{build_authoring_object, seed_official_std_package, AuthoringObject},
@@ -591,7 +605,8 @@ mod tests {
     };
     use skiff_runtime_boundary::binary::decode_recoverable_payload_plan;
     use skiff_runtime_linked_bytecode::{
-        FunctionIndex, LinkedCallableSignature, LinkedValueDropPlan, LinkedValueTransferPlan,
+        ArtifactShapeIndex, FunctionIndex, LinkedArtifactPoolOrigin, LinkedCallableSignature,
+        LinkedShapeField, LinkedValueDropPlan, LinkedValueTransferPlan, ShapeIndex,
         TaskTargetIndex, TypeIndex,
     };
     use skiff_runtime_linker::{
@@ -805,6 +820,55 @@ mod tests {
         assert!(
             reason.contains("task dispatch table row is absent"),
             "an out-of-range dispatch index must fail closed: {reason}"
+        );
+    }
+
+    #[test]
+    fn duplicate_nominal_shape_fails_closed_for_task_payload_planning() {
+        let origin = |index| {
+            LinkedArtifactPoolOrigin::new(
+                PackageBuildId::new("build:task"),
+                ArtifactShapeIndex::new(index),
+                None,
+            )
+            .expect("fixture shape origin is canonical")
+        };
+        let shape = |index: u32, plan: LinkedValueTransferPlan| {
+            LinkedShapeEntry::new(
+                ShapeIndex::new(index),
+                origin(index),
+                TypeIndex::new(0),
+                plan,
+                None,
+                Box::new([
+                    LinkedShapeField::new("value", TypeIndex::new(1), snapshot_plan())
+                        .expect("fixture shape field is canonical"),
+                ]),
+            )
+            .expect("fixture shape is canonical")
+        };
+        let shapes = vec![
+            shape(
+                0,
+                LinkedValueTransferPlan::SnapshotShare {
+                    drop: LinkedValueDropPlan::Trivial,
+                },
+            ),
+            shape(
+                1,
+                LinkedValueTransferPlan::MoveOnly {
+                    drop: LinkedValueDropPlan::SnapshotRelease,
+                },
+            ),
+        ];
+
+        let error = unique_shape_for_type_index(&shapes, TypeIndex::new(0))
+            .expect_err("duplicate task payload shapes must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("matches more than one exact shape"),
+            "unexpected task shape ambiguity error: {error}"
         );
     }
 
