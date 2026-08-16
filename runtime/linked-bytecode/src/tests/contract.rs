@@ -27,8 +27,9 @@ use crate::{
     LinkedRemoteInterfaceTable, LinkedResourceDropPlan, LinkedServiceBoundaryErrorPlan,
     LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue, LinkedServiceCallbackPlan,
     LinkedServiceOperationTarget, LinkedStaticIntrinsicTarget, LinkedSyntheticCallbackTarget,
-    LinkedTaskTarget, LinkedTaskTiming, LinkedValueTransferPlan, ServiceOperationIndex,
-    SpecializationKey, SyntheticCallbackIndex, TaskTargetIndex, TypeIndex,
+    LinkedTaskPayloadParameter, LinkedTaskPayloadPlan, LinkedTaskTarget, LinkedTaskTiming,
+    LinkedValueTransferPlan, ServiceOperationIndex, SpecializationKey, SyntheticCallbackIndex,
+    TaskTargetIndex, TypeIndex,
 };
 
 use super::fixtures::{
@@ -376,12 +377,73 @@ fn task_target_retains_exact_function_and_timing_facts() {
         signature(),
         LinkedTaskTiming::After { expression: 7 },
     )
-    .expect("task target identity is canonical");
+    .expect("task target identity is canonical")
+    .with_payload_plan(record_plan())
+    .expect("exact task payload record plan must be retained");
     assert_eq!(target.index(), TaskTargetIndex::new(3));
     assert_eq!(target.target_identity(), "function:work");
     assert_eq!(target.function(), FunctionIndex::new(1));
     assert_eq!(target.timing(), LinkedTaskTiming::After { expression: 7 });
     assert_eq!(target.signature(), &signature());
+    assert_eq!(
+        target
+            .parameter_names()
+            .expect("payload plan is present")
+            .as_ref(),
+        ["value"]
+    );
+}
+
+#[test]
+fn task_target_retains_exact_parameter_tuple_plan() {
+    let target = LinkedTaskTarget::new(
+        TaskTargetIndex::new(4),
+        "function:tuple",
+        FunctionIndex::new(1),
+        signature(),
+        LinkedTaskTiming::Immediate,
+    )
+    .expect("task target identity is canonical")
+    .with_payload_plan(
+        LinkedTaskPayloadPlan::try_tuple(vec![payload_parameter("first")])
+            .expect("task payload tuple names are unique"),
+    )
+    .expect("exact task payload tuple plan must be retained");
+    let LinkedTaskPayloadPlan::Tuple { parameters } =
+        target.payload_plan().expect("payload plan is present")
+    else {
+        panic!("expected linked tuple payload plan");
+    };
+    assert_eq!(parameters.len(), 1);
+    assert_eq!(parameters[0].name(), "first");
+    assert_eq!(parameters[0].ty(), TypeIndex::new(0));
+    assert_eq!(parameters[0].transfer(), &snapshot_plan());
+}
+
+#[test]
+fn task_target_without_payload_plan_fails_closed() {
+    let target = LinkedTaskTarget::new(
+        TaskTargetIndex::new(5),
+        "function:missing",
+        FunctionIndex::new(1),
+        signature(),
+        LinkedTaskTiming::Immediate,
+    )
+    .expect("task target identity is canonical");
+    assert!(matches!(
+        target.payload_plan(),
+        Err(crate::LinkedTaskTargetError::MissingPayloadPlan)
+    ));
+}
+
+fn payload_parameter(name: &str) -> LinkedTaskPayloadParameter {
+    LinkedTaskPayloadParameter::new(name, TypeIndex::new(0), snapshot_plan())
+        .expect("task payload parameter name is canonical")
+}
+
+fn record_plan() -> LinkedTaskPayloadPlan {
+    LinkedTaskPayloadPlan::try_record(vec![payload_parameter("value")])
+        .expect("task payload record names are unique")
 }
 
 #[test]

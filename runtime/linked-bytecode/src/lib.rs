@@ -81,8 +81,8 @@ pub use targets::{
     LinkedRepresentationCarrier, LinkedServiceBoundaryErrorPlan, LinkedServiceBoundaryPlan,
     LinkedServiceBoundaryValue, LinkedServiceCallbackPlan, LinkedServiceOperationTarget,
     LinkedShapeEntry, LinkedShapeError, LinkedShapeField, LinkedStaticIntrinsicTarget,
-    LinkedSyntheticCallbackTarget, LinkedTaskTarget, LinkedTaskTargetError, LinkedTaskTiming,
-    LinkedTypeEntry,
+    LinkedSyntheticCallbackTarget, LinkedTaskPayloadParameter, LinkedTaskPayloadPlan,
+    LinkedTaskTarget, LinkedTaskTargetError, LinkedTaskTiming, LinkedTypeEntry,
 };
 
 #[cfg(test)]

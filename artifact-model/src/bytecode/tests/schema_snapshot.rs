@@ -456,6 +456,15 @@ fn task_submit_reference_round_trips_exact_target_and_timing_facts() {
         },
         target_identity: "function:fixture.work".to_string(),
         timing: crate::bytecode::dto::TaskSubmitTimingRef::After { expression: 3 },
+        payload_plan: Some(crate::bytecode::dto::TaskSubmitPayloadPlan::Record {
+            fields: vec![crate::bytecode::dto::TaskSubmitParameterPlan {
+                name: "value".to_string(),
+                ty: crate::TypeRefIr::builtin("number"),
+                transfer: crate::bytecode::dto::ValueTransferPlan::SnapshotShare {
+                    drop: crate::bytecode::dto::ValueDropPlan::Trivial,
+                },
+            }],
+        }),
     };
     let wire = serde_json::to_value(&reference).expect("task submit reference serializes");
     assert_eq!(wire["target"]["kind"], "function");
@@ -463,6 +472,16 @@ fn task_submit_reference_round_trips_exact_target_and_timing_facts() {
     assert_eq!(wire["targetIdentity"], "function:fixture.work");
     assert_eq!(wire["timing"]["kind"], "after");
     assert_eq!(wire["timing"]["expression"], 3);
+    assert_eq!(wire["payloadPlan"]["kind"], "record");
+    assert_eq!(wire["payloadPlan"]["fields"][0]["name"], "value");
+    assert_eq!(
+        wire["payloadPlan"]["fields"][0]["type"],
+        serde_json::json!({ "kind": "builtin", "name": "number" })
+    );
+    assert_eq!(
+        wire["payloadPlan"]["fields"][0]["transfer"]["kind"],
+        "snapshotShare"
+    );
     assert_eq!(
         serde_json::from_value::<crate::bytecode::dto::TaskSubmitReference>(wire).unwrap(),
         reference

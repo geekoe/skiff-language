@@ -386,6 +386,9 @@ pub enum LinkedBytecodeCandidateError {
         location: CandidateLocation,
         binding_key: String,
     },
+    TaskPayloadPlanMissing {
+        location: CandidateLocation,
+    },
 }
 
 impl fmt::Display for LinkedBytecodeCandidateError {

@@ -309,6 +309,11 @@ fn validate_dispatch_target_references(
                 task.function().get(),
                 parts.functions.len(),
             )?;
+            task.payload_plan().map_err(|_| {
+                LinkedBytecodeCandidateError::TaskPayloadPlanMissing {
+                    location: task_location,
+                }
+            })?;
             validate_callable_signature(task.signature(), task_location, parts)?;
         }
     }

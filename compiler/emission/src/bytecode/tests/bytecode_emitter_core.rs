@@ -34,13 +34,13 @@ mod tests {
     };
     use skiff_compiler_lowering::{
         mir::{
-            liveness::compute_liveness, MirBlock, MirDirectCallFacts, MirExecutableKind,
-            MirExpression, MirExpressionBlockFact, MirForInBinding, MirForInFacts,
-            MirForInItemKind, MirFunction, MirIndexAccessFacts, MirIndexPolicy,
-            MirIndexReceiverKind, MirLiveness, MirMatchArmIr, MirRemoteInterfaceFacts,
-            MirRemoteInterfaceMethodFacts, MirSlot, MirSlotKind, MirSourceEventPlan,
-            MirSourceEventUnavailableReason, MirStatementEntry, MirStmt, MirStmtKind,
-            MirStreamResultFacts, MirUnit, MirWritablePlace, MirWritableRoot,
+            liveness::compute_liveness, MirBlock, MirCallArgument, MirDirectCallFacts,
+            MirExecutableKind, MirExpression, MirExpressionBlockFact, MirForInBinding,
+            MirForInFacts, MirForInItemKind, MirFunction, MirIndexAccessFacts, MirIndexPolicy,
+            MirIndexReceiverKind, MirLiveness, MirMatchArmIr, MirParam, MirParamMode,
+            MirRemoteInterfaceFacts, MirRemoteInterfaceMethodFacts, MirSlot, MirSlotKind,
+            MirSourceEventPlan, MirSourceEventUnavailableReason, MirStatementEntry, MirStmt,
+            MirStmtKind, MirStreamResultFacts, MirUnit, MirWritablePlace, MirWritableRoot,
         },
         Bounds, ConstEvaluator, FrozenConstantBundle,
     };
@@ -1059,13 +1059,14 @@ mod tests {
 
     #[test]
     fn task_submit_emits_exact_task_relocation_and_target_identity() {
+        let number_ty = TypeRefIr::builtin("number");
         let task_call = CallIr {
             target: CallTargetIr::LocalExecutable {
                 executable_index: 0,
             },
             concrete_receiver: None,
             site: site(),
-            args: Vec::new(),
+            args: vec![expression(1)],
             inout_args: Vec::new(),
             type_args: BTreeMap::new(),
             metadata: BTreeMap::from([(
@@ -1077,7 +1078,7 @@ mod tests {
                     ),
                     (
                         "target".to_string(),
-                        MetadataValue::String("function:main.work".to_string()),
+                        MetadataValue::String("function:main.run".to_string()),
                     ),
                     (
                         "timing".to_string(),
@@ -1089,25 +1090,48 @@ mod tests {
                 ])),
             )]),
         };
-        let expressions = vec![MirExpression {
-            index: 0,
-            expression: ExprIr::Call { call: task_call },
-            ty: TypeRefIr::builtin("TaskRef"),
-            writable: None,
-            direct_call: Some(MirDirectCallFacts {
-                concrete_receiver: None,
-                receiver_call_abi: None,
-                parameter_modes: Vec::new(),
-                arguments: Vec::new(),
-            }),
-            stream_result: None,
-            remote_interface: None,
-        }];
-        let function = function(
+        let expressions = vec![
+            MirExpression {
+                index: 0,
+                expression: ExprIr::Call { call: task_call },
+                ty: TypeRefIr::builtin("TaskRef"),
+                writable: None,
+                direct_call: Some(MirDirectCallFacts {
+                    concrete_receiver: None,
+                    receiver_call_abi: None,
+                    parameter_modes: vec![MirParamMode::Value],
+                    arguments: vec![MirCallArgument::Value {
+                        value: expression(1),
+                    }],
+                }),
+                stream_result: None,
+                remote_interface: None,
+            },
+            MirExpression {
+                index: 1,
+                expression: ExprIr::Literal {
+                    value: LiteralIr::Number {
+                        value: serde_json::Number::from(7),
+                    },
+                },
+                ty: number_ty.clone(),
+                writable: None,
+                direct_call: None,
+                stream_result: None,
+                remote_interface: None,
+            },
+        ];
+        let mut function = function(
             "main",
             "run",
             TypeRefIr::builtin("TaskRef"),
-            Vec::new(),
+            vec![MirSlot {
+                slot: 0,
+                name: "value".to_string(),
+                kind: MirSlotKind::Param,
+                writable_local: false,
+                ty: Some(number_ty.clone()),
+            }],
             expressions,
             vec![MirBlock {
                 id: 0,
@@ -1128,6 +1152,13 @@ mod tests {
             BTreeMap::new(),
             Vec::new(),
         );
+        function.params = vec![MirParam {
+            name: "value".to_string(),
+            slot: 0,
+            ty: number_ty.clone(),
+            mode: MirParamMode::Value,
+        }];
+        function.liveness = compute_liveness(&function).expect("task fixture liveness computes");
         let (unit, bundle) =
             mir_and_bundle("main", Vec::new(), ExternalRefTable::default(), function);
         let plans = derive_test_bytecode_value_transfer_plans(&[unit.clone()])
@@ -1138,7 +1169,7 @@ mod tests {
         assert!(relocations.iter().any(|relocation| matches!(
             relocation,
             BytecodeRelocation::TaskSubmitRef { task }
-                if task.target_identity == "function:main.work"
+                if task.target_identity == "function:main.run"
                     && matches!(
                         &task.target,
                         skiff_artifact_model::bytecode::dto::TaskSubmitTargetRef::Function {
@@ -1146,6 +1177,23 @@ mod tests {
                         } if function_key == "main::run"
                     )
         )));
+        let task = relocations
+            .iter()
+            .find_map(|relocation| match relocation {
+                BytecodeRelocation::TaskSubmitRef { task } => Some(task),
+                _ => None,
+            })
+            .expect("task relocation is present");
+        let skiff_artifact_model::bytecode::dto::TaskSubmitPayloadPlan::Record { fields } = task
+            .payload_plan
+            .as_ref()
+            .expect("function task carries an exact recoverable payload plan")
+        else {
+            panic!("function task payload plan must be a named record");
+        };
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].name, "value");
+        assert_eq!(fields[0].ty, number_ty);
     }
 
     #[test]

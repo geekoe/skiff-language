@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use skiff_artifact_model::bytecode::dto::{
-    DbOperandRole, DbOperationKind, DbOperationReference, TaskSubmitReference, TaskSubmitTargetRef,
-    TaskSubmitTimingRef,
+    DbOperandRole, DbOperationKind, DbOperationReference, TaskSubmitParameterPlan,
+    TaskSubmitPayloadPlan, TaskSubmitReference, TaskSubmitTargetRef, TaskSubmitTimingRef,
 };
 use skiff_artifact_model::{
     bytecode::encode_instruction, bytecode::limits, contract_for_opcode, descriptor_for_opcode,
@@ -35,7 +35,10 @@ use super::{
     inputs::ValidatedEmissionInputs,
     BytecodeEmissionError, FunctionValueTransferPlans,
 };
-use super::{inputs::is_void, intrinsics::static_intrinsic_canonical_key};
+use super::{
+    inputs::{canonical_function_key, is_void},
+    intrinsics::static_intrinsic_canonical_key,
+};
 
 const TASK_SUBMIT_METADATA_KEY: &str = "dispatchSubmit";
 
@@ -2489,22 +2492,22 @@ impl<'a> FunctionEmitter<'a> {
                 )
             })?;
         let timing = task_submit_timing(metadata, &self.key)?;
+        let mut payload_plan = None;
         let target = match target_kind {
             "function" => {
-                let function_key = match &call.target {
+                let (function_key, target) = match &call.target {
                     CallTargetIr::LocalExecutable { executable_index } => {
                         let target = self.unit.function_by_executable_index(*executable_index)?;
-                        super::inputs::canonical_function_key(
-                            &self.unit.module_path,
-                            &target.symbol,
-                        )?
+                        let function_key =
+                            canonical_function_key(&self.unit.module_path, &target.symbol)?;
+                        (function_key, target)
                     }
                     CallTargetIr::PublicationExecutable {
                         module_path,
                         executable_index,
                     } => {
                         let target_unit =
-                            self.inputs.units.get(module_path.as_str()).ok_or_else(|| {
+                            *self.inputs.units.get(module_path.as_str()).ok_or_else(|| {
                                 unsupported(
                                     &self.key,
                                     "task submit",
@@ -2512,7 +2515,8 @@ impl<'a> FunctionEmitter<'a> {
                                 )
                             })?;
                         let target = target_unit.function_by_executable_index(*executable_index)?;
-                        super::inputs::canonical_function_key(module_path, &target.symbol)?
+                        let function_key = canonical_function_key(module_path, &target.symbol)?;
+                        (function_key, target)
                     }
                     _ => {
                         return Err(unsupported(
@@ -2522,6 +2526,7 @@ impl<'a> FunctionEmitter<'a> {
                         ));
                     }
                 };
+                payload_plan = Some(self.task_payload_plan(target, &function_key)?);
                 TaskSubmitTargetRef::Function { function_key }
             }
             "actorMethod" => {
@@ -2557,7 +2562,48 @@ impl<'a> FunctionEmitter<'a> {
             target,
             target_identity,
             timing,
+            payload_plan,
         })
+    }
+
+    fn task_payload_plan(
+        &self,
+        target: &MirFunction,
+        function_key: &str,
+    ) -> Result<TaskSubmitPayloadPlan, BytecodeEmissionError> {
+        let plans = self
+            .inputs
+            .function_plans
+            .get(function_key)
+            .ok_or_else(|| BytecodeEmissionError::MissingValueTransferPlans {
+                function_key: function_key.to_string(),
+            })?;
+        let mut fields = Vec::with_capacity(target.params.len());
+        for parameter in &target.params {
+            if parameter.mode == MirParamMode::InOut {
+                return Err(unsupported(
+                    &self.key,
+                    "task payload",
+                    &format!(
+                        "parameter `{}` is inout and cannot enter a durable recoverable payload",
+                        parameter.name
+                    ),
+                ));
+            }
+            let transfer = plans
+                .slot_plans
+                .get(parameter.slot as usize)
+                .cloned()
+                .ok_or_else(|| BytecodeEmissionError::MissingValueTransferPlans {
+                    function_key: function_key.to_string(),
+                })?;
+            fields.push(TaskSubmitParameterPlan {
+                name: parameter.name.clone(),
+                ty: parameter.ty.clone(),
+                transfer,
+            });
+        }
+        Ok(TaskSubmitPayloadPlan::Record { fields })
     }
 
     fn emit_direct_call(

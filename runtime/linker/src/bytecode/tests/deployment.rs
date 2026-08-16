@@ -30,8 +30,8 @@ use skiff_runtime_linked_bytecode::{
     LinkedBytecodeCandidateError, LinkedBytecodeCandidateParts, LinkedContainerLayoutKind,
     LinkedFunction, LinkedFunctionTables, LinkedInstructionTarget, LinkedInterfaceTableKind,
     LinkedPackageBytecodeProvenance, LinkedResumeResultMaterialization, LinkedResumeSite,
-    LinkedShapeEntry, LinkedSlotState, LinkedValueDropPlan, LinkedValueTransferPlan, ShapeIndex,
-    TypeIndex,
+    LinkedShapeEntry, LinkedSlotState, LinkedTaskPayloadPlan, LinkedValueDropPlan,
+    LinkedValueTransferPlan, ShapeIndex, TypeIndex,
 };
 use skiff_runtime_loader::{
     DeploymentBytecodeLoader, FilesystemDeploymentBytecodeContentResolver, HydratedBytecodePackage,
@@ -1684,6 +1684,43 @@ fn actor_closure_missing_create_callable_fails_closed() {
             } if detail.contains("callable") && detail.contains("no function key")
         ),
         "missing actor create callable must fail closed: {error}"
+    );
+}
+
+#[test]
+fn production_task_image_retains_exact_parameter_record_plan() {
+    let hydrated = production_hydrated_deployment(
+        "runtime/host/tests/fixtures/bytecode-vm-phase-6/task-positive",
+        "p6-task-payload",
+    );
+    let image = Arc::new(
+        link_deployment_execution_image(hydrated, &super::generous_execution_limits())
+            .expect("production task fixture links an execution image"),
+    );
+    let target = image
+        .task_targets()
+        .next()
+        .expect("task fixture links a task dispatch row");
+    let plan = target
+        .payload_plan()
+        .expect("linked task target carries the exact payload plan");
+    assert_eq!(
+        target
+            .parameter_names()
+            .expect("linked task target carries exact parameter names")
+            .as_ref(),
+        ["value"]
+    );
+    assert_eq!(plan.parameter_names().as_ref(), ["value"]);
+    let LinkedTaskPayloadPlan::Record { fields } = plan else {
+        panic!("function task fixture must link a named record payload plan");
+    };
+    assert_eq!(fields.len(), 1);
+    assert_eq!(fields[0].name(), "value");
+    assert_eq!(fields[0].ty(), target.signature().parameter_types()[0]);
+    assert_eq!(
+        fields[0].transfer(),
+        &target.signature().parameter_plans()[0]
     );
 }
 

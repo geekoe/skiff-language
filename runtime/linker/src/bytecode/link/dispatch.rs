@@ -21,8 +21,9 @@ use skiff_runtime_linked_bytecode::{
     LinkedLocalInterfaceTable, LinkedNativeCallableSignature, LinkedPublicInstanceKey,
     LinkedRemoteInterfaceMethod, LinkedRemoteInterfaceTable, LinkedServiceBoundaryErrorPlan,
     LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue, LinkedServiceCallbackPlan,
-    LinkedServiceOperationTarget, LinkedSyntheticCallbackTarget, LinkedTaskTarget,
-    LinkedTaskTiming, ServiceOperationIndex, SpecializationKey, TaskTargetIndex,
+    LinkedServiceOperationTarget, LinkedSyntheticCallbackTarget, LinkedTaskPayloadParameter,
+    LinkedTaskPayloadPlan, LinkedTaskTarget, LinkedTaskTiming, ServiceOperationIndex,
+    SpecializationKey, TaskTargetIndex,
 };
 use skiff_runtime_loader::{HydratedBytecodePackage, HydratedDeploymentBytecode};
 
@@ -941,6 +942,112 @@ fn frame_signature(
             error.to_string(),
         )
     })
+}
+
+fn link_task_payload_plan(
+    task: &skiff_artifact_model::bytecode::dto::TaskSubmitReference,
+    package: &HydratedBytecodePackage,
+    target_specialization: &SpecializationKey,
+    type_linker: &mut TypeLinker<'_>,
+    target_signature: &LinkedCallableSignature,
+    location: BytecodeLinkLocation,
+) -> Result<LinkedTaskPayloadPlan, BytecodeLinkError> {
+    let Some(plan) = &task.payload_plan else {
+        return Err(unsatisfied(
+            BytecodeLinkObligation::FrameAndValueTransferPlan,
+            location,
+            "function task payload plan is missing".to_string(),
+        ));
+    };
+    let parameters = match plan {
+        skiff_artifact_model::bytecode::dto::TaskSubmitPayloadPlan::Tuple { parameters } => {
+            parameters.as_slice()
+        }
+        skiff_artifact_model::bytecode::dto::TaskSubmitPayloadPlan::Record { fields } => {
+            fields.as_slice()
+        }
+    };
+    if parameters.len() != target_signature.parameter_types().len() {
+        return Err(unsatisfied(
+            BytecodeLinkObligation::FrameAndValueTransferPlan,
+            location,
+            format!(
+                "function task payload plan has {} parameters but the target signature has {}",
+                parameters.len(),
+                target_signature.parameter_types().len()
+            ),
+        ));
+    }
+    let mut linked = Vec::with_capacity(parameters.len());
+    for (ordinal, parameter) in parameters.iter().enumerate() {
+        let type_index = type_linker.intern_concrete_type(
+            package,
+            target_specialization,
+            &parameter.ty,
+            &BTreeMap::new(),
+            location.clone(),
+        )?;
+        let expected_type = target_signature.parameter_types()[ordinal];
+        if type_index != expected_type {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::FrameAndValueTransferPlan,
+                location.clone(),
+                format!(
+                    "function task payload parameter {ordinal} type {} differs from signature type {}",
+                    type_index.get(),
+                    expected_type.get()
+                ),
+            ));
+        }
+        let transfer = type_linker.link_exact_plan_for_type_at(
+            package,
+            target_specialization,
+            &BTreeMap::new(),
+            type_index,
+            &parameter.transfer,
+            location.clone(),
+        )?;
+        if &transfer != &target_signature.parameter_plans()[ordinal] {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::FrameAndValueTransferPlan,
+                location.clone(),
+                format!(
+                    "function task payload parameter {ordinal} transfer plan differs from signature plan"
+                ),
+            ));
+        }
+        linked.push(
+            LinkedTaskPayloadParameter::new(parameter.name.clone(), type_index, transfer).map_err(
+                |error| {
+                    unsatisfied(
+                        BytecodeLinkObligation::FrameAndValueTransferPlan,
+                        location.clone(),
+                        error.to_string(),
+                    )
+                },
+            )?,
+        );
+    }
+    match plan {
+        skiff_artifact_model::bytecode::dto::TaskSubmitPayloadPlan::Tuple { .. } => {
+            LinkedTaskPayloadPlan::try_tuple(linked).map_err(|error| {
+                unsatisfied(
+                    BytecodeLinkObligation::FrameAndValueTransferPlan,
+                    location,
+                    error.to_string(),
+                )
+            })
+        }
+        skiff_artifact_model::bytecode::dto::TaskSubmitPayloadPlan::Record { .. } => {
+            LinkedTaskPayloadPlan::try_record(linked).map_err(|error| {
+                unsatisfied(
+                    BytecodeLinkObligation::FrameAndValueTransferPlan,
+                    location,
+                    error.to_string(),
+                )
+            })
+        }
+    }
 }
 
 fn exact_actor_effects(
@@ -2194,6 +2301,14 @@ impl DeploymentLinker<'_> {
                             if !seen_task_submit.insert(task_key.clone()) {
                                 continue;
                             }
+                            let payload_plan = link_task_payload_plan(
+                                task,
+                                package,
+                                &key,
+                                type_linker,
+                                &target_signature,
+                                location.clone(),
+                            )?;
                             let task_target = LinkedTaskTarget::new(
                                 TaskTargetIndex::new(task_submit_indices.len() as u32),
                                 task.target_identity.clone(),
@@ -2211,6 +2326,7 @@ impl DeploymentLinker<'_> {
                                     } => LinkedTaskTiming::At { expression },
                                 },
                             )
+                            .and_then(|target| target.with_payload_plan(payload_plan))
                             .map_err(|error| {
                                 unsatisfied(
                                     BytecodeLinkObligation::ConcreteTargetTables,

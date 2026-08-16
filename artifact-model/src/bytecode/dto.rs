@@ -925,6 +925,37 @@ pub enum TaskSubmitTimingRef {
     At { expression: u32 },
 }
 
+/// One exact recoverable task payload parameter. The name is the source-owned
+/// parameter name, never an ordinal or synthetic binding.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TaskSubmitParameterPlan {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub ty: TypeRefIr,
+    pub transfer: ValueTransferPlan,
+}
+
+/// Compiler-owned recoverable tuple/record payload plan for a durable task.
+///
+/// The linker consumes this exact plan. It must not reconstruct parameter
+/// names, types or transfer facts from the task target signature by position.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum TaskSubmitPayloadPlan {
+    Tuple {
+        parameters: Vec<TaskSubmitParameterPlan>,
+    },
+    Record {
+        fields: Vec<TaskSubmitParameterPlan>,
+    },
+}
+
 /// Exact task call relocation payload. The target identity is retained for
 /// host/router projection while the typed target field remains the linker
 /// resolution authority.
@@ -934,6 +965,8 @@ pub struct TaskSubmitReference {
     pub target: TaskSubmitTargetRef,
     pub target_identity: String,
     pub timing: TaskSubmitTimingRef,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload_plan: Option<TaskSubmitPayloadPlan>,
 }
 
 /// Closed synchronous intrinsic target. Static keys are versioned registry

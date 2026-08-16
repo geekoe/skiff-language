@@ -43,4 +43,7 @@ pub use service::{
     LinkedServiceBoundaryErrorPlan, LinkedServiceBoundaryPlan, LinkedServiceBoundaryValue,
     LinkedServiceCallbackPlan,
 };
-pub use task::{LinkedTaskTarget, LinkedTaskTargetError, LinkedTaskTiming};
+pub use task::{
+    LinkedTaskPayloadParameter, LinkedTaskPayloadPlan, LinkedTaskTarget, LinkedTaskTargetError,
+    LinkedTaskTiming,
+};

@@ -40,8 +40,8 @@ use crate::bytecode::dto::{
     BytecodeConstantRef, BytecodePoolEntry, BytecodePools, CallbackCaptureLayout, DebugBinding,
     DebugTable, ExceptionRegion, FrameLayout, FrozenConstantGraph, HostEffectReference,
     RelocatableBytecodeFunction, ServiceBoundaryPlan, ServiceCallbackPlan, SwitchTable,
-    ValueDropPlan, ValueTransferPlan, WritablePathSegment, BYTECODE_ISA_VERSION, BYTECODE_MAGIC,
-    BYTECODE_SCHEMA_VERSION,
+    TaskSubmitParameterPlan, TaskSubmitPayloadPlan, ValueDropPlan, ValueTransferPlan,
+    WritablePathSegment, BYTECODE_ISA_VERSION, BYTECODE_MAGIC, BYTECODE_SCHEMA_VERSION,
 };
 use crate::bytecode::opcodes::{opcode_table_fingerprint, PoolCategory};
 use crate::types::TypeRefIr;
@@ -2246,7 +2246,7 @@ fn validate_relocation_facts(
             }
         }
         BytecodeRelocation::TaskSubmitRef { task } => {
-            validate_task_submit_reference(key, &location, task)?;
+            validate_task_submit_reference(key, &location, task, pools)?;
         }
         BytecodeRelocation::HostEffectRef(effect) => {
             validate_host_effect_reference(effect, pools, &location)?;
@@ -2425,6 +2425,7 @@ fn validate_task_submit_reference(
     key: &str,
     location: &str,
     task: &crate::bytecode::dto::TaskSubmitReference,
+    pools: &BytecodePools,
 ) -> Result<(), StructuralValidationError> {
     if task.target_identity.trim().is_empty() {
         return Err(table_error(
@@ -2460,7 +2461,73 @@ fn validate_task_submit_reference(
             }
         }
     }
+    match &task.payload_plan {
+        Some(plan) => validate_task_payload_plan(key, location, plan, pools)?,
+        None if matches!(
+            task.target,
+            crate::bytecode::dto::TaskSubmitTargetRef::Function { .. }
+        ) =>
+        {
+            return Err(table_error(
+                key,
+                format!("{location}.task.payloadPlan is required for a function task"),
+            ));
+        }
+        None => {}
+    }
     Ok(())
+}
+
+fn validate_task_payload_plan(
+    key: &str,
+    location: &str,
+    plan: &TaskSubmitPayloadPlan,
+    pools: &BytecodePools,
+) -> Result<(), StructuralValidationError> {
+    let mut seen = BTreeSet::new();
+    let label = match plan {
+        TaskSubmitPayloadPlan::Tuple { .. } => "parameters",
+        TaskSubmitPayloadPlan::Record { .. } => "fields",
+    };
+    for (ordinal, parameter) in task_payload_parameters(plan).iter().enumerate() {
+        let parameter_location = format!("{location}.task.payloadPlan.{label}[{ordinal}]");
+        let name = parameter.name.trim();
+        if name.is_empty() {
+            return Err(table_error(
+                key,
+                format!("{parameter_location}.name must not be empty"),
+            ));
+        }
+        if !seen.insert(name) {
+            return Err(table_error(
+                key,
+                format!("{parameter_location}.name must be unique"),
+            ));
+        }
+        let type_depth = type_ref_nesting_depth(&parameter.ty);
+        if type_depth as u64 > limits::MAX_NESTING_DEPTH {
+            return Err(limit_error(
+                "MAX_NESTING_DEPTH",
+                limits::MAX_NESTING_DEPTH,
+                type_depth as u64,
+                &format!("{parameter_location}.type"),
+            ));
+        }
+        validate_transfer_plan(
+            &parameter.transfer,
+            pools,
+            None,
+            &format!("{parameter_location}.transfer"),
+        )?;
+    }
+    Ok(())
+}
+
+fn task_payload_parameters(plan: &TaskSubmitPayloadPlan) -> &[TaskSubmitParameterPlan] {
+    match plan {
+        TaskSubmitPayloadPlan::Tuple { parameters }
+        | TaskSubmitPayloadPlan::Record { fields: parameters } => parameters,
+    }
 }
 
 fn validate_interface_method_bounds(
