@@ -1,6 +1,7 @@
 use std::{sync::Arc, task::Poll};
 
-use skiff_runtime_linked_bytecode::{LinkedShapeEntry, ShapeIndex, TypeIndex};
+use skiff_artifact_model::TypeRefIr;
+use skiff_runtime_linked_bytecode::{FunctionIndex, LinkedShapeEntry, ShapeIndex, TypeIndex};
 use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_model::{error::RuntimeErrorPayload, vm_heap::VmHeap, vm_value::ValueSlot};
 use skiff_runtime_scheduler::{
@@ -320,6 +321,71 @@ fn prepare_server_stream_frame<T>(
     decode()
 }
 
+/// Checks the exact stream-result authority carried by every stream producer.
+///
+/// Root HTTP producers were already admitted against the canonical gateway at
+/// request ingress. Child producers must also retain the linked stream-result
+/// authority; without it the runtime cannot prove that the emitted item is the
+/// boundary fact the caller is allowed to consume, so the request fails closed
+/// before any HTTP frame decode or transport write.
+pub(crate) fn validate_stream_producer_authority(
+    image: &DeploymentExecutionImage,
+    function: FunctionIndex,
+    item_type: TypeIndex,
+    depth: usize,
+) -> Result<(), BytecodeSchedulerError> {
+    let Some(function) = image
+        .functions()
+        .get(usize::try_from(function.get()).unwrap_or(usize::MAX))
+        .filter(|row| row.index() == function)
+    else {
+        return Err(BytecodeSchedulerError::Port(format!(
+            "server-stream item at depth {depth} references a missing function"
+        )));
+    };
+    let Some(stream_result) = function.stream_result_type_ref() else {
+        return Err(BytecodeSchedulerError::Port(format!(
+            "server-stream item at depth {depth} lacks the exact linked stream-result authority"
+        )));
+    };
+    let stream_type = image
+        .types()
+        .get(usize::try_from(stream_result.get()).unwrap_or(usize::MAX))
+        .filter(|row| row.index() == stream_result)
+        .map(|row| row.type_ref())
+        .ok_or_else(|| {
+            BytecodeSchedulerError::Port(format!(
+                "server-stream item at depth {depth} references a missing stream-result type"
+            ))
+        })?;
+    let TypeRefIr::Builtin { name, args } = stream_type else {
+        return Err(BytecodeSchedulerError::Port(format!(
+            "server-stream item at depth {depth} stream-result type is not an exact Stream carrier"
+        )));
+    };
+    if name != "Stream" || args.len() != 1 {
+        return Err(BytecodeSchedulerError::Port(format!(
+            "server-stream item at depth {depth} stream-result type is not an exact Stream carrier"
+        )));
+    }
+    let item_type_ref = image
+        .types()
+        .get(usize::try_from(item_type.get()).unwrap_or(usize::MAX))
+        .filter(|row| row.index() == item_type)
+        .map(|row| row.type_ref())
+        .ok_or_else(|| {
+            BytecodeSchedulerError::Port(format!(
+                "server-stream item at depth {depth} references a missing item type"
+            ))
+        })?;
+    if item_type_ref != &args[0] {
+        return Err(BytecodeSchedulerError::Port(format!(
+            "server-stream item at depth {depth} lacks the exact linked stream-result authority"
+        )));
+    }
+    Ok(())
+}
+
 enum ReleaseAfterDecodeFailure<R, E> {
     Continuation {
         reason: BytecodeSchedulerError,
@@ -435,6 +501,12 @@ impl BytecodeStreamSupervisor<VmFiber> for BytecodeServerStreamSupervisor {
     ) -> Result<BytecodeStreamHandoff<VmFiber>, BytecodePortFailure<StreamItem, VmResumeToken>>
     {
         let prepared = prepare_server_stream_frame(depth, || {
+            validate_stream_producer_authority(
+                item.resume().image(),
+                item.resume().function(),
+                item.item_type(),
+                depth,
+            )?;
             decode_server_stream_frame(
                 item.resume().image(),
                 item.item_type(),
@@ -853,6 +925,91 @@ mod tests {
         let snapshot = resources.server_stream_snapshot(&handle).unwrap();
         assert_eq!(snapshot.phase, RequestServerStreamPhase::Ended);
         assert!(!snapshot.flush_in_progress);
+
+        resources
+            .terminate(&handle, RequestResourceTermination::RequestCompleted)
+            .unwrap();
+        let snapshot = context.into_not_started();
+        assert_eq!(snapshot.resource.current, 0);
+    }
+
+    #[test]
+    fn phase_6_server_stream_supervisor_preserves_ordered_chunks_and_end() {
+        let context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
+        let resources = context.resource_table();
+        let handle = resources
+            .register_server_response_stream(std::num::NonZeroUsize::new(16).unwrap())
+            .unwrap();
+        let start = resources
+            .reserve_server_stream_event(&handle, RequestServerStreamEventKind::Start)
+            .unwrap();
+        assert!(matches!(
+            materialize_server_stream_flush_outcome(&resources, start, Ok(())),
+            ResumeOutcome::Empty
+        ));
+        for expected_sequence in 0_u64..3 {
+            let chunk = resources
+                .reserve_server_stream_event(
+                    &handle,
+                    RequestServerStreamEventKind::Chunk { payload_bytes: 1 },
+                )
+                .unwrap();
+            assert_eq!(
+                chunk.sequence(),
+                Some(expected_sequence),
+                "the shared supervisor must allocate exact ordered chunk sequences"
+            );
+            assert!(matches!(
+                materialize_server_stream_flush_outcome(&resources, chunk, Ok(())),
+                ResumeOutcome::Empty
+            ));
+        }
+        let end = resources
+            .reserve_server_stream_event(&handle, RequestServerStreamEventKind::End)
+            .unwrap();
+        assert!(matches!(
+            materialize_server_stream_flush_outcome(&resources, end, Ok(())),
+            ResumeOutcome::Empty
+        ));
+        let snapshot = resources.server_stream_snapshot(&handle).unwrap();
+        assert_eq!(snapshot.phase, RequestServerStreamPhase::Ended);
+        assert_eq!(snapshot.next_sequence, 3);
+
+        resources
+            .terminate(&handle, RequestResourceTermination::RequestCompleted)
+            .unwrap();
+        let snapshot = context.into_not_started();
+        assert_eq!(snapshot.resource.current, 0);
+    }
+
+    #[test]
+    fn phase_6_server_stream_supervisor_backpressures_one_flush_permit() {
+        let context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
+        let resources = context.resource_table();
+        let handle = resources
+            .register_server_response_stream(std::num::NonZeroUsize::new(16).unwrap())
+            .unwrap();
+        let start = resources
+            .reserve_server_stream_event(&handle, RequestServerStreamEventKind::Start)
+            .unwrap();
+        assert!(matches!(
+            resources.reserve_server_stream_event(
+                &handle,
+                RequestServerStreamEventKind::Chunk { payload_bytes: 1 },
+            ),
+            Err(RequestServerStreamReserveError::FlushInProgress)
+        ));
+        assert!(matches!(
+            materialize_server_stream_flush_outcome(&resources, start, Ok(())),
+            ResumeOutcome::Empty
+        ));
+        let chunk = resources
+            .reserve_server_stream_event(
+                &handle,
+                RequestServerStreamEventKind::Chunk { payload_bytes: 1 },
+            )
+            .unwrap();
+        assert_eq!(chunk.sequence(), Some(0));
 
         resources
             .terminate(&handle, RequestResourceTermination::RequestCompleted)

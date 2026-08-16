@@ -494,3 +494,41 @@ fn phase_5_absent_stream_supervisor_release_failure_reaches_terminal_retry_escro
     assert_eq!(trace.attempts.load(Ordering::Acquire), 2);
     assert_eq!(trace.successes.load(Ordering::Acquire), 1);
 }
+
+#[test]
+fn phase_6_child_stream_missing_authority_fails_closed_before_http_decode() {
+    let fixture = absent_supervisor_fixture();
+    let target = fixture.target();
+    let item_type = skiff_runtime_linked_bytecode::TypeIndex::new(first_stream_item_type(&target));
+
+    crate::bytecode_server_stream::validate_stream_producer_authority(
+        &fixture.image,
+        target.function(),
+        item_type,
+        0,
+    )
+    .expect("the root server-stream entry retains its exact stream-result authority");
+    crate::bytecode_server_stream::validate_stream_producer_authority(
+        &fixture.image,
+        target.function(),
+        item_type,
+        1,
+    )
+    .expect("a child producer with exact stream-result authority passes the same checked seam");
+
+    let error = crate::bytecode_server_stream::validate_stream_producer_authority(
+        &fixture.image,
+        target.function(),
+        skiff_runtime_linked_bytecode::TypeIndex::new(0),
+        1,
+    )
+    .expect_err("a child item that is not the linked Stream<T> item must fail closed");
+    assert!(
+        matches!(
+            error,
+            BytecodeSchedulerError::Port(ref message)
+                if message.contains("lacks the exact linked stream-result authority")
+        ),
+        "missing authority must stay a typed port failure: {error}"
+    );
+}
