@@ -67,6 +67,16 @@ impl MemoryLease {
         self.amount
     }
 
+    /// Replaces the committed amount tracked by this lease.
+    ///
+    /// This is host-owned: the owning ledger must already have applied the
+    /// corresponding reserve/commit/release delta before calling this setter.
+    /// It exists so a concrete heap can keep one affine lease in step with its
+    /// current live allocation while the heap remains reachable.
+    pub fn set_amount(&mut self, amount: usize) {
+        self.amount = amount;
+    }
+
     /// Releases the committed amount exactly once.
     pub fn release(mut self) {
         self.release_inner();

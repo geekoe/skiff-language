@@ -14,14 +14,29 @@ use fixture::Capability;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skiff_runtime_model::{
+        request_heap::RequestHeapLimits,
+        vm_heap::{HeapDomainId, HeapEpoch, VmHeap, VmHeapError},
+        vm_root::{VmRootSource, VmRootVisitor},
+        vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot},
+    };
+    use skiff_runtime_request::{RequestMemoryLedger, RequestVmHeap};
+    use skiff_runtime_scheduler::{
+        BytecodeControl, BytecodeResumeFailure, BytecodeSchedulerOutcome, BytecodeSchedulerPorts,
+        BytecodeUnit, BytecodeUnitControl, ChildHeapCarrier, ChildHeapState, PendingOwnerDraft,
+        PendingPublication, PendingRegistry, PendingWake, PendingWakeQueue,
+        RequestExecutionContext, RootEscrow, SettleDisposition,
+    };
     use skiff_runtime_transport::protocol::{
         ActivationIdentityFrameMetadata, TaskCallerKind, TaskSubmitRequestFrameHeaderV2,
         TaskTargetKind, RUNTIME_FRAME_SCHEMA_VERSION,
     };
+    use skiff_runtime_vm::{VmBudget, VmBudgetClosed, VmFiber, VmSemanticCharge};
     use stages::{
         admitted_artifact, link_input, linked_image, published_positive, request_to_terminal,
         scheduler_to_request,
     };
+    use std::sync::{Arc, Mutex};
 
     fn assert_stage_one(capability: Capability, prefix: &str) {
         let fixture = published_positive(capability, prefix);
@@ -481,33 +496,323 @@ mod tests {
         stages::assert_containment_rejected("containment-negative");
     }
 
+    struct NoopHeap;
+
+    impl VmHeap for NoopHeap {
+        fn validate_live(&self, _value: &ValueSlot) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+
+        fn snapshot_share(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+            Ok(*source)
+        }
+
+        fn transfer_owner(&mut self, source: &ValueSlot) -> Result<ValueSlot, VmHeapError> {
+            Ok(*source)
+        }
+
+        fn release_snapshot(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+
+        fn release_resource(&mut self, _owner: &ValueSlot) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    struct NoopBudget;
+
+    impl VmBudget for NoopBudget {
+        fn before_dispatch(&mut self) -> Result<(), VmBudgetClosed> {
+            Ok(())
+        }
+
+        fn poll_interrupt(&mut self) -> Result<(), VmBudgetClosed> {
+            Ok(())
+        }
+
+        fn charge_semantic(&mut self, _charge: VmSemanticCharge<'_>) -> Result<(), VmBudgetClosed> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    struct NoRoots;
+
+    impl VmRootSource for NoRoots {
+        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingPendingQueue(Mutex<Vec<PendingWake<u64, NoRoots, NoRoots>>>);
+
+    impl PendingWakeQueue<u64, NoRoots, NoRoots> for RecordingPendingQueue {
+        fn enqueue(&self, wake: PendingWake<u64, NoRoots, NoRoots>) {
+            self.0.lock().unwrap().push(wake);
+        }
+    }
+
+    struct SyncUnit;
+
+    impl VmRootSource for SyncUnit {
+        fn visit_roots(&self, _visitor: &mut dyn VmRootVisitor) -> Result<(), VmHeapError> {
+            Ok(())
+        }
+    }
+
+    impl BytecodeUnit for SyncUnit {
+        type ResumeToken = u64;
+        type ResumeOutcome = u64;
+        type RootResult = u64;
+        type ChildInvocation = u64;
+        type AdapterInvocation = u64;
+        type StreamItem = u64;
+        type PendingOperation = u64;
+
+        fn run_segment(
+            &mut self,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> BytecodeUnitControl<Self> {
+            BytecodeControl::Complete(1)
+        }
+
+        fn resume(
+            &mut self,
+            _resume: u64,
+            _outcome: u64,
+        ) -> Result<(), BytecodeResumeFailure<u64, u64>> {
+            Ok(())
+        }
+    }
+
+    fn kernel_heap(ledger: &Arc<RequestMemoryLedger>) -> (HeapDomainId, HeapEpoch, RequestVmHeap) {
+        let (domain, epoch) = ledger.mint_heap_identity().expect("mint heap identity");
+        let heap = RequestVmHeap::with_ledger(
+            Arc::clone(ledger),
+            domain.get(),
+            epoch.get(),
+            RequestHeapLimits::default(),
+        );
+        (domain, epoch, heap)
+    }
+
     #[test]
     fn phase_6_kernel_owner_bundle() {
-        published_positive(Capability::Service, "kernel-owner-bundle");
+        let ledger = Arc::new(RequestMemoryLedger::new(1024));
+        let context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
+        let (domain, epoch, heap) = kernel_heap(&ledger);
+        let carrier = ChildHeapCarrier::new(
+            Box::new(heap),
+            domain,
+            epoch,
+            ledger.zero_lease().expect("zero carrier lease"),
+            context
+                .child_heap_registration()
+                .mint_lease()
+                .expect("child heap owner lease"),
+        );
+
+        assert_eq!(carrier.domain(), domain);
+        assert_eq!(carrier.epoch(), epoch);
+        assert_eq!(carrier.state(), ChildHeapState::Prepared);
+
+        drop(carrier);
+        let snapshot = context.into_not_started();
+        assert_eq!(snapshot.child_heap.current, 0);
+        assert!(snapshot.child_heap.ever_created);
+        assert_eq!(snapshot.child.current, 0);
+        assert_eq!(ledger.snapshot().committed, 0);
     }
 
     #[test]
     fn phase_6_kernel_root_visit() {
-        published_positive(Capability::InterfaceLocal, "kernel-root-visit");
+        struct CountingVisitor {
+            roots: Vec<ValueSlot>,
+        }
+
+        impl VmRootVisitor for CountingVisitor {
+            fn visit_root(&mut self, root: &ValueSlot) -> Result<(), VmHeapError> {
+                self.roots.push(*root);
+                Ok(())
+            }
+        }
+
+        let ledger = Arc::new(RequestMemoryLedger::new(1024));
+        let context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
+        let (domain, epoch, mut heap) = kernel_heap(&ledger);
+        let slot = heap
+            .alloc_typed_string(
+                "root".to_string(),
+                CompactTypeTag::try_from_type_index(7).expect("type tag"),
+                ValueFlags::new(0),
+            )
+            .expect("allocate root");
+        let mut carrier = ChildHeapCarrier::new(
+            Box::new(heap),
+            domain,
+            epoch,
+            ledger.zero_lease().expect("zero carrier lease"),
+            context
+                .child_heap_registration()
+                .mint_lease()
+                .expect("child heap owner lease"),
+        );
+        carrier.attach_boundary_registration(context.boundary_registration());
+        carrier
+            .publish_staging_root(slot)
+            .expect("publish staging root");
+
+        let mut visitor = CountingVisitor { roots: Vec::new() };
+        carrier
+            .visit_roots(&mut visitor)
+            .expect("visit child heap roots");
+        assert_eq!(visitor.roots.len(), 1);
+        assert_eq!(visitor.roots[0].kind(), Some(ValueKind::RequestHeapRef));
+        assert_eq!(
+            carrier
+                .heap()
+                .string_value(&visitor.roots[0])
+                .expect("read published string root"),
+            "root"
+        );
+
+        drop(carrier);
+        let snapshot = context.into_not_started();
+        assert_eq!(snapshot.child_heap.current, 0);
+        assert_eq!(snapshot.boundary.current, 0);
+        assert!(snapshot.boundary.ever_created);
+        assert_eq!(ledger.snapshot().committed, 0);
     }
 
     #[test]
     fn phase_6_kernel_memory_reserve_release() {
-        published_positive(Capability::Callback, "kernel-memory");
+        let ledger = Arc::new(RequestMemoryLedger::new(256));
+        let reservation = ledger.reserve(32).expect("reserve");
+        assert_eq!(ledger.snapshot().reserved, 32);
+        let lease = reservation.commit();
+        assert_eq!(ledger.snapshot().committed, 32);
+
+        let (_domain, _epoch, mut heap) = kernel_heap(&ledger);
+        let _ = heap
+            .alloc_typed_bytes(
+                vec![0; 64],
+                CompactTypeTag::try_from_type_index(8).expect("type tag"),
+                ValueFlags::new(0),
+            )
+            .expect("allocate bytes");
+        assert!(ledger.snapshot().committed > 32);
+        assert!(ledger.snapshot().peak_committed > 32);
+        drop(heap);
+        assert!(ledger.snapshot().committed >= 32);
+
+        lease.release();
+        assert_eq!(ledger.snapshot().committed, 0);
+        let terminal = ledger.mark_terminal().expect("terminal at zero");
+        assert!(terminal.terminal);
+        assert_eq!(terminal.peak_total, ledger.snapshot().peak_total);
     }
 
     #[test]
     fn phase_6_kernel_sync_no_park() {
-        published_positive(Capability::Db, "kernel-sync-no-park");
+        let mut context =
+            RequestExecutionContext::<SyncUnit>::create(BytecodeSchedulerPorts::default());
+        context.install_root(SyncUnit);
+        let (outcome, snapshot) = context.drive(&mut NoopHeap, &mut NoopBudget);
+
+        assert!(matches!(outcome, Ok(BytecodeSchedulerOutcome::Complete(1))));
+        assert_eq!(snapshot.pending.current, 0);
+        assert!(!snapshot.pending.ever_created);
+        assert_eq!(snapshot.child.current, 0);
+        assert_eq!(snapshot.child_heap.current, 0);
+        assert_eq!(snapshot.boundary.current, 0);
+        assert_eq!(snapshot.actor.current, 0);
     }
 
     #[test]
     fn phase_6_kernel_actual_pending_chain() {
-        published_positive(Capability::Task, "kernel-pending-chain");
+        let context = RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
+        let mut context = context;
+        let registry = PendingRegistry::<u64, NoRoots, NoRoots>::new(
+            context
+                .take_pending_registration()
+                .expect("pending registration"),
+        );
+        let completion = registry.begin(RootEscrow::empty()).expect("begin pending");
+        let queue = Arc::new(RecordingPendingQueue::default());
+        let publication = registry
+            .publish(
+                completion.ticket(),
+                PendingOwnerDraft::new(1u64, NoRoots),
+                queue.clone(),
+            )
+            .expect("publish pending owner");
+        assert_eq!(publication, PendingPublication::Waiting);
+
+        let disposition = completion.complete(NoRoots);
+        assert!(matches!(disposition, SettleDisposition::Enqueued));
+        let wake = queue.0.lock().unwrap().pop().expect("claimed wake queued");
+        drop(wake);
+
+        let snapshot = context.into_not_started();
+        assert_eq!(snapshot.pending.current, 0);
+        assert!(snapshot.pending.ever_created);
+        assert_eq!(snapshot.child.current, 0);
+        assert_eq!(snapshot.child_heap.current, 0);
+        assert_eq!(snapshot.boundary.current, 0);
+        assert_eq!(snapshot.actor.current, 0);
     }
 
     #[test]
     fn phase_6_kernel_cleanup_returns_to_zero() {
-        published_positive(Capability::Actor, "kernel-cleanup");
+        let ledger = Arc::new(RequestMemoryLedger::new(1024));
+        let mut context =
+            RequestExecutionContext::<VmFiber>::create(BytecodeSchedulerPorts::default());
+        let (domain, epoch, heap) = kernel_heap(&ledger);
+        let mut carrier = ChildHeapCarrier::new(
+            Box::new(heap),
+            domain,
+            epoch,
+            ledger.zero_lease().expect("zero carrier lease"),
+            context
+                .child_heap_registration()
+                .mint_lease()
+                .expect("child heap owner lease"),
+        );
+        carrier
+            .attach_pending_cleanup(Box::new(|| {}))
+            .expect("attach pending cleanup");
+
+        let registry = PendingRegistry::<u64, NoRoots, NoRoots>::new(
+            context
+                .take_pending_registration()
+                .expect("pending registration"),
+        );
+        let completion = registry.begin(RootEscrow::empty()).expect("begin pending");
+        let queue = Arc::new(RecordingPendingQueue::default());
+        registry
+            .publish(
+                completion.ticket(),
+                PendingOwnerDraft::new(2u64, NoRoots),
+                queue.clone(),
+            )
+            .expect("publish pending owner");
+        assert!(matches!(
+            completion.complete(NoRoots),
+            SettleDisposition::Enqueued
+        ));
+        drop(queue.0.lock().unwrap().pop().expect("claimed wake"));
+
+        drop(carrier);
+        let snapshot = context.into_not_started();
+        assert_eq!(snapshot.pending.current, 0);
+        assert_eq!(snapshot.child_heap.current, 0);
+        assert_eq!(snapshot.boundary.current, 0);
+        assert_eq!(snapshot.actor.current, 0);
+        assert_eq!(ledger.snapshot().committed, 0);
+        let terminal = ledger.mark_terminal().expect("terminal at zero");
+        assert!(terminal.terminal);
     }
 }

@@ -26,6 +26,7 @@ use skiff_runtime_scheduler::{
 use skiff_runtime_vm::VmFiber;
 
 use super::RequestVmHeap;
+use crate::RequestMemoryLedger;
 
 const fn tag(type_index: u32) -> CompactTypeTag {
     match CompactTypeTag::try_from_type_index(type_index) {
@@ -250,6 +251,29 @@ impl RequestByteStreamSource for RecordingByteStreamSource {
     fn terminate(self: Box<Self>, termination: RequestResourceTermination) {
         self.0.lock().unwrap().push(termination);
     }
+}
+
+#[test]
+fn ledger_issued_heap_charges_allocations_and_fails_closed_on_hard_cap() {
+    let ledger = Arc::new(RequestMemoryLedger::new(64));
+    let (domain, epoch) = ledger.mint_heap_identity().expect("mint identity");
+    let mut heap = RequestVmHeap::with_ledger(
+        Arc::clone(&ledger),
+        domain.get(),
+        epoch.get(),
+        RequestHeapLimits::default(),
+    );
+
+    let error = match heap.alloc_typed_bytes(vec![0; 128], TAG, FLAGS) {
+        Err(error) => error,
+        Ok(_) => panic!("aggregate ledger hard cap must reject the allocation"),
+    };
+    assert!(matches!(error, VmHeapError::HeapOperationFailed { .. }));
+    assert_eq!(ledger.snapshot().committed, 0);
+
+    drop(heap);
+    assert_eq!(ledger.snapshot().committed, 0);
+    ledger.mark_terminal().expect("ledger terminal at zero");
 }
 
 #[test]

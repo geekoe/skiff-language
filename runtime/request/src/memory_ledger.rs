@@ -237,29 +237,104 @@ impl RequestMemoryLedger {
         &self,
         reserved_bytes: usize,
     ) -> Result<(HeapDomainId, HeapEpoch, MemoryLease), MemoryLedgerError> {
-        let (domain, epoch) = {
-            let mut state = self.lock();
-            if state.terminal {
-                return Err(MemoryLedgerError::Terminal);
-            }
-            let raw_domain = state.next_domain;
-            let next_domain = state
-                .next_domain
-                .checked_add(1)
-                .ok_or(MemoryLedgerError::DomainSpaceExhausted)?;
-            let domain =
-                HeapDomainId::try_new(raw_domain).ok_or(MemoryLedgerError::DomainSpaceExhausted)?;
-            let epoch = HeapEpoch::new(state.next_epoch);
-            state.next_domain = next_domain;
-            state.next_epoch = state
-                .next_epoch
-                .checked_add(1)
-                .ok_or(MemoryLedgerError::EpochSpaceExhausted)?;
-            (domain, epoch)
-        };
+        let (domain, epoch) = self.mint_heap_identity()?;
         let reservation = self.reserve(reserved_bytes)?;
         let lease = reservation.commit();
         Ok((domain, epoch, lease))
+    }
+
+    /// Mints one request-scoped heap domain/epoch identity without committing
+    /// any allocation.
+    pub fn mint_heap_identity(&self) -> Result<(HeapDomainId, HeapEpoch), MemoryLedgerError> {
+        let mut state = self.lock();
+        if state.terminal {
+            return Err(MemoryLedgerError::Terminal);
+        }
+        let raw_domain = state.next_domain;
+        if raw_domain > u64::from(u32::MAX) {
+            return Err(MemoryLedgerError::DomainSpaceExhausted);
+        }
+        let next_domain = state
+            .next_domain
+            .checked_add(1)
+            .ok_or(MemoryLedgerError::DomainSpaceExhausted)?;
+        let domain =
+            HeapDomainId::try_new(raw_domain).ok_or(MemoryLedgerError::DomainSpaceExhausted)?;
+        let epoch = HeapEpoch::new(state.next_epoch);
+        state.next_domain = next_domain;
+        state.next_epoch = state
+            .next_epoch
+            .checked_add(1)
+            .ok_or(MemoryLedgerError::EpochSpaceExhausted)?;
+        Ok((domain, epoch))
+    }
+
+    /// Returns an affine zero-amount lease bound to this request ledger.
+    pub fn zero_lease(&self) -> Result<MemoryLease, MemoryLedgerError> {
+        self.reserve(0).map(MemoryReservation::commit)
+    }
+
+    /// Moves one affine committed lease to a new exact amount.
+    ///
+    /// The ledger applies the reserve/commit/release delta first so hard-cap
+    /// rejection happens before the lease's observable amount changes. This
+    /// keeps a concrete heap's single lease in step with live allocation.
+    pub fn set_committed_lease_amount(
+        &self,
+        lease: &mut MemoryLease,
+        amount: usize,
+    ) -> Result<(), MemoryLedgerError> {
+        let mut state = self.lock();
+        if state.terminal {
+            return Err(MemoryLedgerError::Terminal);
+        }
+        let old = lease.amount();
+        if amount == old {
+            return Ok(());
+        }
+        if amount > old {
+            let requested = amount - old;
+            let current_total = state.reserved.checked_add(state.committed).ok_or_else(|| {
+                MemoryLedgerError::HardCapExceeded {
+                    hard_cap: state.hard_cap,
+                    reserved: state.reserved,
+                    committed: state.committed,
+                    requested,
+                }
+            })?;
+            let total = current_total.checked_add(requested).ok_or_else(|| {
+                MemoryLedgerError::HardCapExceeded {
+                    hard_cap: state.hard_cap,
+                    reserved: state.reserved,
+                    committed: state.committed,
+                    requested,
+                }
+            })?;
+            if total > state.hard_cap {
+                return Err(MemoryLedgerError::HardCapExceeded {
+                    hard_cap: state.hard_cap,
+                    reserved: state.reserved,
+                    committed: state.committed,
+                    requested,
+                });
+            }
+            state.committed = state
+                .committed
+                .checked_add(requested)
+                .expect("request memory ledger committed total cannot overflow");
+            state.peak_committed = state.peak_committed.max(state.committed);
+            state.peak_total = state.peak_total.max(total);
+        } else {
+            let released = old - amount;
+            state.committed = state.committed.checked_sub(released).ok_or(
+                MemoryLedgerError::ReleaseUnderflow {
+                    committed: state.committed,
+                    amount: released,
+                },
+            )?;
+        }
+        lease.set_amount(amount);
+        Ok(())
     }
 
     pub fn snapshot(&self) -> MemoryLedgerSnapshot {
@@ -679,6 +754,54 @@ mod tests {
 
         drop(first_lease);
         drop(second_lease);
+        assert_eq!(ledger.snapshot().committed, 0);
+    }
+
+    #[test]
+    fn mint_heap_identity_and_zero_lease_are_request_scoped() {
+        let ledger = RequestMemoryLedger::new(100);
+        let (first_domain, first_epoch) = ledger.mint_heap_identity().unwrap();
+        let (second_domain, second_epoch) = ledger.mint_heap_identity().unwrap();
+        let zero = ledger.zero_lease().unwrap();
+
+        assert_eq!(first_domain.get(), 1);
+        assert_eq!(second_domain.get(), 2);
+        assert_eq!(first_epoch.get(), 0);
+        assert_eq!(second_epoch.get(), 1);
+        assert_eq!(zero.amount(), 0);
+        assert_eq!(ledger.snapshot().committed, 0);
+        drop(zero);
+    }
+
+    #[test]
+    fn set_committed_lease_amount_moves_one_lease_with_hard_cap() {
+        let ledger = RequestMemoryLedger::new(100);
+        let mut lease = ledger.zero_lease().unwrap();
+        ledger
+            .set_committed_lease_amount(&mut lease, 40)
+            .expect("lease increase fits");
+        assert_eq!(lease.amount(), 40);
+        assert_eq!(ledger.snapshot().committed, 40);
+
+        let error = ledger
+            .set_committed_lease_amount(&mut lease, 101)
+            .expect_err("aggregate hard cap is independent");
+        assert!(matches!(
+            error,
+            MemoryLedgerError::HardCapExceeded {
+                hard_cap: 100,
+                committed: 40,
+                ..
+            }
+        ));
+        assert_eq!(lease.amount(), 40);
+
+        ledger
+            .set_committed_lease_amount(&mut lease, 10)
+            .expect("lease decrease releases");
+        assert_eq!(ledger.snapshot().committed, 10);
+        assert_eq!(ledger.snapshot().peak_committed, 40);
+        drop(lease);
         assert_eq!(ledger.snapshot().committed, 0);
     }
 }

@@ -37,6 +37,7 @@ pub use bytecode::{
     BytecodeTerminalOwner, BytecodeUnit, BytecodeUnitControl, ChildFinish, ChildFinishError,
 };
 pub use owner_inventory::{
+    ActorOwnerLease, ActorOwnerRegistration, BoundaryOwnerLease, BoundaryOwnerRegistration,
     ChildHeapOwnerLease, ChildHeapOwnerRegistration, OwnerCreationError, OwnerCreationErrorKind,
     OwnerDomain, PendingOwnerRegistration, PendingRegistrationTakeError, RequestExecutionContext,
 };

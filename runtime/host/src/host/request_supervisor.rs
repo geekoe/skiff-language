@@ -925,6 +925,18 @@ mod tests {
                 current: 0,
                 ever_created: false,
             },
+            child_heap: FrozenOwnerDomain {
+                current: 0,
+                ever_created: false,
+            },
+            boundary: FrozenOwnerDomain {
+                current: 0,
+                ever_created: false,
+            },
+            actor: FrozenOwnerDomain {
+                current: 0,
+                ever_created: false,
+            },
         }
     }
 
@@ -1172,6 +1184,18 @@ mod tests {
                 ever_created: false,
             },
             child: FrozenOwnerDomain {
+                current: 0,
+                ever_created: false,
+            },
+            child_heap: FrozenOwnerDomain {
+                current: 0,
+                ever_created: false,
+            },
+            boundary: FrozenOwnerDomain {
+                current: 0,
+                ever_created: false,
+            },
+            actor: FrozenOwnerDomain {
                 current: 0,
                 ever_created: false,
             },

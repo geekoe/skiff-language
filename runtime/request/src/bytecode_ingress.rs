@@ -248,7 +248,7 @@ fn start_bytecode_request(
         handles,
         http_client,
         server_stream_writer,
-        child_composition: _,
+        child_composition,
         heap: injected_heap,
     } = input;
 
@@ -271,10 +271,27 @@ fn start_bytecode_request(
     let execution_control = execution_control.owned();
     let mut heap: Box<dyn VmHeap + Send> = match injected_heap {
         Some(heap) => heap,
-        None => Box::new(RequestVmHeap::for_execution(
-            resources,
-            handles.request_heap_limits,
-        )),
+        None => {
+            let ledger = Arc::clone(&child_composition.memory_ledger);
+            let (domain, epoch) = ledger.mint_heap_identity().map_err(|error| {
+                RequestError::Decode(format!(
+                    "request memory ledger rejected root heap identity: {error}"
+                ))
+            })?;
+            let memory_lease = ledger.zero_lease().map_err(|error| {
+                RequestError::Decode(format!(
+                    "request memory ledger rejected root heap lease: {error}"
+                ))
+            })?;
+            Box::new(RequestVmHeap::with_ledger_and_resources(
+                ledger,
+                domain.get(),
+                epoch.get(),
+                handles.request_heap_limits,
+                Some(resources),
+                memory_lease,
+            ))
+        }
     };
     let arguments = gateway_entry_arguments(&request, &target, &mut *heap)?;
     let mut fiber = Vm::start(target, arguments.into_boxed_slice(), vm_limits(), observer)
@@ -436,6 +453,7 @@ pub fn drive_runtime_bytecode_request_controlled(
         .unwrap_or_else(|| {
             Arc::new(RequestChildHeapFactory::new(
                 context.child_heap_registration(),
+                context.boundary_registration(),
             ))
         });
     let stream_supervisor: Option<Arc<dyn BytecodeStreamSupervisor<VmFiber>>> =

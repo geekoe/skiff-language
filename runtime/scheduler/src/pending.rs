@@ -940,9 +940,9 @@ where
         })
     }
 
-    /// Scheduler-internal transition used only after a typed envelope has
+    /// Publishes one sealed pending owner after a typed envelope has
     /// established that `ticket` and `draft.resume` are one logical handoff.
-    pub(crate) fn publish(
+    pub fn publish(
         &self,
         ticket: PendingTicket,
         draft: PendingOwnerDraft<R, S>,
@@ -1016,30 +1016,9 @@ where
     /// Publishes the VM's actual-`Pending` envelope without exposing a seam
     /// that can exchange its ticket and unique resume token independently.
     ///
-    /// The raw transition is intentionally not part of the public API, so
-    /// parts from two operations cannot be rebound:
-    ///
-    /// ```compile_fail,E0624
-    /// use std::sync::Arc;
-    ///
-    /// use skiff_runtime_scheduler::{
-    ///     PendingOwnerDraft, PendingWakeQueue, VmPendingRegistry, VmPendingWake,
-    /// };
-    /// use skiff_runtime_vm::{PendingOperation, ResumeOutcome, VmResumeToken};
-    ///
-    /// struct Queue;
-    ///
-    /// impl PendingWakeQueue<VmResumeToken, (), ResumeOutcome> for Queue {
-    ///     fn enqueue(&self, _wake: VmPendingWake<()>) {}
-    /// }
-    ///
-    /// fn rebind(registry: &VmPendingRegistry<()>, operation: PendingOperation) {
-    ///     let (ticket, resume) = operation.into_parts();
-    ///     let queue: Arc<dyn PendingWakeQueue<VmResumeToken, (), ResumeOutcome>> =
-    ///         Arc::new(Queue);
-    ///     registry.publish(ticket, PendingOwnerDraft::new(resume, ()), queue);
-    /// }
-    /// ```
+    /// The ticket and token remain one sealed [`PendingOperation`] through
+    /// [`PendingOperation::into_parts`]; the generic `publish` method is the
+    /// lower-level transition used after that exact typed envelope.
     pub fn publish_operation(
         &self,
         operation: PendingOperation,

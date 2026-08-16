@@ -6,13 +6,11 @@
 
 use std::{
     collections::{BTreeMap, HashMap},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
+    sync::Arc,
 };
 
 use skiff_runtime_linked_bytecode::{LinkedLocalInterfaceTable, LinkedRemoteInterfaceTable};
+use skiff_runtime_model::memory_ledger::MemoryLease;
 use skiff_runtime_model::{
     error::RuntimeModelError as RuntimeError,
     request_heap::{RequestHeap, RequestHeapLimits},
@@ -27,22 +25,23 @@ use skiff_runtime_model::{
     vm_value::{CompactTypeTag, ValueFlags, ValueKind, ValueSlot, VmHandle},
 };
 use skiff_runtime_scheduler::{
-    RequestResourceHandle, RequestResourceLookupError, RequestResourceTable,
+    RequestResourceHandle, RequestResourceLookupError, RequestResourceRelease, RequestResourceTable,
 };
 
-const DOMAIN_SHIFT: u64 = 56;
-const DOMAIN_MASK: u64 = (u8::MAX as u64) << DOMAIN_SHIFT;
-const SERIAL_MASK: u64 = !DOMAIN_MASK;
+use crate::RequestMemoryLedger;
+
+const DOMAIN_SHIFT: u32 = 32;
+const DOMAIN_MASK: u64 = (u32::MAX as u64) << DOMAIN_SHIFT;
+const SERIAL_MASK: u64 = u32::MAX as u64;
 const MAX_SERIAL: u64 = SERIAL_MASK;
+const MAX_HANDLE_DOMAIN: u64 = u32::MAX as u64;
+const BOUNDARY_ROOT_BYTES: usize = 64;
+const ACTOR_STATE_BYTES: usize = 64;
+const RESOURCE_ROUTE_BYTES: usize = 64;
 
-static NEXT_DOMAIN: AtomicU64 = AtomicU64::new(1);
-
-fn next_domain() -> u8 {
-    NEXT_DOMAIN.fetch_add(1, Ordering::Relaxed) as u8
-}
-
-fn encode_handle(domain: u8, serial: u64) -> VmHandle {
-    VmHandle::new((u64::from(domain) << DOMAIN_SHIFT) | serial)
+fn encode_handle(domain: u64, serial: u64) -> VmHandle {
+    debug_assert!(domain <= MAX_HANDLE_DOMAIN);
+    VmHandle::new((domain << DOMAIN_SHIFT) | serial)
 }
 
 struct LiveEntry {
@@ -77,11 +76,16 @@ struct ExcludedOwnerField<'a> {
 pub struct RequestVmHeap {
     heap: RequestHeap,
     resources: Option<RequestResourceTable>,
-    domain: u8,
+    domain: u64,
     next_serial: u64,
     live: HashMap<VmHandle, LiveEntry>,
     handles_by_heap: HashMap<HeapHandle, VmHandle>,
     released_heap_handles: HashMap<HeapHandle, VmHandle>,
+    ledger: Option<Arc<RequestMemoryLedger>>,
+    memory_lease: Option<MemoryLease>,
+    boundary_staging_roots: usize,
+    resource_routes: usize,
+    structural_bytes: usize,
     array_slots: HashMap<HeapHandle, Vec<ValueSlot>>,
     object_slots: HashMap<HeapHandle, BTreeMap<String, ValueSlot>>,
     map_slots: HashMap<
@@ -96,28 +100,59 @@ pub struct RequestVmHeap {
 
 impl RequestVmHeap {
     pub fn new(limits: RequestHeapLimits) -> Self {
-        Self::with_domain(next_domain(), 0, limits)
+        Self::with_domain(0, 0, limits)
     }
 
     pub fn new_with_epoch(epoch: u32, limits: RequestHeapLimits) -> Self {
-        Self::with_domain(next_domain(), epoch, limits)
+        Self::with_domain(0, epoch, limits)
     }
 
     pub fn with_domain(domain: u8, epoch: u32, limits: RequestHeapLimits) -> Self {
-        Self::with_domain_and_resources(domain, epoch, limits, None)
+        Self::with_domain_and_resources(u64::from(domain), epoch, limits, None)
+    }
+
+    /// Constructs a request-ledger heap with a ledger-issued domain/epoch.
+    ///
+    /// The heap owns one affine zero-amount lease and adjusts it as checked
+    /// allocations and owner-local staging are committed.
+    pub fn with_ledger(
+        ledger: Arc<RequestMemoryLedger>,
+        domain: u64,
+        epoch: u32,
+        limits: RequestHeapLimits,
+    ) -> Self {
+        let memory_lease = ledger
+            .zero_lease()
+            .expect("a newly opened request memory ledger accepts a zero lease");
+        Self::with_ledger_and_resources(ledger, domain, epoch, limits, None, memory_lease)
     }
 
     /// Constructs the production request heap bound to the exact scheduler
     /// resource table created by the same request execution context.
+    #[cfg(test)]
     pub(crate) fn for_execution(
         resources: RequestResourceTable,
         limits: RequestHeapLimits,
     ) -> Self {
-        Self::with_domain_and_resources(next_domain(), 0, limits, Some(resources))
+        Self::with_domain_and_resources(0, 0, limits, Some(resources))
+    }
+
+    pub(crate) fn with_ledger_and_resources(
+        ledger: Arc<RequestMemoryLedger>,
+        domain: u64,
+        epoch: u32,
+        limits: RequestHeapLimits,
+        resources: Option<RequestResourceTable>,
+        memory_lease: MemoryLease,
+    ) -> Self {
+        let mut heap = Self::with_domain_and_resources(domain, epoch, limits, resources);
+        heap.ledger = Some(ledger);
+        heap.memory_lease = Some(memory_lease);
+        heap
     }
 
     fn with_domain_and_resources(
-        domain: u8,
+        domain: u64,
         epoch: u32,
         limits: RequestHeapLimits,
         resources: Option<RequestResourceTable>,
@@ -130,6 +165,11 @@ impl RequestVmHeap {
             live: HashMap::new(),
             handles_by_heap: HashMap::new(),
             released_heap_handles: HashMap::new(),
+            ledger: None,
+            memory_lease: None,
+            boundary_staging_roots: 0,
+            resource_routes: 0,
+            structural_bytes: 0,
             array_slots: HashMap::new(),
             object_slots: HashMap::new(),
             map_slots: HashMap::new(),
@@ -245,6 +285,10 @@ impl RequestVmHeap {
         self.heap.epoch()
     }
 
+    pub fn domain(&self) -> u64 {
+        self.domain
+    }
+
     pub fn limits(&self) -> &RequestHeapLimits {
         self.heap.limits()
     }
@@ -295,6 +339,7 @@ impl RequestVmHeap {
         let handle = encode_handle(self.domain, serial);
         self.actor_state_slots
             .insert(handle, (compact_type_tag, actor_ref));
+        self.account_structural(ACTOR_STATE_BYTES)?;
         Ok(ValueSlot::actor_state_ref(handle, compact_type_tag, flags))
     }
 
@@ -332,7 +377,9 @@ impl RequestVmHeap {
             .heap
             .alloc_local_carrier_cell(carrier)
             .map_err(|error| self.map_error(error, VmHeapOperation::AllocateRepresentation))?;
-        self.register_handle(handle, compact_type_tag, flags)
+        let slot = self.register_handle(handle, compact_type_tag, flags)?;
+        self.sync_memory()?;
+        Ok(slot)
     }
 
     fn alloc_bytes_with_metadata(
@@ -347,7 +394,9 @@ impl RequestVmHeap {
             .heap
             .alloc_bytes(value)
             .map_err(|error| self.map_error(error, operation))?;
-        self.register_handle(handle, compact_type_tag, flags)
+        let slot = self.register_handle(handle, compact_type_tag, flags)?;
+        self.sync_memory()?;
+        Ok(slot)
     }
 
     fn ensure_serial_available(&self, operation: VmHeapOperation) -> Result<(), VmHeapError> {
@@ -418,8 +467,8 @@ impl RequestVmHeap {
         }
     }
 
-    fn domain_of(handle: VmHandle) -> u8 {
-        ((handle.get() & DOMAIN_MASK) >> DOMAIN_SHIFT) as u8
+    fn domain_of(handle: VmHandle) -> u64 {
+        (handle.get() & DOMAIN_MASK) >> DOMAIN_SHIFT
     }
 
     fn invalid_handle(handle: VmHandle, reason: VmHandleInvalidReason) -> VmHeapError {
@@ -524,6 +573,51 @@ impl RequestVmHeap {
                 message: error.to_string(),
             },
         }
+    }
+
+    fn map_memory_error(error: crate::memory_ledger::MemoryLedgerError) -> VmHeapError {
+        VmHeapError::HeapOperationFailed {
+            operation: VmHeapOperation::AllocateRepresentation,
+            message: error.to_string(),
+        }
+    }
+
+    fn sync_memory(&mut self) -> Result<(), VmHeapError> {
+        let Some(ledger) = self.ledger.as_ref() else {
+            return Ok(());
+        };
+        let lease = self
+            .memory_lease
+            .as_mut()
+            .expect("a request-ledger heap owns its affine memory lease");
+        let amount = self
+            .heap
+            .stats()
+            .estimated_bytes
+            .saturating_add(self.structural_bytes);
+        ledger
+            .set_committed_lease_amount(lease, amount)
+            .map_err(Self::map_memory_error)
+    }
+
+    fn account_structural(&mut self, delta: usize) -> Result<(), VmHeapError> {
+        self.structural_bytes = self.structural_bytes.checked_add(delta).ok_or_else(|| {
+            VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::AllocateRepresentation,
+                message: "request heap structural accounting overflowed".to_string(),
+            }
+        })?;
+        self.sync_memory()
+    }
+
+    fn release_structural(&mut self, delta: usize) -> Result<(), VmHeapError> {
+        self.structural_bytes = self.structural_bytes.checked_sub(delta).ok_or_else(|| {
+            VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::AllocateRepresentation,
+                message: "request heap structural accounting underflowed".to_string(),
+            }
+        })?;
+        self.sync_memory()
     }
 
     fn ensure_node_kind(
@@ -949,6 +1043,7 @@ impl RequestVmHeap {
         if let Some(old) = old {
             self.release_replaced_slot(&old)?;
         }
+        self.sync_memory()?;
         Ok(())
     }
 
@@ -1042,6 +1137,7 @@ impl RequestVmHeap {
                     .insert(new_handle, names.into_iter().zip(shared).collect());
             }
         }
+        self.sync_memory()?;
         Ok(slot)
     }
 
@@ -1161,6 +1257,13 @@ impl VmHeap for RequestVmHeap {
         self.resources(VmHeapOperation::ValidateLive)?
             .admit_vm_route(route, compact_type_tag, flags)
             .map_err(|error| Self::map_resource_lookup(route, error))?;
+        self.resource_routes = self.resource_routes.checked_add(1).ok_or_else(|| {
+            VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::ValidateLive,
+                message: "resource route accounting overflowed".to_string(),
+            }
+        })?;
+        self.account_structural(RESOURCE_ROUTE_BYTES)?;
         Ok(ValueSlot::resource_ref(route, compact_type_tag, flags))
     }
 
@@ -1297,10 +1400,54 @@ impl VmHeap for RequestVmHeap {
         let compact_type_tag = owner
             .compact_type_tag()
             .ok_or(VmHeapError::InvalidValueMetadata)?;
-        self.resources(VmHeapOperation::ReleaseResource)?
+        let release = self
+            .resources(VmHeapOperation::ReleaseResource)?
             .release_vm_route_metadata(route, compact_type_tag, owner.flags())
             .map_err(|error| Self::map_resource_lookup(route, error))?;
+        if release == RequestResourceRelease::AlreadyReleased {
+            return Ok(());
+        }
+        if self.resource_routes == 0 {
+            return Err(VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::ReleaseResource,
+                message: "resource route accounting underflowed".to_string(),
+            });
+        }
+        self.resource_routes -= 1;
+        self.release_structural(RESOURCE_ROUTE_BYTES)?;
         Ok(())
+    }
+
+    fn account_boundary_staging(&mut self, roots: usize) -> Result<(), VmHeapError> {
+        self.boundary_staging_roots =
+            self.boundary_staging_roots
+                .checked_add(roots)
+                .ok_or_else(|| VmHeapError::HeapOperationFailed {
+                    operation: VmHeapOperation::ValidateLive,
+                    message: "boundary staging accounting overflowed".to_string(),
+                })?;
+        self.structural_bytes = self
+            .structural_bytes
+            .checked_add(roots.saturating_mul(BOUNDARY_ROOT_BYTES))
+            .ok_or_else(|| VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::ValidateLive,
+                message: "boundary staging bytes overflowed".to_string(),
+            })?;
+        self.sync_memory()
+    }
+
+    fn release_boundary_staging(&mut self, roots: usize) -> Result<(), VmHeapError> {
+        if roots > self.boundary_staging_roots {
+            return Err(VmHeapError::HeapOperationFailed {
+                operation: VmHeapOperation::ValidateLive,
+                message: "boundary staging accounting underflowed".to_string(),
+            });
+        }
+        self.boundary_staging_roots -= roots;
+        self.structural_bytes = self
+            .structural_bytes
+            .saturating_sub(roots.saturating_mul(BOUNDARY_ROOT_BYTES));
+        self.sync_memory()
     }
 
     fn allocate_array(
@@ -1324,6 +1471,7 @@ impl VmHeap for RequestVmHeap {
             .map_err(|error| self.map_error(error, operation))?;
         let slot = self.register_handle(heap_handle, compact_type_tag, flags)?;
         self.array_slots.insert(heap_handle, elements.to_vec());
+        self.sync_memory()?;
         Ok(slot)
     }
 
@@ -1353,6 +1501,7 @@ impl VmHeap for RequestVmHeap {
             .map_err(|error| self.map_error(error, operation))?;
         let slot = self.register_handle(heap_handle, compact_type_tag, flags)?;
         self.map_slots.insert(heap_handle, slots);
+        self.sync_memory()?;
         Ok(slot)
     }
 
@@ -1391,6 +1540,7 @@ impl VmHeap for RequestVmHeap {
             .map_err(|error| self.map_error(error, operation))?;
         let slot = self.register_handle(heap_handle, compact_type_tag, flags)?;
         self.object_slots.insert(heap_handle, slots);
+        self.sync_memory()?;
         Ok(slot)
     }
 
@@ -1415,6 +1565,7 @@ impl VmHeap for RequestVmHeap {
             .map_err(|error| self.map_error(error, operation))?;
         let slot = self.register_handle(heap_handle, compact_type_tag, flags)?;
         self.representation_slots.insert(heap_handle, *payload);
+        self.sync_memory()?;
         Ok(slot)
     }
 
@@ -1759,6 +1910,7 @@ impl VmHeap for RequestVmHeap {
         // No fallible work is allowed beyond the physical detach. The exact
         // recursive owner transition was frozen before any mutation.
         self.commit_owner_consume(prepared);
+        self.sync_memory()?;
         Ok(detached)
     }
 
@@ -1849,6 +2001,7 @@ impl VmHeap for RequestVmHeap {
                 payload: *payload,
             },
         );
+        self.sync_memory()?;
         Ok(slot)
     }
 
@@ -1901,6 +2054,7 @@ impl VmHeap for RequestVmHeap {
         let slot = self.register_handle(heap_handle, compact_type_tag, flags)?;
         self.remote_interface_slots
             .insert(heap_handle, RequestRemoteInterfaceCarrier { table });
+        self.sync_memory()?;
         Ok(slot)
     }
 
@@ -1935,6 +2089,7 @@ impl VmHeap for RequestVmHeap {
             .push_array_item_carrier(heap_handle, carrier)
             .map_err(|error| self.map_error(error, operation))?;
         self.array_slots.entry(heap_handle).or_default().push(value);
+        self.sync_memory()?;
         Ok(())
     }
 
@@ -1961,6 +2116,7 @@ impl VmHeap for RequestVmHeap {
             .entry(heap_handle)
             .or_default()
             .insert(key_value, (key, value));
+        self.sync_memory()?;
         Ok(existed)
     }
 

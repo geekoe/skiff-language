@@ -30,8 +30,9 @@ use skiff_runtime_model::{
     vm_heap::VmHeap,
 };
 use skiff_runtime_scheduler::{
-    BytecodeChildHandoff, BytecodePortFailure, BytecodeSchedulerError, ChildFinishError,
-    ChildHeapCarrier, ChildHeapOwnerRegistration, OwnerCreationError, RequestResourceTable,
+    BoundaryOwnerRegistration, BytecodeChildHandoff, BytecodePortFailure, BytecodeSchedulerError,
+    ChildFinishError, ChildHeapCarrier, ChildHeapOwnerRegistration, OwnerCreationError,
+    RequestResourceTable,
 };
 use skiff_runtime_vm::{
     ChildInvocation, ChildTarget, ResumeOutcome, VmBudget, VmCompletion, VmFiber, VmLifecycleSite,
@@ -451,12 +452,17 @@ impl BytecodeServiceResolver for FailClosedServiceResolver {
 #[derive(Clone)]
 pub struct RequestChildHeapFactory {
     child_heap_registration: ChildHeapOwnerRegistration,
+    boundary_registration: BoundaryOwnerRegistration,
 }
 
 impl RequestChildHeapFactory {
-    pub fn new(child_heap_registration: ChildHeapOwnerRegistration) -> Self {
+    pub fn new(
+        child_heap_registration: ChildHeapOwnerRegistration,
+        boundary_registration: BoundaryOwnerRegistration,
+    ) -> Self {
         Self {
             child_heap_registration,
+            boundary_registration,
         }
     }
 }
@@ -466,21 +472,29 @@ impl BytecodeChildHeapFactory for RequestChildHeapFactory {
         &self,
         _owner: &DeploymentOwnerIdentity,
         limits: RequestHeapLimits,
-        _resources: RequestResourceTable,
+        resources: RequestResourceTable,
         ledger: Arc<RequestMemoryLedger>,
     ) -> Result<ChildHeapCarrier, BytecodeChildError> {
-        let (domain, epoch, memory_lease) = ledger.mint_child_heap(limits.max_estimated_bytes)?;
-        let domain_u8 =
-            u8::try_from(domain.get()).map_err(|_| BytecodeChildError::DomainOverflow)?;
-        let heap = RequestVmHeap::with_domain(domain_u8, epoch.get(), limits);
+        let (domain, epoch) = ledger.mint_heap_identity()?;
+        let memory_lease = ledger.zero_lease()?;
+        let heap = RequestVmHeap::with_ledger_and_resources(
+            Arc::clone(&ledger),
+            domain.get(),
+            epoch.get(),
+            limits,
+            Some(resources),
+            memory_lease,
+        );
         let owner_lease = self.child_heap_registration.mint_lease()?;
-        Ok(ChildHeapCarrier::new(
+        let mut carrier = ChildHeapCarrier::new(
             Box::new(heap),
             domain,
             epoch,
-            memory_lease,
+            ledger.zero_lease()?,
             owner_lease,
-        ))
+        );
+        carrier.attach_boundary_registration(self.boundary_registration.clone());
+        Ok(carrier)
     }
 }
 

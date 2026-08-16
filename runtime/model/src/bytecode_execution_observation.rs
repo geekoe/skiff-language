@@ -369,6 +369,9 @@ pub struct RequestExecutionOwnerInventorySnapshot {
     pub pending: FrozenOwnerDomain,
     pub resource: FrozenOwnerDomain,
     pub child: FrozenOwnerDomain,
+    pub child_heap: FrozenOwnerDomain,
+    pub boundary: FrozenOwnerDomain,
+    pub actor: FrozenOwnerDomain,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -716,6 +719,18 @@ mod tests {
                     current: 2,
                     ever_created: true,
                 },
+                child_heap: FrozenOwnerDomain {
+                    current: 1,
+                    ever_created: true,
+                },
+                boundary: FrozenOwnerDomain {
+                    current: 3,
+                    ever_created: true,
+                },
+                actor: FrozenOwnerDomain {
+                    current: 0,
+                    ever_created: true,
+                },
             },
         });
         assert_eq!(
@@ -727,6 +742,9 @@ mod tests {
                         "pending": { "current": 1, "everCreated": true },
                         "resource": { "current": 0, "everCreated": false },
                         "child": { "current": 2, "everCreated": true },
+                        "childHeap": { "current": 1, "everCreated": true },
+                        "boundary": { "current": 3, "everCreated": true },
+                        "actor": { "current": 0, "everCreated": true },
                     }
                 }
             })

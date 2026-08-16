@@ -12,7 +12,8 @@ use crate::bytecode::{
     BytecodeSchedulerError, BytecodeUnit, BytecodeUnitControl, ChildFinish, ChildFinishError,
 };
 use crate::owner_inventory::{
-    ChildHeapOwnerLease, ChildOwnerLease, ChildOwnerRegistration, OwnerCreationError,
+    BoundaryOwnerLease, BoundaryOwnerRegistration, ChildHeapOwnerLease, ChildOwnerLease,
+    ChildOwnerRegistration, OwnerCreationError,
 };
 
 /// Rejection from attaching a second pending cleanup to one owner bundle.
@@ -165,6 +166,7 @@ impl BoundaryStaging {
         if root.as_handle().is_some() {
             heap.validate_live(&root)?;
         }
+        heap.account_boundary_staging(1)?;
         if self.state == ChildHeapState::Prepared {
             self.state = ChildHeapState::Staging;
         }
@@ -182,6 +184,7 @@ impl BoundaryStaging {
     }
 
     fn release_all(&mut self, heap: &mut dyn VmHeap) -> Result<(), VmHeapError> {
+        let released_count = self.roots.len();
         while let Some(root) = self.roots.last().copied() {
             let result = match root.kind() {
                 Some(ValueKind::RequestHeapRef) => heap.release_snapshot(&root),
@@ -193,6 +196,7 @@ impl BoundaryStaging {
             }
             self.roots.pop();
         }
+        heap.release_boundary_staging(released_count)?;
         self.state = ChildHeapState::Released;
         Ok(())
     }
@@ -223,6 +227,8 @@ pub struct ChildHeapCarrier {
     epoch: HeapEpoch,
     memory_lease: MemoryLease,
     heap_owner_lease: ChildHeapOwnerLease,
+    boundary_owner_registration: Option<BoundaryOwnerRegistration>,
+    boundary_owner_lease: Option<BoundaryOwnerLease>,
     staging: BoundaryStaging,
     pending_cleanup: Option<Box<dyn FnOnce() + Send>>,
 }
@@ -241,6 +247,8 @@ impl ChildHeapCarrier {
             epoch,
             memory_lease,
             heap_owner_lease,
+            boundary_owner_registration: None,
+            boundary_owner_lease: None,
             staging: BoundaryStaging::new(),
             pending_cleanup: None,
         }
@@ -275,6 +283,17 @@ impl ChildHeapCarrier {
     }
 
     pub fn publish_staging_root(&mut self, root: ValueSlot) -> Result<(), VmHeapError> {
+        if self.boundary_owner_lease.is_none() {
+            if let Some(registration) = &self.boundary_owner_registration {
+                let lease = registration.mint_lease().map_err(|error| {
+                    VmHeapError::HeapOperationFailed {
+                        operation: VmHeapOperation::ValidateLive,
+                        message: error.to_string(),
+                    }
+                })?;
+                self.boundary_owner_lease = Some(lease);
+            }
+        }
         self.staging.publish(root, self.heap.as_mut())
     }
 
@@ -285,7 +304,16 @@ impl ChildHeapCarrier {
     /// Releases every published staging/terminal root exactly against this
     /// carrier's own heap.
     pub fn release_published_roots(&mut self) -> Result<(), VmHeapError> {
-        self.staging.release_all(self.heap.as_mut())
+        self.staging.release_all(self.heap.as_mut())?;
+        if self.staging.roots.is_empty() {
+            drop(self.boundary_owner_lease.take());
+        }
+        Ok(())
+    }
+
+    /// Binds this carrier's boundary staging roots to the request inventory.
+    pub fn attach_boundary_registration(&mut self, registration: BoundaryOwnerRegistration) {
+        self.boundary_owner_registration = Some(registration);
     }
 
     /// Attaches the single pending cleanup authority for this owner bundle.
@@ -316,7 +344,9 @@ impl Drop for ChildHeapCarrier {
         // while the heap is still alive, then the heap drops, then the memory
         // lease releases its committed amount, then the child heap owner lease
         // releases its inventory count.
-        let _ = self.release_published_roots();
+        if let Err(error) = self.release_published_roots() {
+            panic!("child heap carrier dropped with unreleased roots: {error}");
+        }
         if let Some(cleanup) = self.pending_cleanup.take() {
             cleanup();
         }

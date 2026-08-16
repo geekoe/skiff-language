@@ -456,6 +456,22 @@ pub trait VmHeap {
         None
     }
 
+    /// Charges one owner-local boundary staging root against the heap's
+    /// request memory authority.
+    ///
+    /// The default is a no-op for heap-neutral implementations that do not
+    /// participate in a request ledger. Concrete request heaps must make the
+    /// charge observable and fail closed when the aggregate hard cap rejects
+    /// it.
+    fn account_boundary_staging(&mut self, _roots: usize) -> Result<(), VmHeapError> {
+        Ok(())
+    }
+
+    /// Releases previously charged boundary staging roots.
+    fn release_boundary_staging(&mut self, _roots: usize) -> Result<(), VmHeapError> {
+        Ok(())
+    }
+
     /// Validates metadata and the liveness/domain of any referenced handle.
     fn validate_live(&self, value: &ValueSlot) -> Result<(), VmHeapError>;
 
