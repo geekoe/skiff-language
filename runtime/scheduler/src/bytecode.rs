@@ -493,6 +493,64 @@ pub trait ChildFinish<U: BytecodeUnit, R>: Send {
         parent_heap: &mut dyn VmHeap,
         budget: &mut dyn VmBudget,
     ) -> Result<U::ResumeOutcome, ChildFinishError<U>>;
+
+    /// Materializes a completed child and either resumes its parent or
+    /// installs the next child in the same flat owner chain.
+    ///
+    /// Ordinary boundaries use the default and resume the parent. Actor
+    /// create-over-method execution overrides this to keep the method call on
+    /// the same child heap carrier without recursively entering Rust.
+    fn finish_continue(
+        &mut self,
+        resume: &R,
+        child_result: U::RootResult,
+        active: &mut U,
+        child_heap: &mut ChildHeapCarrier,
+        parent_heap: &mut dyn VmHeap,
+        budget: &mut dyn VmBudget,
+    ) -> Result<ChildFinishResult<U, R>, ChildFinishError<U>> {
+        let _ = active;
+        self.finish(resume, child_result, child_heap, parent_heap, budget)
+            .map(ChildFinishResult::ResumeParent)
+    }
+
+    /// Notifies a suspended child owner that its active segment is about to
+    /// move into the Phase 4 pending graph.
+    fn suspend(&mut self) {}
+
+    /// Reacquires a child owner segment after a pending wake claims the
+    /// suspended invocation chain.
+    fn resume(&mut self) {}
+}
+
+/// The next child installed by a boundary finish without resuming the parent.
+pub struct ChildContinuation<U: BytecodeUnit, R> {
+    pub unit: U,
+    pub finish: Box<dyn ChildFinish<U, R>>,
+}
+
+/// One completed child boundary decision.
+pub enum ChildFinishResult<U: BytecodeUnit, R> {
+    ResumeParent(U::ResumeOutcome),
+    ContinueChild(ChildContinuation<U, R>),
+}
+
+impl<U: BytecodeUnit, R> fmt::Debug for ChildContinuation<U, R> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ChildContinuation")
+            .field("finish_present", &true)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<U: BytecodeUnit, R> fmt::Debug for ChildFinishResult<U, R> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ResumeParent(_) => formatter.write_str("ResumeParent(..)"),
+            Self::ContinueChild(_) => formatter.write_str("ContinueChild(..)"),
+        }
+    }
 }
 
 /// Owner-bearing failure from one child boundary finish.
@@ -1531,6 +1589,13 @@ where
                                 }
                                 self = scheduler;
                             }
+                            Ok(TrampolineCompletion::ContinueChild(continued)) => {
+                                self = BytecodeScheduler {
+                                    trampoline: continued.into_trampoline(),
+                                    ports,
+                                    resource_roots,
+                                };
+                            }
                             Ok(TrampolineCompletion::RootComplete(_)) => {
                                 unreachable!("child completion restores a blocked parent")
                             }
@@ -1891,6 +1956,10 @@ mod tests {
     };
 
     use skiff_runtime_model::{
+        actor_vm_arena::{
+            ActorSegmentLease, ActorSuspendedContinuationLease, ActorVmArena, ActorVmArenaEpoch,
+            ActorVmArenaId,
+        },
         memory_ledger::{MemoryLease, MemoryLeaseHost, MemoryLeaseToken},
         vm_heap::{HeapDomainId, HeapEpoch, VmHeap, VmHeapError, VmHeapOperation},
         vm_root::{VmRootSource, VmRootVisitor},
@@ -2222,6 +2291,105 @@ mod tests {
             let (operation, suspended) = request.into_parts();
             *self.parked.lock().unwrap() = Some((operation, suspended));
             Ok(())
+        }
+    }
+
+    struct SegmentFinishingChild {
+        segment_lease: Option<ActorSegmentLease>,
+        suspended_lease: Option<ActorSuspendedContinuationLease>,
+    }
+
+    impl ChildFinish<TestUnit, <TestUnit as BytecodeUnit>::ResumeToken> for SegmentFinishingChild {
+        fn finish(
+            &self,
+            _resume: &<TestUnit as BytecodeUnit>::ResumeToken,
+            child_result: usize,
+            _child_heap: &mut ChildHeapCarrier,
+            _parent_heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<TestResumeOutcome, ChildFinishError<TestUnit>> {
+            Ok(TestResumeOutcome(child_result))
+        }
+
+        fn suspend(&mut self) {
+            if let Some(lease) = self.segment_lease.take() {
+                let suspended = lease
+                    .suspend()
+                    .expect("segment finish active before pending park");
+                self.suspended_lease = Some(suspended);
+            }
+        }
+
+        fn resume(&mut self) {
+            if let Some(suspended) = self.suspended_lease.take() {
+                let active = suspended
+                    .resume()
+                    .expect("segment finish suspended lease is unique at wake");
+                self.segment_lease = Some(active);
+            }
+        }
+    }
+
+    impl Drop for SegmentFinishingChild {
+        fn drop(&mut self) {
+            if let Some(lease) = self.segment_lease.take() {
+                lease.release();
+            }
+            if let Some(lease) = self.suspended_lease.take() {
+                lease.release();
+            }
+        }
+    }
+
+    struct SegmentSyncChildExecutor {
+        child_heap: Arc<Mutex<Option<ChildHeapCarrier>>>,
+        child_unit: Arc<Mutex<Option<TestUnit>>>,
+        arena: ActorVmArena,
+    }
+
+    impl BytecodeChildExecutor<TestUnit> for SegmentSyncChildExecutor {
+        fn execute_child(
+            &self,
+            invocation: usize,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<BytecodeChildHandoff<TestUnit>, BytecodePortFailure<usize, usize>> {
+            let child_heap = self
+                .child_heap
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+                .expect("segment child executor starts exactly once");
+            let segment_lease = self
+                .arena
+                .acquire_segment()
+                .expect("segment child executor acquires an active lease");
+            Ok(BytecodeChildHandoff::Ready(BytecodeChildStart {
+                unit: self
+                    .child_unit
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                    .expect("segment child executor starts exactly once"),
+                resume: invocation,
+                child_heap,
+                finish: Box::new(SegmentFinishingChild {
+                    segment_lease: Some(segment_lease),
+                    suspended_lease: None,
+                }),
+            }))
+        }
+
+        fn execute_adapter(
+            &self,
+            invocation: usize,
+            _heap: &mut dyn VmHeap,
+            _budget: &mut dyn VmBudget,
+        ) -> Result<BytecodeAdapterHandoff<TestUnit>, BytecodePortFailure<usize, usize>> {
+            Err(BytecodePortFailure::input(
+                BytecodeSchedulerError::UnsupportedAdapter,
+                invocation,
+            ))
         }
     }
 
@@ -3427,6 +3595,120 @@ mod tests {
         .unwrap();
         let outcome = scheduler.run(&mut NoopHeap, &mut NoopBudget).unwrap();
         assert!(matches!(outcome, BytecodeSchedulerOutcome::Complete(0)));
+        assert_eq!(released.load(Ordering::SeqCst), 24);
+        let snapshot = freeze.freeze();
+        assert_eq!(snapshot.child.current, 0);
+        assert!(snapshot.child.ever_created);
+    }
+
+    #[test]
+    fn segment_finish_suspend_resume_toggles_actor_segment_lease() {
+        let arena = ActorVmArena::new(
+            ActorVmArenaId::try_new(1).unwrap(),
+            1,
+            ActorVmArenaEpoch::try_new(1).unwrap(),
+            1024,
+        );
+        let mut finish = SegmentFinishingChild {
+            segment_lease: Some(arena.acquire_segment().expect("acquire active segment")),
+            suspended_lease: None,
+        };
+        assert_eq!(arena.snapshot().active_segments, 1);
+        assert_eq!(arena.snapshot().suspended_segments, 0);
+
+        finish.suspend();
+        assert_eq!(arena.snapshot().active_segments, 0);
+        assert_eq!(arena.snapshot().suspended_segments, 1);
+
+        finish.resume();
+        assert_eq!(arena.snapshot().active_segments, 1);
+        assert_eq!(arena.snapshot().suspended_segments, 0);
+
+        drop(finish);
+        assert_eq!(arena.snapshot().active_segments, 0);
+        assert_eq!(arena.snapshot().suspended_segments, 0);
+    }
+
+    #[test]
+    fn actual_pending_child_suspends_and_resumes_actor_segment_through_owner_graph() {
+        let inventory = RequestExecutionOwnerInventory::open();
+        let (mut registrations, freeze) = inventory.into_parts();
+        let released = Arc::new(AtomicUsize::new(0));
+        let arena = ActorVmArena::new(
+            ActorVmArenaId::try_new(2).unwrap(),
+            1,
+            ActorVmArenaEpoch::try_new(2).unwrap(),
+            1024,
+        );
+        let root_heap = test_child_heap_with_release(8, Arc::clone(&released), 1);
+        let executor = Arc::new(SegmentSyncChildExecutor {
+            child_heap: Arc::new(Mutex::new(Some(test_child_heap_with_release(
+                16,
+                Arc::clone(&released),
+                2,
+            )))),
+            child_unit: Arc::new(Mutex::new(Some(TestUnit::parked(7)))),
+            arena: arena.clone(),
+        });
+        let supervisor = Arc::new(TestStreamSupervisor {
+            parked: Mutex::new(None),
+            emitted: Mutex::new(Vec::new()),
+        });
+        let ports = BytecodeSchedulerPorts {
+            child_executor: Some(executor.clone() as Arc<dyn BytecodeChildExecutor<TestUnit>>),
+            stream_supervisor: Some(
+                supervisor.clone() as Arc<dyn BytecodeStreamSupervisor<TestUnit>>
+            ),
+        };
+        let scheduler = BytecodeScheduler::new_with_child_heap(
+            TestUnit {
+                control: Some(TestControl::EnterChild(0)),
+                resumed: None,
+                finish_after_resume: Some(42),
+            },
+            root_heap,
+            ports,
+            registrations.child(),
+        );
+
+        let outcome = scheduler.run(&mut NoopHeap, &mut NoopBudget).unwrap();
+        assert!(matches!(outcome, BytecodeSchedulerOutcome::Parked));
+        assert_eq!(arena.snapshot().active_segments, 0);
+        assert_eq!(arena.snapshot().suspended_segments, 1);
+
+        let (operation, suspended) = supervisor.parked.lock().unwrap().take().unwrap();
+        assert_eq!(operation, 7);
+        let registry = PendingRegistry::<usize, TestSuspended, TestResumeOutcome>::new(
+            registrations.take_pending().unwrap(),
+        );
+        let completion = registry.begin(RootEscrow::empty()).unwrap();
+        let queue = Arc::new(TestWakeQueue(Mutex::new(Vec::new())));
+        let wake_queue: Arc<dyn PendingWakeQueue<usize, TestSuspended, TestResumeOutcome>> =
+            queue.clone();
+        registry
+            .publish(
+                completion.ticket(),
+                PendingOwnerDraft::new(operation, suspended),
+                wake_queue,
+            )
+            .unwrap();
+        assert!(matches!(
+            completion.complete(TestResumeOutcome(0)),
+            SettleDisposition::Enqueued
+        ));
+        let wake = queue.0.lock().unwrap().pop().unwrap();
+        let scheduler = BytecodeScheduler::<TestUnit>::resume_from_pending_wake(
+            wake,
+            BytecodeSchedulerPorts::default(),
+        )
+        .unwrap();
+        assert_eq!(arena.snapshot().active_segments, 1);
+        assert_eq!(arena.snapshot().suspended_segments, 0);
+
+        let outcome = scheduler.run(&mut NoopHeap, &mut NoopBudget).unwrap();
+        assert!(matches!(outcome, BytecodeSchedulerOutcome::Complete(42)));
+        assert_eq!(arena.snapshot().active_segments, 0);
+        assert_eq!(arena.snapshot().suspended_segments, 0);
         assert_eq!(released.load(Ordering::SeqCst), 24);
         let snapshot = freeze.freeze();
         assert_eq!(snapshot.child.current, 0);

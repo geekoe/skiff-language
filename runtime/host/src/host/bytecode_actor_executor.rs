@@ -19,13 +19,14 @@ use skiff_artifact_model::{ActorAbiIdentity, LiteralIr, TypeRefIr};
 use skiff_canonical_json::canonical_json_bytes;
 use skiff_runtime_boundary::vm_materialize::{materialize_linked_value, release_boundary_source};
 use skiff_runtime_linked_bytecode::{
-    FrozenConstantNodeIndex, LinkedActorMethodTarget, LinkedActorStateField,
+    FrozenConstantNodeIndex, FunctionIndex, LinkedActorMethodTarget, LinkedActorStateField,
     LinkedFrozenConstantValue, LinkedServiceBoundaryValue, TypeIndex,
 };
 use skiff_runtime_linker::DeploymentExecutionImage;
 use skiff_runtime_model::{
     actor_vm_arena::{
-        ActorSegmentLease, ActorVmArena, ActorVmArenaEpoch, ActorVmArenaId, ActorVmArenaMemoryLease,
+        ActorSegmentLease, ActorSuspendedContinuationLease, ActorVmArena, ActorVmArenaEpoch,
+        ActorVmArenaId, ActorVmArenaMemoryLease,
     },
     bytecode_execution_observation::BytecodeExecutionObserver,
     request_heap::RequestHeapLimits,
@@ -38,12 +39,12 @@ use skiff_runtime_request::{
 };
 use skiff_runtime_scheduler::{
     BytecodeAdapterHandoff, BytecodeChildHandoff, BytecodeChildStart, BytecodeHandoff,
-    BytecodePortFailure, BytecodeSchedulerError, ChildFinish, ChildFinishError,
-    RequestResourceTable,
+    BytecodePortFailure, BytecodeSchedulerError, ChildContinuation, ChildFinish, ChildFinishError,
+    ChildFinishResult, RequestResourceTable,
 };
 use skiff_runtime_vm::{
     AdapterInvocation, ChildInvocation, ChildTarget, ResumeOutcome, Vm, VmBudget, VmCompletion,
-    VmControl, VmFiber, VmLimits, VmOwnedValues, VmResumeToken,
+    VmFiber, VmLimits, VmOwnedValues, VmResumeToken,
 };
 
 const ACTOR_ID_ENCODING_VERSION: &str = "skiff-canonical-v1";
@@ -254,7 +255,7 @@ impl BytecodeActorExecutor for ProductionBytecodeActorExecutor {
         &self,
         invocation: ChildInvocation,
         parent_heap: &mut dyn VmHeap,
-        budget: &mut dyn VmBudget,
+        _budget: &mut dyn VmBudget,
         child_heap_factory: Arc<dyn BytecodeChildHeapFactory>,
         resources: RequestResourceTable,
         memory_ledger: Arc<RequestMemoryLedger>,
@@ -369,57 +370,8 @@ impl BytecodeActorExecutor for ProductionBytecodeActorExecutor {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .state_root
             .is_none();
-        let state_slot = if needs_create {
-            match self.run_create_if_needed(
-                &image,
-                &target,
-                &actor_ref,
-                &key_field,
-                &mut child_heap,
-                &instance,
-                *actor_type,
-                budget,
-                observer.clone(),
-                limits,
-            ) {
-                Ok(state_slot) => state_slot,
-                Err(error) => {
-                    return Err(BytecodePortFailure::input(
-                        BytecodeSchedulerError::Port(format!(
-                            "Actor create execution failed: {error}"
-                        )),
-                        invocation,
-                    ));
-                }
-            }
-        } else {
-            let mut guard = instance
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let state_root = guard
-                .state_root
-                .expect("actor state root is present when create is not needed");
-            match materialize_actor_state(
-                &mut guard.heap,
-                &state_root,
-                child_heap.heap_mut(),
-                &image,
-                *actor_type,
-                target.actor_implementation().state_fields(),
-            ) {
-                Ok(state_slot) => state_slot,
-                Err(error) => {
-                    return Err(BytecodePortFailure::input(
-                        BytecodeSchedulerError::Port(format!(
-                            "Actor state materialization failed: {error}"
-                        )),
-                        invocation,
-                    ));
-                }
-            }
-        };
-        let mut method_args = Vec::with_capacity(target.signature().parameter_types().len());
-        method_args.push(state_slot);
+        let mut parameter_values =
+            Vec::with_capacity(target.signature().parameter_types().len().saturating_sub(1));
         let parameter_boundaries = target.parameter_boundaries();
         if parameter_boundaries.len() != target.signature().parameter_types().len() {
             return Err(BytecodePortFailure::input(
@@ -463,50 +415,8 @@ impl BytecodeActorExecutor for ProductionBytecodeActorExecutor {
                     invocation,
                 ));
             }
-            method_args.push(value);
+            parameter_values.push(value);
         }
-
-        let entry = match image.function_entry(target.function()) {
-            Ok(entry) => entry,
-            Err(error) => {
-                return Err(BytecodePortFailure::input(
-                    BytecodeSchedulerError::Port(format!(
-                        "Actor method entry lookup failed: {error}"
-                    )),
-                    invocation,
-                ));
-            }
-        };
-        let fiber = match Vm::start_with_retained_parameter(
-            entry,
-            method_args.into_boxed_slice(),
-            limits,
-            observer.clone(),
-        ) {
-            Ok(fiber) => fiber,
-            Err(error) => {
-                return Err(BytecodePortFailure::input(
-                    BytecodeSchedulerError::Vm(error),
-                    invocation,
-                ));
-            }
-        };
-        let segment_lease = match instance
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .arena
-            .acquire_segment()
-        {
-            Ok(segment_lease) => segment_lease,
-            Err(error) => {
-                return Err(BytecodePortFailure::input(
-                    BytecodeSchedulerError::Port(format!(
-                        "Actor segment lease acquisition failed: {error}"
-                    )),
-                    invocation,
-                ));
-            }
-        };
 
         if invocation.stream_endpoint().is_some() {
             return Err(BytecodePortFailure::input(
@@ -554,6 +464,171 @@ impl BytecodeActorExecutor for ProductionBytecodeActorExecutor {
                 ));
             }
         }
+
+        if needs_create {
+            let create = match image.actor_creates().iter().find(|row| {
+                row.actor_implementation().actor_implementation_identity()
+                    == target
+                        .actor_implementation()
+                        .actor_implementation_identity()
+            }) {
+                Some(create) => create,
+                None => {
+                    return Err(BytecodePortFailure::continuation(
+                        BytecodeSchedulerError::Port("actor create row is absent".to_string()),
+                        resume,
+                    ));
+                }
+            };
+            let state = match self.allocate_provisional_state(
+                child_heap.heap_mut(),
+                image.as_ref(),
+                *actor_type,
+                &key_field,
+                &actor_ref,
+                target.actor_implementation().state_fields(),
+            ) {
+                Ok(state) => state,
+                Err(error) => {
+                    return Err(BytecodePortFailure::continuation(
+                        BytecodeSchedulerError::Port(format!(
+                            "Actor create provisional state failed: {error}"
+                        )),
+                        resume,
+                    ));
+                }
+            };
+            let create_entry = match image.function_entry(create.function()) {
+                Ok(entry) => entry,
+                Err(error) => {
+                    return Err(BytecodePortFailure::continuation(
+                        BytecodeSchedulerError::Port(format!(
+                            "Actor create entry lookup failed: {error}"
+                        )),
+                        resume,
+                    ));
+                }
+            };
+            let create_fiber = match Vm::start_with_retained_parameter(
+                create_entry,
+                vec![state].into_boxed_slice(),
+                limits,
+                observer.clone(),
+            ) {
+                Ok(fiber) => fiber,
+                Err(error) => {
+                    return Err(BytecodePortFailure::continuation(
+                        BytecodeSchedulerError::Vm(error),
+                        resume,
+                    ));
+                }
+            };
+            let create_lease = match instance
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .arena
+                .acquire_segment()
+            {
+                Ok(segment_lease) => segment_lease,
+                Err(error) => {
+                    return Err(BytecodePortFailure::continuation(
+                        BytecodeSchedulerError::Port(format!(
+                            "Actor create segment lease acquisition failed: {error}"
+                        )),
+                        resume,
+                    ));
+                }
+            };
+            let create_finish = ActorCreateChildFinish {
+                registry: self.instances.clone(),
+                actor_key,
+                image: Arc::clone(&image),
+                actor_type: *actor_type,
+                parameter_values,
+                method_function: target.function(),
+                method_result_boundaries: result_boundaries.to_vec(),
+                state_fields: target.actor_implementation().state_fields().to_vec(),
+                observer,
+                limits,
+                segment_lease: Some(create_lease),
+                suspended_lease: None,
+            };
+            return Ok(BytecodeChildHandoff::Ready(BytecodeChildStart {
+                unit: create_fiber,
+                resume,
+                child_heap,
+                finish: Box::new(create_finish),
+            }));
+        }
+
+        let mut guard = instance
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let state_root = guard
+            .state_root
+            .expect("actor state root is present when create is not needed");
+        let state_slot = match materialize_actor_state(
+            &mut guard.heap,
+            &state_root,
+            child_heap.heap_mut(),
+            &image,
+            *actor_type,
+            target.actor_implementation().state_fields(),
+        ) {
+            Ok(state_slot) => state_slot,
+            Err(error) => {
+                return Err(BytecodePortFailure::continuation(
+                    BytecodeSchedulerError::Port(format!(
+                        "Actor state materialization failed: {error}"
+                    )),
+                    resume,
+                ));
+            }
+        };
+        let method_entry = match image.function_entry(target.function()) {
+            Ok(entry) => entry,
+            Err(error) => {
+                return Err(BytecodePortFailure::continuation(
+                    BytecodeSchedulerError::Port(format!(
+                        "Actor method entry lookup failed: {error}"
+                    )),
+                    resume,
+                ));
+            }
+        };
+        let mut method_args = Vec::with_capacity(target.signature().parameter_types().len());
+        method_args.push(state_slot);
+        method_args.extend(parameter_values);
+        let fiber = match Vm::start_with_retained_parameter(
+            method_entry,
+            method_args.into_boxed_slice(),
+            limits,
+            observer.clone(),
+        ) {
+            Ok(fiber) => fiber,
+            Err(error) => {
+                return Err(BytecodePortFailure::continuation(
+                    BytecodeSchedulerError::Vm(error),
+                    resume,
+                ));
+            }
+        };
+        let segment_lease = match instance
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .arena
+            .acquire_segment()
+        {
+            Ok(segment_lease) => segment_lease,
+            Err(error) => {
+                return Err(BytecodePortFailure::continuation(
+                    BytecodeSchedulerError::Port(format!(
+                        "Actor segment lease acquisition failed: {error}"
+                    )),
+                    resume,
+                ));
+            }
+        };
         let finish = ActorMethodChildFinish {
             registry: self.instances.clone(),
             actor_key,
@@ -563,6 +638,7 @@ impl BytecodeActorExecutor for ProductionBytecodeActorExecutor {
             result_boundaries: result_boundaries.to_vec(),
             state_fields: target.actor_implementation().state_fields().to_vec(),
             segment_lease: Some(segment_lease),
+            suspended_lease: None,
         };
         Ok(BytecodeChildHandoff::Ready(BytecodeChildStart {
             unit: fiber,
@@ -570,6 +646,230 @@ impl BytecodeActorExecutor for ProductionBytecodeActorExecutor {
             child_heap,
             finish: Box::new(finish),
         }))
+    }
+}
+
+struct ActorCreateChildFinish {
+    registry: ActorInstanceRegistry,
+    actor_key: ActorKey,
+    image: Arc<DeploymentExecutionImage>,
+    actor_type: TypeIndex,
+    parameter_values: Vec<ValueSlot>,
+    method_function: FunctionIndex,
+    method_result_boundaries: Vec<LinkedServiceBoundaryValue>,
+    state_fields: Vec<LinkedActorStateField>,
+    observer: BytecodeExecutionObserver,
+    limits: VmLimits,
+    segment_lease: Option<ActorSegmentLease>,
+    suspended_lease: Option<ActorSuspendedContinuationLease>,
+}
+
+impl ChildFinish<VmFiber, VmResumeToken> for ActorCreateChildFinish {
+    fn finish(
+        &self,
+        _resume: &VmResumeToken,
+        _child_result: VmCompletion,
+        _child_heap: &mut skiff_runtime_scheduler::ChildHeapCarrier,
+        _parent_heap: &mut dyn VmHeap,
+        _budget: &mut dyn VmBudget,
+    ) -> Result<ResumeOutcome, ChildFinishError<VmFiber>> {
+        Err(ChildFinishError::failure(BytecodeSchedulerError::Port(
+            "actor create must continue through the flat child lifecycle".to_string(),
+        )))
+    }
+
+    fn finish_continue(
+        &mut self,
+        _resume: &VmResumeToken,
+        child_result: VmCompletion,
+        active: &mut VmFiber,
+        child_heap: &mut skiff_runtime_scheduler::ChildHeapCarrier,
+        _parent_heap: &mut dyn VmHeap,
+        _budget: &mut dyn VmBudget,
+    ) -> Result<ChildFinishResult<VmFiber, VmResumeToken>, ChildFinishError<VmFiber>> {
+        let instance = self.registry.get(&self.actor_key).ok_or_else(|| {
+            ChildFinishError::failure(BytecodeSchedulerError::Port(
+                "Actor instance vanished before create finish".to_string(),
+            ))
+        })?;
+        let state_after_create = active.take_terminal_retained_parameter().ok_or_else(|| {
+            ChildFinishError::failure(BytecodeSchedulerError::Port(
+                "Actor create terminal lost its retained self root".to_string(),
+            ))
+        })?;
+        let (outcome, mut residual) = child_result.into_resume().map_err(|_| {
+            ChildFinishError::failure(BytecodeSchedulerError::Port(
+                "Actor create terminal failure cannot materialize to the method chain".to_string(),
+            ))
+        })?;
+        let _ = residual.retain_root(&state_after_create);
+        match outcome {
+            ResumeOutcome::Values(values) => {
+                values
+                    .into_terminal_escrow()
+                    .release_all(child_heap.heap_mut())
+                    .map_err(|error| {
+                        ChildFinishError::failure(BytecodeSchedulerError::Vm(error))
+                    })?;
+            }
+            ResumeOutcome::Empty => {}
+            ResumeOutcome::Throw(_) => {
+                residual
+                    .release_all(child_heap.heap_mut())
+                    .map_err(|error| {
+                        ChildFinishError::failure(BytecodeSchedulerError::Vm(error))
+                    })?;
+                return Err(ChildFinishError::failure(BytecodeSchedulerError::Port(
+                    "actor create threw".to_string(),
+                )));
+            }
+            ResumeOutcome::Failure(error) => {
+                residual
+                    .release_all(child_heap.heap_mut())
+                    .map_err(|error| {
+                        ChildFinishError::failure(BytecodeSchedulerError::Vm(error))
+                    })?;
+                return Err(ChildFinishError::failure(BytecodeSchedulerError::Port(
+                    format!("actor create failed: {error}"),
+                )));
+            }
+            ResumeOutcome::StreamEnd => {
+                residual
+                    .release_all(child_heap.heap_mut())
+                    .map_err(|error| {
+                        ChildFinishError::failure(BytecodeSchedulerError::Vm(error))
+                    })?;
+                return Err(ChildFinishError::failure(BytecodeSchedulerError::Port(
+                    "actor create returned a stream end".to_string(),
+                )));
+            }
+            ResumeOutcome::InternalTerminal(_) => {
+                residual
+                    .release_all(child_heap.heap_mut())
+                    .map_err(|error| {
+                        ChildFinishError::failure(BytecodeSchedulerError::Vm(error))
+                    })?;
+                return Err(ChildFinishError::failure(BytecodeSchedulerError::Port(
+                    "actor create hit an internal terminal".to_string(),
+                )));
+            }
+        }
+
+        let mut guard = instance
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let committed_state = materialize_actor_state(
+            child_heap.heap_mut(),
+            &state_after_create,
+            &mut guard.heap,
+            &self.image,
+            self.actor_type,
+            &self.state_fields,
+        )
+        .map_err(|error| {
+            ChildFinishError::failure(BytecodeSchedulerError::Port(format!(
+                "Actor create state writeback failed: {error}"
+            )))
+        })?;
+        guard
+            .replace_state_root(committed_state)
+            .map_err(ChildFinishError::failure)?;
+        let state_root = guard
+            .state_root
+            .expect("actor state root was just committed");
+        let fresh_state = materialize_actor_state(
+            &mut guard.heap,
+            &state_root,
+            child_heap.heap_mut(),
+            &self.image,
+            self.actor_type,
+            &self.state_fields,
+        )
+        .map_err(|error| {
+            ChildFinishError::failure(BytecodeSchedulerError::Port(format!(
+                "Actor method state materialization failed: {error}"
+            )))
+        })?;
+        drop(guard);
+
+        residual
+            .release_all(child_heap.heap_mut())
+            .map_err(|error| ChildFinishError::failure(BytecodeSchedulerError::Vm(error)))?;
+        let method_entry = self
+            .image
+            .function_entry(self.method_function)
+            .map_err(|error| {
+                ChildFinishError::failure(BytecodeSchedulerError::Port(format!(
+                    "Actor method entry lookup failed after create: {error}"
+                )))
+            })?;
+        let mut method_args = Vec::with_capacity(self.parameter_values.len() + 1);
+        method_args.push(fresh_state);
+        method_args.extend(self.parameter_values.iter().copied());
+        let method_fiber = Vm::start_with_retained_parameter(
+            method_entry,
+            method_args.into_boxed_slice(),
+            self.limits,
+            self.observer.clone(),
+        )
+        .map_err(|error| ChildFinishError::failure(BytecodeSchedulerError::Vm(error)))?;
+        let method_lease = instance
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .arena
+            .acquire_segment()
+            .map_err(|error| {
+                ChildFinishError::failure(BytecodeSchedulerError::Port(format!(
+                    "Actor method segment lease acquisition failed after create: {error}"
+                )))
+            })?;
+        if let Some(lease) = self.segment_lease.take() {
+            lease.release();
+        }
+        let method_finish = ActorMethodChildFinish {
+            registry: self.registry.clone(),
+            actor_key: self.actor_key.clone(),
+            image: Arc::clone(&self.image),
+            actor_type: self.actor_type,
+            state_slot: fresh_state,
+            result_boundaries: self.method_result_boundaries.clone(),
+            state_fields: self.state_fields.clone(),
+            segment_lease: Some(method_lease),
+            suspended_lease: None,
+        };
+        Ok(ChildFinishResult::ContinueChild(ChildContinuation {
+            unit: method_fiber,
+            finish: Box::new(method_finish),
+        }))
+    }
+
+    fn suspend(&mut self) {
+        if let Some(lease) = self.segment_lease.take() {
+            let suspended = lease
+                .suspend()
+                .expect("actor create segment lease is active before pending park");
+            self.suspended_lease = Some(suspended);
+        }
+    }
+
+    fn resume(&mut self) {
+        if let Some(suspended) = self.suspended_lease.take() {
+            let active = suspended
+                .resume()
+                .expect("actor create suspended segment lease is unique at wake");
+            self.segment_lease = Some(active);
+        }
+    }
+}
+
+impl Drop for ActorCreateChildFinish {
+    fn drop(&mut self) {
+        if let Some(lease) = self.segment_lease.take() {
+            lease.release();
+        }
+        if let Some(lease) = self.suspended_lease.take() {
+            lease.release();
+        }
     }
 }
 
@@ -582,6 +882,7 @@ struct ActorMethodChildFinish {
     result_boundaries: Vec<LinkedServiceBoundaryValue>,
     state_fields: Vec<LinkedActorStateField>,
     segment_lease: Option<ActorSegmentLease>,
+    suspended_lease: Option<ActorSuspendedContinuationLease>,
 }
 
 impl ChildFinish<VmFiber, VmResumeToken> for ActorMethodChildFinish {
@@ -677,11 +978,32 @@ impl ChildFinish<VmFiber, VmResumeToken> for ActorMethodChildFinish {
             .map_err(|error| ChildFinishError::failure(BytecodeSchedulerError::Vm(error)))?;
         Ok(outcome)
     }
+
+    fn suspend(&mut self) {
+        if let Some(lease) = self.segment_lease.take() {
+            let suspended = lease
+                .suspend()
+                .expect("actor method segment lease is active before pending park");
+            self.suspended_lease = Some(suspended);
+        }
+    }
+
+    fn resume(&mut self) {
+        if let Some(suspended) = self.suspended_lease.take() {
+            let active = suspended
+                .resume()
+                .expect("actor method suspended segment lease is unique at wake");
+            self.segment_lease = Some(active);
+        }
+    }
 }
 
 impl Drop for ActorMethodChildFinish {
     fn drop(&mut self) {
         if let Some(lease) = self.segment_lease.take() {
+            lease.release();
+        }
+        if let Some(lease) = self.suspended_lease.take() {
             lease.release();
         }
     }
@@ -869,103 +1191,6 @@ impl ProductionBytecodeActorExecutor {
         ))
     }
 
-    fn run_create_if_needed(
-        &self,
-        image: &Arc<DeploymentExecutionImage>,
-        method: &LinkedActorMethodTarget,
-        actor_ref: &ActorRef,
-        key_field: &str,
-        child_heap: &mut skiff_runtime_scheduler::ChildHeapCarrier,
-        instance: &Arc<Mutex<ActorInstance>>,
-        actor_type: TypeIndex,
-        budget: &mut dyn VmBudget,
-        observer: BytecodeExecutionObserver,
-        limits: VmLimits,
-    ) -> Result<ValueSlot, String> {
-        let create = image
-            .actor_creates()
-            .iter()
-            .find(|row| {
-                row.actor_implementation().actor_implementation_identity()
-                    == method
-                        .actor_implementation()
-                        .actor_implementation_identity()
-            })
-            .ok_or_else(|| "actor create row is absent".to_string())?;
-        let state = self.allocate_provisional_state(
-            child_heap.heap_mut(),
-            image.as_ref(),
-            actor_type,
-            key_field,
-            actor_ref,
-            method.actor_implementation().state_fields(),
-        )?;
-        let entry = image
-            .function_entry(create.function())
-            .map_err(|error| error.to_string())?;
-        let (completion, state_after_create) = run_sync_fiber(
-            entry,
-            vec![state].into_boxed_slice(),
-            child_heap.heap_mut(),
-            budget,
-            observer,
-            limits,
-        )?;
-        let (outcome, mut residual) = completion
-            .into_resume()
-            .map_err(|_| "actor create terminal failure".to_string())?;
-        let _ = residual.retain_root(&state_after_create);
-        match outcome {
-            ResumeOutcome::Values(values) => {
-                values
-                    .into_terminal_escrow()
-                    .release_all(child_heap.heap_mut())
-                    .map_err(|error| error.to_string())?;
-            }
-            ResumeOutcome::Empty => {}
-            ResumeOutcome::Throw(_) => return Err("actor create threw".to_string()),
-            ResumeOutcome::Failure(error) => {
-                return Err(format!("actor create failed: {error}"));
-            }
-            ResumeOutcome::StreamEnd => {
-                return Err("actor create returned a stream end".to_string())
-            }
-            ResumeOutcome::InternalTerminal(_) => {
-                return Err("actor create hit an internal terminal".to_string());
-            }
-        }
-        let mut guard = instance
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let committed_state = materialize_actor_state(
-            child_heap.heap_mut(),
-            &state_after_create,
-            &mut guard.heap,
-            image.as_ref(),
-            actor_type,
-            method.actor_implementation().state_fields(),
-        )
-        .map_err(|error| error.to_string())?;
-        guard
-            .replace_state_root(committed_state)
-            .map_err(|error| error.to_string())?;
-        let state_root = guard.state_root.expect("state root was just committed");
-        let fresh_state = materialize_actor_state(
-            &mut guard.heap,
-            &state_root,
-            child_heap.heap_mut(),
-            image.as_ref(),
-            actor_type,
-            method.actor_implementation().state_fields(),
-        )
-        .map_err(|error| error.to_string())?;
-        drop(guard);
-        residual
-            .release_all(child_heap.heap_mut())
-            .map_err(|error| error.to_string())?;
-        Ok(fresh_state)
-    }
-
     fn allocate_provisional_state(
         &self,
         heap: &mut dyn VmHeap,
@@ -1119,37 +1344,6 @@ fn exact_resume_result_type(
         ));
     };
     Ok(*result_type)
-}
-
-fn run_sync_fiber(
-    entry: skiff_runtime_linker::DeploymentExecutionEntry,
-    arguments: Box<[ValueSlot]>,
-    heap: &mut dyn VmHeap,
-    budget: &mut dyn VmBudget,
-    observer: BytecodeExecutionObserver,
-    limits: VmLimits,
-) -> Result<(VmCompletion, ValueSlot), String> {
-    let tracked = *arguments
-        .first()
-        .ok_or_else(|| "actor create tracked slot is absent".to_string())?;
-    let mut fiber = Vm::start_with_retained_parameter(entry, arguments, limits, observer)
-        .map_err(|error| error.to_string())?;
-    let mut tracked = tracked;
-    loop {
-        match fiber.run_segment(heap, budget) {
-            VmControl::Continue => {
-                if let Ok(value) =
-                    fiber.frame_slot_value(skiff_runtime_linked_bytecode::FrameSlotIndex::new(0))
-                {
-                    tracked = value;
-                }
-            }
-            VmControl::Complete(completion) => {
-                return Ok((completion, tracked));
-            }
-            _ => return Err("Actor create requires a coroutine or host handoff".to_string()),
-        }
-    }
 }
 
 #[cfg(test)]

@@ -316,6 +316,11 @@ mod tests {
     );
 
     #[tokio::test(flavor = "current_thread")]
+    async fn actor_create_host_handoff_pending_resumes_and_terminates() {
+        request_to_terminal(Capability::Actor, "actor-create-pending").await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn task_request_routing_carries_exact_activation_identity_fields() {
         let prefix = "task-routing-exact";
         let request_id = "phase-6-task-routing-exact";

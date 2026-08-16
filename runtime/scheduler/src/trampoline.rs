@@ -10,6 +10,7 @@ use skiff_runtime_vm::VmBudget;
 
 use crate::bytecode::{
     BytecodeSchedulerError, BytecodeUnit, BytecodeUnitControl, ChildFinish, ChildFinishError,
+    ChildFinishResult,
 };
 use crate::owner_inventory::{
     BoundaryOwnerLease, BoundaryOwnerRegistration, ChildHeapOwnerLease, ChildOwnerLease,
@@ -594,7 +595,7 @@ impl<U: BytecodeUnit, R> FlatTrampoline<U, R> {
         let Some(mut blocked) = self.blocked.pop() else {
             unreachable!("child completion requires a blocked parent");
         };
-        let Some(finish) = blocked.finish.take() else {
+        let Some(mut finish) = blocked.finish.take() else {
             self.blocked.push(blocked);
             return Err((
                 ChildFinishError::result_retained(
@@ -604,47 +605,57 @@ impl<U: BytecodeUnit, R> FlatTrampoline<U, R> {
                 self,
             ));
         };
-        let BlockedUnit {
-            parent: _,
-            resume,
-            owner_lease: _,
-            parent_heap,
-            finish: _,
-        } = &mut blocked;
-        let parent_heap = parent_heap
-            .as_mut()
-            .map(ChildHeapCarrier::heap_mut)
-            .unwrap_or(fallback_heap);
         let child_heap = self
             .active_heap
             .as_mut()
             .expect("a child completion owns its active heap carrier");
-        let outcome = match finish.finish(resume, child_result, child_heap, parent_heap, budget) {
-            Ok(outcome) => outcome,
+        let parent_heap = blocked
+            .parent_heap
+            .as_mut()
+            .map(ChildHeapCarrier::heap_mut)
+            .unwrap_or(fallback_heap);
+        match finish.finish_continue(
+            &blocked.resume,
+            child_result,
+            &mut self.active,
+            child_heap,
+            parent_heap,
+            budget,
+        ) {
+            Ok(ChildFinishResult::ResumeParent(outcome)) => {
+                drop(finish);
+                let BlockedUnit {
+                    parent,
+                    resume,
+                    owner_lease,
+                    parent_heap,
+                    finish: _,
+                } = blocked;
+                self.active = parent;
+                self.active_heap = parent_heap;
+                let completion = TrampolineCompletion::ResumeParent(ParentResume {
+                    trampoline: self,
+                    resume,
+                    outcome,
+                });
+                drop(owner_lease);
+                Ok(completion)
+            }
+            Ok(ChildFinishResult::ContinueChild(continuation)) => {
+                blocked.finish = Some(continuation.finish);
+                self.active = continuation.unit;
+                self.blocked.push(blocked);
+                drop(finish);
+                Ok(TrampolineCompletion::ContinueChild(ContinuedChild {
+                    trampoline: self,
+                }))
+            }
             Err(error) => {
                 blocked.finish = Some(finish);
                 self.blocked.push(blocked);
-                return Err((error, self));
+                Err((error, self))
             }
-        };
-
-        drop(finish);
-        let BlockedUnit {
-            parent,
-            resume,
-            owner_lease,
-            parent_heap,
-            finish: _,
-        } = blocked;
-        self.active = parent;
-        self.active_heap = parent_heap;
-        let completion = TrampolineCompletion::ResumeParent(ParentResume {
-            trampoline: self,
-            resume,
-            outcome,
-        });
-        drop(owner_lease);
-        Ok(completion)
+        }
     }
 
     pub fn complete_active<O>(mut self, outcome: O) -> TrampolineCompletion<U, R, O> {
@@ -670,7 +681,12 @@ impl<U: BytecodeUnit, R> FlatTrampoline<U, R> {
         }
     }
 
-    pub fn suspend(self) -> SuspendedTrampoline<U, R> {
+    pub fn suspend(mut self) -> SuspendedTrampoline<U, R> {
+        if let Some(blocked) = self.blocked.last_mut() {
+            if let Some(finish) = blocked.finish.as_mut() {
+                finish.suspend();
+            }
+        }
         SuspendedTrampoline {
             active: self.active,
             active_heap: self.active_heap,
@@ -700,7 +716,23 @@ where
 #[derive(Debug)]
 pub enum TrampolineCompletion<U: BytecodeUnit, R, O> {
     ResumeParent(ParentResume<U, R, O>),
+    ContinueChild(ContinuedChild<U, R>),
     RootComplete(O),
+}
+
+/// A flat child chain whose parent remains blocked after the boundary finish.
+///
+/// The scheduler keeps the same child heap carrier and blocked parent slot,
+/// installs the continuation unit, and continues the non-recursive drive.
+#[derive(Debug)]
+pub struct ContinuedChild<U: BytecodeUnit, R> {
+    trampoline: FlatTrampoline<U, R>,
+}
+
+impl<U: BytecodeUnit, R> ContinuedChild<U, R> {
+    pub fn into_trampoline(self) -> FlatTrampoline<U, R> {
+        self.trampoline
+    }
 }
 
 /// Typed continuation and outcome to inject into the restored parent unit.
@@ -747,7 +779,12 @@ impl<U: BytecodeUnit, R> SuspendedTrampoline<U, R> {
         self.active_heap.as_ref()
     }
 
-    pub fn resume(self) -> FlatTrampoline<U, R> {
+    pub fn resume(mut self) -> FlatTrampoline<U, R> {
+        if let Some(blocked) = self.blocked.last_mut() {
+            if let Some(finish) = blocked.finish.as_mut() {
+                finish.resume();
+            }
+        }
         FlatTrampoline {
             active: self.active,
             active_heap: self.active_heap,
@@ -980,7 +1017,7 @@ mod tests {
             1
         );
 
-        let mut resumed = suspended.resume();
+        let resumed = suspended.resume();
         assert_eq!(resumed.active_heap().unwrap().domain().get(), 2);
         let completion = resumed.complete_active(());
         let TrampolineCompletion::ResumeParent(resume) = completion else {

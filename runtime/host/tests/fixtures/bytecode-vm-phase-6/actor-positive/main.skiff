@@ -12,6 +12,7 @@ actor Counter {
 
 impl Counter {
   function create() -> void {
+    std.time.sleep(Duration.milliseconds(0))
     self.count = 0
   }
 

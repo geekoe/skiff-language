@@ -34,7 +34,8 @@ pub use bytecode::{
     BytecodeScheduler, BytecodeSchedulerError, BytecodeSchedulerFailure,
     BytecodeSchedulerFailureOwner, BytecodeSchedulerOutcome, BytecodeSchedulerPorts,
     BytecodeStreamHandoff, BytecodeStreamSupervisor, BytecodeTerminalFailure,
-    BytecodeTerminalOwner, BytecodeUnit, BytecodeUnitControl, ChildFinish, ChildFinishError,
+    BytecodeTerminalOwner, BytecodeUnit, BytecodeUnitControl, ChildContinuation, ChildFinish,
+    ChildFinishError, ChildFinishResult,
 };
 pub use owner_inventory::{
     ActorOwnerLease, ActorOwnerRegistration, BoundaryOwnerLease, BoundaryOwnerRegistration,
@@ -66,7 +67,7 @@ pub use stream::{
     StreamSupervisor, WakeSignal, STREAM_BUFFER_CAPACITY,
 };
 pub use trampoline::{
-    BlockedUnit, ChildHeapCarrier, ChildHeapCleanupError, ChildHeapState, EnterChildError,
-    EnterChildWithFinishError, FlatTrampoline, ParentResume, SuspendedTrampoline,
+    BlockedUnit, ChildHeapCarrier, ChildHeapCleanupError, ChildHeapState, ContinuedChild,
+    EnterChildError, EnterChildWithFinishError, FlatTrampoline, ParentResume, SuspendedTrampoline,
     TrampolineCompletion,
 };

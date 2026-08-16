@@ -137,6 +137,7 @@ pub struct VmFiber {
     projection_sequence: u64,
     observer: BytecodeExecutionObserver,
     retained_slots: Vec<FrameSlotIndex>,
+    terminal_retained_parameter: Option<ValueSlot>,
 }
 
 struct UnwindState {
@@ -289,6 +290,7 @@ impl VmFiber {
             projection_sequence: 0,
             observer,
             retained_slots: retained_slots.to_vec(),
+            terminal_retained_parameter: None,
         };
         if let Ok(slot_count) = u32::try_from(slot_count) {
             if fiber.observer.claim_root_frame_entry() {
@@ -337,6 +339,15 @@ impl VmFiber {
             });
         }
         Ok(self.values[index])
+    }
+
+    /// Takes the terminal value of the retained root parameter after the
+    /// root frame exits.
+    ///
+    /// Actor create uses this to capture the updated self record without
+    /// running the create body recursively in Rust.
+    pub fn take_terminal_retained_parameter(&mut self) -> Option<ValueSlot> {
+        self.terminal_retained_parameter.take()
     }
 
     /// Supplies the request-local error correlation used when constructing
@@ -5420,6 +5431,9 @@ impl VmFiber {
                     }
                 })?);
                 if self.retained_slots.contains(&slot) {
+                    if self.frames.len() == 1 {
+                        self.terminal_retained_parameter = Some(value);
+                    }
                     self.clear_value(index);
                     continue;
                 }
