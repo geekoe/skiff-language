@@ -154,7 +154,7 @@ test('Rust matrices expose every registered prefix with the exact expected red c
     ['recoverable_', 8],
     ['db_', 6],
     ['task_', 10],
-    ['actor_', 6],
+    ['actor_', 7],
   ]);
   for (const [prefix, count] of expectedStageTests) {
     const stagePattern = new RegExp(`\\b${escapeRegExp(prefix)}s[1-6]\\b`, 'g');
