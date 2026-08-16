@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use skiff_artifact_model::bytecode::dto::TaskSubmitPayloadPlan;
 use skiff_artifact_model::{ServiceBoundaryPlan, ServiceCallRef, TypeRefIr, ValueTransferPlan};
 use skiff_compiler_lowering::{
     mir::{liveness::compute_liveness, MirConst, MirFunction, MirUnit},
@@ -203,6 +204,13 @@ impl<'a> ValidatedEmissionInputs<'a> {
             representation_carriers,
             service_boundary_plans,
         })
+    }
+}
+
+pub(crate) fn task_payload_parameter_count(plan: &TaskSubmitPayloadPlan) -> usize {
+    match plan {
+        TaskSubmitPayloadPlan::Tuple { parameters } => parameters.len(),
+        TaskSubmitPayloadPlan::Record { fields } => fields.len(),
     }
 }
 

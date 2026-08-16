@@ -240,17 +240,30 @@ impl<'a> DeploymentLinker<'a> {
                             self.key_for_synthetic_callback(package, function_key)?,
                         ))
                     }
-                    BytecodeRelocation::TaskSubmitRef { task } => {
-                        if let skiff_artifact_model::bytecode::dto::TaskSubmitTargetRef::Function {
+                    BytecodeRelocation::TaskSubmitRef { task } => match &task.target {
+                        skiff_artifact_model::bytecode::dto::TaskSubmitTargetRef::Function {
                             function_key,
-                        } = &task.target
-                        {
-                            discoveries.push((
-                                reference.pc,
-                                self.key_for_task_function(package, function_key)?,
-                            ));
-                        }
-                    }
+                        } => discoveries.push((
+                            reference.pc,
+                            self.key_for_task_function(package, function_key)?,
+                        )),
+                        skiff_artifact_model::bytecode::dto::TaskSubmitTargetRef::ActorMethod {
+                            actor,
+                            actor_abi_identity,
+                            actor_implementation_identity,
+                            method_identity,
+                        } => discoveries.push((
+                            reference.pc,
+                            self.key_for_actor_method(
+                                package,
+                                actor,
+                                actor_abi_identity,
+                                actor_implementation_identity,
+                                method_identity,
+                                type_linker,
+                            )?,
+                        )),
+                    },
                     _ => {}
                 }
             }

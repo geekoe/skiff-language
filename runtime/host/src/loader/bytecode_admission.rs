@@ -90,6 +90,18 @@ impl BytecodeDeploymentRegistry {
             .cloned()
     }
 
+    pub(crate) fn loaded_sync_by_build_id(
+        &self,
+        build_id: &str,
+    ) -> Option<Arc<DeploymentExecutionImage>> {
+        self.loaded_sync
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .find(|image| image.owner().build_id().as_str() == build_id)
+            .cloned()
+    }
+
     pub(crate) fn loaded_or_failed_sync(
         &self,
         deployment: &ServiceDeploymentRef,

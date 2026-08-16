@@ -1,8 +1,61 @@
 use std::{collections::BTreeSet, fmt};
 
-use crate::{
-    FunctionIndex, LinkedCallableSignature, LinkedValueTransferPlan, TaskTargetIndex, TypeIndex,
+use skiff_artifact_model::{
+    ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, ServiceSymbolRef,
 };
+
+use crate::{
+    ActorMethodIndex, FunctionIndex, LinkedCallableSignature, LinkedValueTransferPlan,
+    TaskTargetIndex, TypeIndex,
+};
+
+/// Exact Actor-method dispatch facts retained by one task target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkedTaskActorMethodTarget {
+    actor_method: ActorMethodIndex,
+    actor: ServiceSymbolRef,
+    actor_abi_identity: ActorAbiIdentity,
+    actor_implementation_identity: ActorImplementationIdentity,
+    method_identity: ActorMethodIdentity,
+}
+
+impl LinkedTaskActorMethodTarget {
+    pub fn new(
+        actor_method: ActorMethodIndex,
+        actor: ServiceSymbolRef,
+        actor_abi_identity: ActorAbiIdentity,
+        actor_implementation_identity: ActorImplementationIdentity,
+        method_identity: ActorMethodIdentity,
+    ) -> Self {
+        Self {
+            actor_method,
+            actor,
+            actor_abi_identity,
+            actor_implementation_identity,
+            method_identity,
+        }
+    }
+
+    pub const fn actor_method(&self) -> ActorMethodIndex {
+        self.actor_method
+    }
+
+    pub const fn actor(&self) -> &ServiceSymbolRef {
+        &self.actor
+    }
+
+    pub const fn actor_abi_identity(&self) -> &ActorAbiIdentity {
+        &self.actor_abi_identity
+    }
+
+    pub const fn actor_implementation_identity(&self) -> &ActorImplementationIdentity {
+        &self.actor_implementation_identity
+    }
+
+    pub const fn method_identity(&self) -> &ActorMethodIdentity {
+        &self.method_identity
+    }
+}
 
 /// Compiler-owned task scheduling plan retained by the linked image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,6 +181,7 @@ pub struct LinkedTaskTarget {
     signature: LinkedCallableSignature,
     timing: LinkedTaskTiming,
     payload_plan: Option<LinkedTaskPayloadPlan>,
+    actor_method: Option<LinkedTaskActorMethodTarget>,
 }
 
 impl LinkedTaskTarget {
@@ -149,6 +203,30 @@ impl LinkedTaskTarget {
             signature,
             timing,
             payload_plan: None,
+            actor_method: None,
+        })
+    }
+
+    pub fn new_actor_method(
+        index: TaskTargetIndex,
+        target_identity: impl Into<String>,
+        function: FunctionIndex,
+        signature: LinkedCallableSignature,
+        timing: LinkedTaskTiming,
+        actor_method: LinkedTaskActorMethodTarget,
+    ) -> Result<Self, LinkedTaskTargetError> {
+        let target_identity = target_identity.into();
+        if target_identity.trim().is_empty() {
+            return Err(LinkedTaskTargetError::EmptyTargetIdentity);
+        }
+        Ok(Self {
+            index,
+            target_identity: target_identity.into_boxed_str(),
+            function,
+            signature,
+            timing,
+            payload_plan: None,
+            actor_method: Some(actor_method),
         })
     }
 
@@ -200,6 +278,14 @@ impl LinkedTaskTarget {
 
     pub const fn timing(&self) -> LinkedTaskTiming {
         self.timing
+    }
+
+    pub fn actor_method(&self) -> Option<&LinkedTaskActorMethodTarget> {
+        self.actor_method.as_ref()
+    }
+
+    pub fn is_actor_method(&self) -> bool {
+        self.actor_method.is_some()
     }
 
     pub fn payload_plan(&self) -> Result<&LinkedTaskPayloadPlan, LinkedTaskTargetError> {

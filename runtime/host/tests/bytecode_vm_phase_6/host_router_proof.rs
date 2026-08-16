@@ -220,7 +220,12 @@ async fn wait_for_records(store: &MemoryTaskStore) -> Vec<skiff_task_control::mo
     panic!("Router accepted no durable task record");
 }
 
-async fn wait_for_status(store: &MemoryTaskStore, task_id: &str, expected: TaskStatusKind) {
+async fn wait_for_status(
+    supervisor: &RouterSupervisor,
+    store: &MemoryTaskStore,
+    task_id: &str,
+    expected: TaskStatusKind,
+) {
     for _ in 0..600 {
         let status = store
             .status(StatusInput {
@@ -234,7 +239,13 @@ async fn wait_for_status(store: &MemoryTaskStore, task_id: &str, expected: TaskS
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    panic!("task {task_id} did not reach {expected:?}");
+    panic!(
+        "task {task_id} did not reach {expected:?}; records={:?}; dispatcher={:?}; counters={:?}; backlog={:?}",
+        store.records().await,
+        supervisor.components().dispatcher.health(),
+        supervisor.components().task_control.counters(),
+        supervisor.components().task_control.backlog().await,
+    );
 }
 
 #[cfg(test)]
@@ -312,7 +323,13 @@ mod tests {
             skiff_task_control::model::DetachedCallTarget::Function { .. }
         ));
 
-        wait_for_status(&store, accepted.task_id.as_str(), TaskStatusKind::Succeeded).await;
+        wait_for_status(
+            &supervisor,
+            &store,
+            accepted.task_id.as_str(),
+            TaskStatusKind::Succeeded,
+        )
+        .await;
         let terminal = store.records().await[0].clone();
         assert_eq!(terminal.state, TaskState::Succeeded);
         assert_eq!(terminal.active_lease, None);
@@ -364,7 +381,13 @@ mod tests {
         );
         assert!(!accepted.payload.as_bytes().is_empty());
 
-        wait_for_status(&store, accepted.task_id.as_str(), TaskStatusKind::Succeeded).await;
+        wait_for_status(
+            &supervisor,
+            &store,
+            accepted.task_id.as_str(),
+            TaskStatusKind::Succeeded,
+        )
+        .await;
         let terminal = store.records().await[0].clone();
         assert_eq!(terminal.state, TaskState::Succeeded);
         assert_eq!(terminal.active_lease, None);

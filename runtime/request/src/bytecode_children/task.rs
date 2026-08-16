@@ -7,28 +7,37 @@
 
 use std::{future::Future, pin::Pin, sync::Arc};
 
+use base64::Engine as _;
+use sha2::{Digest, Sha256};
 use skiff_artifact_model::{LiteralIr, ServiceDeploymentRef, TypeRefIr};
 use skiff_runtime_boundary::{
-    binary::encode_recoverable_payload_plan,
+    binary::{decode_recoverable_payload_plan, encode_recoverable_payload_plan},
     payload::{PayloadBoundary, PayloadBoundaryKind, PayloadServiceRef},
 };
 use skiff_runtime_capability_context::{
-    ActivationIdentityControl, TaskCallerKind, TaskSubmitControlMessage, TaskSubmitControlRequest,
-    TaskSubmitResponseControl, TaskSubmitTimingControl,
+    ActivationIdentityControl, ActorInvocationDeclarationOwner, ActorInvocationOwnerFile,
+    ActorInvocationOwnerUnit, ActorMethodTaskTargetControl, TaskCallerKind,
+    TaskSubmitControlMessage, TaskSubmitControlRequest, TaskSubmitResponseControl,
+    TaskSubmitTimingControl,
 };
 use skiff_runtime_linked_bytecode::{
-    LinkedShapeEntry, LinkedTaskPayloadPlan, LinkedTaskTarget, LinkedTaskTiming, LinkedTypeEntry,
-    TypeIndex,
+    LinkedActorMethodTarget, LinkedShapeEntry, LinkedTaskPayloadPlan, LinkedTaskTarget,
+    LinkedTaskTiming, LinkedTypeEntry, TypeIndex,
 };
 use skiff_runtime_linker::{DeploymentExecutionEntry, DeploymentExecutionImage};
 use skiff_runtime_model::{
-    runtime_value::{RuntimeObject, RuntimeObjectFields, RuntimeValue},
+    recoverable::RuntimeRecoverableExpectedTypePlan,
+    request_heap::RequestHeap,
+    runtime_value::{HeapNode, RuntimeObject, RuntimeObjectFields, RuntimeValue},
     type_plan::builtins::artifact_type_ref_label,
     type_plan::{RuntimeRecordFieldPlan, RuntimeTypeNode, RuntimeTypePlan},
     vm_heap::VmHeap,
     vm_value::{ValueKind, ValueSlot},
 };
+use skiff_runtime_request_contract::ActorRef as ControlActorRef;
 use skiff_runtime_vm::TaskDispatchIndex;
+
+use super::db_intrinsic::materialize_runtime_value;
 
 use crate::{vm_heap::RequestVmHeap, RequestEnvelope, RequestError, RequestResult};
 
@@ -123,11 +132,96 @@ pub(crate) fn is_task_request(request: &RequestEnvelope) -> bool {
 }
 
 pub(crate) fn task_arguments(
-    _request: &RequestEnvelope,
-    _entry: &DeploymentExecutionEntry,
-    _heap: &mut dyn VmHeap,
+    request: &RequestEnvelope,
+    entry: &DeploymentExecutionEntry,
+    heap: &mut dyn VmHeap,
 ) -> RequestResult<Vec<ValueSlot>> {
-    Err(RequestError::Unsupported(task_required_fact().to_string()))
+    let image = entry.image();
+    let target = image
+        .task_targets()
+        .find(|target| target.target_identity() == request.target.as_str())
+        .ok_or_else(|| {
+            RequestError::Decode(format!(
+                "durable task target {} is absent from the exact execution image",
+                request.target
+            ))
+        })?;
+    if entry.function() != target.function() {
+        return Err(RequestError::Decode(format!(
+            "durable task routing target {} does not pin the linked task function",
+            request.target
+        )));
+    }
+    let plan = target
+        .payload_plan()
+        .map_err(|error| RequestError::Decode(error.to_string()))?;
+    let runtime_plan = task_payload_runtime_plan(image, plan)
+        .map_err(|error| RequestError::Decode(error.to_string()))?;
+    let boundary = task_payload_boundary(image);
+    let mut decode_heap = RequestHeap::default();
+    let decoded = decode_recoverable_payload_plan(
+        &request.payload_bytes,
+        &runtime_plan,
+        &boundary,
+        &mut decode_heap,
+    )
+    .map_err(|error| {
+        RequestError::Decode(format!(
+            "durable task recoverable payload decode failed: {error}"
+        ))
+    })?;
+    let RuntimeValue::Heap(handle) = decoded else {
+        return Err(RequestError::Decode(
+            "durable task recoverable payload root is not a record".to_string(),
+        ));
+    };
+    let node = decode_heap.get(handle).map_err(|error| {
+        RequestError::Decode(format!(
+            "durable task recoverable payload heap read failed: {error}"
+        ))
+    })?;
+    if !matches!(node, HeapNode::Object(_)) {
+        return Err(RequestError::Decode(
+            "durable task recoverable payload root is not an object".to_string(),
+        ));
+    }
+    let request_heap = heap
+        .as_any_mut()
+        .and_then(|heap| heap.downcast_mut::<RequestVmHeap>())
+        .ok_or_else(|| {
+            RequestError::Decode("durable task request heap is not a request VM heap".to_string())
+        })?;
+    let mut arguments = Vec::with_capacity(plan.parameter_count());
+    let mut session = Vec::new();
+    for parameter in plan.parameters() {
+        let carrier = decode_heap
+            .object_field_carrier(handle, parameter.name())
+            .map_err(|error| {
+                RequestError::Decode(format!(
+                    "durable task payload field {} read failed: {error}",
+                    parameter.name()
+                ))
+            })?
+            .ok_or_else(|| {
+                RequestError::Decode(format!(
+                    "durable task payload field {} is absent",
+                    parameter.name()
+                ))
+            })?;
+        let value = materialize_runtime_value(
+            request_heap,
+            &decode_heap,
+            image,
+            carrier.value(),
+            parameter.ty(),
+            parameter.transfer(),
+            &mut session,
+        )
+        .map_err(|error| RequestError::Decode(error))?;
+        arguments.push(value);
+        session.clear();
+    }
+    Ok(arguments)
 }
 
 pub(crate) fn task_required_fact() -> &'static str {
@@ -370,6 +464,177 @@ fn task_payload_boundary(image: &DeploymentExecutionImage) -> PayloadBoundary {
     )
 }
 
+fn linked_actor_method<'a>(
+    image: &'a DeploymentExecutionImage,
+    index: skiff_runtime_linked_bytecode::ActorMethodIndex,
+) -> Result<&'a LinkedActorMethodTarget, BytecodeTaskSubmitError> {
+    image
+        .actor_methods()
+        .iter()
+        .find(|row| row.index() == index)
+        .ok_or_else(|| {
+            task_error(format!(
+                "linked actor method row {} is absent from the exact image",
+                index.get()
+            ))
+        })
+}
+
+fn actor_task_key_payload(actor_ref: &ControlActorRef) -> Result<Vec<u8>, BytecodeTaskSubmitError> {
+    serde_json::to_vec(&serde_json::json!({
+        "serviceId": actor_ref.service_id(),
+        "actorTypeIdentity": actor_ref.actor_type_identity(),
+        "actorIdTypeIdentity": actor_ref.actor_id_type_identity(),
+        "actorIdEncodingVersion": actor_ref.actor_id_encoding_version(),
+        "canonicalActorIdKeyBytesBase64": base64::engine::general_purpose::STANDARD
+            .encode(actor_ref.canonical_actor_id_key_bytes()),
+        "actorIdHash": actor_ref.actor_id_hash(),
+    }))
+    .map_err(|error| task_error(format!("actor task key projection failed: {error}")))
+}
+
+fn actor_task_expected_type_plan(
+    image: &DeploymentExecutionImage,
+    actor_method: &LinkedActorMethodTarget,
+) -> Result<serde_json::Value, BytecodeTaskSubmitError> {
+    let create = image
+        .actor_creates()
+        .iter()
+        .find(|row| {
+            row.actor_implementation().actor_implementation_identity()
+                == actor_method
+                    .actor_implementation()
+                    .actor_implementation_identity()
+        })
+        .ok_or_else(|| {
+            task_error("actor task target has no linked create row for the exact implementation")
+        })?;
+    let parameter_count = create.signature().parameter_types().len().saturating_sub(1);
+    if parameter_count != 0 {
+        return Err(task_error(
+            "actor task create parameters are not retained by the linked create row",
+        ));
+    }
+    let plan = RuntimeTypePlan::synthetic_request_record(Vec::new());
+    serde_json::to_value(
+        RuntimeRecoverableExpectedTypePlan::from_runtime_type_plan_shape_only_for_diagnostics(
+            &plan,
+        ),
+    )
+    .map_err(|error| {
+        task_error(format!(
+            "actor task expected type plan projection failed: {error}"
+        ))
+    })
+}
+
+pub(crate) fn actor_method_task_target_control(
+    image: &DeploymentExecutionImage,
+    target: &LinkedTaskTarget,
+    receiver: &skiff_runtime_model::runtime_value::ActorRef,
+) -> Result<ActorMethodTaskTargetControl, BytecodeTaskSubmitError> {
+    let actor_method_target = target
+        .actor_method()
+        .ok_or_else(|| task_error("task target is not an actor-method target"))?;
+    let actor_method = linked_actor_method(image, actor_method_target.actor_method())?;
+    let actor_ref = ControlActorRef::new(
+        image.owner().deployment().service_id.clone(),
+        actor_method
+            .actor_implementation()
+            .actor_type_identity()
+            .to_string(),
+        actor_method
+            .actor_implementation()
+            .actor_id_type_identity()
+            .to_string(),
+        receiver.actor_id_encoding_version().to_string(),
+        receiver.canonical_actor_id_key_bytes().to_vec(),
+        receiver.actor_id_hash().to_string(),
+        receiver.epoch().or(Some(1)),
+    );
+    let actor = actor_method.actor();
+    let declaration_owner = ActorInvocationDeclarationOwner {
+        unit: ActorInvocationOwnerUnit::Service,
+        file: ActorInvocationOwnerFile::FileIrIdentity(actor.module_path.clone()),
+        actor_symbol: actor.symbol.clone(),
+    };
+    let key = actor_task_key_payload(&actor_ref)?;
+    let create_input = serde_json::to_vec(&serde_json::json!({})).map_err(|error| {
+        task_error(format!(
+            "actor task create input projection failed: {error}"
+        ))
+    })?;
+    let expected_type_plan = actor_task_expected_type_plan(image, actor_method)?;
+    Ok(ActorMethodTaskTargetControl {
+        actor_ref,
+        declaration_owner,
+        actor_abi_identity: actor_method.actor_abi_identity().clone(),
+        actor_implementation_identity: actor_method.actor_implementation_identity().clone(),
+        method_identity: actor_method.method_identity().clone(),
+        activation: skiff_runtime_request_contract::ActorActivationSnapshotControl {
+            key: base64::engine::general_purpose::STANDARD.encode(key),
+            create_input: base64::engine::general_purpose::STANDARD.encode(create_input),
+            expected_type_plan,
+        },
+    })
+}
+
+pub(crate) fn actor_method_task_target_control_from_state(
+    image: &DeploymentExecutionImage,
+    target: &LinkedTaskTarget,
+    receiver: &ValueSlot,
+    heap: &mut dyn VmHeap,
+) -> Result<ActorMethodTaskTargetControl, BytecodeTaskSubmitError> {
+    let request_heap = heap
+        .as_any()
+        .and_then(|heap| heap.downcast_ref::<RequestVmHeap>())
+        .ok_or_else(|| task_error("actor-method task state heap is not a request VM heap"))?;
+    let actor_ref = if receiver.kind() == Some(ValueKind::ActorStateRef) {
+        request_heap
+            .actor_state_ref_value(receiver)
+            .map_err(|error| {
+                task_error(format!("actor task receiver projection failed: {error}"))
+            })?
+    } else {
+        let actor_method_target = target
+            .actor_method()
+            .ok_or_else(|| task_error("task target is not an actor-method target"))?;
+        let actor_method = linked_actor_method(image, actor_method_target.actor_method())?;
+        let key_field = actor_method.actor_implementation().key_field();
+        let key_slot = request_heap
+            .record_field(receiver, key_field)
+            .map_err(|error| {
+                task_error(format!(
+                    "actor task state key field {key_field} read failed: {error}"
+                ))
+            })?;
+        let key = request_heap.string_value(&key_slot).map_err(|error| {
+            task_error(format!("actor task state key projection failed: {error}"))
+        })?;
+        let canonical_key =
+            serde_json::to_vec(&serde_json::Value::String(key)).map_err(|error| {
+                task_error(format!("actor task key canonicalization failed: {error}"))
+            })?;
+        let actor_id_hash = format!("sha256:{}", hex::encode(Sha256::digest(&canonical_key)));
+        skiff_runtime_request_contract::ActorRef::new(
+            image.owner().deployment().service_id.clone(),
+            actor_method
+                .actor_implementation()
+                .actor_type_identity()
+                .to_string(),
+            actor_method
+                .actor_implementation()
+                .actor_id_type_identity()
+                .to_string(),
+            "skiff-canonical-v1".to_string(),
+            canonical_key,
+            actor_id_hash,
+            None,
+        )
+    };
+    actor_method_task_target_control(image, target, &actor_ref)
+}
+
 fn task_runtime_value_for_slot(
     heap: &RequestVmHeap,
     value: &ValueSlot,
@@ -527,6 +792,7 @@ pub(crate) fn task_submit_message_from_composition(
     rpc_id: &str,
     composition: &BytecodeTaskChildComposition,
     timing: Option<TaskSubmitTimingControl>,
+    actor_method: Option<ActorMethodTaskTargetControl>,
 ) -> Result<TaskSubmitControlMessage, BytecodeTaskSubmitError> {
     if rpc_id.trim().is_empty() {
         return Err(BytecodeTaskSubmitError::PortUnavailable(
@@ -566,7 +832,11 @@ pub(crate) fn task_submit_message_from_composition(
         request: TaskSubmitControlRequest {
             rpc_id: rpc_id.to_string(),
             runtime_id,
-            target_kind: "function".to_string(),
+            target_kind: if actor_method.is_some() {
+                "actorMethod".to_string()
+            } else {
+                "function".to_string()
+            },
             service_id: deployment.service_id.clone(),
             service_version: deployment.contract_version.clone(),
             service_protocol_identity: protocol_identity.to_string(),
@@ -579,7 +849,7 @@ pub(crate) fn task_submit_message_from_composition(
             trace_id: None,
             caller_target: Some(target_identity.to_string()),
             max_queue_wait_ms: None,
-            actor_method: None,
+            actor_method,
         },
         payload: payload.to_vec(),
         caller_kind: TaskCallerKind::Request,
@@ -882,6 +1152,7 @@ mod tests {
             "rpc:task-child",
             &composition(),
             Some(TaskSubmitTimingControl::Immediate),
+            None,
         )
         .expect("exact task facts must compose a fresh submit message");
 
@@ -943,6 +1214,7 @@ mod tests {
             "rpc:task-child",
             &composition(),
             Some(TaskSubmitTimingControl::Immediate),
+            None,
         )
         .expect("exact linked task facts must compose a fresh submit message");
 
@@ -973,6 +1245,7 @@ mod tests {
             "rpc:task-child",
             &composition(),
             None,
+            None,
         )
         .expect_err("missing timing must fail before submission");
         assert!(error.to_string().contains("timing"));
@@ -997,6 +1270,7 @@ mod tests {
             "rpc:task-child",
             &composition,
             Some(TaskSubmitTimingControl::Immediate),
+            None,
         )
         .expect_err("missing activation identity must fail closed");
         assert!(error.to_string().contains("activation identity"));
@@ -1014,6 +1288,7 @@ mod tests {
             "rpc:task-child",
             &composition,
             Some(TaskSubmitTimingControl::Immediate),
+            None,
         )
         .expect_err("missing caller request id must fail before submission");
         assert!(error.to_string().contains("caller request id"));
@@ -1031,6 +1306,7 @@ mod tests {
             "rpc:task-child",
             &composition,
             Some(TaskSubmitTimingControl::Immediate),
+            None,
         )
         .expect_err("missing runtime id must fail before submission");
         assert!(error.to_string().contains("runtime id"));
@@ -1126,6 +1402,35 @@ mod tests {
             object.fields().get("value"),
             Some(&RuntimeValue::Number(9.0))
         );
+    }
+
+    #[test]
+    fn task_arguments_decodes_fresh_attempt_payload_with_exact_plan() {
+        let image = task_image();
+        let target = image
+            .task_targets()
+            .next()
+            .expect("task fixture links a task dispatch row")
+            .clone();
+        let mut source_heap = RequestVmHeap::new(RequestHeapLimits::default());
+        let payload = encode_durable_task_payload(
+            &image,
+            &target,
+            &[ValueSlot::number(7.0)],
+            &mut source_heap,
+        )
+        .expect("exact linked task payload must encode");
+        let entry = image
+            .function_entry(target.function())
+            .expect("task fixture entry is linked");
+        let mut request = task_envelope();
+        request.target = target.target_identity().to_string();
+        request.payload_bytes = payload;
+        let mut heap = RequestVmHeap::new(RequestHeapLimits::default());
+        let arguments =
+            task_arguments(&request, &entry, &mut heap).expect("fresh task payload must decode");
+        assert_eq!(arguments.len(), 1);
+        assert_eq!(arguments[0].as_number(), Some(7.0));
     }
 
     #[test]

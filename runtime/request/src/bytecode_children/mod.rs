@@ -58,8 +58,8 @@ pub(crate) use db_intrinsic::{
 pub(crate) use interface::execute_interface_child;
 pub(crate) use service::execute_service_child;
 pub(crate) use task::{
-    encode_durable_task_payload, is_task_request, task_arguments,
-    task_submit_message_from_composition, task_target_by_dispatch_index, task_timing_control,
+    actor_method_task_target_control_from_state, encode_durable_task_payload, is_task_request,
+    task_arguments, task_submit_message_from_composition, task_target_by_dispatch_index,
 };
 pub use task::{
     BytecodeTaskChildComposition, BytecodeTaskSubmitError, BytecodeTaskSubmitter,
