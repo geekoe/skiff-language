@@ -6,7 +6,7 @@ mod dispatch_harness;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -15,9 +15,9 @@ use skiff_artifact_identity::{
     PACKAGE_ARTIFACT_BUILD_IDENTITY_PREFIX, PACKAGE_ARTIFACT_LOCAL_ABI_IDENTITY_PREFIX,
 };
 use skiff_artifact_model::{
-    ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, PackageArtifactRef,
-    PackageBuildId, PackageLocalAbiIdentity, RecoverableExpectedTypePlan,
-    RecoverableExpectedTypeRoot, ServiceDeploymentRef, TypeRefIr,
+    ActorAbiIdentity, ActorImplementationIdentity, ActorMethodIdentity, DeploymentArtifactIdentity,
+    DeploymentRevision, PackageArtifactRef, PackageBuildId, PackageLocalAbiIdentity,
+    RecoverableExpectedTypePlan, RecoverableExpectedTypeRoot, ServiceDeploymentRef, TypeRefIr,
 };
 use skiff_deployment::projection::actor_routing::{
     ActorRoutingMethod, ActorRoutingProjection, ActorRoutingRef,
@@ -53,6 +53,7 @@ use skiff_runtime_transport::actor_owner::{
     ActorOwnerFailureReasonFrameHeader, ACTOR_OWNER_FAILURE_FRAME_TYPE,
 };
 use skiff_runtime_transport::protocol::RUNTIME_FRAME_SCHEMA_VERSION;
+use skiff_task_control::clock::TaskClock;
 use skiff_task_control::model::{
     ActorActivationSnapshot, ActorDeclarationOwner, ActorDeclarationOwnerFile,
     ActorDeclarationOwnerUnit, DurableDuration, DurableUtcTimestamp, RecoverablePayload,
@@ -62,7 +63,9 @@ use skiff_task_control::model::{
 use skiff_task_control::scheduler::{
     AdmissionDecision, AttemptAdmission, RetryBackoffPolicy, Scheduler, SchedulerConfig,
 };
-use skiff_task_control::store::{ClaimInput, DueScanInput, StatusInput, TaskStore};
+use skiff_task_control::store::{
+    ClaimInput, DueScanInput, LeaseRecoveryInput, StatusInput, TaskStore,
+};
 use skiff_task_control::MemoryTaskStore;
 use tokio::time::timeout;
 
@@ -163,10 +166,26 @@ fn actor_record(
     create_input: &[u8],
     due_at: DurableUtcTimestamp,
 ) -> TaskRecord {
+    actor_record_with_execution(
+        task_id,
+        implementation,
+        create_input,
+        due_at,
+        corpus_image(),
+    )
+}
+
+fn actor_record_with_execution(
+    task_id: &str,
+    implementation: &ActorImplementationIdentity,
+    create_input: &[u8],
+    due_at: DurableUtcTimestamp,
+    execution: TaskExecutionImageRef,
+) -> TaskRecord {
     TaskRecord {
         task_id: TaskId::new(task_id),
         owner: ServiceOwner::new(SERVICE_ID),
-        execution: corpus_image(),
+        execution,
         target: skiff_task_control::model::DetachedCallTarget::ActorMethod {
             actor: ActorRoutingRef {
                 service_id: SERVICE_ID.to_string(),
@@ -199,6 +218,16 @@ fn corpus_image() -> TaskExecutionImageRef {
         package_version: dispatch_harness::CORPUS_CONTRACT_VERSION.to_string(),
         deployment: dispatch_harness::corpus_deployment_ref(),
     }
+}
+
+fn other_build_image() -> TaskExecutionImageRef {
+    let mut image = corpus_image();
+    image.deployment.deployment_revision = DeploymentRevision::new("deployment-2");
+    image.deployment.deployment_artifact_identity = DeploymentArtifactIdentity::new(format!(
+        "skiff-deployment-artifact-v4:sha256:{}",
+        "e".repeat(64)
+    ));
+    image
 }
 
 /// Temp artifact root carrying the fixture actor routing projection record
@@ -318,6 +347,29 @@ impl Clock for TestClock {
 }
 
 #[derive(Debug, Default)]
+struct StoreClock {
+    now_ms: AtomicI64,
+}
+
+impl StoreClock {
+    fn new(millis: i64) -> Self {
+        Self {
+            now_ms: AtomicI64::new(millis),
+        }
+    }
+
+    fn set_millis(&self, millis: i64) {
+        self.now_ms.store(millis, Ordering::SeqCst);
+    }
+}
+
+impl TaskClock for StoreClock {
+    fn now_millis(&self) -> i64 {
+        self.now_ms.load(Ordering::SeqCst)
+    }
+}
+
+#[derive(Debug, Default)]
 struct FakeWriter {
     frames: Mutex<Vec<Vec<u8>>>,
 }
@@ -406,7 +458,10 @@ struct Rig {
 }
 
 fn rig() -> Rig {
-    let store = Arc::new(MemoryTaskStore::new()) as Arc<dyn TaskStore>;
+    rig_with_store(Arc::new(MemoryTaskStore::new()) as Arc<dyn TaskStore>)
+}
+
+fn rig_with_store(store: Arc<dyn TaskStore>) -> Rig {
     let clock = Arc::new(TestClock::new(1_700_000_000_000));
     let counters = Arc::new(TaskControlCounters::default());
     let deferred_scheduler: Arc<Mutex<Option<Arc<Scheduler>>>> = Arc::new(Mutex::new(None));
@@ -543,10 +598,18 @@ async fn create_and_claim(rig: &Rig, record: TaskRecord) -> TaskRecord {
 }
 
 async fn status_kind(store: &dyn TaskStore, task_id: &str) -> TaskStatusKind {
+    status_kind_with_retention(store, task_id, DurableDuration::from_millis(60_000)).await
+}
+
+async fn status_kind_with_retention(
+    store: &dyn TaskStore,
+    task_id: &str,
+    retention: DurableDuration,
+) -> TaskStatusKind {
     store
         .status(StatusInput {
             task_id: TaskId::new(task_id),
-            retention: DurableDuration::from_millis(60_000),
+            retention,
         })
         .await
         .expect("status")
@@ -697,6 +760,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn branch1_live_incarnation_different_build_rejects_without_invoke() {
+        let rig = rig();
+        let fence = commit_owner(&rig, &implementation(), b"[]");
+        assert_ne!(
+            fence.build_id,
+            other_build_image()
+                .deployment
+                .deployment_artifact_identity
+                .to_string()
+        );
+        let record = actor_record_with_execution(
+            "task-actor",
+            &implementation(),
+            b"[]",
+            rig.store.now().await.expect("now"),
+            other_build_image(),
+        );
+        let claimed = create_and_claim(&rig, record).await;
+        let decision = rig.admission.admit(&claimed).await;
+        assert!(
+            matches!(
+                decision,
+                AdmissionDecision::PermanentFailure { ref reason }
+                    if reason.contains("ActorVersionRejectedError")
+            ),
+            "live actor build mismatch must be platform-failed: {decision:?}"
+        );
+        assert_eq!(
+            rig.port.frames.lock().expect("frames").len(),
+            0,
+            "different build must never receive the task payload"
+        );
+        rig.worker.abort();
+    }
+
+    #[tokio::test]
+    async fn catalog_build_mismatch_fails_closed_before_activation() {
+        let rig = rig();
+        let record = actor_record_with_execution(
+            "task-actor",
+            &implementation(),
+            b"[]",
+            rig.store.now().await.expect("now"),
+            other_build_image(),
+        );
+        let claimed = create_and_claim(&rig, record).await;
+        let decision = rig.admission.admit(&claimed).await;
+        assert!(
+            matches!(
+                decision,
+                AdmissionDecision::PermanentFailure { ref reason }
+                    if reason.contains("ActorVersionRejectedError")
+            ),
+            "catalog deployment mismatch must fail closed: {decision:?}"
+        );
+        assert_eq!(
+            rig.activation_control
+                .requests
+                .lock()
+                .expect("requests")
+                .len(),
+            0
+        );
+        assert_eq!(rig.port.frames.lock().expect("frames").len(), 0);
+        rig.worker.abort();
+    }
+
+    #[tokio::test]
     async fn test_case_actor_attempt_carries_capability_and_parent_on_invoke() {
         let rig = rig();
         commit_owner(&rig, &implementation(), b"[]");
@@ -813,9 +944,11 @@ mod tests {
     // ---------------------------------------------------------------------------
 
     #[tokio::test]
-    async fn branch2_entry_exists_uses_entry_create_input_to_activate() {
+    async fn branch2_entry_exists_with_exact_snapshot_admits() {
         let rig = rig();
-        // Registry entry exists with entry-frozen create input; no live owner.
+        // Registry entry exists with the same frozen task snapshot; no live
+        // owner. The exact snapshot is admissible, and activation carries the
+        // task's frozen create input.
         let key = actor_key();
         rig.actor.registry.ensure_present(
             &key,
@@ -827,7 +960,7 @@ mod tests {
         let record = actor_record(
             "task-actor",
             &implementation(),
-            br#"[1]"#, // task snapshot differs; entry input must win
+            br#"[9]"#,
             rig.store.now().await.expect("now"),
         );
         let claimed = create_and_claim(&rig, record).await;
@@ -835,10 +968,7 @@ mod tests {
         let record = claimed.clone();
         let admit = tokio::spawn(async move { admission.admit(&record).await });
         let request = wait_for_activation_request(&rig).await;
-        assert_eq!(
-            request.bootstrap_bytes, br#"[9]"#,
-            "entry create input wins"
-        );
+        assert_eq!(request.bootstrap_bytes, br#"[9]"#);
         let ack = rig.actor.activation_broker.on_activation_ack(
             &request.request_id,
             &request.owner_runtime_id,
@@ -858,6 +988,77 @@ mod tests {
             rig.actor.registry.entry(&key).expect("entry").create_input,
             br#"[9]"#
         );
+        rig.worker.abort();
+    }
+
+    #[tokio::test]
+    async fn branch2_entry_exists_with_stale_create_input_uses_frozen_task_snapshot() {
+        let rig = rig();
+        let key = actor_key();
+        rig.actor.registry.ensure_present(
+            &key,
+            actor_abi(),
+            implementation(),
+            declaration_owner(),
+            br#"[9]"#,
+        );
+        let record = actor_record(
+            "task-actor",
+            &implementation(),
+            br#"[1]"#, // stale registry snapshot differs from the frozen task snapshot
+            rig.store.now().await.expect("now"),
+        );
+        let claimed = create_and_claim(&rig, record).await;
+        let admission = Arc::clone(&rig.admission);
+        let record = claimed.clone();
+        let admit = tokio::spawn(async move { admission.admit(&record).await });
+        let request = wait_for_activation_request(&rig).await;
+        assert_eq!(
+            request.bootstrap_bytes, br#"[1]"#,
+            "a stale registry create input must not poison the frozen task snapshot"
+        );
+        let ack = rig.actor.activation_broker.on_activation_ack(
+            &request.request_id,
+            &request.owner_runtime_id,
+            &request.owner_connection,
+            true,
+            rig.clock.now_ms(),
+        );
+        assert!(matches!(
+            ack,
+            skiff_router::actor::ActivationAckOutcome::Committed { .. }
+        ));
+        let decision = admit.await.expect("admit task");
+        assert_eq!(decision, AdmissionDecision::Accepted);
+        assert_eq!(rig.port.frames.lock().expect("frames").len(), 1);
+        rig.worker.abort();
+    }
+
+    #[tokio::test]
+    async fn missing_frozen_expected_type_plan_fails_closed() {
+        let rig = rig();
+        let mut record = actor_record(
+            "task-actor",
+            &implementation(),
+            b"[]",
+            rig.store.now().await.expect("now"),
+        );
+        if let skiff_task_control::model::DetachedCallTarget::ActorMethod { activation, .. } =
+            &mut record.target
+        {
+            activation.expected_type_plan_runtime = None;
+        }
+        let claimed = create_and_claim(&rig, record).await;
+        let decision = rig.admission.admit(&claimed).await;
+        assert!(
+            matches!(
+                decision,
+                AdmissionDecision::PermanentFailure { ref reason }
+                    if reason.contains("ActorActivationSnapshotRejected")
+            ),
+            "missing frozen expected-type plan must fail closed: {decision:?}"
+        );
+        assert_eq!(rig.port.frames.lock().expect("frames").len(), 0);
         rig.worker.abort();
     }
 
@@ -1092,7 +1293,7 @@ mod tests {
     // ---------------------------------------------------------------------------
 
     #[tokio::test]
-    async fn actor_attempt_return_settles_succeeded() {
+    async fn actor_attempt_return_settles_succeeded_without_parent_request() {
         let rig = rig();
         commit_owner(&rig, &implementation(), b"[]");
         let record = actor_record(
@@ -1111,6 +1312,103 @@ mod tests {
             .handle(&rig.session, &owner_return_frame(&invocation_id))
             .expect("handle return");
         wait_for_status(rig.store.as_ref(), "task-actor", TaskStatusKind::Succeeded).await;
+        rig.worker.abort();
+    }
+
+    #[tokio::test]
+    async fn actor_attempt_duplicate_return_settles_once() {
+        let rig = rig();
+        commit_owner(&rig, &implementation(), b"[]");
+        let record = actor_record(
+            "task-actor",
+            &implementation(),
+            b"[]",
+            rig.store.now().await.expect("now"),
+        );
+        let claimed = create_and_claim(&rig, record).await;
+        assert_eq!(
+            rig.admission.admit(&claimed).await,
+            AdmissionDecision::Accepted
+        );
+        let invocation_id = invoke_invocation_id(&rig);
+        let frame = owner_return_frame(&invocation_id);
+        rig.sink
+            .handle(&rig.session, &frame)
+            .expect("handle first return");
+        wait_for_status(rig.store.as_ref(), "task-actor", TaskStatusKind::Succeeded).await;
+        rig.sink
+            .handle(&rig.session, &frame)
+            .expect("handle duplicate return");
+        // The relay/sink drops the duplicate before the task control plane
+        // can report a second terminal.
+        assert_eq!(
+            rig.control
+                .counters()
+                .settlements_succeeded
+                .load(Ordering::Relaxed),
+            1
+        );
+        rig.worker.abort();
+    }
+
+    #[tokio::test]
+    async fn actor_attempt_late_return_after_lease_recovery_does_not_settle() {
+        let store_clock = Arc::new(StoreClock::new(1_700_000_000_000));
+        let store = Arc::new(MemoryTaskStore::with_clock(
+            Arc::clone(&store_clock) as Arc<dyn TaskClock>
+        ));
+        let rig = rig_with_store(Arc::clone(&store) as Arc<dyn TaskStore>);
+        commit_owner(&rig, &implementation(), b"[]");
+        let record = actor_record(
+            "task-actor",
+            &implementation(),
+            b"[]",
+            rig.store.now().await.expect("now"),
+        );
+        let claimed = create_and_claim(&rig, record).await;
+        assert_eq!(
+            rig.admission.admit(&claimed).await,
+            AdmissionDecision::Accepted
+        );
+        let invocation_id = invoke_invocation_id(&rig);
+
+        store_clock.set_millis(1_700_000_060_061);
+        let recovered = rig
+            .store
+            .recover_expired_lease(LeaseRecoveryInput {
+                task_id: TaskId::new("task-actor"),
+                retry_not_before: rig.store.now().await.expect("now"),
+            })
+            .await
+            .expect("recover lease");
+        assert!(matches!(
+            recovered,
+            skiff_task_control::store::LeaseRecoveryOutcome::Recovered(_)
+        ));
+
+        // The old actor terminal arrives after TaskStore recovered the lease.
+        // It must not write the terminal or reopen the old lease.
+        rig.sink
+            .handle(&rig.session, &owner_return_frame(&invocation_id))
+            .expect("handle late return");
+        assert_eq!(
+            status_kind_with_retention(
+                rig.store.as_ref(),
+                "task-actor",
+                DurableDuration::from_millis(2_000_000),
+            )
+            .await,
+            TaskStatusKind::Ready,
+            "late return from a fenced task lease must not settle the recovered attempt"
+        );
+        assert_eq!(
+            store.records().await[0]
+                .active_lease
+                .as_ref()
+                .map(|lease| lease.lease_id.as_str()),
+            None,
+            "late settlement must not reattach the old lease"
+        );
         rig.worker.abort();
     }
 

@@ -40,7 +40,9 @@ use skiff_runtime_transport::protocol::{
     BytecodeTaskRequestCallerFrameHeader, BytecodeTaskRequestRoutingFrameHeader,
     BytecodeTaskRequestStartFrameHeader,
 };
-use skiff_task_control::model::{DetachedCallTarget, TaskLease, TaskRecord};
+use skiff_task_control::model::{
+    ActorActivationSnapshot, DetachedCallTarget, TaskLease, TaskRecord,
+};
 use skiff_task_control::scheduler::{AdmissionDecision, AttemptAdmission};
 
 use crate::actor::{
@@ -387,6 +389,9 @@ impl RouterTaskAttemptAdmission {
                 };
             }
         };
+        if let Err(decision) = self.require_exact_activation_snapshot(activation) {
+            return decision;
+        }
         let test_case = record.test_case.as_ref();
         if test_case.is_some() {
             // F2a: a test-case actor method must belong to the parent service
@@ -416,13 +421,8 @@ impl RouterTaskAttemptAdmission {
             implementation.clone(),
             method.clone(),
         );
-        if !self.actor.catalog_view.has_method(&query) {
-            self.counters
-                .admissions_permanent_failure
-                .fetch_add(1, Ordering::Relaxed);
-            return AdmissionDecision::PermanentFailure {
-                reason: "actor method is absent from the current routing catalog".to_string(),
-            };
+        if let Err(decision) = self.require_exact_actor_method_build(record, &authority, &query) {
+            return decision;
         }
         let candidates = self.actor_port.candidates_by_build_id(&authority.build_id);
         let owner = if let Some(authority) = test_case {
@@ -468,6 +468,9 @@ impl RouterTaskAttemptAdmission {
 
         // Branch 1 / 5: a live owner fence decides by implementation identity.
         if let Some(fence) = self.actor.registry.current_owner(&key) {
+            if fence.build_id != authority.build_id {
+                return self.actor_build_rejected(&authority.build_id, Some(&fence.build_id));
+            }
             if fence.actor_implementation_identity != *implementation {
                 return self.version_rejected(record, Some(&fence));
             }
@@ -495,29 +498,20 @@ impl RouterTaskAttemptAdmission {
         let entry = self.actor.registry.entry(&key);
         let (activation_abi, activation_impl, activation_decl, bootstrap) = match entry {
             Some(entry) => {
-                if entry.actor_implementation_identity != *implementation {
-                    let fence = self.actor.registry.current_owner(&key);
-                    return self.version_rejected(record, fence.as_ref());
+                if entry.actor_abi_identity != actor.actor_abi_identity
+                    || entry.actor_implementation_identity != *implementation
+                    || entry.declaration_owner != declaration_owner_frame
+                {
+                    return self.stale_activation_plan(
+                        "registry entry identity facts differ from the frozen task target",
+                    );
                 }
-                if entry.create_input.is_empty() {
-                    // Entry predates create-input freezing: it cannot satisfy
-                    // "entry 创建输入", so treat it as an incomplete entry and
-                    // restore from the task snapshot (put-if-absent still
-                    // keeps identity facts from the first entry).
-                    (
-                        actor.actor_abi_identity.clone(),
-                        implementation.clone(),
-                        declaration_owner_frame.clone(),
-                        activation.create_input.as_bytes().to_vec(),
-                    )
-                } else {
-                    (
-                        entry.actor_abi_identity,
-                        entry.actor_implementation_identity,
-                        entry.declaration_owner,
-                        entry.create_input,
-                    )
-                }
+                (
+                    actor.actor_abi_identity.clone(),
+                    implementation.clone(),
+                    declaration_owner_frame.clone(),
+                    activation.create_input.as_bytes().to_vec(),
+                )
             }
             None => (
                 actor.actor_abi_identity.clone(),
@@ -716,6 +710,76 @@ impl RouterTaskAttemptAdmission {
                 "ActorVersionRejectedError: task implementation {} was superseded by {accepted}",
                 implementation.as_str()
             ),
+        }
+    }
+
+    /// Exact deployment build gate for actor-method tasks. The task freezes a
+    /// deployment/build, and the actor routing catalog must resolve the same
+    /// method inside that exact deployment. A live incarnation is then only
+    /// eligible when its owner fence carries the same build id.
+    fn require_exact_actor_method_build(
+        &self,
+        record: &TaskRecord,
+        authority: &RequestAuthority,
+        query: &CatalogQuery,
+    ) -> Result<(), AdmissionDecision> {
+        let Some(method) = self.actor.catalog_view.method_for(query) else {
+            self.counters
+                .admissions_permanent_failure
+                .fetch_add(1, Ordering::Relaxed);
+            return Err(AdmissionDecision::PermanentFailure {
+                reason: "actor method is absent from the current routing catalog".to_string(),
+            });
+        };
+        if method.deployment != record.execution.deployment {
+            return Err(self.actor_build_rejected(
+                &authority.build_id,
+                Some(&method.deployment.deployment_artifact_identity.to_string()),
+            ));
+        }
+        Ok(())
+    }
+
+    fn actor_build_rejected(&self, expected: &str, actual: Option<&str>) -> AdmissionDecision {
+        self.counters
+            .admissions_permanent_failure
+            .fetch_add(1, Ordering::Relaxed);
+        AdmissionDecision::PermanentFailure {
+            reason: format!(
+                "ActorVersionRejectedError: task execution build {expected} does not match the actor admission build {}",
+                actual.unwrap_or("unknown")
+            ),
+        }
+    }
+
+    /// Validates the durable activation snapshot before it can participate in
+    /// get-or-activate. Missing canonical key/create facts or the runtime
+    /// expected-type plan are stale activation plans and fail closed.
+    fn require_exact_activation_snapshot(
+        &self,
+        activation: &ActorActivationSnapshot,
+    ) -> Result<(), AdmissionDecision> {
+        if activation.key.as_bytes().is_empty()
+            || activation.create_input.as_bytes().is_empty()
+            || activation.expected_type_plan_runtime.is_none()
+        {
+            self.counters
+                .admissions_permanent_failure
+                .fetch_add(1, Ordering::Relaxed);
+            return Err(AdmissionDecision::PermanentFailure {
+                reason: "ActorActivationSnapshotRejected: task activation snapshot lacks exact key/create/expected-type-plan facts"
+                    .to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn stale_activation_plan(&self, reason: impl Into<String>) -> AdmissionDecision {
+        self.counters
+            .admissions_permanent_failure
+            .fetch_add(1, Ordering::Relaxed);
+        AdmissionDecision::PermanentFailure {
+            reason: format!("ActorActivationSnapshotRejected: {}", reason.into()),
         }
     }
 
