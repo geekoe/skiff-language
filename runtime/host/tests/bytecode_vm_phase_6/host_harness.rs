@@ -1,7 +1,10 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 
@@ -11,15 +14,17 @@ use skiff_runtime_host::{RuntimeConfig, RuntimeHost};
 use skiff_runtime_service_db::InMemoryDbProviderFactory;
 use skiff_runtime_transport::protocol::{
     decode_response_chunk_frame, decode_response_end_frame, decode_response_error_frame,
-    decode_response_start_frame, decode_runtime_capabilities_frame, decode_typed_binary_frame,
-    encode_binary_frame, encode_router_bootstrap_frame, encode_runtime_registered_frame,
-    BytecodeHttpRequestFrameHeader, BytecodeRequestCallerFrameHeader,
-    BytecodeRequestIngressFrameHeader, BytecodeRequestIngressProtocol,
-    BytecodeRequestRoutingFrameHeader, BytecodeRequestStartFrameHeader,
-    BytecodeRequestTraceFrameHeader, ResponseEndFrameMetadata,
+    decode_response_start_frame, decode_runtime_capabilities_frame,
+    decode_task_submit_request_frame, decode_typed_binary_frame, encode_binary_frame,
+    encode_router_bootstrap_frame, encode_runtime_registered_frame,
+    encode_task_submit_response_frame, BytecodeHttpRequestFrameHeader,
+    BytecodeRequestCallerFrameHeader, BytecodeRequestIngressFrameHeader,
+    BytecodeRequestIngressProtocol, BytecodeRequestRoutingFrameHeader,
+    BytecodeRequestStartFrameHeader, BytecodeRequestTraceFrameHeader, ResponseEndFrameMetadata,
     RouterBootstrapActivationFrameHeader, RouterBootstrapFrameHeader,
     RouterBootstrapHttpFrameHeader, RouterBootstrapServiceDbFrameHeader,
-    RuntimeDispatchModeCapability, RuntimeRegisteredFrameHeader, TypedEnvelope,
+    RuntimeDispatchModeCapability, RuntimeRegisteredFrameHeader, TaskCallerKind, TaskRef,
+    TaskSubmitRequestFrameHeaderV2, TaskSubmitResponseFrameHeader, TaskTargetKind, TypedEnvelope,
     ValidatedResponseErrorFrame, RUNTIME_FRAME_SCHEMA_VERSION,
 };
 use tokio::{
@@ -38,6 +43,7 @@ pub(super) struct RuntimeHostHarness {
     fixture: PublishedFixture,
     websocket: WebSocketStream<TcpStream>,
     runtime_replica_id: String,
+    task_store: FakeTaskStore,
     _host_task: AbortOnDrop,
     _runtime_home: RuntimeHome,
 }
@@ -51,6 +57,70 @@ pub(super) struct HostError {
     pub code: String,
     pub message: String,
     pub status: Option<u16>,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct TaskSubmission {
+    pub request: TaskSubmitRequestFrameHeaderV2,
+    pub payload: Vec<u8>,
+    pub response: TaskSubmitResponseFrameHeader,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(super) struct FakeTaskStore {
+    submissions: Arc<Mutex<Vec<TaskSubmission>>>,
+}
+
+impl FakeTaskStore {
+    pub(super) fn accept(
+        &self,
+        request: TaskSubmitRequestFrameHeaderV2,
+        payload: Vec<u8>,
+    ) -> Result<TaskSubmitResponseFrameHeader, String> {
+        let task_id = request
+            .task_id
+            .clone()
+            .unwrap_or_else(|| format!("task-{}", request.caller_request_id));
+        let response = TaskSubmitResponseFrameHeader {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            envelope_type: "task.submit.response".to_string(),
+            rpc_id: request.rpc_id.clone(),
+            task_ref: TaskRef::new(&task_id, &request.service_id)?,
+            task_id: task_id.clone(),
+            request_id: task_id.clone(),
+            status: "submitted".to_string(),
+        };
+
+        let mut submissions = self
+            .submissions
+            .lock()
+            .map_err(|_| "fake TaskStore submissions lock poisoned".to_string())?;
+        if let Some(existing) = submissions
+            .iter()
+            .find(|submission| submission.response.task_id == task_id)
+        {
+            if existing.request != request || existing.payload != payload {
+                return Err(format!(
+                    "duplicate task id {task_id} conflicts with the already accepted submission"
+                ));
+            }
+            return Ok(existing.response.clone());
+        }
+        submissions.push(TaskSubmission {
+            request,
+            payload,
+            response: response.clone(),
+        });
+        Ok(response)
+    }
+
+    pub(super) fn accepted(&self) -> Vec<TaskSubmission> {
+        self.submissions
+            .lock()
+            .map_err(|_| "fake TaskStore submissions lock poisoned".to_string())
+            .expect("fake TaskStore submissions")
+            .clone()
+    }
 }
 
 impl RuntimeHostHarness {
@@ -83,6 +153,7 @@ impl RuntimeHostHarness {
             fixture,
             websocket,
             runtime_replica_id,
+            task_store: FakeTaskStore::default(),
             _host_task: host_task,
             _runtime_home: runtime_home,
         }
@@ -91,6 +162,10 @@ impl RuntimeHostHarness {
     pub(super) fn request_routing(&self, request_id: &str) -> RequestRoutingFacts {
         self.fixture
             .request_routing_facts(&self.runtime_replica_id, request_id)
+    }
+
+    pub(super) fn accepted_tasks(&self) -> Vec<TaskSubmission> {
+        self.task_store.accepted()
     }
 
     pub async fn send_http_request(
@@ -163,6 +238,9 @@ impl RuntimeHostHarness {
                 .expect("decode RuntimeHost response envelope");
             match typed.envelope_type.as_str() {
                 "response.start" => break bytes,
+                "task.submit.request" => {
+                    self.handle_task_submit_request(&bytes).await;
+                }
                 "response.end" => {
                     let (header, payload) = decode_response_end_frame(&bytes)
                         .expect("RuntimeHost emitted canonical response.end");
@@ -208,6 +286,9 @@ impl RuntimeHostHarness {
                     expected_seq += 1;
                     chunks.push(payload);
                 }
+                "task.submit.request" => {
+                    self.handle_task_submit_request(&bytes).await;
+                }
                 "response.end" => {
                     let (header, payload) = decode_response_end_frame(&bytes)
                         .expect("RuntimeHost emitted canonical response.end");
@@ -228,7 +309,19 @@ impl RuntimeHostHarness {
 
     pub async fn error(&mut self, request_id: &str) -> HostError {
         let deadline = Instant::now() + IO_TIMEOUT;
-        let bytes = next_binary_of_type(&mut self.websocket, "response.error", deadline).await;
+        let bytes = loop {
+            let bytes = next_binary(&mut self.websocket, deadline, request_id).await;
+            let (typed, _) = decode_typed_binary_frame::<TypedEnvelope>(&bytes)
+                .expect("decode RuntimeHost response envelope");
+            match typed.envelope_type.as_str() {
+                "response.error" => break bytes,
+                "task.submit.request" => {
+                    self.handle_task_submit_request(&bytes).await;
+                }
+                "runtime.capabilities" | "runtime.health" => {}
+                other => panic!("unexpected RuntimeHost response frame {other}"),
+            }
+        };
         let (header, error) = decode_response_error_frame(&bytes)
             .expect("RuntimeHost emitted canonical response.error");
         assert_eq!(header.request_id(), request_id);
@@ -252,6 +345,31 @@ impl RuntimeHostHarness {
             .await
             .expect("close RuntimeHost peer");
         self._host_task.stop().await;
+    }
+
+    async fn handle_task_submit_request(&mut self, bytes: &[u8]) {
+        let (request, payload) = decode_task_submit_request_frame(bytes)
+            .expect("RuntimeHost emitted canonical task.submit.request");
+        assert_eq!(
+            request.caller_kind,
+            TaskCallerKind::Request,
+            "Phase 6 function task submit must use the request parent kind"
+        );
+        assert_eq!(
+            request.target_kind,
+            TaskTargetKind::Function,
+            "Phase 6 host task fixture must submit a function target"
+        );
+        let response = self
+            .task_store
+            .accept(request, payload)
+            .unwrap_or_else(|message| panic!("fake TaskStore rejected submission: {message}"));
+        let response_bytes = encode_task_submit_response_frame(&response)
+            .expect("encode deterministic task.submit.response");
+        self.websocket
+            .send(Message::Binary(response_bytes.into()))
+            .await
+            .expect("send deterministic task.submit.response");
     }
 }
 

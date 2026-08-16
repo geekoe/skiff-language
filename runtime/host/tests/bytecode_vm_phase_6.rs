@@ -14,6 +14,10 @@ use fixture::Capability;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skiff_runtime_transport::protocol::{
+        ActivationIdentityFrameMetadata, TaskCallerKind, TaskSubmitRequestFrameHeaderV2,
+        TaskTargetKind, RUNTIME_FRAME_SCHEMA_VERSION,
+    };
     use stages::{
         admitted_artifact, link_input, linked_image, published_positive, request_to_terminal,
         scheduler_to_request,
@@ -278,6 +282,150 @@ mod tests {
             .as_str()
             .starts_with("skiff-runtime-assembly-v3:sha256:"));
         host.close().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn task_host_durable_acceptance_resumes_and_preserves_exact_build() {
+        let prefix = "task-acceptance";
+        let request_id = "phase-6-task-acceptance";
+        let fixture = published_positive(Capability::Task, prefix);
+        let expected_build = fixture.deployment.deployment_artifact_identity.clone();
+        let expected_service = fixture.deployment.service_id.clone();
+        let expected_assembly = fixture.assembly_identity().as_str().to_string();
+        let mut host = host_harness::RuntimeHostHarness::start(prefix, fixture).await;
+        host.send_http_request(&request_id, "/phase-6/task", "unary", b"7")
+            .await;
+        let response = host.response(&request_id).await;
+
+        assert_eq!(response.status, 200);
+        assert!(
+            !response.chunks.is_empty(),
+            "durable task acceptance must resume the parent to an observable terminal"
+        );
+        let accepted = host.accepted_tasks();
+        assert_eq!(accepted.len(), 1);
+        let submission = &accepted[0];
+        assert_eq!(submission.request.caller_kind, TaskCallerKind::Request);
+        assert_eq!(submission.request.caller_request_id, request_id);
+        assert_eq!(submission.request.target_kind, TaskTargetKind::Function);
+        assert_eq!(submission.request.service_id, expected_service);
+        assert_eq!(
+            submission.request.build_id.as_deref(),
+            Some(expected_build.as_str())
+        );
+        assert_eq!(
+            submission.request.activation_identity.assembly_identity,
+            expected_assembly
+        );
+        assert_eq!(submission.response.rpc_id, submission.request.rpc_id);
+        assert_eq!(submission.response.status, "submitted");
+        assert_eq!(submission.response.task_id, format!("task-{request_id}"));
+        assert_eq!(submission.response.request_id, submission.response.task_id);
+        assert_eq!(
+            submission.response.task_ref.task_id(),
+            submission.response.task_id
+        );
+        assert_eq!(
+            submission.response.task_ref.owner(),
+            submission.request.service_id
+        );
+        assert!(
+            !submission.payload.is_empty(),
+            "durable function task must carry the encoded recoverable payload"
+        );
+        host.close().await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn task_host_duplicate_acceptance_outlives_parent_terminal_and_preserves_payload() {
+        let prefix = "task-duplicate";
+        let request_id = "phase-6-task-duplicate";
+        let fixture = published_positive(Capability::Task, prefix);
+        let mut host = host_harness::RuntimeHostHarness::start(prefix, fixture).await;
+        host.send_http_request(&request_id, "/phase-6/task", "unary", b"7")
+            .await;
+        let first = host.response(&request_id).await;
+        host.send_http_request(&request_id, "/phase-6/task", "unary", b"7")
+            .await;
+        let second = host.response(&request_id).await;
+
+        assert_eq!(first.status, 200);
+        assert_eq!(second.status, 200);
+        assert!(!first.chunks.is_empty());
+        assert!(!second.chunks.is_empty());
+        let accepted = host.accepted_tasks();
+        assert_eq!(
+            accepted.len(),
+            1,
+            "identical duplicate acceptance must not create a second durable task"
+        );
+        assert_eq!(
+            accepted[0].response.task_id,
+            format!("task-{request_id}"),
+            "late duplicate acceptance after the parent terminal must return the same durable task id"
+        );
+        assert!(
+            !accepted[0].payload.is_empty(),
+            "the durable accepted record must preserve the recoverable task payload"
+        );
+        host.close().await;
+    }
+
+    #[test]
+    fn task_fake_store_rejects_conflicting_duplicate_task_id() {
+        let store = host_harness::FakeTaskStore::default();
+        let request = task_submit_request("task-conflict", "parent-1");
+        let first = store
+            .accept(request.clone(), b"payload-1".to_vec())
+            .expect("first acceptance");
+        let duplicate = store
+            .accept(request.clone(), b"payload-1".to_vec())
+            .expect("identical duplicate acceptance");
+        assert_eq!(first, duplicate);
+        assert_eq!(store.accepted().len(), 1);
+
+        let error = store
+            .accept(request, b"payload-2".to_vec())
+            .expect_err("conflicting duplicate task id must fail closed");
+        assert!(
+            error.contains("conflicts"),
+            "rejection must be explicit: {error}"
+        );
+    }
+
+    fn task_submit_request(
+        task_id: &str,
+        caller_request_id: &str,
+    ) -> TaskSubmitRequestFrameHeaderV2 {
+        TaskSubmitRequestFrameHeaderV2 {
+            schema_version: RUNTIME_FRAME_SCHEMA_VERSION.to_string(),
+            envelope_type: "task.submit.request".to_string(),
+            rpc_id: format!("rpc:{caller_request_id}"),
+            runtime_id: "runtime-a".to_string(),
+            caller_kind: TaskCallerKind::Request,
+            caller_request_id: caller_request_id.to_string(),
+            target_kind: TaskTargetKind::Function,
+            service_id: "test.skiff/bytecode-vm-phase-6-task".to_string(),
+            service_version: "1.0.0".to_string(),
+            service_protocol_identity: "test.skiff/bytecode-vm-phase-6-task:1.0.0".to_string(),
+            target: "test.skiff/bytecode-vm-phase-6-task:work".to_string(),
+            timing: None,
+            task_id: Some(task_id.to_string()),
+            build_id: Some(format!(
+                "skiff-deployment-artifact-v6:sha256:{}",
+                "a".repeat(64)
+            )),
+            activation_identity: ActivationIdentityFrameMetadata {
+                assembly_identity: format!("skiff-runtime-assembly-v3:sha256:{}", "a".repeat(64)),
+                generation: 1,
+                runtime_replica_id: "runtime-a".to_string(),
+                deployment_revision: "rev-1".to_string(),
+            },
+            trace_id: None,
+            caller_target: Some("test.skiff/bytecode-vm-phase-6-task:work".to_string()),
+            max_queue_wait_ms: None,
+            actor_method: None,
+        }
     }
 
     #[test]
