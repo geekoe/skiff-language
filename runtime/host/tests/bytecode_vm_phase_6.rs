@@ -200,6 +200,40 @@ mod tests {
         interface_remote_s5,
         interface_remote_s6
     );
+
+    #[test]
+    fn interface_remote_table_links_remote_service_operation() {
+        let image = linked_image(
+            Capability::InterfaceRemote,
+            "interface-remote-table-links-service-operation",
+        );
+        let remote = image
+            .interface_tables()
+            .iter()
+            .find_map(|table| match table.kind() {
+                skiff_runtime_linked_bytecode::LinkedInterfaceTableKind::Remote(remote) => {
+                    Some(remote)
+                }
+                _ => None,
+            })
+            .expect("remote interface fixture must produce a Remote method table");
+        assert!(!remote.methods().is_empty());
+        assert!(
+            image.service_operations().iter().any(|operation| {
+                operation.service_requirement_key() == remote.service_requirement_key()
+                    && operation.contract_operation_id()
+                        == remote.methods()[0].contract_operation_id()
+                    && operation.expected_protocol_identity()
+                        == remote.callee_protocol_identity()
+            }),
+            "remote interface table must link the exact service operation/build"
+        );
+    }
+
+    #[test]
+    fn interface_remote_negative_rejected() {
+        stages::assert_interface_remote_negative_rejected("interface-remote-negative");
+    }
     capability_matrix!(
         Capability::Callback,
         "callback-s1",

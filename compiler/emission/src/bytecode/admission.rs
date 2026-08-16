@@ -1060,6 +1060,9 @@ fn validate_service_boundary_plan_coverage(
         for service_call in &unit.external_refs.service_call_refs {
             required.insert(service_call.clone(), ());
         }
+        for service_call in &unit.remote_interface_refs {
+            required.insert(service_call.clone(), ());
+        }
     }
     for service_call in required.keys() {
         let plan = service_boundary_plans.get(service_call).ok_or_else(|| {

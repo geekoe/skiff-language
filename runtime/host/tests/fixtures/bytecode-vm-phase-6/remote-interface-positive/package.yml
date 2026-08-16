@@ -1,0 +1,6 @@
+id: test.skiff/bytecode-vm-phase-6-remote-interface
+version: 1.0.0
+services:
+  - id: example.com/phase-6-remote-provider
+    version: 1.0.0
+    alias: provider

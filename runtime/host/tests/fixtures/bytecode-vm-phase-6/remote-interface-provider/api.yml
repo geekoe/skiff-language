@@ -1,0 +1,4 @@
+reader:
+  const: root.main.reader
+  interfaces:
+    - root.main.Reader

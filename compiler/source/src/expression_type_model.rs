@@ -6,7 +6,8 @@ use skiff_artifact_model::{
     http_boundary::{canonical_http_boundary_symbol, HTTP_RESPONSE_STREAM_EVENT_TYPE},
     BoundaryValueCarrier, BoundaryValueEncoding, BoundaryValueLifetime, BoundaryValueOwner,
     BoundaryValuePlan, BuiltinReceiverPublicReturnType, LiteralIr, PackageRefIr, PackageSymbolRef,
-    PackageTypeRef, ParamModeIr, TypeRefIr,
+    PackageTypeRef, ParamModeIr, InterfaceMethodSlotSignatureIr, RemoteOperationSlotPlanIr,
+    RemoteOperationTablePlanIr, TypeRefIr,
 };
 use skiff_compiler_core::type_ref::{
     catch_result_branches, contains_type_param, debug_text, is_null_type, map_entry,
@@ -70,6 +71,8 @@ pub struct ExpressionTypeModel {
     representation_constructor_validations:
         BTreeMap<ExpressionKey, RepresentationConstructorValidation>,
     object_materializations: BTreeMap<ExpressionKey, TargetTypedObjectMaterialization>,
+    remote_interface_operations:
+        BTreeMap<ExpressionKey, RemoteOperationTablePlanIr>,
 }
 
 /// Compiler-known collection kind selected for one source bracket segment.
@@ -322,6 +325,8 @@ struct CheckOutputs {
     representation_constructor_validations:
         BTreeMap<ExpressionKey, RepresentationConstructorValidation>,
     object_materialization: ObjectMaterializationState,
+    remote_interface_operations:
+        BTreeMap<ExpressionKey, RemoteOperationTablePlanIr>,
     diagnostics: Vec<String>,
 }
 
@@ -393,6 +398,7 @@ impl ExpressionTypeModel {
             constructor_validations,
             representation_constructor_validations,
             object_materialization,
+            remote_interface_operations,
             diagnostics,
         } = outputs;
         let model = Self {
@@ -401,6 +407,7 @@ impl ExpressionTypeModel {
             constructor_validations,
             representation_constructor_validations,
             object_materializations: object_materialization.facts,
+            remote_interface_operations,
         };
         if !diagnostics.is_empty() {
             return Err(ExpressionTypeModelBuildError {
@@ -440,6 +447,13 @@ impl ExpressionTypeModel {
         key: &ExpressionKey,
     ) -> Option<&TargetTypedObjectMaterialization> {
         self.object_materializations.get(key)
+    }
+
+    pub fn remote_interface_operations(
+        &self,
+        key: &ExpressionKey,
+    ) -> Option<&RemoteOperationTablePlanIr> {
+        self.remote_interface_operations.get(key)
     }
 
     /// Returns the `Stream<T>` chunk target recorded by the unified expression
@@ -2002,7 +2016,12 @@ impl<'a> OwnerChecker<'a> {
         value: &Expr,
         interface: &TypeRef,
     ) -> Option<ResolvedTypeRef> {
-        let value_ty = self.check_expr(value);
+        let remote_source = matches!(value, Expr::DependencySourceAddress(_));
+        let value_ty = if remote_source {
+            self.check_expr_with_field_diagnostics(value, false, None)
+        } else {
+            self.check_expr(value)
+        };
         let selector = match self
             .type_resolution
             .resolve_object_safe_interface_selector_type_ref(interface, &self.type_context)
@@ -2018,6 +2037,31 @@ impl<'a> OwnerChecker<'a> {
                 return None;
             }
         };
+        if let Expr::DependencySourceAddress(source) = value {
+            let plan = match self.remote_interface_operation_plan(source, &selector.instantiation_ref)
+            {
+                Ok(plan) => plan,
+                Err(error) => {
+                    self.outputs.diagnostics.push(format!(
+                        "{}: remote interface source `{}/{}` at {} failed: {error}",
+                        self.module_path,
+                        source.dependency_ref,
+                        source.public_path,
+                        self.expression_span_label(key)
+                    ));
+                    return None;
+                }
+            };
+            self.outputs
+                .remote_interface_operations
+                .insert(key.clone(), plan);
+            return Some(ResolvedTypeRef::with_text(
+                TypeRefIr::AnyInterface {
+                    interface: selector.instantiation_ref,
+                },
+                format!("any {}", selector.source_text),
+            ));
+        }
         let value_ty = value_ty?;
         let Some(receiver) = self
             .type_resolution
@@ -2067,6 +2111,60 @@ impl<'a> OwnerChecker<'a> {
                 None
             }
         }
+    }
+
+    fn remote_interface_operation_plan(
+        &self,
+        source: &crate::shared::ast::DependencySourceAddress,
+        interface: &skiff_artifact_model::InterfaceInstantiationRef,
+    ) -> Result<RemoteOperationTablePlanIr, String> {
+        let dependency_analysis = self.dependency_analysis.ok_or_else(|| {
+            "remote interface boxing requires resolved service dependency facts".to_string()
+        })?;
+        let contract = dependency_analysis
+            .contract(&source.dependency_ref)
+            .map_err(|error| format!("contract dependency lookup failed: {error}"))?;
+        let instance = contract
+            .public_instances
+            .get(&source.public_path)
+            .ok_or_else(|| format!("public instance `{}` is absent", source.public_path))?;
+        let row = instance
+            .interfaces
+            .iter()
+            .find(|row| &row.interface == interface)
+            .ok_or_else(|| "public instance does not expose the selected interface".to_string())?;
+        let slots = self
+            .type_resolution
+            .interface_method_slots_for_instantiation(interface)
+            .map_err(|error| format!("interface method slots failed: {error}"))?;
+        if slots.len() != row.methods.len() {
+            return Err(format!(
+                "public instance exposes {} method rows but interface has {} slots",
+                row.methods.len(),
+                slots.len()
+            ));
+        }
+        let mut remote_slots = Vec::with_capacity(slots.len());
+        for (ordinal, (slot, method)) in slots.iter().zip(&row.methods).enumerate() {
+            if slot.slot != ordinal as u32 || slot.method_abi_id != method.method_abi_id {
+                return Err(format!(
+                    "public instance method row {ordinal} disagrees with interface slot facts"
+                ));
+            }
+            remote_slots.push(RemoteOperationSlotPlanIr {
+                slot: slot.slot,
+                method_abi_id: slot.method_abi_id.clone(),
+                signature: InterfaceMethodSlotSignatureIr {
+                    params: slot.params.clone(),
+                    return_type: slot.return_type.clone(),
+                },
+                operation_abi_id: method.contract_operation_id.as_str().to_string(),
+            });
+        }
+        Ok(RemoteOperationTablePlanIr {
+            interface: interface.clone(),
+            slots: remote_slots,
+        })
     }
 
     fn check_field_expr(

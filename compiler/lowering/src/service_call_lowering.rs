@@ -86,13 +86,18 @@ pub fn lower_service_calls(
     let mut used_operations =
         BTreeMap::<String, (ContractRequirement, BTreeSet<ContractOperationId>)>::new();
     for (_, target) in targets.iter() {
-        let ResolvedCallTarget::ContractOperation {
-            contract_requirement,
-            contract_operation_id,
-            ..
-        } = target
-        else {
-            continue;
+        let (contract_requirement, operations) = match target {
+            ResolvedCallTarget::ContractOperation {
+                contract_requirement,
+                contract_operation_id,
+                ..
+            } => (contract_requirement, std::slice::from_ref(contract_operation_id)),
+            ResolvedCallTarget::RemoteInterface {
+                contract_requirement,
+                operations,
+                ..
+            } => (contract_requirement, operations.as_slice()),
+            _ => continue,
         };
         let alias = contract_requirement.alias.clone();
         let operation_ids = match used_operations.entry(alias.clone()) {
@@ -108,7 +113,7 @@ pub fn lower_service_calls(
                 &mut entry.into_mut().1
             }
         };
-        operation_ids.insert(contract_operation_id.clone());
+        operation_ids.extend(operations.iter().cloned());
     }
 
     // Slots are dense over used requirements and ordered by validated alias.
@@ -131,23 +136,32 @@ pub fn lower_service_calls(
 
     let mut call_sites = Vec::new();
     for (expression, target) in targets.iter() {
-        let ResolvedCallTarget::ContractOperation {
-            contract_requirement,
-            contract_operation_id,
-            ..
-        } = target
-        else {
-            continue;
+        let (contract_requirement, operations) = match target {
+            ResolvedCallTarget::ContractOperation {
+                contract_requirement,
+                contract_operation_id,
+                ..
+            } => (contract_requirement, std::slice::from_ref(contract_operation_id)),
+            ResolvedCallTarget::RemoteInterface {
+                contract_requirement,
+                operations,
+                ..
+            } => (contract_requirement, operations.as_slice()),
+            _ => continue,
         };
         let slot = slots[&contract_requirement.alias];
-        call_sites.push(LoweredServiceCallSite {
-            expression: expression.clone(),
-            call_ref: ServiceCallRef {
-                service_requirement_slot: slot,
-                contract_operation_id: contract_operation_id.clone(),
-                expected_protocol_identity: contract_requirement.expected_protocol_identity.clone(),
-            },
-        });
+        call_sites.extend(operations.iter().map(|contract_operation_id| {
+            LoweredServiceCallSite {
+                expression: expression.clone(),
+                call_ref: ServiceCallRef {
+                    service_requirement_slot: slot,
+                    contract_operation_id: contract_operation_id.clone(),
+                    expected_protocol_identity: contract_requirement
+                        .expected_protocol_identity
+                        .clone(),
+                },
+            }
+        }));
     }
 
     let (file_refs, call_ref_indices) = index_file_service_call_refs(&call_sites)?;

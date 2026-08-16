@@ -1,0 +1,8 @@
+interface NotReader {
+  function nope(self: Self) -> string
+}
+
+function run(seed: number) -> string {
+  final reader = provider/reader as NotReader
+  return reader.nope()
+}

@@ -59,6 +59,11 @@ pub enum ResolvedCallTarget {
         method_abi_id: String,
         slot: u32,
     },
+    RemoteInterface {
+        contract_requirement: ContractRequirement,
+        public_instance_key: String,
+        operations: Vec<ContractOperationId>,
+    },
     ContractOperation {
         contract_requirement: ContractRequirement,
         contract_operation_id: ContractOperationId,
@@ -87,6 +92,7 @@ impl ResolvedCallTarget {
             | Self::ReceiverBuiltin { .. }
             | Self::DependencyPackageFunction { .. }
             | Self::InterfaceMethod { .. }
+            | Self::RemoteInterface { .. }
             | Self::ContractOperation { .. }
             | Self::Unknown { .. } => None,
         }

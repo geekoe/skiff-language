@@ -210,6 +210,13 @@ impl Evaluator<'_, '_> {
                 };
                 self.apply_callee(&callee, &actuals, return_reference, None)
             }
+            Some(ResolvedCallTarget::RemoteInterface { .. }) => self
+                .apply_unknown_call_with_callee(
+                    &callee_value,
+                    &actuals,
+                    return_reference,
+                    EscapeLane::External,
+                ),
             Some(ResolvedCallTarget::Unknown { .. }) | None => self.apply_unknown_call_with_callee(
                 &callee_value,
                 &actuals,

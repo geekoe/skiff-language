@@ -251,6 +251,25 @@ fn service_boundary_plans(
             .compile_model()
             .resolved_call_targets()
             .contract_operation(site.expression())
+            .or_else(|| {
+                let requirement = compiled
+                    .lowered()
+                    .service_calls()
+                    .service_requirements()
+                    .iter()
+                    .find(|requirement| {
+                        requirement.service_binding_slot
+                            == site.call_ref().service_requirement_slot
+                    })?;
+                let contract = compiled
+                    .compile_model()
+                    .dependency_analysis()
+                    .contract(&requirement.contract_requirement.alias)
+                    .ok()?;
+                contract
+                    .operations
+                    .get(&site.call_ref().contract_operation_id)
+            })
             .ok_or_else(|| PackageCompileError::ContractValidation {
                 message: format!(
                     "service call {} has no exact contract operation descriptor",

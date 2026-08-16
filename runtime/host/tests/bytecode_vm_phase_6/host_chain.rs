@@ -63,6 +63,7 @@ async fn drive(capability: Capability, prefix: &str) -> HostResponse {
         capability,
         Capability::Service
             | Capability::InterfaceLocal
+            | Capability::InterfaceRemote
             | Capability::Recoverable
             | Capability::Db
             | Capability::Task
@@ -96,7 +97,8 @@ async fn drive_fixture(
 fn capability_path(capability: Capability) -> &'static str {
     match capability {
         Capability::Service => "/phase-6/service",
-        Capability::InterfaceLocal | Capability::InterfaceRemote => "/phase-6/interface",
+        Capability::InterfaceLocal => "/phase-6/interface-local",
+        Capability::InterfaceRemote => "/phase-6/remote-interface",
         Capability::Callback => "/phase-6/callback",
         Capability::Recoverable => "/phase-6/recoverable",
         Capability::Db => "/phase-6/db",

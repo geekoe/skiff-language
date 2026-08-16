@@ -44,8 +44,12 @@ impl Capability {
             (Self::InterfaceLocal, true) => {
                 "test.skiff/bytecode-vm-phase-6-interface-local-bad-signature"
             }
-            (Self::InterfaceRemote, false) => "test.skiff/bytecode-vm-phase-6-interface",
-            (Self::InterfaceRemote, true) => "test.skiff/bytecode-vm-phase-6-interface-negative",
+            (Self::InterfaceRemote, false) => {
+                "test.skiff/bytecode-vm-phase-6-remote-interface"
+            }
+            (Self::InterfaceRemote, true) => {
+                "test.skiff/bytecode-vm-phase-6-remote-interface-negative"
+            }
             (Self::Callback, false) => "test.skiff/bytecode-vm-phase-6-callback",
             (Self::Callback, true) => "test.skiff/bytecode-vm-phase-6-callback-negative",
             (Self::Recoverable, false) => "test.skiff/bytecode-vm-phase-6-recoverable",
@@ -67,8 +71,8 @@ impl Capability {
             Self::Service => "service-positive",
             Self::InterfaceLocal if negative => "interface-local-bad-signature",
             Self::InterfaceLocal => "interface-local-success",
-            Self::InterfaceRemote if negative => "interface-negative",
-            Self::InterfaceRemote => "interface-positive",
+            Self::InterfaceRemote if negative => "remote-interface-negative",
+            Self::InterfaceRemote => "remote-interface-positive",
             Self::Callback if negative => "callback-negative",
             Self::Callback => "callback-positive",
             Self::Recoverable if negative => "recoverable-negative",
@@ -153,6 +157,12 @@ pub fn build_capability(capability: Capability, negative: bool, prefix: &str) ->
     }
     if capability == Capability::Callback && !negative {
         return build_callback_positive(&repository, prefix);
+    }
+    if capability == Capability::InterfaceRemote && !negative {
+        return build_remote_interface_positive(&repository, prefix);
+    }
+    if capability == Capability::InterfaceRemote && negative {
+        return build_remote_interface_negative(&repository, prefix);
     }
     let fixture = repository.join(capability.path(negative));
     let root = TempRoot::new(prefix);
@@ -243,6 +253,72 @@ fn build_callback_positive(repository: &Path, prefix: &str) -> BuildOutcome {
         fixture._root = root;
     }
     outcome
+}
+
+fn build_remote_interface_positive(repository: &Path, prefix: &str) -> BuildOutcome {
+    let root = TempRoot::new(prefix);
+    let sources = CompilerPlatformSources::new(repository).expect("open compiler platform sources");
+    seed_official_std_package(&sources, root.path()).expect("seed production std package");
+    let provider =
+        repository.join("runtime/host/tests/fixtures/bytecode-vm-phase-6/remote-interface-provider");
+    match build_single_into(
+        &provider,
+        "example.com/phase-6-remote-provider",
+        "1.0.0",
+        root.path(),
+    ) {
+        BuildOutcome::Published(_) => {}
+        BuildOutcome::Rejected { error_chain, .. } => {
+            return BuildOutcome::Rejected {
+                error_chain,
+                package_pointer_absent: false,
+                release_pointer_absent: false,
+            }
+        }
+    }
+    let consumer = repository
+        .join("runtime/host/tests/fixtures/bytecode-vm-phase-6/remote-interface-positive");
+    let mut outcome = build_single_into(
+        &consumer,
+        "test.skiff/bytecode-vm-phase-6-remote-interface",
+        "1.0.0",
+        root.path(),
+    );
+    if let BuildOutcome::Published(fixture) = &mut outcome {
+        fixture._root = root;
+    }
+    outcome
+}
+
+fn build_remote_interface_negative(repository: &Path, prefix: &str) -> BuildOutcome {
+    let root = TempRoot::new(prefix);
+    let sources = CompilerPlatformSources::new(repository).expect("open compiler platform sources");
+    seed_official_std_package(&sources, root.path()).expect("seed production std package");
+    let provider =
+        repository.join("runtime/host/tests/fixtures/bytecode-vm-phase-6/remote-interface-provider");
+    match build_single_into(
+        &provider,
+        "example.com/phase-6-remote-provider",
+        "1.0.0",
+        root.path(),
+    ) {
+        BuildOutcome::Published(_) => {}
+        BuildOutcome::Rejected { error_chain, .. } => {
+            return BuildOutcome::Rejected {
+                error_chain,
+                package_pointer_absent: false,
+                release_pointer_absent: false,
+            }
+        }
+    }
+    let consumer = repository
+        .join("runtime/host/tests/fixtures/bytecode-vm-phase-6/remote-interface-negative");
+    build_single_into(
+        &consumer,
+        "test.skiff/bytecode-vm-phase-6-remote-interface-negative",
+        "1.0.0",
+        root.path(),
+    )
 }
 
 fn build_single(

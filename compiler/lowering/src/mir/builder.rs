@@ -10,7 +10,9 @@ use skiff_artifact_model::{
     StmtIr, TypeRefIr,
 };
 use skiff_compiler_core::{implementation_package_callable_id, ImplementationCallableKind};
-use skiff_compiler_source::{ResolvedCallTargetFacts, SourceCallableEffectFacts, SourceSymbolKey};
+use skiff_compiler_source::{
+    ResolvedCallTarget, ResolvedCallTargetFacts, SourceCallableEffectFacts, SourceSymbolKey,
+};
 
 use super::{
     abi::{direct_call_facts, is_direct_target},
@@ -144,7 +146,7 @@ pub fn build_mir_units_with_source_facts_and_package_records(
         }
     }
     let catalog = MirPackageCatalog::build(units, resolved_call_targets)?;
-    units
+    let mut mir_units = units
         .iter()
         .map(|unit| {
             build_mir_unit_with_catalog(
@@ -156,7 +158,52 @@ pub fn build_mir_units_with_source_facts_and_package_records(
                 &package_type_records,
             )
         })
-        .collect()
+        .collect::<Result<Vec<_>, MirBuildError>>()?;
+    let mut remote_refs_by_module = BTreeMap::<String, Vec<ServiceCallRef>>::new();
+    for (expression, target) in resolved_call_targets.iter() {
+        let ResolvedCallTarget::RemoteInterface {
+            contract_requirement,
+            operations,
+            ..
+        } = target
+        else {
+            continue;
+        };
+        let Some(requirement) = catalog.service_requirement(&contract_requirement.alias) else {
+            return Err(MirBuildError::InvalidServiceRequirementFacts {
+                alias: contract_requirement.alias.clone(),
+                message: "remote interface target has no service requirement slot".to_string(),
+            });
+        };
+        let refs = remote_refs_by_module
+            .entry(expression.module_path().to_string())
+            .or_default();
+        refs.extend(operations.iter().map(|operation| ServiceCallRef {
+            service_requirement_slot: requirement.slot,
+            contract_operation_id: operation.clone(),
+            expected_protocol_identity: requirement.expected_protocol_identity.clone(),
+        }));
+    }
+    for refs in remote_refs_by_module.values_mut() {
+        refs.sort_by(|left, right| {
+            (
+                left.service_requirement_slot,
+                left.contract_operation_id.as_str(),
+                left.expected_protocol_identity.as_str(),
+            )
+                .cmp(&(
+                    right.service_requirement_slot,
+                    right.contract_operation_id.as_str(),
+                    right.expected_protocol_identity.as_str(),
+                ))
+        });
+    }
+    for unit in &mut mir_units {
+        unit.remote_interface_refs = remote_refs_by_module
+            .remove(&unit.module_path)
+            .unwrap_or_default();
+    }
+    Ok(mir_units)
 }
 
 /// Builder core with an already-resolved per-callable effect map (test seam).
@@ -261,6 +308,7 @@ fn build_mir_unit_with_catalog(
         module_path: unit.module_path.clone(),
         actor_declarations: unit.actor_declarations.clone(),
         external_refs: package_type_authority.external_refs,
+        remote_interface_refs: Vec::new(),
         source_map: unit.source_map.clone(),
         type_table: unit.type_table.clone(),
         package_type_records: package_type_authority.package_type_records,

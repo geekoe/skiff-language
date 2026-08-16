@@ -122,7 +122,7 @@ use std::collections::BTreeMap;
 use skiff_artifact_model::{
     ActorDeclarationIr, AssignTargetIr, CallableEffectSummary, ExprIr, ExprRefIr, ExternalRefTable,
     FileLinkTargets, InstructionSourceSite, PackageCallableId, PackageExecutableCoordinate,
-    PatternIr, SourceMapDto, SourceSpanRef, TypeDeclIr, TypeRefIr,
+    PatternIr, ServiceCallRef, SourceMapDto, SourceSpanRef, TypeDeclIr, TypeRefIr,
 };
 
 /// One `FileIrUnit`'s self-contained typed CFG. Pure in-memory; never
@@ -143,6 +143,10 @@ pub struct MirUnit {
     /// PackageArtifact manifest. MIR does not synthesize actor rows.
     pub actor_declarations: Vec<ActorDeclarationIr>,
     pub external_refs: ExternalRefTable,
+    /// Service refs consumed by remote interface boxes. These are not
+    /// `CallIr` sites, so they live beside the cloned File IR refs instead of
+    /// being inserted into `external_refs.service_call_refs`.
+    pub remote_interface_refs: Vec<ServiceCallRef>,
     pub source_map: SourceMapDto,
     pub type_table: Vec<TypeDeclIr>,
     pub package_type_records: BTreeMap<(String, String), BTreeMap<String, TypeRefIr>>,

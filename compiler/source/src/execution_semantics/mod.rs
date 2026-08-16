@@ -374,6 +374,7 @@ fn target_kind_label(target: Option<&ResolvedCallTarget>) -> &'static str {
         Some(ResolvedCallTarget::NativeFunction { .. }) => "native",
         Some(ResolvedCallTarget::ReceiverBuiltin { .. }) => "receiver",
         Some(ResolvedCallTarget::InterfaceMethod { .. }) => "interface",
+        Some(ResolvedCallTarget::RemoteInterface { .. }) => "remote-interface",
         Some(ResolvedCallTarget::ContractOperation { .. }) => "service",
         Some(ResolvedCallTarget::DependencyPackageFunction { .. }) => "package-direct",
         Some(ResolvedCallTarget::ConfigIntrinsic { .. }) => "config",

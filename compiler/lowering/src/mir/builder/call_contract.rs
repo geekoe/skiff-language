@@ -128,13 +128,18 @@ impl<'a> MirPackageCatalog<'a> {
         }
         let mut service_requirements = BTreeMap::new();
         for (_, target) in resolved_call_targets.iter() {
-            let ResolvedCallTarget::ContractOperation {
-                contract_requirement,
-                contract_operation_id,
-                ..
-            } = target
-            else {
-                continue;
+            let (contract_requirement, operations) = match target {
+                ResolvedCallTarget::ContractOperation {
+                    contract_requirement,
+                    contract_operation_id,
+                    ..
+                } => (contract_requirement, std::slice::from_ref(contract_operation_id)),
+                ResolvedCallTarget::RemoteInterface {
+                    contract_requirement,
+                    operations,
+                    ..
+                } => (contract_requirement, operations.as_slice()),
+                _ => continue,
             };
             let entry = service_requirements
                 .entry(contract_requirement.alias.clone())
@@ -151,7 +156,7 @@ impl<'a> MirPackageCatalog<'a> {
                         .to_string(),
                 });
             }
-            entry.1.insert(contract_operation_id.clone());
+            entry.1.extend(operations.iter().cloned());
         }
         let service_requirement_slots = service_requirements
             .into_iter()

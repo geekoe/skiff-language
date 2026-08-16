@@ -76,6 +76,28 @@ pub fn assert_callback_negative_rejected(prefix: &str) {
     }
 }
 
+pub fn assert_interface_remote_negative_rejected(prefix: &str) {
+    match build_capability(Capability::InterfaceRemote, true, prefix) {
+        BuildOutcome::Rejected {
+            package_pointer_absent,
+            release_pointer_absent,
+            ..
+        } => {
+            assert!(
+                package_pointer_absent,
+                "disabled remote interface source wrote a package pointer"
+            );
+            assert!(
+                release_pointer_absent,
+                "disabled remote interface source wrote a release pointer"
+            );
+        }
+        BuildOutcome::Published(_) => {
+            panic!("disabled remote interface source published an executable image")
+        }
+    }
+}
+
 pub fn admitted_artifact(capability: Capability, prefix: &str) -> Arc<ValidatedBytecodeArtifact> {
     let fixture = published_positive(capability, prefix);
     fixture.bytecode()

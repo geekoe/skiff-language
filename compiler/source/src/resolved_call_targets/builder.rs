@@ -8,7 +8,10 @@ use crate::{
     prelude_registry::prelude_registry,
     semantic::{ExecutableIndex, SemanticSource},
     shared::{
-        ast::{Block, Expr, ForBinding, FunctionDecl, LocalBindingKind, Pattern, Stmt},
+        ast::{
+            Block, DependencySourceAddress, Expr, ForBinding, FunctionDecl, LocalBindingKind,
+            Pattern, Stmt, TypeRef,
+        },
         ast_utils::{dependency_source_address_parts, expr_path, walk_expr, walk_stmt, AstVisitor},
         type_syntax::generic_parts,
     },
@@ -316,6 +319,13 @@ impl AstVisitor for TargetCollector<'_> {
             .next_index
             .checked_add(1)
             .expect("expression preorder index overflow was rejected by ExpressionSourceMap");
+        if let Expr::InterfaceBox { value, interface } = expr {
+            if let Expr::DependencySourceAddress(source) = value.as_ref() {
+                if let Some(target) = self.resolve_remote_interface_target(source, interface) {
+                    self.targets.insert(key.clone(), target);
+                }
+            }
+        }
         if let Expr::Call { callee, .. } = expr {
             let target = self.resolve_call_target(&key, callee);
             self.targets.insert(key, target);
@@ -338,9 +348,84 @@ impl AstVisitor for TargetCollector<'_> {
             _ => walk_expr(self, expr),
         }
     }
+
 }
 
 impl TargetCollector<'_> {
+    fn resolve_remote_interface_target(
+        &mut self,
+        source: &DependencySourceAddress,
+        interface: &TypeRef,
+    ) -> Option<ResolvedCallTarget> {
+        let context = TypeResolutionContext::source(self.module_path);
+        let selector = match self
+            .type_resolution
+            .resolve_object_safe_interface_selector_type_ref(interface, &context)
+        {
+            Ok(selector) => selector,
+            Err(error) => {
+                self.errors.push(format!(
+                    "{}: remote interface selector `{}` failed: {error}",
+                    self.module_path, interface.name,
+                ));
+                return None;
+            }
+        };
+        let contract = match self.dependencies.contract(&source.dependency_ref) {
+            Ok(contract) => contract,
+            Err(error) => {
+                self.errors.push(format!(
+                    "{}: remote interface source `{}/{}` failed: {error}",
+                    self.module_path, source.dependency_ref, source.public_path,
+                ));
+                return None;
+            }
+        };
+        let instance = match contract.public_instances.get(&source.public_path) {
+            Some(instance) => instance,
+            None => {
+                self.errors.push(format!(
+                    "{}: dependency `{}` has no public instance `{}`",
+                    self.module_path, source.dependency_ref, source.public_path,
+                ));
+                return None;
+            }
+        };
+        let row = match instance
+            .interfaces
+            .iter()
+            .find(|row| row.interface == selector.instantiation_ref)
+        {
+            Some(row) => row,
+            None => {
+                self.errors.push(format!(
+                    "{}: public instance `{}/{}` does not expose interface `{}`",
+                    self.module_path, source.dependency_ref, source.public_path, interface.name,
+                ));
+                return None;
+            }
+        };
+        let requirement = match self.dependencies.contract_requirement(&source.dependency_ref) {
+            Ok(requirement) => requirement.clone(),
+            Err(error) => {
+                self.errors.push(format!(
+                    "{}: remote interface dependency `{}` failed: {error}",
+                    self.module_path, source.dependency_ref,
+                ));
+                return None;
+            }
+        };
+        Some(ResolvedCallTarget::RemoteInterface {
+            contract_requirement: requirement,
+            public_instance_key: source.public_path.clone(),
+            operations: row
+                .methods
+                .iter()
+                .map(|method| method.contract_operation_id.clone())
+                .collect(),
+        })
+    }
+
     fn visit_value_block(&mut self, value: &crate::shared::ast::ValueBlock) {
         let saved_scope = self.value_scope.clone();
         for statement in &value.body.statements {

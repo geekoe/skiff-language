@@ -178,7 +178,8 @@ fn callable_target_fact(target: &ResolvedCallTarget) -> Option<CallableTargetFac
         | ResolvedCallTarget::LocalImplMethod { .. }
         | ResolvedCallTarget::ActorMethod { .. }
         | ResolvedCallTarget::NativeFunction { .. }
-        | ResolvedCallTarget::ReceiverBuiltin { .. } => None,
+        | ResolvedCallTarget::ReceiverBuiltin { .. }
+        | ResolvedCallTarget::RemoteInterface { .. } => None,
     }
 }
 

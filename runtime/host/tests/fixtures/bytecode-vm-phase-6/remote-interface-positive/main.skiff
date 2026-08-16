@@ -1,0 +1,4 @@
+function run(seed: number) -> string {
+  final reader = provider/reader as provider.Reader
+  return reader.label(seed)
+}

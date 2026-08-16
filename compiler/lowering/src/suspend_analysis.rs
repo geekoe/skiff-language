@@ -687,6 +687,7 @@ impl SuspendContext<'_, '_> {
             }
             Some(
                 ResolvedCallTarget::InterfaceMethod { .. }
+                | ResolvedCallTarget::RemoteInterface { .. }
                 | ResolvedCallTarget::ContractOperation { .. }
                 | ResolvedCallTarget::Unknown { .. },
             ) => return true,

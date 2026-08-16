@@ -1680,6 +1680,80 @@ impl<'a> FunctionLowerer<'a> {
             }
         }
 
+        if let Expr::DependencySourceAddress(source) = value {
+            let operations_plan = self
+                .expression_types
+                .and_then(|types| types.remote_interface_operations(box_key))
+                .cloned()
+                .ok_or_else(|| {
+                    CompileError::Semantic(format!(
+                        "remote interface boxing lacks exact operation facts for ExpressionKey {box_key:?}"
+                    ))
+                })?;
+            let ResolvedCallTarget::RemoteInterface {
+                contract_requirement,
+                operations,
+                ..
+            } = self
+                .resolved_call_targets
+                .target(box_key)
+                .ok_or_else(|| {
+                    CompileError::Semantic(format!(
+                        "remote interface boxing lacks exact service operation targets for ExpressionKey {box_key:?}"
+                    ))
+                })?
+            else {
+                return Err(CompileError::Semantic(format!(
+                    "remote interface boxing resolved a non-remote target for ExpressionKey {box_key:?}"
+                )));
+            };
+            if operations.len() != operations_plan.slots.len()
+                || operations
+                    .iter()
+                    .zip(&operations_plan.slots)
+                    .any(|(operation, slot)| operation.as_str() != slot.operation_abi_id)
+            {
+                return Err(CompileError::Semantic(format!(
+                    "remote interface operation facts disagree with the resolved service targets for ExpressionKey {box_key:?}"
+                )));
+            }
+            let _service_requirement = self
+                .service_calls
+                .service_requirements()
+                .iter()
+                .find(|requirement| {
+                    requirement.contract_requirement.alias == contract_requirement.alias
+                        && requirement.contract_requirement.expected_protocol_identity
+                            == contract_requirement.expected_protocol_identity
+                })
+                .ok_or_else(|| {
+                    CompileError::Semantic(format!(
+                        "remote interface dependency `{}` has no lowered service requirement",
+                        contract_requirement.alias
+                    ))
+                })?;
+            self.next_expression_key()?;
+            let placeholder = self.push_expr(
+                ExprIr::Literal {
+                    value: LiteralIr::Null,
+                },
+                TypeRefIr::builtin("null"),
+            );
+            return Ok(ExprIr::InterfaceBox {
+                value: placeholder,
+                interface: selector.instantiation_ref,
+                source: BoxSourceIr::Remote {
+                    dependency_ref: source.dependency_ref.clone(),
+                    public_instance_key: source.public_path.clone(),
+                    operations: operations_plan,
+                    callee_protocol_identity: contract_requirement
+                        .expected_protocol_identity
+                        .as_str()
+                        .to_string(),
+                },
+            });
+        }
+
         let value_key = expression_key_offset(box_key, 1, "interface boxing value")?;
         let (value_source_text, concrete_type) =
             self.required_expression_type_fact(&value_key, "interface boxing value")?;
@@ -3626,6 +3700,7 @@ fn resolved_call_target_kind(target: &ResolvedCallTarget) -> &'static str {
         ResolvedCallTarget::ReceiverBuiltin { .. } => "ReceiverBuiltin",
         ResolvedCallTarget::DependencyPackageFunction { .. } => "DependencyPackageFunction",
         ResolvedCallTarget::InterfaceMethod { .. } => "InterfaceMethod",
+        ResolvedCallTarget::RemoteInterface { .. } => "RemoteInterface",
         ResolvedCallTarget::ContractOperation { .. } => "ContractOperation",
         ResolvedCallTarget::Unknown { .. } => "Unknown",
     }
