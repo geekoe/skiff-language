@@ -1,12 +1,6 @@
-import std
-
 function run(seed: number) -> number {
-  std.http.sse(std.http.HttpClientRequest {
-    method: "GET",
-    url: "http://cross-runtime.invalid/callback",
-    headers: [],
-    body: null,
-    timeoutMs: 5000,
-  })
+  concurrent {
+    final parallel = seed + 1
+  }
   return seed
 }

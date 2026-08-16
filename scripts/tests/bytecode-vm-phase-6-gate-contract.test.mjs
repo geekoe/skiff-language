@@ -84,7 +84,7 @@ test('r1 matrix commands pin exact expected-red counts for every new prefix', ()
     'p6-callback-matrix': 7,
     'p6-recoverable-matrix': 8,
     'p6-db-matrix': 6,
-    'p6-task-host-matrix': 6,
+    'p6-task-host-matrix': 10,
     'p6-task-router-matrix': 6,
     'p6-actor-host-matrix': 6,
     'p6-actor-router-matrix': 6,

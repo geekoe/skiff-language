@@ -153,7 +153,7 @@ test('Rust matrices expose every registered prefix with the exact expected red c
     ['callback_', 7],
     ['recoverable_', 8],
     ['db_', 6],
-    ['task_', 6],
+    ['task_', 10],
     ['actor_', 6],
   ]);
   for (const [prefix, count] of expectedStageTests) {
@@ -168,6 +168,9 @@ test('Rust matrices expose every registered prefix with the exact expected red c
       actual += [...recoverableCodec.matchAll(
         /\bfn\s+recoverable_[a-z0-9_]+\s*\(/g,
       )].length;
+    }
+    if (prefix === 'task_') {
+      actual -= [...host.matchAll(/\bfn\s+task_submit_request\s*\(/g)].length;
     }
     assert.equal(actual, count, `host prefix ${prefix} test count`);
   }
