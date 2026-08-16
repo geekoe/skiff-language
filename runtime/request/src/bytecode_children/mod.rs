@@ -52,7 +52,8 @@ pub use db::{
 };
 pub(crate) use db::{DbPendingCarrier, DbPendingRoots};
 pub(crate) use db_intrinsic::{
-    db_key_from_runtime, linked_db_target, materialize_db_result_to_vm, require_db_operation,
+    db_argument_runtime_value, db_key_from_runtime, linked_db_target, materialize_db_result_to_vm,
+    require_db_operation,
 };
 pub(crate) use interface::execute_interface_child;
 pub(crate) use service::execute_service_child;

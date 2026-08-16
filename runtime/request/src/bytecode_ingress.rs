@@ -59,9 +59,9 @@ use skiff_runtime_vm::{
 
 use crate::{
     bytecode_children::{
-        db_key_from_runtime, encode_durable_task_payload, execute_actor_child,
-        execute_interface_child, execute_service_child, is_task_request, linked_db_target,
-        materialize_db_result_to_vm, require_db_operation, task_arguments,
+        db_argument_runtime_value, db_key_from_runtime, encode_durable_task_payload,
+        execute_actor_child, execute_interface_child, execute_service_child, is_task_request,
+        linked_db_target, materialize_db_result_to_vm, require_db_operation, task_arguments,
         task_submit_message_from_composition, task_target_by_dispatch_index, task_timing_control,
         BytecodeChildHeapFactory, BytecodeChildLane, BytecodeRequestChildComposition,
         DbPendingCarrier, DbPendingRoots, DbTransactionSession, RequestChildHeapFactory,
@@ -1205,8 +1205,8 @@ impl BytecodeHostExecutor {
             }
         }
         let caller_vm = match heap
-            .as_any()
-            .and_then(|heap| heap.downcast_ref::<RequestVmHeap>())
+            .as_any_mut()
+            .and_then(|heap| heap.downcast_mut::<RequestVmHeap>())
         {
             Some(heap) => heap,
             None => {
@@ -1222,7 +1222,7 @@ impl BytecodeHostExecutor {
             None
         } else {
             let argument = invocation.arguments().values()[0];
-            match caller_vm.runtime_value_for_slot(&argument) {
+            match db_argument_runtime_value(caller_vm, &image, &argument) {
                 Ok(value) => Some(value),
                 Err(error) => {
                     return Err(BytecodePortFailure::input(

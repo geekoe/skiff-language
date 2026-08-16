@@ -14,7 +14,8 @@ use skiff_runtime_capability_context::{
     DbCapabilitySource, DbCapabilityStore, DbCapabilityStoreApi, DbDocument, DbKey, DbOneSelector,
     DbOrderEntry, DbPageResult, DbProviderBuildInput, DbProviderFactory, DbQuery,
     DbRecoverableRuntimeContext, DbRuntimeChange, DbRuntimeFinalizer, DbWriteResult, FieldPath,
-    FileCapabilityRecord, PreparedDbValueRuntimeOperation, ServiceDbChange, ServiceDbFindOptions,
+    FileCapabilityRecord, PreparedDbOptionalRuntimeOperation, PreparedDbValueRuntimeOperation,
+    ServiceDbChange, ServiceDbFindOptions,
 };
 use skiff_runtime_model::{
     request_heap::{deep_clone_runtime_value_between_heaps, RequestHeap, RequestHeapLimits},
@@ -117,7 +118,13 @@ impl DbCapabilityContextApi for InMemoryDbCapabilityContext {
 #[derive(Clone, Default)]
 pub struct InMemoryDbStore {
     admitted_targets: Option<Arc<HashSet<String>>>,
-    records: Arc<Mutex<HashMap<String, Vec<RuntimeValue>>>>,
+    records: Arc<Mutex<HashMap<String, Vec<InMemoryDbRecord>>>>,
+}
+
+#[derive(Clone)]
+struct InMemoryDbRecord {
+    heap: RequestHeap,
+    value: RuntimeValue,
 }
 
 impl InMemoryDbStore {
@@ -134,7 +141,7 @@ impl InMemoryDbStore {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .values()
             .flatten()
-            .cloned()
+            .map(|record| record.value.clone())
             .collect()
     }
 
@@ -199,7 +206,6 @@ impl DbCapabilityStoreApi for InMemoryDbStore {
     }
 
     unavailable_async!(find_one_by_key, DbCapabilityFuture<'a, Option<DbDocument>>, type_name: &'a str, key: DbKey, projection: Option<Vec<FieldPath>>);
-    unavailable_async!(find_one_by_key_runtime, DbCapabilityFuture<'a, Option<RuntimeValue>>, type_name: &'a str, key: DbKey, projection: Option<Vec<FieldPath>>, heap: &'a mut RequestHeap, context: DbRecoverableRuntimeContext);
     unavailable_async!(find_one_by_query, DbCapabilityFuture<'a, Option<DbDocument>>, type_name: &'a str, query: DbQuery, order: Vec<DbOrderEntry>, projection: Option<Vec<FieldPath>>);
     unavailable_async!(find_one_by_query_runtime, DbCapabilityFuture<'a, Option<RuntimeValue>>, type_name: &'a str, query: DbQuery, order: Vec<DbOrderEntry>, projection: Option<Vec<FieldPath>>, heap: &'a mut RequestHeap, context: DbRecoverableRuntimeContext);
     unavailable_async!(find_many_page, DbCapabilityFuture<'a, DbPageResult>, type_name: &'a str, query: DbQuery, options: ServiceDbFindOptions, projection: Option<Vec<FieldPath>>);
@@ -220,6 +226,22 @@ impl DbCapabilityStoreApi for InMemoryDbStore {
         Box::pin(async move { prepared.into_wait().await?.finalize(heap) })
     }
 
+    fn find_one_by_key_runtime<'a>(
+        &'a self,
+        type_name: &'a str,
+        key: DbKey,
+        projection: Option<Vec<FieldPath>>,
+        heap: &'a mut RequestHeap,
+        context: DbRecoverableRuntimeContext,
+    ) -> DbCapabilityFuture<'a, Option<RuntimeValue>> {
+        let prepared =
+            match self.prepare_find_one_by_key_runtime(type_name, key, projection, heap, context) {
+                Ok(prepared) => prepared,
+                Err(error) => return Box::pin(async move { Err(error) }),
+            };
+        Box::pin(async move { prepared.into_wait().await?.finalize(heap) })
+    }
+
     fn prepare_create_runtime(
         &self,
         type_name: &str,
@@ -231,6 +253,8 @@ impl DbCapabilityStoreApi for InMemoryDbStore {
         let type_name = type_name.to_string();
         let mut logical_heap = RequestHeap::new(RequestHeapLimits::default());
         let logical_value = logical_runtime_value(value, heap, &mut logical_heap, 0)?;
+        let stored_heap = logical_heap.clone();
+        let stored_value = logical_value.clone();
         let records = Arc::clone(&self.records);
         Ok(PreparedDbValueRuntimeOperation::new(async move {
             records
@@ -238,10 +262,47 @@ impl DbCapabilityStoreApi for InMemoryDbStore {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .entry(type_name)
                 .or_default()
-                .push(logical_value.clone());
+                .push(InMemoryDbRecord {
+                    heap: stored_heap,
+                    value: stored_value,
+                });
             Ok(DbRuntimeFinalizer::new(move |heap| {
                 deep_clone_runtime_value_between_heaps(&logical_heap, heap, &logical_value)
                     .map_err(|error| DbCapabilityError::decode(error.to_string()))
+            }))
+        }))
+    }
+
+    fn prepare_find_one_by_key_runtime(
+        &self,
+        type_name: &str,
+        key: DbKey,
+        _projection: Option<Vec<FieldPath>>,
+        _heap: &mut RequestHeap,
+        _context: DbRecoverableRuntimeContext,
+    ) -> DbCapabilityResult<PreparedDbOptionalRuntimeOperation> {
+        self.admit_target(type_name, "in-memory DB target is not admitted")?;
+        let type_name = type_name.to_string();
+        let key = key.into_value();
+        let records = Arc::clone(&self.records);
+        Ok(PreparedDbOptionalRuntimeOperation::new(async move {
+            let matched = records
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&type_name)
+                .and_then(|records| {
+                    records
+                        .iter()
+                        .find(|record| runtime_value_matches_key(&record.value, &record.heap, &key))
+                        .cloned()
+                });
+            Ok(DbRuntimeFinalizer::new(move |heap| match matched {
+                Some(record) => {
+                    deep_clone_runtime_value_between_heaps(&record.heap, heap, &record.value)
+                        .map(Some)
+                        .map_err(|error| DbCapabilityError::decode(error.to_string()))
+                }
+                None => Ok(None),
             }))
         }))
     }
@@ -270,6 +331,36 @@ impl DbCapabilityStoreApi for InMemoryDbStore {
     unavailable_async!(insert_skiff_file_record, DbCapabilityFuture<'a, ()>, record: FileCapabilityRecord);
     unavailable_async!(find_skiff_file_by_id, DbCapabilityFuture<'a, Option<FileCapabilityRecord>>, id: &'a str);
     unavailable_async!(delete_skiff_file_by_id, DbCapabilityFuture<'a, u64>, id: &'a str);
+}
+
+fn runtime_value_matches_key(value: &RuntimeValue, heap: &RequestHeap, key: &Value) -> bool {
+    match value {
+        RuntimeValue::Null => matches!(key, Value::Null),
+        RuntimeValue::Bool(actual) => key.as_bool() == Some(*actual),
+        RuntimeValue::Number(actual) => key.as_f64() == Some(*actual),
+        RuntimeValue::Date(actual) => key.as_i64() == Some(*actual),
+        RuntimeValue::String(actual) => key.as_str() == Some(actual.as_str()),
+        RuntimeValue::ActorRef(_) => false,
+        RuntimeValue::Heap(handle) => {
+            if let Ok(Some(carrier)) = heap.local_carrier_cell(*handle) {
+                return runtime_value_matches_key(carrier.value(), heap, key);
+            }
+            match heap.get(*handle) {
+                Ok(HeapNode::Array(items)) => items
+                    .iter()
+                    .any(|item| runtime_value_matches_key(item, heap, key)),
+                Ok(HeapNode::Object(object)) => object
+                    .fields()
+                    .values()
+                    .any(|field| runtime_value_matches_key(field, heap, key)),
+                Ok(HeapNode::Bytes(bytes)) => {
+                    key.as_str() == Some(String::from_utf8_lossy(bytes.as_slice()).as_ref())
+                }
+                Ok(HeapNode::Map(_) | HeapNode::Interface(_) | HeapNode::Exception(_)) => false,
+                Err(_) => false,
+            }
+        }
+    }
 }
 
 fn logical_runtime_value(
@@ -363,7 +454,7 @@ mod tests {
     };
     use skiff_runtime_boundary::recoverable::FailClosedRecoverableBehaviorHooks;
     use skiff_runtime_capability_context::{
-        DbCapabilityError, DbCapabilityTarget, DbCapabilityTargetId, DbProviderConfig,
+        DbCapabilityError, DbCapabilityTarget, DbCapabilityTargetId, DbKey, DbProviderConfig,
         DbRecoverableRuntimeContext, DbRecoverableRuntimeExpectedPlans,
     };
     use skiff_runtime_model::recoverable::{
@@ -541,5 +632,75 @@ mod tests {
             Some(&RuntimeValue::String("phase6-db".to_string()))
         );
         assert_eq!(provider.store().inserted_values().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn in_memory_provider_prepared_insert_then_read_by_key_round_trips() {
+        let provider = InMemoryDbProviderFactory::new();
+        let source = provider
+            .build(provider_input())
+            .expect("in-memory provider builds");
+        let context = source.context_for_request("test.skiff/bytecode-vm-phase-6-db", "request");
+        let exact = fixture_target();
+        let store = context
+            .require_store(exact.lookup_key(), "exact fixture target must be admitted")
+            .expect("exact fixture target should be admitted");
+
+        let mut source_heap = RequestHeap::default();
+        let id_handle = source_heap
+            .alloc_local_carrier_cell(RuntimeValue::String("phase6-db".to_string()).into())
+            .expect("VM string carrier should allocate");
+        let object_handle = source_heap
+            .alloc_object(RuntimeObject::unshaped(RuntimeObjectFields::from([(
+                "id".to_string(),
+                RuntimeValue::Heap(id_handle),
+            )])))
+            .expect("VM record should allocate");
+        let value = RuntimeValue::Heap(object_handle);
+        let prepared = store
+            .prepare_create_runtime(
+                exact.lookup_key(),
+                &value,
+                &mut source_heap,
+                recoverable_context(),
+            )
+            .expect("prepared insert should accept a VM record");
+        prepared
+            .into_wait()
+            .await
+            .expect("prepared insert should complete")
+            .finalize(&mut source_heap)
+            .expect("prepared insert should finalize");
+
+        let mut read_heap = RequestHeap::default();
+        let prepared = store
+            .prepare_find_one_by_key_runtime(
+                exact.lookup_key(),
+                DbKey::new(json!("phase6-db")),
+                None,
+                &mut read_heap,
+                recoverable_context(),
+            )
+            .expect("prepared read should be accepted");
+        let restored = prepared
+            .into_wait()
+            .await
+            .expect("prepared read should complete")
+            .finalize(&mut read_heap)
+            .expect("prepared read should finalize")
+            .expect("inserted record should be readable by key");
+        let RuntimeValue::Heap(restored_handle) = restored else {
+            panic!("restored DB value must be a record");
+        };
+        let HeapNode::Object(restored_object) = read_heap
+            .get(restored_handle)
+            .expect("restored record handle")
+        else {
+            panic!("restored DB value must be an object");
+        };
+        assert_eq!(
+            restored_object.fields().get("id"),
+            Some(&RuntimeValue::String("phase6-db".to_string()))
+        );
     }
 }
