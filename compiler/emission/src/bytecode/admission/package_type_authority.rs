@@ -732,6 +732,7 @@ mod tests {
             type_table: Vec::new(),
             package_type_records,
             link_targets: FileLinkTargets::default(),
+            remote_interface_refs: Vec::new(),
             constants: Vec::new(),
             functions: Vec::new(),
         }

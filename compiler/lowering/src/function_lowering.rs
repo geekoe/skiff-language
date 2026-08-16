@@ -1640,6 +1640,7 @@ impl<'a> FunctionLowerer<'a> {
     fn lower_interface_box(
         &mut self,
         expression_key: Option<&ExpressionKey>,
+        collapsed_keys: &mut Vec<ExpressionKey>,
         value: &Expr,
         interface: &TypeRef,
     ) -> Result<ExprIr> {
@@ -1732,22 +1733,16 @@ impl<'a> FunctionLowerer<'a> {
                         contract_requirement.alias
                     ))
                 })?;
-            let placeholder_key = self.take_expression_key()?;
+            let source_address_key = self.take_expression_key()?;
+            if let Some(key) = source_address_key {
+                collapsed_keys.push(key);
+            }
             let placeholder = self.push_expr(
                 ExprIr::Literal {
                     value: LiteralIr::Null,
                 },
                 TypeRefIr::builtin("null"),
             );
-            if let Some(key) = placeholder_key {
-                self.source_event_collector
-                    .record_expression(
-                        Some(key),
-                        placeholder.expression,
-                        ExpressionEventKind::Expression,
-                    )
-                    .map_err(source_event_error)?;
-            }
             return Ok(ExprIr::InterfaceBox {
                 value: placeholder,
                 interface: selector.instantiation_ref,
@@ -2092,7 +2087,12 @@ impl<'a> FunctionLowerer<'a> {
                 ))
             }
             Expr::InterfaceBox { value, interface } => {
-                self.lower_interface_box(expression_key.as_ref(), value, interface)?
+                self.lower_interface_box(
+                    expression_key.as_ref(),
+                    &mut collapsed_keys,
+                    value,
+                    interface,
+                )?
             }
             Expr::DependencySourceAddress(source) => {
                 return Err(CompileError::Semantic(format!(

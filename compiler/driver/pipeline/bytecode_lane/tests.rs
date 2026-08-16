@@ -1688,6 +1688,7 @@ fn phase_2_bytecode_admission_source_facts_export_local_and_publication_nominals
         }],
         package_type_records: BTreeMap::new(),
         link_targets: skiff_artifact_model::FileLinkTargets::default(),
+        remote_interface_refs: Vec::new(),
         constants: Vec::new(),
         functions: Vec::new(),
     };
@@ -1894,6 +1895,7 @@ fn package_fact_unit(
         type_table: Vec::new(),
         package_type_records: BTreeMap::from([((owner, symbol_path.to_string()), fields)]),
         link_targets: skiff_artifact_model::FileLinkTargets::default(),
+        remote_interface_refs: Vec::new(),
         constants: Vec::new(),
         functions: Vec::new(),
     }

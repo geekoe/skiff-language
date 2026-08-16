@@ -378,6 +378,7 @@ fn unit(functions: Vec<MirFunction>) -> MirUnit {
         type_table: file_ir.type_table,
         package_type_records: BTreeMap::new(),
         link_targets: file_ir.link_targets,
+        remote_interface_refs: Vec::new(),
         constants: Vec::new(),
         functions,
     }

@@ -5863,13 +5863,15 @@ mod tests {
     use skiff_artifact_model::{
         BinaryOpIr, CallableEffectSummary, ExprIr, ExprRefIr, FileIrUnit, InstructionSourceSite,
         LiteralIr, PackageCallableId, PackageRefIr, PackageSymbolRef, PendingEffectCategory,
-        SyntheticInstructionSiteReason, TypeRefIr, ValueDropPlan, ValueTransferPlan,
+        ServiceCallRef, SyntheticInstructionSiteReason, TypeRefIr, ValueDropPlan,
+        ValueTransferPlan,
     };
     use skiff_compiler_lowering::{
         mir::{
             liveness::compute_liveness, MirBlock, MirExecutableKind, MirExpression, MirFunction,
-            MirLiveness, MirSlot, MirSlotKind, MirSourceEventPlan, MirSourceEventUnavailableReason,
-            MirStatementEntry, MirStmt, MirStmtKind, MirUnit,
+            MirLiveness, MirRemoteInterfaceFacts, MirRemoteInterfaceMethodFacts, MirSlot,
+            MirSlotKind, MirSourceEventPlan, MirSourceEventUnavailableReason, MirStatementEntry,
+            MirStmt, MirStmtKind, MirUnit,
         },
         Bounds, ConstEvaluator,
     };
@@ -5879,6 +5881,296 @@ mod tests {
     use crate::bytecode::plans::{
         derive_bytecode_value_transfer_plans_unchecked, derive_test_bytecode_value_transfer_plans,
     };
+
+    fn remote_interface_function() -> MirFunction {
+        let interface = InterfaceInstantiationRef {
+            interface_abi_id: "iface:reader".to_string(),
+            canonical_type_args: Vec::new(),
+        };
+        let operation_abi_id = "operation:reader:read".to_string();
+        let method_abi_id = "method:interface:pkg.Reader:read".to_string();
+        let signature = InterfaceMethodSlotSignatureIr {
+            params: vec![FunctionTypeParamIr {
+                name: "input".to_string(),
+                ty: TypeRefIr::builtin("string"),
+            }],
+            return_type: TypeRefIr::builtin("string"),
+        };
+        let source = BoxSourceIr::Remote {
+            dependency_ref: "readerService".to_string(),
+            public_instance_key: "readers/default".to_string(),
+            operations: skiff_artifact_model::RemoteOperationTablePlanIr {
+                interface: interface.clone(),
+                slots: vec![skiff_artifact_model::RemoteOperationSlotPlanIr {
+                    slot: 0,
+                    method_abi_id: method_abi_id.clone(),
+                    signature: signature.clone(),
+                    operation_abi_id: operation_abi_id.clone(),
+                }],
+            },
+            callee_protocol_identity: "protocol:reader".to_string(),
+        };
+        let box_type = TypeRefIr::AnyInterface {
+            interface: interface.clone(),
+        };
+        MirFunction {
+            executable_index: 0,
+            origin: skiff_artifact_model::PackageExecutableCoordinate {
+                file_ir_identity: "file:remote".to_string(),
+                module_path: "remote".to_string(),
+                executable_index: 0,
+            },
+            symbol: "remote.boxReader".to_string(),
+            kind: MirExecutableKind::Function,
+            native: false,
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: box_type.clone(),
+            self_type: None,
+            receiver: None,
+            slots: Vec::new(),
+            index_accesses: BTreeMap::new(),
+            expression_blocks: BTreeMap::new(),
+            expressions: vec![
+                MirExpression {
+                    index: 0,
+                    expression: ExprIr::Literal {
+                        value: LiteralIr::Null,
+                    },
+                    ty: TypeRefIr::builtin("null"),
+                    writable: None,
+                    direct_call: None,
+                    stream_result: None,
+                    remote_interface: None,
+                },
+                MirExpression {
+                    index: 1,
+                    expression: ExprIr::InterfaceBox {
+                        value: ExprRefIr { expression: 0 },
+                        interface: interface.clone(),
+                        source,
+                    },
+                    ty: box_type,
+                    writable: None,
+                    direct_call: None,
+                    stream_result: None,
+                    remote_interface: Some(MirRemoteInterfaceFacts {
+                        service_requirement_slot: 3,
+                        public_instance_key: "readers/default".to_string(),
+                        interface,
+                        methods: vec![MirRemoteInterfaceMethodFacts {
+                            slot: 0,
+                            method_abi_id,
+                            signature,
+                            contract_operation_id: skiff_artifact_model::ContractOperationId::new(
+                                operation_abi_id,
+                            ),
+                        }],
+                        callee_protocol_identity:
+                            skiff_artifact_model::ServiceProtocolIdentity::new("protocol:reader"),
+                    }),
+                },
+            ],
+            blocks: vec![MirBlock {
+                id: 0,
+                label: "entry".to_string(),
+                statements: vec![MirStmt {
+                    statement_index: 0,
+                    span: None,
+                    kind: MirStmtKind::Return {
+                        value: Some(ExprRefIr { expression: 1 }),
+                    },
+                }],
+                successors: Vec::new(),
+            }],
+            regions: Vec::new(),
+            statements: vec![MirStatementEntry {
+                statement_index: 0,
+                span: None,
+            }],
+            stream_result: None,
+            liveness: MirLiveness::default(),
+            effect_summary_ref: PackageCallableId::new("callable:remote:boxReader".to_string()),
+            effect_summary: CallableEffectSummary::analysis_pending(),
+            source_span: None,
+            source_event_plan: MirSourceEventPlan::unavailable(
+                MirSourceEventUnavailableReason::SourceFactsNotProvided,
+            ),
+        }
+    }
+
+    fn emit_with_injected_remote_events(
+        events: Vec<MirSourceEvent>,
+    ) -> Result<RelocatableBytecodeFunction, BytecodeEmissionError> {
+        let mut function = remote_interface_function();
+        function.liveness =
+            compute_liveness(&function).expect("remote interface liveness computes");
+
+        let mut file_ir = FileIrUnit::empty("remote", "source-hash");
+        file_ir.file_ir_identity = "file:remote".to_string();
+        file_ir.external_refs = skiff_artifact_model::ExternalRefTable {
+            service_call_refs: vec![ServiceCallRef {
+                service_requirement_slot: 3,
+                contract_operation_id: skiff_artifact_model::ContractOperationId::new(
+                    "operation:reader:read",
+                ),
+                expected_protocol_identity: skiff_artifact_model::ServiceProtocolIdentity::new(
+                    "protocol:reader",
+                ),
+            }],
+            ..skiff_artifact_model::ExternalRefTable::default()
+        };
+        let bundle = ConstEvaluator::new(Bounds::default())
+            .evaluate_unit(&file_ir)
+            .expect("test bundle evaluates");
+        let unit = MirUnit {
+            file_ir_identity: file_ir.file_ir_identity.clone(),
+            package_id: "test.package".to_string(),
+            module_path: file_ir.module_path.clone(),
+            actor_declarations: file_ir.actor_declarations.clone(),
+            external_refs: file_ir.external_refs.clone(),
+            source_map: file_ir.source_map.clone(),
+            type_table: file_ir.type_table.clone(),
+            package_type_records: BTreeMap::new(),
+            link_targets: file_ir.link_targets.clone(),
+            remote_interface_refs: vec![ServiceCallRef {
+                service_requirement_slot: 3,
+                contract_operation_id: skiff_artifact_model::ContractOperationId::new(
+                    "operation:reader:read",
+                ),
+                expected_protocol_identity: skiff_artifact_model::ServiceProtocolIdentity::new(
+                    "protocol:reader",
+                ),
+            }],
+            constants: Vec::new(),
+            functions: vec![function],
+        };
+        let units = [unit];
+        let plans = derive_test_bytecode_value_transfer_plans(&units)
+            .expect("the source classifier covers the test MIR");
+        let bundles = [bundle];
+        let dense_parameter_materializations = BTreeMap::new();
+        let machine_carriers =
+            super::super::carriers::analyze_machine_carriers(&units).expect("carriers analyze");
+        let service_boundary_plans = BTreeMap::new();
+        let inputs = ValidatedEmissionInputs::validate(
+            &units,
+            &bundles,
+            &plans,
+            &dense_parameter_materializations,
+            &machine_carriers,
+            &[],
+            &service_boundary_plans,
+        )
+        .expect("test inputs validate");
+        let mut image = build_constant_image(&inputs).expect("test image builds");
+        let unit = inputs.units.get("remote").expect("test unit is present");
+        let function = unit
+            .functions
+            .iter()
+            .find(|function| function.symbol == "remote.boxReader")
+            .expect("test function is present");
+        let function_plans = inputs
+            .function_plans
+            .get("remote::boxReader")
+            .expect("test function plans are present");
+        let local_interface_tables = LocalInterfaceFacts::empty();
+        let mut emitter = FunctionEmitter::new(
+            unit,
+            function,
+            "remote::boxReader",
+            function_plans,
+            &mut image,
+            &inputs,
+            &service_boundary_plans,
+            &local_interface_tables,
+            SourceAttributionMode::AdmittedPhase1,
+        )
+        .expect("test emitter constructs");
+        emitter.events = events;
+        emitter.event_mapping = vec![None; emitter.events.len()];
+        emitter.emit()
+    }
+
+    #[test]
+    fn remote_interface_box_collapsed_source_events_are_anchored_exactly() {
+        let site = InstructionSourceSite::Synthetic {
+            reason: SyntheticInstructionSiteReason::CompilerDesugaring,
+        };
+        let events = vec![
+            MirSourceEvent {
+                attribution_id: StatementAttributionId::Expression {
+                    expression_index: 1,
+                    occurrence_ordinal: 0,
+                },
+                site: site.clone(),
+                anchor: MirEmissionAnchor::Expression {
+                    expression_index: 1,
+                    occurrence_ordinal: 0,
+                },
+            },
+            MirSourceEvent {
+                attribution_id: StatementAttributionId::Expression {
+                    expression_index: 1,
+                    occurrence_ordinal: 1,
+                },
+                site,
+                anchor: MirEmissionAnchor::Expression {
+                    expression_index: 1,
+                    occurrence_ordinal: 1,
+                },
+            },
+        ];
+
+        let emitted = emit_with_injected_remote_events(events)
+            .expect("collapsed remote interface source events must anchor to the box");
+        assert_eq!(
+            emitted.statement_entries.len(),
+            2,
+            "both remote box source events must remain statement charges"
+        );
+        assert_eq!(
+            emitted.source_map.len(),
+            1,
+            "collapsed remote source events must not duplicate one emitted instruction"
+        );
+        assert_eq!(
+            emitted.statement_entries[0].pc, emitted.statement_entries[1].pc,
+            "both remote box source events collapse onto the emitted box instruction"
+        );
+        assert_eq!(emitted.statement_entries[0].sequence_ordinal, 0);
+        assert_eq!(emitted.statement_entries[1].sequence_ordinal, 1);
+    }
+
+    #[test]
+    fn remote_interface_placeholder_event_without_anchor_fails_closed() {
+        let events = vec![MirSourceEvent {
+            attribution_id: StatementAttributionId::Expression {
+                expression_index: 0,
+                occurrence_ordinal: 0,
+            },
+            site: InstructionSourceSite::Synthetic {
+                reason: SyntheticInstructionSiteReason::CompilerDesugaring,
+            },
+            anchor: MirEmissionAnchor::Expression {
+                expression_index: 0,
+                occurrence_ordinal: 0,
+            },
+        }];
+
+        let error = emit_with_injected_remote_events(events)
+            .expect_err("an un-emitted placeholder must not silently anchor");
+        assert!(matches!(
+            error,
+            BytecodeEmissionError::UnsupportedConstruct {
+                function_key,
+                construct: "source event placement",
+                location,
+            } if function_key == "remote::boxReader"
+                && location.contains("event 0")
+                && location.contains("not anchored to emitted code")
+        ));
+    }
 
     #[test]
     fn stream_backedge_state_distinguishes_shared_and_consumed_items() {
@@ -5993,6 +6285,7 @@ mod tests {
             type_table: file_ir.type_table.clone(),
             package_type_records: BTreeMap::new(),
             link_targets: file_ir.link_targets.clone(),
+            remote_interface_refs: Vec::new(),
             constants: Vec::new(),
             functions: vec![function],
         };
@@ -6197,6 +6490,7 @@ mod tests {
             type_table: file_ir.type_table.clone(),
             package_type_records: BTreeMap::new(),
             link_targets: file_ir.link_targets.clone(),
+            remote_interface_refs: Vec::new(),
             constants: Vec::new(),
             functions: vec![function],
         };
@@ -6340,6 +6634,7 @@ mod tests {
             type_table: file_ir.type_table.clone(),
             package_type_records: BTreeMap::new(),
             link_targets: file_ir.link_targets.clone(),
+            remote_interface_refs: Vec::new(),
             constants: Vec::new(),
             functions: vec![function],
         };
@@ -6503,6 +6798,7 @@ mod tests {
             type_table: file_ir.type_table.clone(),
             package_type_records: BTreeMap::new(),
             link_targets: file_ir.link_targets.clone(),
+            remote_interface_refs: Vec::new(),
             constants: Vec::new(),
             functions: vec![function],
         };
