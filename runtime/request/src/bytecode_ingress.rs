@@ -4526,6 +4526,9 @@ fn json_value_from_slot(
             value.kind()
         )));
     }
+    if let Ok(text) = heap.string_value(value) {
+        return Ok(serde_json::Value::String(text));
+    }
     if depth > MAX_DEPTH {
         return Err(RequestError::Unsupported(format!(
             "bytecode VM aggregate exceeds the JSON materialization depth {MAX_DEPTH}"
@@ -5335,6 +5338,49 @@ mod tests {
         )
         .is_err());
         assert!(json_payload_from_value_slots(&mut heap, &[ValueSlot::number(f64::NAN)]).is_err());
+    }
+
+    #[test]
+    fn json_payload_encodes_string_carrier_value() {
+        let mut heap = RequestVmHeap::new(RequestHeapLimits::default());
+        let slot = heap
+            .alloc_typed_string("remote-ok".to_string(), test_tag(4), ValueFlags::new(0))
+            .unwrap();
+        assert_eq!(
+            json_payload_from_value_slots(&mut heap, &[slot]).unwrap(),
+            b"\"remote-ok\""
+        );
+    }
+
+    #[test]
+    fn json_payload_keeps_empty_array_and_projects_nested_strings() {
+        let mut heap = RequestVmHeap::new(RequestHeapLimits::default());
+        let empty = heap
+            .allocate_array(&[], test_tag(1), ValueFlags::new(0))
+            .unwrap();
+        assert_eq!(
+            json_payload_from_value_slots(&mut heap, &[empty]).unwrap(),
+            b"[]"
+        );
+        let text = heap
+            .alloc_typed_string("nested".to_string(), test_tag(2), ValueFlags::new(0))
+            .unwrap();
+        let tags = heap
+            .allocate_array(&[text], test_tag(3), ValueFlags::new(0))
+            .unwrap();
+        let record = heap
+            .allocate_record(
+                &[VmRecordField {
+                    name: "label".to_string(),
+                    value: tags,
+                }],
+                test_tag(4),
+                ValueFlags::new(0),
+            )
+            .unwrap();
+        let payload = json_payload_from_value_slots(&mut heap, &[record]).unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(json, serde_json::json!({ "label": ["nested"] }));
     }
 
     #[test]
