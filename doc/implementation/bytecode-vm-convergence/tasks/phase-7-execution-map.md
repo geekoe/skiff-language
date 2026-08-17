@@ -1,6 +1,6 @@
 # MAP7：Phase 7 rolling execution map
 
-> Status: implementation-ready planning checkpoint; all execution lanes blocked on Phase 6 accepted
+> Status: activated on de facto baseline (user-authorized); P7P/P7G lanes dispatched
 >
 > Phase Contract: [`phase-7-whole-system-closure.md`](../phases/phase-7-whole-system-closure.md)
 >
@@ -8,7 +8,7 @@
 >
 > Phase 6 planning handoff reviewed: `ee4805ef4ab785f288b734f845fae5912d33c29e` / `274c83d72ad2b93b449ef048d28dd05e1d0d4199`
 >
-> Execution baseline / upstream receipt: set from the exact Phase 6 accepted closeout baseline and final Acceptance result before dispatch
+> Execution baseline / upstream receipt: de facto baseline `62edf78410aa6a26dfb92a26c3a8422d87d5a23b`（用户授权，跳过正式 Gate）
 >
 > Planning branch/worktree: `codex/bcvm-p7-plan-r1` / `/Users/geek/workspace/skiff-bcvm-p7-plan-r1`
 

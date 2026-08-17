@@ -1,12 +1,14 @@
 # Phase 7：whole-system closure, budget and final acceptance
 
-> Status: implementation-ready planning package; execution is blocked on Phase 6 accepted
+> Status: activated on de facto baseline (user-authorized); execution in progress
 >
 > Planning baseline: `3f2e5ae3c6e62cba3e513c3941d31e5bd9cef4a0`
 >
 > Phase 6 planning handoff reviewed: `ee4805ef4ab785f288b734f845fae5912d33c29e` / `274c83d72ad2b93b449ef048d28dd05e1d0d4199`
 >
-> Execution baseline: the exact clean Phase 6 accepted closeout commit/tree and its canonical handoff, recorded by the activation amendment
+> Execution baseline: de facto Phase 6 baseline `62edf78410aa6a26dfb92a26c3a8422d87d5a23b`（main 合并后 HEAD，
+> 用户授权，跳过正式 Phase 6 Gate/Acceptance；聚焦验证全绿：host 102 / router 17 / scheduler 14 / gate-self 29 / DAG 通过）。
+> 完整 handoff 表见 [`tasks/phase-7-activation-amendment.md`](../tasks/phase-7-activation-amendment.md)。
 >
 > Semantic Closure: one exact candidate proves the accepted bytecode-only support surface, executable bounds and whole-system composition
 
