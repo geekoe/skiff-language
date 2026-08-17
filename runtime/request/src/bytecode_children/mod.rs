@@ -16,10 +16,7 @@ mod service;
 mod task;
 
 use std::collections::HashMap;
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
-};
+use std::sync::{Arc, Mutex};
 
 use skiff_artifact_model::{ContractOperationId, Opcode, ServiceProtocolIdentity};
 use skiff_runtime_boundary::service_linkable::ServiceLinkableCapabilityHooks;
@@ -387,10 +384,6 @@ pub struct BytecodeRequestChildComposition {
     pub heap_limits: RequestHeapLimits,
     /// Cross-image throw materialization seam.
     pub throw_materializer: Arc<dyn ServiceChildThrowMaterializer>,
-    /// Set only after a service child has successfully materialized its result
-    /// back into the caller. The host uses this to classify a successful unary
-    /// service response as start/chunk/end instead of a bare unary end.
-    pub unary_response_start: Arc<AtomicBool>,
     /// C6 host projection hooks for same-Runtime callback capabilities. The
     /// concrete host type is injected by the host composition; request code
     /// only retains the boundary trait.
@@ -426,7 +419,6 @@ impl Default for BytecodeRequestChildComposition {
             child_heap_factory: None,
             heap_limits: RequestHeapLimits::default(),
             throw_materializer: Arc::new(CrossImageServiceChildThrowMaterializer),
-            unary_response_start: Arc::new(AtomicBool::new(false)),
             callback_hooks: None,
             callback_child: BytecodeCallbackChildComposition::default(),
             callback_projector: None,
@@ -435,12 +427,6 @@ impl Default for BytecodeRequestChildComposition {
             task_child: BytecodeTaskChildComposition::default(),
             child_streams: Arc::new(Mutex::new(HashMap::new())),
         }
-    }
-}
-
-impl BytecodeRequestChildComposition {
-    pub fn unary_response_started(&self) -> bool {
-        self.unary_response_start.load(Ordering::Acquire)
     }
 }
 
@@ -586,18 +572,5 @@ mod tests {
         assert!(composition.callback_hooks.is_none());
         assert!(!composition.callback_child.is_available());
         assert!(!composition.actor_child.is_available());
-    }
-
-    #[test]
-    fn unary_response_start_signal_precedes_end_framing() {
-        let composition = BytecodeRequestChildComposition::default();
-        assert!(
-            !composition.unary_response_started(),
-            "a request with no service child result must keep ordinary unary end framing"
-        );
-        composition
-            .unary_response_start
-            .store(true, std::sync::atomic::Ordering::Release);
-        assert!(composition.unary_response_started());
     }
 }
