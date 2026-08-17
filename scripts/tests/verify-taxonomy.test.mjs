@@ -154,6 +154,62 @@ test('bytecode VM phase 1 gate is independently selectable and excluded from def
   }
 });
 
+test('bytecode VM phase 3 and phase 4 gates are public leaves excluded from defaults', async () => {
+  for (const [selector, taskId] of [
+    ['bytecode-vm-phase-3-gate', 'bytecode-vm-phase-3:gate'],
+    ['bytecode-vm-phase-4-gate', 'bytecode-vm-phase-4:gate'],
+  ]) {
+    assert.ok(PUBLIC_SELECTORS.includes(selector), selector);
+    const focused = await buildVerifyPlan({ root, selectors: [selector] });
+    assert.deepEqual(
+      focused.tasks.map(({ id, kind, command, args, cwd }) => ({
+        id,
+        kind,
+        command,
+        args,
+        cwd,
+      })),
+      [{
+        id: taskId,
+        kind: 'implementation:runtime',
+        command: 'node',
+        args: [`scripts/run-${selector}.mjs`],
+        cwd: root,
+      }],
+      selector,
+    );
+    for (const selectors of [['tests'], ['verify']]) {
+      const plan = await buildVerifyPlan({ root, selectors });
+      assert.equal(plan.tasks.some((task) => task.id === taskId), false, selector);
+    }
+  }
+});
+
+test('bytecode VM phase 7 gate is an exclusive leaf with one slot and no defaults', async () => {
+  assert.ok(PUBLIC_SELECTORS.includes('bytecode-vm-phase-7-gate'));
+  const focused = await buildVerifyPlan({
+    root,
+    selectors: ['bytecode-vm-phase-7-gate'],
+  });
+  assert.deepEqual(focused.tasks, [{
+    id: 'bytecode-vm-phase-7:gate',
+    kind: 'implementation:runtime',
+    command: 'node',
+    args: ['scripts/run-bytecode-vm-phase-7-gate.mjs'],
+    cwd: root,
+    exclusive: true,
+    slots: 1,
+  }]);
+  for (const selectors of [['tests'], ['verify'], ['implementation-tests']]) {
+    const plan = await buildVerifyPlan({ root, selectors });
+    assert.equal(
+      plan.tasks.some((task) => task.id === 'bytecode-vm-phase-7:gate'),
+      false,
+      `phase-7 gate must not expand from ${selectors.join(',')}`,
+    );
+  }
+});
+
 test('implementation tests expand by subject without static or live tasks', async () => {
   const plan = await buildVerifyPlan({ root, selectors: ['implementation-tests'] });
   for (const id of [
@@ -358,6 +414,14 @@ test('verify help explains subject-oriented test domains', async () => {
   assert.match(result.stdout, /SKIFF_BYTECODE_VM_PHASE1_CANDIDATE_TREE\s+literal 40-hex tree/);
   assert.match(result.stdout, /SKIFF_BYTECODE_VM_PHASE1_EVIDENCE_DIR\s+caller-chosen canonical absolute absent path/);
   assert.match(result.stdout, /fixed 21-receipt K0\/T-C\/T-R\/V1\/Phase-0-regression matrix/);
+  assert.match(result.stdout, /bytecode-vm-phase-3-gate\s+Phase 3 exception\/unwind lifecycle gate/);
+  assert.match(result.stdout, /bytecode-vm-phase-4-gate\s+Phase 4 request\/Pending\/cancel\/deadline gate/);
+  assert.match(result.stdout, /bytecode-vm-phase-7-gate\s+Phase 7 whole-system closure Gate/);
+  assert.match(result.stdout, /SKIFF_BYTECODE_VM_PHASE7_CANDIDATE_COMMIT\s+literal 40-hex commit/);
+  assert.match(result.stdout, /SKIFF_BYTECODE_VM_PHASE7_CANDIDATE_TREE\s+literal 40-hex tree/);
+  assert.match(result.stdout, /SKIFF_BYTECODE_VM_PHASE7_EVIDENCE_DIR\s+caller-chosen canonical absolute absent path/);
+  assert.match(result.stdout, /exactly-one Phase 6 cumulative import/);
+  assert.match(result.stdout, /never reuses an evidence directory or re-derives provenance from ID prefixes/);
   assert.doesNotMatch(result.stdout, /Phase 1 VCP validation readiness gate/);
   assert.doesNotMatch(result.stdout, /cargo test --workspace|Node\/TypeScript plan/);
 });
