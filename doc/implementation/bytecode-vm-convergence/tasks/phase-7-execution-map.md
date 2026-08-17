@@ -421,4 +421,22 @@ manifest SHA-256 `dafeeb633...`，evidence 目录 `/Users/geek/workspace/.skiff-
 P7R-2 批派发：`codex/bcvm-p7-p7r2-*` 系列 worktree（从候选 `75f7d980e` 检出），修完逐一 rejoin 到候选；adapter 表更新为 P7G
 写集，直接改 P7G worktree。全部绿后重跑 Gate（新 evidence 目录，新 epoch）→ freeze F1。
 
+## 15. Freeze F1（integrator 记录）
+
+P7R-2 批 5 个修复全部合入候选（`d8d3aaeaf` sched、`e68dae8a2` fixture、`e772d60bc` clippy、`1dc2d56fb` phase-5、`20f5f1167`+`08c82e34d` adapter）。vcp 失败为候选 worktree 缺 `scripts/node_modules`（ws 模块，gitignore 本地依赖），安装后整链 PASS（207 6-chunk、timeout 504、disconnect 全过）。
+
+**Freeze F1 candidate**：commit `bbcd08936e6ae1a1f3eb6f337da73c16e8d0f8cf` / tree `51c9fc0f33f08d3c74d48a058e2a3697cd47e739`（branch `codex/bcvm-p7-p7p-r1`，worktree clean）。
+
+Gate 结果（第三轮，evidence 目录 `/Users/geek/workspace/.skiff-bcvm-p7-e2`）：
+- **128/128 commands PASS，714/714 tests PASS，0 failed，0 skipped/todo/ignored**；checker 与 manifest 一致。
+- manifest SHA-256 `56a8692a9403ca7d7fdd3a89de8f628d830df2953dbc01079ce6990e03897739`；evidence epoch **P7-E1**（adapter 计数更新开启新 epoch）。
+- 覆盖：C01–C18 全行（含 phase-1–6 继承 95 spec + 5 P7 场景 + 边界/negatives）。
+
+**P7S review cohort**（同 HEAD `bbcd08936`，只读，detached worktree `skiff-bcvm-p7-p7s-{a,b,c}`）：
+- P7S-A 语义实现 review（authority/hard-cut/accepted invariants/ownership/limits/fail-closed）
+- P7S-B proof/Gate/evidence review（false-green/provenance/no-fail-fast/dependencies/receipts/checker）
+- P7S-C whole-system capability review（真实组合/ledger/errors/resources/fuel/memory/GC/bounded work）
+
+Sealed blocker ledger 在 F1 当前为空（P7-BLK-01/02/03 已关闭；两个基线残余已记录 accepted）。P7S 发现项 → 汇总 seal → 空则 REVIEW_PASS → P7A detached Acceptance。
+
 后续：merged preflight → freeze F1 → P7S 并行 review cohort → 正式 Gate epoch（P7A）。
