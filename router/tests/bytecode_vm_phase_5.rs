@@ -1,9 +1,26 @@
-use std::{path::Path, process::Command};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use serde::Deserialize;
 
+use skiff_compiler::{
+    authoring::{build_authoring_object, seed_official_std_package, AuthoringObject},
+    CompilerPlatformSources,
+};
+use skiff_deployment::storage::CanonicalArtifactStore;
+
 const ROUTER_BIN_ENV: &str = "SKIFF_BYTECODE_VM_PHASE5_ROUTER_BIN";
+const RUNTIME_BIN_ENV: &str = "SKIFF_BYTECODE_VM_PHASE5_RUNTIME_BIN";
+const CARRIER_ENV: &str = "SKIFF_BYTECODE_VM_PHASE5_CARRIER_ROOT";
+const PROFILE: &str = "skiff-test";
+const SERVICE_ID: &str = "test.skiff/bytecode-vm-phase-5";
+const VERSION: &str = "1.0.0";
 const PROOF_SCHEMA: &str = "skiff-bytecode-vm-phase-5-router-proof-r1";
+static NEXT_ROOT: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -93,10 +110,22 @@ mod tests {
         let script = repository.join("scripts/lib/bytecode-vm-phase-5-router-harness.mjs");
         assert!(script.is_file(), "Phase 5 Router harness is missing");
 
+        // The production Router harness is a real process boundary that also
+        // starts the production runtime binary and serves the Phase 5 carrier
+        // artifact store. Make the test self-sufficient so it is green both
+        // under the Phase 5 gate (which pre-populates `CARRIER_ENV` and points
+        // `RUNTIME_BIN_ENV` at the shared target dir) and standalone: seed the
+        // carrier store and build/locate the runtime binary when needed.
+        let carrier = ensure_carrier_root(repository);
+        let runtime_bin = ensure_runtime_bin(repository);
+        let router_bin = PathBuf::from(env!("CARGO_BIN_EXE_skiff-router"));
+
         let output = Command::new(std::env::var_os("NODE").unwrap_or_else(|| "node".into()))
             .arg(&script)
             .current_dir(repository)
-            .env(ROUTER_BIN_ENV, env!("CARGO_BIN_EXE_skiff-router"))
+            .env(ROUTER_BIN_ENV, &router_bin)
+            .env(RUNTIME_BIN_ENV, &runtime_bin)
+            .env(CARRIER_ENV, &carrier.path)
             .output()
             .expect("start Phase 5 production Router harness");
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -205,4 +234,119 @@ fn pending_health() -> HealthCounters {
         task_requests_active: 1,
         ..HealthCounters::default()
     }
+}
+
+struct CarrierRoot {
+    path: PathBuf,
+    _temp: Option<TempRoot>,
+}
+
+struct TempRoot {
+    path: PathBuf,
+}
+
+impl TempRoot {
+    fn new(prefix: &str) -> Self {
+        let ordinal = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "skiff-bcvm-p5-r1-{prefix}-{}-{ordinal}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&path).expect("create carrier root");
+        Self { path }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn canonical(&self) -> PathBuf {
+        fs::canonicalize(&self.path).expect("resolve canonical carrier root")
+    }
+}
+
+impl Drop for TempRoot {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+/// Locate the production runtime binary, building it into the Cargo target
+/// dir when neither the environment provides an existing file nor a build
+/// artifact is present yet (e.g. a standalone `cargo test` run). The Phase 5
+/// gate normally points `RUNTIME_BIN_ENV` at `$CARGO_TARGET_DIR/debug/runtime`
+/// after `phase-5-runtime-process-binary`; rebuilding here is an idempotent
+/// no-op once the shared binary exists.
+fn ensure_runtime_bin(repository: &Path) -> PathBuf {
+    if let Some(path) = std::env::var_os(RUNTIME_BIN_ENV) {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return fs::canonicalize(&path).expect("canonical runtime binary");
+        }
+    }
+    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repository.join("target"));
+    let bin = target_dir.join("debug").join("runtime");
+    if !bin.is_file() {
+        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+        let status = Command::new(cargo)
+            .args(["build", "-p", "runtime", "--bin", "runtime"])
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .current_dir(repository)
+            .status()
+            .expect("start the production runtime build");
+        assert!(
+            status.success(),
+            "building the production runtime binary failed"
+        );
+    }
+    assert!(bin.is_file(), "runtime binary was not produced at {bin:?}");
+    fs::canonicalize(&bin).expect("canonical runtime binary")
+}
+
+/// Seed the Phase 5 carrier artifact store with the positive fixture so the
+/// Router harness can serve `test.skiff/bytecode-vm-phase-5@1.0.0`. Uses the
+/// gate-provided carrier root when present and idempotently seeds it when the
+/// release pointer is still absent; otherwise creates and seeds a temporary
+/// root that lives for the duration of the harness run.
+fn ensure_carrier_root(repository: &Path) -> CarrierRoot {
+    if let Some(path) = std::env::var_os(CARRIER_ENV) {
+        let path = PathBuf::from(path);
+        seed_carrier(repository, &path);
+        return CarrierRoot {
+            path: fs::canonicalize(&path).expect("canonical carrier root"),
+            _temp: None,
+        };
+    }
+    let temp = TempRoot::new("phase5-router-carrier");
+    seed_carrier(repository, temp.path());
+    CarrierRoot {
+        path: temp.canonical(),
+        _temp: Some(temp),
+    }
+}
+
+fn seed_carrier(repository: &Path, root: &Path) {
+    let store = CanonicalArtifactStore::create(root).expect("open or create carrier store");
+    if store
+        .read_release_pointer(PROFILE, SERVICE_ID, VERSION)
+        .is_ok_and(|pointer| pointer.is_some())
+    {
+        return;
+    }
+    let sources = CompilerPlatformSources::new(repository)
+        .expect("open repository compiler platform sources");
+    seed_official_std_package(&sources, root)
+        .expect("seed production std package into the carrier store");
+    let fixture = repository.join("runtime/host/tests/fixtures/bytecode-vm-phase-5/positive");
+    build_authoring_object(
+        &sources,
+        AuthoringObject::Package,
+        &fixture,
+        root,
+        PROFILE,
+        true,
+    )
+    .expect("build the positive carrier fixture into the store");
 }

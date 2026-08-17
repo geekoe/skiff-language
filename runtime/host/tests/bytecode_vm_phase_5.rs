@@ -13,6 +13,7 @@ mod tcp_server;
 #[path = "bytecode_vm_phase_5/terminal.rs"]
 mod terminal;
 
+use skiff_artifact_model::{PackageLocalAbiSymbol, PackageTypeRef, TypeRefIr};
 use skiff_compiler::Phase1UnsupportedCapability;
 
 use fixture::{BuildOutcome, FixtureSpec, TypedRejection};
@@ -25,8 +26,8 @@ mod tests {
     fn phase_5_stage_sentinel_source_to_admission() {
         let unsupported = FixtureSpec::unsupported_sse().build("s1-unsupported-sse");
         let unsupported_date = FixtureSpec::unsupported_date_now().build("s1-unsupported-date-now");
-        let illegal_stream =
-            FixtureSpec::illegal_stream_placement().build("s1-illegal-stream-placement");
+        let public_stream =
+            FixtureSpec::illegal_stream_placement().build("s1-public-stream-placement");
         let positive = FixtureSpec::positive().build("s1-positive");
         let mut failures = Vec::new();
 
@@ -44,7 +45,15 @@ mod tests {
             "main::run",
             &mut failures,
         );
-        assert_public_stream_rejection(illegal_stream, "leak", &mut failures);
+        // Public Stream<T> callables are admitted since Phase 6: the compiler
+        // grants every public symbol with a Stream<T> return type an exact
+        // child-stream producer authority (compiler/driver/pipeline/
+        // bytecode_lane.rs `child_stream_producer_authorities`, added in
+        // d66f45c44 "fix(p6): finalize child stream lifecycle round trip").
+        // The Phase 5 sentinel premise that a public Stream path must be
+        // rejected is therefore stale; the fixture now proves the public
+        // Stream<string> callable is accepted with an exact public ABI entry.
+        assert_public_stream_admitted(public_stream, "leak", &mut failures);
 
         if let BuildOutcome::Rejected { error_chain, .. } = positive {
             failures.push(format!(
@@ -147,45 +156,42 @@ fn assert_phase1_rejection(
     }
 }
 
-fn assert_public_stream_rejection(
+fn assert_public_stream_admitted(
     outcome: BuildOutcome,
     public_path: &str,
     failures: &mut Vec<String>,
 ) {
     match outcome {
-        BuildOutcome::Published(_) => failures.push(format!(
-            "illegal public Stream path {public_path} published despite remaining outside Phase 5"
-        )),
-        BuildOutcome::Rejected {
-            error_chain,
-            package_pointer_absent,
-            release_pointer_absent,
-            rejection,
-        } => {
-            if !package_pointer_absent {
+        BuildOutcome::Published(fixture) => {
+            let package = fixture.package_artifact();
+            let symbol = package.package_local_abi.public_symbols.get(public_path);
+            let exact_stream_callable = match symbol {
+                Some(PackageLocalAbiSymbol::Callable { signature, .. }) => {
+                    matches!(
+                        &signature.return_type,
+                        PackageTypeRef::Local {
+                            local_type: TypeRefIr::Builtin { name, args },
+                        } if name == "Stream" && args.len() == 1
+                    ) || matches!(
+                        &signature.return_type,
+                        PackageTypeRef::Container { name, arguments }
+                            if name == "Stream" && arguments.len() == 1
+                    )
+                }
+                _ => false,
+            };
+            if !exact_stream_callable {
                 failures.push(format!(
-                    "rejected public Stream path {public_path} published a PackageArtifact pointer"
-                ));
-            }
-            if !release_pointer_absent {
-                failures.push(format!(
-                    "rejected public Stream path {public_path} published a release pointer"
-                ));
-            }
-            let exact = matches!(
-                &rejection,
-                Some(TypedRejection::Phase1Capability {
-                    capability: Phase1UnsupportedCapability::Stream,
-                    module_path,
-                    function_key: Some(function_key),
-                }) if module_path == "main"
-                    && function_key.strip_prefix("main::") == Some(public_path)
-            );
-            if !exact {
-                failures.push(format!(
-                    "public Stream path {public_path} did not fail at the typed compiler owner: {rejection:?}; diagnostic={error_chain}"
+                    "public Stream path {public_path} published without an exact Stream<T> public callable ABI entry"
                 ));
             }
         }
+        BuildOutcome::Rejected {
+            error_chain,
+            rejection,
+            ..
+        } => failures.push(format!(
+            "public Stream path {public_path} rejected despite public stream callables being admitted since Phase 6: {rejection:?}; diagnostic={error_chain}"
+        )),
     }
 }
