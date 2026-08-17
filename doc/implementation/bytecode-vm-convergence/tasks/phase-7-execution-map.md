@@ -370,3 +370,29 @@ P7R worktrees（基于 P7P HEAD `8d492b819`，non-overlapping 写集，各自单
 
 修复完成后的 rejoin 顺序：P7P 将 C05/C07/C08 expected-red 更新为 positive 断言并全绿 → merged preflight → 正式 Gate
 epoch（MAP7 §5.1 Cargo 独占）。本 ledger 在 final freeze 前持续可追加，Acceptance 前必须为空。
+
+## 13. P7R 批收尾 amendment（integrator 记录，P7-E0 rolling）
+
+P7R 修复批完成，全部聚焦验证绿：
+
+| finding id | fix commit | 修复 | 验证 |
+| --- | --- | --- | --- |
+| P7-BLK-01 | `245806939`（P7R-1 X6） | `finish_http_gateway_request` 不再因 child 完成切换 `send_service_unary_stream`，unary 请求始终单一 `response.end` | host p7 19 passed + 4 expected-red 按预期失效；phase-6 102/102；runtime/request 171+34+7 |
+| P7-BLK-02 | `ca881a78e`（P7R-2 A6） | actor 复活路径 materialize 后未 drop instance guard 导致非可重入 mutex 自死锁；加 `drop(guard)`（1 行） | 整链二次请求回归 5ms 返回 200/2.0；host p7 23/23；phase-6 102/102；actor lib 单测 40/40 |
+
+Integrator 验证后收编的跨 owner 写（P7R-2 actual write set）：`runtime/host/tests/bytecode_vm_phase_7_actor_cross_request.rs`
+（新增整链回归测试，归 A6 P7R 写集；不在 MAP7 §3 任何正式写集内，本 amendment 收编为 A6 的 P7R 回归测试）。
+
+P7P rejoin：`1ed4017dc`（P7P branch）。C05/C07/C08 的 `drive_fail_closed`（断言 502）已删除，翻转为 positive 断言
+（200 + exact typed JSON body + 单 terminal + pending/permits 归零 + session 保持注册）。host p7 23/23、actor
+cross-request 1/1、phase-6 102/102、router p7 5/5、fmt/diff PASS。
+
+新 finding（滚动中，未派发）：**P7-BLK-03**（C07 interface-remote）——字符串返回值穿越 provider 边界后确定性物化为
+空数组 `[]`（两次独立运行确认；数字物化正常，callback 8.0 正常）。rejoin 断言真实 exact body `[]` 并注明为 X6/I6C
+owner 的 pin。待用户授权后路由 X6/I6C reopen 或降级观察。
+
+基线既存失败（与 P7 写集无关，@8d492b819 双向复现确认，未动）：host lib 全量 3 个 `phase_5_bytecode_http_*`
+stream registry 泄漏（共享 registry 污染）；`runtime/request` `callback_provider_boundary_type_resolves_to_the_linked_signature_row`。
+正式 Gate 前需按 §7 路由其原始 owner 或记录为 accepted 基线残余。
+
+后续：merged preflight → freeze F1 → P7S 并行 review cohort → 正式 Gate epoch（P7A）。
