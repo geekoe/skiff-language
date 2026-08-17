@@ -719,6 +719,7 @@ mod tests {
                     fail_finish: false,
                     return_pending_draft: false,
                 })),
+                child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
             },
             ProbeAction::Park | ProbeAction::Complete => unreachable!(),
         }
@@ -782,6 +783,7 @@ mod tests {
                 fail_finish: true,
                 return_pending_draft: false,
             })),
+            child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
         };
         let mut context = RequestExecutionContext::create(ports);
         context.install_root(OwnerProbeUnit::new(ProbeAction::Complete, &drops));
@@ -821,6 +823,7 @@ mod tests {
                 fail_finish: false,
                 return_pending_draft: true,
             })),
+            child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
         };
         let mut context = RequestExecutionContext::create(ports);
         context.install_root(OwnerProbeUnit::new(ProbeAction::Park, &drops));
