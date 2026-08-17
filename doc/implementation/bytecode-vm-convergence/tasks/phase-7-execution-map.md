@@ -459,4 +459,18 @@ Sealed blocker ledger 在 F1 当前为空（P7-BLK-01/02/03 已关闭；两个�
 
 **P7A detached Acceptance**：fresh agent（未参与 P7S/写作），detached worktree at F2，独立跑正式 Gate（新 evidence 目录）+ 独立复核 raw evidence（chain/closure/identities/计数/verdict）。PASS 后 → P7I result → main fast-forward merge + push → **merge 后 chat-smoke + host-tools（main 栈，AGENTS.md 规范）** → P7C cleanup。
 
+## 17. P7A 首轮 FAIL、计数修复、freeze F3（integrator 记录）
+
+P7A 首轮（F2 candidate `e0798742`，evidence `/Users/geek/workspace/.skiff-bcvm-p7-e4-acceptance`）**FAIL**，两项：
+1. **候选缺陷（确定性）**：`phase-7-gate-self-tests` 契约期望 43，实际 44（P7G `12cd9c6f6` 新增 1 个专项契约测试未同步计数）。**已修复** `89a43d8a4`（expectedTests 43→44，P7G 写集）。
+2. **验收环境**：p7a detached worktree 缺 `scripts/node_modules`（`ws`）→ vcp 失败；已为验收 worktree 安装 scripts 依赖（gitignore 本地状态，不影响候选 tree）。
+
+**Gate 5（evidence `/Users/geek/workspace/.skiff-bcvm-p7-e5`）**：**verdict=PASS、131/131 commands、754/754 tests、0 failures、checkerError=null**；manifest SHA-256 `e5d6ccacf5e18f30e97fda1e1835cef06dc8ba746705789d7468cd0fd5a6c629`；epoch **P7-E3**。
+
+**Freeze F3 candidate**：commit `25dc7087fcf3a61e875c81bff19449b36f702ad6` / tree `a7ee4c7dafbc22a017db0a22258f500f26ff0518`。
+
+计数一致性设计 note：P7 自身 spec 的 expectedTests 为防静默变化的 guardrail（本轮抓到 43→44 漂移）；Node self-tests 可后续改为运行时枚举单一事实源，Rust suites 保持硬编码 + Gate 运行时校验；继承 spec 的 expectedTests 原始状态为 provenance 契约，不可动态化。
+
+P7A 重跑：p7a worktree 更新到 F3，正式 Gate（新 evidence 目录）+ 独立复核。PASS 后 → P7I → merge → chat-smoke/host-tools → cleanup。
+
 后续：merged preflight → freeze F1 → P7S 并行 review cohort → 正式 Gate epoch（P7A）。
