@@ -1,6 +1,6 @@
 # Phase 7：whole-system closure, budget and final acceptance
 
-> Status: activated on de facto baseline (user-authorized); execution in progress
+> Status: accepted; candidate `25dc7087fcf3a61e875c81bff19449b36f702ad6`（P7A PASS）；result 见 [`results/phase-7.md`](../results/phase-7.md)
 >
 > Planning baseline: `3f2e5ae3c6e62cba3e513c3941d31e5bd9cef4a0`
 >

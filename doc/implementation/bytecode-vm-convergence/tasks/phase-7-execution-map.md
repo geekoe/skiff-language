@@ -1,6 +1,6 @@
 # MAP7：Phase 7 rolling execution map
 
-> Status: activated on de facto baseline (user-authorized); P7P/P7G lanes dispatched
+> Status: accepted; candidate `25dc7087fcf3a61e875c81bff19449b36f702ad6`（P7A PASS）；result 见 [`results/phase-7.md`](../results/phase-7.md)
 >
 > Phase Contract: [`phase-7-whole-system-closure.md`](../phases/phase-7-whole-system-closure.md)
 >

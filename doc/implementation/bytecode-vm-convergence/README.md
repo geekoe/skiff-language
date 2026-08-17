@@ -1,6 +1,6 @@
 # Bytecode VM 架构收敛重构总计划
 
-> Status: project plan; Phase 0/1/2/3/4/5 accepted; Phase 6 completed (de facto verified, user-authorized); Phase 7 active
+> Status: project plan; Phase 0/1/2/3/4/5 accepted; Phase 6 completed (de facto verified, user-authorized); Phase 7 accepted
 >
 > Created: 2026-08-12
 >
@@ -349,7 +349,7 @@ Phase plan 只冻结角色分离、write set 和验收约束；实际 Agent、wo
 | Phase 4 | accepted; [`results/phase-4.md`](./results/phase-4.md) |
 | Phase 5 | accepted; [`results/phase-5.md`](./results/phase-5.md) |
 | Phase 6 | completed (de facto verified, user-authorized; no formal Gate) — 编码完成并合入 main `62edf7841`，聚焦验证全绿（host 102 / router 17 / scheduler 14 / gate-self 29 / DAG） |
-| Phase 7 | active; [`Contract`](./phases/phase-7-whole-system-closure.md) + [`MAP7`](./tasks/phase-7-execution-map.md) |
+| Phase 7 | accepted; [`results/phase-7.md`](./results/phase-7.md)；candidate `25dc7087f`，Gate 131/131 + 754/754，P7A PASS |
 
 Phase 0/1/2/3/4/5 均已由独立 Acceptance Agent 在 exact detached candidate 上通过 canonical Gate，且各 result
 commit 已合入 `main`（`results/phase-*.md` 记录 accepted candidate、merge commit/tree 与独立 Acceptance
