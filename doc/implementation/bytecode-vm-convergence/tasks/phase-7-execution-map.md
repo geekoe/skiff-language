@@ -439,4 +439,24 @@ Gate 结果（第三轮，evidence 目录 `/Users/geek/workspace/.skiff-bcvm-p7-
 
 Sealed blocker ledger 在 F1 当前为空（P7-BLK-01/02/03 已关闭；两个基线残余已记录 accepted）。P7S 发现项 → 汇总 seal → 空则 REVIEW_PASS → P7A detached Acceptance。
 
+## 16. P7S review、sealed ledger、freeze F2（integrator 记录）
+
+**P7S-C blocker F1**：Gate 不含 P7P whole-system 证明测试（C03–C14 由 Phase 6 fake-router harness 背书）。已修复 `12cd9c6f6`
+（P7G 在 `phase7ScenarioSpecs` 绑定 `phase-7-p7p-host-whole-system` 33 / `phase-7-p7p-actor-cross-request` 1 /
+`phase-7-p7p-router-whole-system` 5，`PHASE7_REQUIRED_LANES` 加 P7P）。契约自测 58/58。
+
+**Gate 4（evidence `/Users/geek/workspace/.skiff-bcvm-p7-e3`）**：**131/131 commands、754/754 tests、0 failed**，checker 与 manifest
+一致；manifest SHA-256 `32ae3adde6f1ef8dd718a14dfc90de8f8af55f3c5d45b35cde8b74cb944c7198`；evidence epoch **P7-E2**。
+
+**P7S cohort findings（exact HEAD `bbcd08936`，后经 `12cd9c6f6` 修复 rejoin）**：
+- P7S-A 语义实现：无 blocker；advisory P7S-A-01（vcp harness 无 CARGO_TARGET_DIR 时回退仓库 target 冷编 runtime，操作层面）。
+- P7S-B proof/Gate/evidence：无 blocker；advisory P7S-B-01（P7P 测试曾未执行，已由 12cd9c6f6 解决）、P7S-B-02（catalog digest 含绝对 repo 路径，checker/P7A 复算须用记录的确切路径）。
+- P7S-C whole-system：F1 blocker 已闭环；advisory P7S-C-02（disabled 能力 fail-closed 靠代理 surface 的通用语法拒绝，非专门 gate——真实且 pointer 缺席，记录）、P7S-C-03（DB/recoverable 行在 in-memory provider 上成立，非真实 Mongo 事务引擎——Phase 6 继承设计）、P7S-C-04（router no-candidate 路径含 HTTP body 子串断言，同时有计数器断言，advisory）。
+
+**Sealed blocker ledger（F2 前）**：空。P7S 三路均无 blocker（F1 已修复闭环）。**REVIEW_PASS**。
+
+**Freeze F2 candidate**：commit `e0798742d049c51e28e4adb6f26ebb94c6ce856b` / tree `c0ecbfce271c9628e98f05984587e54a17ebce70`（branch `codex/bcvm-p7-p7p-r1`，worktree clean）。
+
+**P7A detached Acceptance**：fresh agent（未参与 P7S/写作），detached worktree at F2，独立跑正式 Gate（新 evidence 目录）+ 独立复核 raw evidence（chain/closure/identities/计数/verdict）。PASS 后 → P7I result → main fast-forward merge + push → **merge 后 chat-smoke + host-tools（main 栈，AGENTS.md 规范）** → P7C cleanup。
+
 后续：merged preflight → freeze F1 → P7S 并行 review cohort → 正式 Gate epoch（P7A）。
