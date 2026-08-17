@@ -354,7 +354,7 @@ pub(crate) fn materialize_db_result_to_vm(
     }
 }
 
-fn materialize_runtime_value(
+pub(crate) fn materialize_runtime_value(
     destination: &mut RequestVmHeap,
     source: &RequestHeap,
     image: &DeploymentExecutionImage,

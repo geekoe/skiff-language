@@ -3809,11 +3809,12 @@ impl VmFiber {
         let intrinsic_signature = intrinsic.signature();
         let target_signature = task_target.signature();
         let payload_count = target_signature.parameter_types().len();
+        let receiver_count = usize::from(task_target.is_actor_method());
         let timing_operand_count = match task_target.timing() {
             LinkedTaskTiming::Immediate => 0,
             LinkedTaskTiming::After { .. } | LinkedTaskTiming::At { .. } => 1,
         };
-        let expected_arg_count = payload_count + timing_operand_count;
+        let expected_arg_count = receiver_count + payload_count + timing_operand_count;
         if arg_count != expected_arg_count
             || arg_count != intrinsic_signature.parameter_types().len()
             || result_count != 1
@@ -3827,12 +3828,13 @@ impl VmFiber {
                 opcode: Opcode::InvokeIntrinsic,
             });
         }
-        if target_signature.parameter_types()
-            != &intrinsic_signature.parameter_types()[..payload_count]
+        if intrinsic_signature.parameter_types().len() < receiver_count
+            || target_signature.parameter_types()
+                != &intrinsic_signature.parameter_types()[receiver_count..]
             || target_signature.parameter_modes()
-                != &intrinsic_signature.parameter_modes()[..payload_count]
+                != &intrinsic_signature.parameter_modes()[receiver_count..]
             || target_signature.parameter_plans()
-                != &intrinsic_signature.parameter_plans()[..payload_count]
+                != &intrinsic_signature.parameter_plans()[receiver_count..]
         {
             return Err(VmError::FullValueLifecyclePlanUnavailable {
                 function,
@@ -3869,8 +3871,8 @@ impl VmFiber {
                     opcode: Opcode::InvokeIntrinsic,
                 }
             })?;
-        let arguments = self.pop_operands(payload_count, false)?;
-        let argument_plans = target_signature.parameter_plans().to_vec();
+        let arguments = self.pop_operands(receiver_count + payload_count, false)?;
+        let argument_plans = intrinsic_signature.parameter_plans().to_vec();
         let expected_stack_height =
             self.current_frame()?
                 .operand_height()

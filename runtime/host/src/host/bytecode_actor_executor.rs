@@ -1301,7 +1301,7 @@ fn string_slot_value(
     }
 }
 
-fn materialize_json_key(
+pub(crate) fn materialize_json_key(
     heap: &mut dyn VmHeap,
     image: &DeploymentExecutionImage,
     type_index: TypeIndex,
@@ -1339,6 +1339,34 @@ fn materialize_json_key(
             entry.type_ref()
         )),
     }
+}
+
+pub(crate) fn allocate_actor_state(
+    heap: &mut dyn VmHeap,
+    image: &DeploymentExecutionImage,
+    actor_type: TypeIndex,
+    key_field: &str,
+    actor_ref: &ActorRef,
+    state_fields: &[LinkedActorStateField],
+) -> Result<ValueSlot, String> {
+    let key_json: Value = serde_json::from_slice(actor_ref.canonical_actor_id_key_bytes())
+        .map_err(|error| error.to_string())?;
+    let mut fields = Vec::with_capacity(state_fields.len());
+    for field in state_fields {
+        let value = if field.name() == key_field {
+            materialize_json_key(heap, image, field.boundary().caller_type(), &key_json)?
+        } else {
+            ValueSlot::null()
+        };
+        fields.push(VmRecordField {
+            name: field.name().to_string(),
+            value,
+        });
+    }
+    let tag = CompactTypeTag::try_from_type_index(actor_type.get())
+        .ok_or_else(|| "actor state type does not fit compact tag".to_string())?;
+    heap.allocate_record(&fields, tag, ValueFlags::new(0))
+        .map_err(|error| error.to_string())
 }
 
 fn exact_resume_result_type(

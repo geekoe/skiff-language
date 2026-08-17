@@ -365,6 +365,10 @@ impl RequestVmHeap {
         Ok(actor_ref.clone())
     }
 
+    pub(crate) fn string_value(&self, value: &ValueSlot) -> Result<String, VmHeapError> {
+        VmHeap::string_value(self, value)
+    }
+
     fn alloc_string_with_metadata(
         &mut self,
         value: String,

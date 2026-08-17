@@ -6,17 +6,18 @@ use skiff_artifact_model::bytecode::dto::{
 };
 use skiff_artifact_model::{
     bytecode::encode_instruction, bytecode::limits, contract_for_opcode, descriptor_for_opcode,
-    AssignTargetIr, BoxSourceIr, BytecodeFunctionOrigin, BytecodeIntrinsicRef, BytecodeRelocation,
-    BytecodeSpecialization, CallLoanLayout, CallTargetIr, CallableMayEffects, CatchMatcher,
-    DbBodyIr, DbOpKindIr, DbTargetIr, ExceptionRegion, ExprIr, ExprRefIr, FrameLayout,
-    FunctionTypeParamIr, HostEffectReference, HostEffectSignature, InstructionSourceSite,
-    InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr, InterfaceRequirementMethod,
-    IntrinsicReference, LiteralIr, LocalInterfaceMethod, LocalInterfaceRef, MetadataValue,
-    NativeTarget, Opcode, ParamModeIr, ParameterSlotDecl, PatternIr, PrivilegedAffineFieldAccess,
-    RelocatableBytecodeFunction, RemoteInterfaceMethod, RemoteInterfaceRef, ResumeDescriptor,
-    ResumeErrorMode, ResumeResultMaterialization, ServiceBoundaryPlan, ServiceCallRef,
-    SourceMapEntry, StatementAttributionId, StatementEntry, SyntheticInstructionSiteReason,
-    TrapFailureKind, TypeRefIr, ValueDropPlan, ValueTransferPlan, WritablePathSegment,
+    ActorDeclarationIr, AssignTargetIr, BoxSourceIr, BytecodeFunctionOrigin, BytecodeIntrinsicRef,
+    BytecodeRelocation, BytecodeSpecialization, CallLoanLayout, CallTargetIr, CallableMayEffects,
+    CatchMatcher, DbBodyIr, DbOpKindIr, DbTargetIr, ExceptionRegion, ExprIr, ExprRefIr,
+    FrameLayout, FunctionTypeParamIr, HostEffectReference, HostEffectSignature,
+    InstructionSourceSite, InterfaceInstantiationRef, InterfaceMethodSlotSignatureIr,
+    InterfaceRequirementMethod, IntrinsicReference, LiteralIr, LocalInterfaceMethod,
+    LocalInterfaceRef, MetadataValue, NativeTarget, Opcode, ParamModeIr, ParameterSlotDecl,
+    PatternIr, PrivilegedAffineFieldAccess, RelocatableBytecodeFunction, RemoteInterfaceMethod,
+    RemoteInterfaceRef, ResumeDescriptor, ResumeErrorMode, ResumeResultMaterialization,
+    ServiceBoundaryPlan, ServiceCallRef, SourceMapEntry, StatementAttributionId, StatementEntry,
+    SyntheticInstructionSiteReason, TrapFailureKind, TypeRefIr, ValueDropPlan, ValueTransferPlan,
+    WritablePathSegment,
 };
 use skiff_compiler_lowering::mir::{
     MirCallArgument, MirDirectCallFacts, MirEmissionAnchor, MirExpression, MirForInItemKind,
@@ -1849,20 +1850,33 @@ impl<'a> FunctionEmitter<'a> {
         let result_materialization = self.host_result_materialization(expression, &relocation)?;
         let relocation_index = u32::try_from(self.relocations.len())
             .map_err(|_| arithmetic(self.key.as_str(), "relocation index conversion"))?;
-        self.relocations.push(relocation);
-
-        let (arg_count, input_count) = if method_ordinal.is_some() {
-            let args = call.args.len().checked_sub(1).ok_or_else(|| {
-                unsupported(
-                    &self.key,
-                    "interface call",
-                    "interface call has no carrier argument",
-                )
-            })?;
-            (args, args + 1)
-        } else {
-            (call.args.len(), call.args.len())
+        let (arg_count, input_count) = match &relocation {
+            BytecodeRelocation::TaskSubmitRef { task } => {
+                let payload_args = task
+                    .payload_plan
+                    .as_ref()
+                    .map(super::inputs::task_payload_parameter_count)
+                    .unwrap_or(0);
+                let receiver_args = usize::from(matches!(
+                    task.target,
+                    TaskSubmitTargetRef::ActorMethod { .. }
+                ));
+                let args = payload_args + receiver_args;
+                (args, args)
+            }
+            _ if method_ordinal.is_some() => {
+                let args = call.args.len().checked_sub(1).ok_or_else(|| {
+                    unsupported(
+                        &self.key,
+                        "interface call",
+                        "interface call has no carrier argument",
+                    )
+                })?;
+                (args, args + 1)
+            }
+            _ => (call.args.len(), call.args.len()),
         };
+        self.relocations.push(relocation);
         let arg_count = u32::try_from(arg_count)
             .map_err(|_| arithmetic(self.key.as_str(), "argument count conversion"))?;
         let result_count = usize::from(!is_void(&expression.ty));
@@ -2811,6 +2825,25 @@ impl<'a> FunctionEmitter<'a> {
             ));
         }
         let task = self.task_submit_reference(call)?;
+        let is_actor_method = matches!(task.target, TaskSubmitTargetRef::ActorMethod { .. });
+        if is_actor_method {
+            let expected_payload_args = match &task.payload_plan {
+                Some(skiff_artifact_model::bytecode::dto::TaskSubmitPayloadPlan::Record {
+                    fields,
+                })
+                | Some(skiff_artifact_model::bytecode::dto::TaskSubmitPayloadPlan::Tuple {
+                    parameters: fields,
+                }) => fields.len(),
+                None => 0,
+            };
+            if call.args.len() != expected_payload_args + 1 {
+                return Err(unsupported(
+                    &self.key,
+                    "task submit",
+                    "actor task call must carry exactly one receiver plus the linked payload arguments",
+                ));
+            }
+        }
         for argument in &call.args {
             self.emit_expression(*argument)?;
         }
@@ -2933,6 +2966,11 @@ impl<'a> FunctionEmitter<'a> {
                         "actor task target must be an actor method",
                     ));
                 };
+                payload_plan = Some(self.actor_task_payload_plan(
+                    actor,
+                    actor_implementation_identity,
+                    method_identity,
+                )?);
                 TaskSubmitTargetRef::ActorMethod {
                     actor: actor.clone(),
                     actor_abi_identity: actor_abi_identity.clone(),
@@ -2954,6 +2992,74 @@ impl<'a> FunctionEmitter<'a> {
             timing,
             payload_plan,
         })
+    }
+
+    fn actor_task_payload_plan(
+        &self,
+        actor: &skiff_artifact_model::ServiceSymbolRef,
+        actor_implementation_identity: &skiff_artifact_model::ActorImplementationIdentity,
+        method_identity: &skiff_artifact_model::ActorMethodIdentity,
+    ) -> Result<TaskSubmitPayloadPlan, BytecodeEmissionError> {
+        let unit = self
+            .inputs
+            .units
+            .get(actor.module_path.as_str())
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "task submit",
+                    &format!("actor task target module `{}` is absent", actor.module_path),
+                )
+            })?;
+        let declaration = unit
+            .actor_declarations
+            .iter()
+            .find(|declaration: &&ActorDeclarationIr| {
+                declaration.abi.actor_name == actor.symbol
+                    && declaration.actor_implementation_identity == *actor_implementation_identity
+            })
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "task submit",
+                    &format!("actor task target `{}` is absent", actor.symbol_path()),
+                )
+            })?;
+        let executable_index = declaration
+            .method_implementations
+            .get(method_identity)
+            .copied()
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "task submit",
+                    &format!(
+                        "actor task method {} is absent from `{}`",
+                        method_identity.as_str(),
+                        actor.symbol_path()
+                    ),
+                )
+            })?;
+        let function = self
+            .inputs
+            .functions
+            .values()
+            .find(|function| {
+                function.origin.module_path == actor.module_path
+                    && function.executable_index == executable_index
+            })
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "task submit",
+                    &format!(
+                        "actor task method executable {} is absent from the emission input",
+                        executable_index
+                    ),
+                )
+            })?;
+        let function_key = canonical_function_key(&actor.module_path, &function.symbol)?;
+        self.task_payload_plan(function, &function_key)
     }
 
     fn task_payload_plan(

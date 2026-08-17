@@ -14,6 +14,7 @@ use skiff_runtime_boundary::http::HttpBoundaryNameValue;
 use skiff_runtime_capability_context::{
     CancellationToken, DbRuntimeFinalizer, ExecutionBudgetReason,
     PreparedDbOptionalRuntimeOperation, PreparedDbValueRuntimeOperation, TaskSubmitResponseControl,
+    TaskSubmitTimingControl,
 };
 use skiff_runtime_linked_bytecode::{
     LinkedDbOperation, LinkedNativeCallableSignature, LinkedRepresentationCarrier,
@@ -59,13 +60,13 @@ use skiff_runtime_vm::{
 
 use crate::{
     bytecode_children::{
-        child_stream_next, db_argument_runtime_value, db_key_from_runtime,
-        encode_durable_task_payload, execute_actor_child, execute_interface_child,
-        execute_service_child, is_task_request, linked_db_target, materialize_db_result_to_vm,
-        require_db_operation, task_arguments, task_submit_message_from_composition,
-        task_target_by_dispatch_index, task_timing_control, BytecodeChildHeapFactory,
-        BytecodeChildLane, BytecodeRequestChildComposition, DbPendingCarrier, DbPendingRoots,
-        DbTransactionSession, RequestChildHeapFactory,
+        actor_method_task_target_control_from_state, child_stream_next, db_argument_runtime_value,
+        db_key_from_runtime, encode_durable_task_payload, execute_actor_child,
+        execute_interface_child, execute_service_child, is_task_request, linked_db_target,
+        materialize_db_result_to_vm, require_db_operation, task_arguments,
+        task_submit_message_from_composition, task_target_by_dispatch_index,
+        BytecodeChildHeapFactory, BytecodeChildLane, BytecodeRequestChildComposition,
+        DbPendingCarrier, DbPendingRoots, DbTransactionSession, RequestChildHeapFactory,
     },
     bytecode_host_effects::{
         BytecodeHttpFailure, BytecodeHttpRequest, BytecodeHttpResponse,
@@ -231,6 +232,7 @@ struct BytecodeStart {
     budget: Box<dyn VmBudget + Send>,
     execution_budget: Arc<ExecutionBudget>,
     mode: String,
+    task_request: bool,
     raw_http_adapter: bool,
     http_client: Option<SharedBytecodeHttpClientPort>,
     server_stream: Option<ServerStreamStart>,
@@ -308,6 +310,7 @@ fn start_bytecode_request(
         budget: Box::new(budget),
         execution_budget,
         mode,
+        task_request: is_task_request(&request),
         raw_http_adapter,
         http_client,
         server_stream,
@@ -484,6 +487,7 @@ pub fn drive_runtime_bytecode_request_controlled(
         mut budget,
         execution_budget,
         mode,
+        task_request,
         raw_http_adapter,
         http_client: _,
         server_stream: _,
@@ -499,6 +503,7 @@ pub fn drive_runtime_bytecode_request_controlled(
         runtime,
         wake_receiver,
         mode,
+        task_request,
         raw_http_adapter,
     }
     .finish_drive(outcome)
@@ -1536,8 +1541,18 @@ impl BytecodeHostExecutor {
                 invocation,
             ));
         }
-        let timing = match task_timing_control(&target) {
-            Ok(timing) => timing,
+        let timing = match invocation.task_dispatch_timing() {
+            Ok(timing) => match timing {
+                skiff_runtime_vm::TaskDispatchTiming::Immediate => {
+                    TaskSubmitTimingControl::Immediate
+                }
+                skiff_runtime_vm::TaskDispatchTiming::After { duration_ms } => {
+                    TaskSubmitTimingControl::After { duration_ms }
+                }
+                skiff_runtime_vm::TaskDispatchTiming::At { utc_millis } => {
+                    TaskSubmitTimingControl::At { utc_millis }
+                }
+            },
             Err(error) => {
                 return Err(BytecodePortFailure::input(
                     BytecodeSchedulerError::Port(error.to_string()),
@@ -1545,12 +1560,45 @@ impl BytecodeHostExecutor {
                 ));
             }
         };
-        let payload = match encode_durable_task_payload(
-            &image,
-            &target,
-            invocation.arguments().values(),
-            heap,
-        ) {
+        let actor_method = if target.is_actor_method() {
+            let invocation_values = invocation.arguments().values();
+            let Some(&receiver) = invocation_values.first() else {
+                return Err(BytecodePortFailure::input(
+                    BytecodeSchedulerError::Port(
+                        "actor-method task invocation is missing its receiver".to_string(),
+                    ),
+                    invocation,
+                ));
+            };
+            match actor_method_task_target_control_from_state(&image, &target, &receiver, heap) {
+                Ok(target) => Some(target),
+                Err(error) => {
+                    return Err(BytecodePortFailure::input(
+                        BytecodeSchedulerError::Port(error.to_string()),
+                        invocation,
+                    ));
+                }
+            }
+        } else {
+            None
+        };
+        let invocation_values = invocation.arguments().values();
+        let payload_values = if target.is_actor_method() {
+            match invocation_values.get(1..) {
+                Some(values) => values,
+                None => {
+                    return Err(BytecodePortFailure::input(
+                        BytecodeSchedulerError::Port(
+                            "actor-method task invocation has no payload arguments".to_string(),
+                        ),
+                        invocation,
+                    ));
+                }
+            }
+        } else {
+            invocation_values
+        };
+        let payload = match encode_durable_task_payload(&image, &target, payload_values, heap) {
             Ok(payload) => payload,
             Err(error) => {
                 return Err(BytecodePortFailure::input(
@@ -1572,6 +1620,7 @@ impl BytecodeHostExecutor {
             &rpc_id,
             &composition,
             Some(timing),
+            actor_method,
         ) {
             Ok(message) => message,
             Err(error) => {
@@ -3532,6 +3581,7 @@ pub struct ParkedBytecodeRequest {
     runtime: Arc<RequestPendingRuntime>,
     wake_receiver: mpsc::Receiver<()>,
     mode: String,
+    task_request: bool,
     raw_http_adapter: bool,
 }
 
@@ -3650,6 +3700,7 @@ impl ParkedBytecodeRequest {
             budget,
             execution_budget,
             mode,
+            task_request,
             raw_http_adapter,
             runtime,
             ..
@@ -3659,6 +3710,7 @@ impl ParkedBytecodeRequest {
             &execution_budget,
             &completion,
             &mode,
+            task_request,
             raw_http_adapter,
         );
         let (mut terminal_cause, mut terminal_escrow) = completion.into_terminal();
@@ -3777,6 +3829,7 @@ fn project_completed_request(
     execution_budget: &ExecutionBudget,
     completion: &VmCompletion,
     mode: &str,
+    task_request: bool,
     raw_http_adapter: bool,
 ) -> RequestResult<BoundaryResponse> {
     if let Some(values) = completion.returned_values() {
@@ -3788,6 +3841,8 @@ fn project_completed_request(
                     "linked serverStream request returned unexpected scalar values".to_string(),
                 ))
             }
+        } else if task_request && values.is_empty() {
+            Ok(BoundaryResponse::payload(Vec::new()))
         } else if raw_http_adapter {
             http_response_from_vm_values(heap, values.values())
         } else {

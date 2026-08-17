@@ -44,6 +44,7 @@ use crate::error::{Result, RuntimeError};
 mod handshake;
 pub(crate) mod task_submit;
 
+use super::bytecode_actor_owner::handle_actor_owner_frame;
 use super::request_supervisor::RouterSessionEpoch;
 use handshake::{
     ClientHandshake, ClientHandshakePhase, ClientTerminalKind, ClientTimeoutKind,
@@ -764,10 +765,7 @@ async fn dispatch_router_binary_frame_inner(
             }
         }
         "actor.owner.invoke" | "actor.owner.control" => {
-            return Err(RuntimeError::Unsupported(
-                "actor owner invoke/control execution is not installed by the bytecode runtime"
-                    .to_string(),
-            ));
+            handle_actor_owner_frame(&host, bytes, &sender).await?;
         }
         "actor.owner.failure" => {
             let header = decode_actor_owner_failure_frame(bytes)

@@ -44,6 +44,6 @@ pub use service::{
     LinkedServiceCallbackPlan,
 };
 pub use task::{
-    LinkedTaskPayloadParameter, LinkedTaskPayloadPlan, LinkedTaskTarget, LinkedTaskTargetError,
-    LinkedTaskTiming,
+    LinkedTaskActorMethodTarget, LinkedTaskPayloadParameter, LinkedTaskPayloadPlan,
+    LinkedTaskTarget, LinkedTaskTargetError, LinkedTaskTiming,
 };

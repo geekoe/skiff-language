@@ -422,6 +422,7 @@ fn phase_5_absent_stream_supervisor_release_failure_reaches_terminal_retry_escro
         mut budget,
         execution_budget,
         mode,
+        task_request: _,
         raw_http_adapter,
         http_client: _,
         server_stream,
@@ -454,6 +455,7 @@ fn phase_5_absent_stream_supervisor_release_failure_reaches_terminal_retry_escro
         runtime,
         wake_receiver,
         mode,
+        task_request: false,
         raw_http_adapter,
     }
     .terminal(error);
