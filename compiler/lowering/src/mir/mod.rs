@@ -150,12 +150,33 @@ pub struct MirUnit {
     pub source_map: SourceMapDto,
     pub type_table: Vec<TypeDeclIr>,
     pub package_type_records: BTreeMap<(String, String), BTreeMap<String, TypeRefIr>>,
+    /// Exact discriminated-union shape authority for package symbols, keyed by
+    /// the same `(package-id-or-alias, symbol-path)` pairs as
+    /// [`Self::package_type_records`]. A named union carries a discriminator
+    /// field plus the per-branch full record shapes (including the
+    /// discriminator literal). This is the emitter's authority for resolving
+    /// union field layouts without reopening the source `FileIrUnit`.
+    pub package_type_unions: BTreeMap<(String, String), MirUnionShape>,
     pub link_targets: FileLinkTargets,
     /// Dense local-constant metadata. Frozen graphs remain a separate
     /// ConstEvaluator input keyed by `MirConst::symbol`; initializer bodies
     /// are intentionally not copied into MIR.
     pub constants: Vec<MirConst>,
     pub functions: Vec<MirFunction>,
+}
+
+/// Exact shape of one package named (discriminated) union.
+///
+/// `discriminator` names the string discriminator field shared by every
+/// branch; `branches` maps each discriminator literal value to the branch's
+/// full record fields (the discriminator field is present with its literal
+/// value). The emitter derives the canonical dense layout (the union of every
+/// branch field, with missing branch fields represented as `null`) from this
+/// authority so bytecode field reads stay ordinal-exact across all branches.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MirUnionShape {
+    pub discriminator: String,
+    pub branches: BTreeMap<String, BTreeMap<String, TypeRefIr>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

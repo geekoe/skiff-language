@@ -23,7 +23,7 @@ use skiff_compiler_lowering::mir::{
     MirCallArgument, MirDirectCallFacts, MirEmissionAnchor, MirExpression, MirForInItemKind,
     MirFunction, MirIndexReceiverKind, MirParamMode, MirRemoteInterfaceFacts,
     MirRemoteInterfaceMethodFacts, MirSlot, MirSlotKind, MirSourceEvent, MirStatementPlacement,
-    MirStmtKind, MirUnit, MirWritablePathSegment, MirWritablePlace, MirWritableRoot,
+    MirStmtKind, MirUnionShape, MirUnit, MirWritablePathSegment, MirWritablePlace, MirWritableRoot,
 };
 
 use super::{
@@ -3697,6 +3697,36 @@ impl<'a> FunctionEmitter<'a> {
             ExprIr::LoadSlot { slot } => Some(*slot),
             _ => None,
         };
+        // A narrowed union load is retyped as its branch record, but the
+        // physical value always uses the canonical union layout (every branch
+        // field present, missing branch fields null). Resolve the layout from
+        // the underlying slot so both the discriminator read and narrowed
+        // branch reads share one ordinal-exact shape.
+        let layout_ty = self.field_read_layout_type(&object_expression)?;
+        if let Some(shape) = self.named_union_shape(&layout_ty)? {
+            let fields = self.canonical_union_fields(&shape, "union field read")?;
+            let ordinal = fields
+                .keys()
+                .position(|name| name == field)
+                .ok_or_else(|| {
+                    unsupported(
+                        &self.key,
+                        "union field read",
+                        &format!(
+                            "field `{field}` is absent from the canonical union shape for {layout_ty:?}"
+                        ),
+                    )
+                })?;
+            let shape = self.image.intern_shape(
+                self.unit.module_path.as_str(),
+                &layout_ty,
+                &fields,
+                &format!("union field read `{field}` in `{}`", self.key),
+            )?;
+            self.emit_expression(object)?;
+            self.emit_op(Opcode::GetDenseField, vec![shape, ordinal as u32])?;
+            return Ok(());
+        }
         let fields = self.machine_expression_shape_fields(
             object_expression.index,
             &object_ty,
@@ -3742,6 +3772,114 @@ impl<'a> FunctionEmitter<'a> {
             self.emit_op(Opcode::GetDenseField, vec![shape, ordinal as u32])?;
         }
         Ok(())
+    }
+
+    /// The physical layout owner for one field-read object. A narrowed union
+    /// load is retyped as its branch record; the slot keeps the union type, so
+    /// the slot is the authoritative layout owner for the canonical union
+    /// shape.
+    fn field_read_layout_type(
+        &self,
+        expression: &MirExpression,
+    ) -> Result<TypeRefIr, BytecodeEmissionError> {
+        match &expression.expression {
+            ExprIr::LoadSlot { slot } => {
+                if let Some(slot) = self.function.slots.get(*slot as usize) {
+                    if let Some(ty) = &slot.ty {
+                        return Ok(ty.clone());
+                    }
+                }
+                Ok(expression.ty.clone())
+            }
+            _ => Ok(expression.ty.clone()),
+        }
+    }
+
+    /// Resolves a named (discriminated) union shape for a layout-owner type.
+    ///
+    /// Package symbols resolve through the MIR union authority; local types
+    /// resolve through the unit type table's union declaration. Any other
+    /// type (or a generic nominal) yields `None` so the ordinary record path
+    /// stays authoritative.
+    fn named_union_shape(
+        &self,
+        ty: &TypeRefIr,
+    ) -> Result<Option<MirUnionShape>, BytecodeEmissionError> {
+        match ty {
+            TypeRefIr::PackageSymbol { symbol } => Ok(self.package_union_shape(symbol)),
+            TypeRefIr::AppliedNominal {
+                base: skiff_artifact_model::NominalTypeRefBaseIr::PackageSymbol { symbol },
+                arguments,
+            } if arguments.is_empty() => Ok(self.package_union_shape(symbol)),
+            TypeRefIr::LocalType { type_index } => {
+                let declaration =
+                    self.unit
+                        .type_table
+                        .get(*type_index as usize)
+                        .ok_or_else(|| {
+                            unsupported(
+                                &self.key,
+                                "named union shape",
+                                &format!("local type {type_index} is absent"),
+                            )
+                        })?;
+                if !declaration.type_params.is_empty() {
+                    return Ok(None);
+                }
+                Ok(local_union_shape(&declaration.descriptor))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn package_union_shape(
+        &self,
+        symbol: &skiff_artifact_model::PackageSymbolRef,
+    ) -> Option<MirUnionShape> {
+        let lookup_key = match &symbol.package {
+            skiff_artifact_model::PackageRefIr::Dependency { dependency_ref } => {
+                (dependency_ref.clone(), symbol.symbol_path.clone())
+            }
+            skiff_artifact_model::PackageRefIr::PackageId { package_id } => {
+                (package_id.clone(), symbol.symbol_path.clone())
+            }
+        };
+        self.unit.package_type_unions.get(&lookup_key).cloned()
+    }
+
+    /// Derives the canonical dense layout of a discriminated union: every
+    /// branch field (the discriminator typed as `string`), with any field that
+    /// appears in two branches under conflicting types rejected fail-closed.
+    fn canonical_union_fields(
+        &self,
+        shape: &MirUnionShape,
+        context: &'static str,
+    ) -> Result<BTreeMap<String, TypeRefIr>, BytecodeEmissionError> {
+        let mut fields = BTreeMap::new();
+        for branch_fields in shape.branches.values() {
+            for (name, ty) in branch_fields {
+                if name == &shape.discriminator {
+                    continue;
+                }
+                match fields.get(name) {
+                    Some(existing) if existing == ty => {}
+                    Some(existing) => {
+                        return Err(unsupported(
+                            &self.key,
+                            context,
+                            &format!(
+                                "union field `{name}` has conflicting branch types {existing:?} and {ty:?}"
+                            ),
+                        ));
+                    }
+                    None => {
+                        fields.insert(name.clone(), ty.clone());
+                    }
+                }
+            }
+        }
+        fields.insert(shape.discriminator.clone(), TypeRefIr::builtin("string"));
+        Ok(fields)
     }
 
     fn emit_index_read(
@@ -6153,7 +6291,6 @@ fn is_never_type(ty: &TypeRefIr) -> bool {
         TypeRefIr::Builtin { name, args } if name == "never" && args.is_empty()
     )
 }
-
 fn is_package_symbol_type(ty: &TypeRefIr) -> bool {
     matches!(ty, TypeRefIr::PackageSymbol { .. })
         || matches!(
@@ -6163,6 +6300,41 @@ fn is_package_symbol_type(ty: &TypeRefIr) -> bool {
                 ..
             }
         )
+}
+
+/// Builds a `MirUnionShape` from a local union type declaration. Only
+/// synthetic-discriminator branches (full record payloads carrying the
+/// discriminator literal) participate; any other branch kind yields `None` so
+/// the caller stays fail-closed.
+fn local_union_shape(descriptor: &skiff_artifact_model::TypeDescriptorIr) -> Option<MirUnionShape> {
+    let skiff_artifact_model::TypeDescriptorIr::Union { branches } = descriptor else {
+        return None;
+    };
+    let mut discriminator = None;
+    let mut branch_shapes = BTreeMap::new();
+    for branch in branches {
+        let skiff_artifact_model::NamedUnionBranchIr::SyntheticDiscriminator {
+            payload_type,
+            discriminator_field,
+            discriminator_value,
+        } = branch
+        else {
+            return None;
+        };
+        let skiff_artifact_model::TypeRefIr::Record { fields } = payload_type else {
+            return None;
+        };
+        match discriminator {
+            Some(existing) if existing != *discriminator_field => return None,
+            None => discriminator = Some(discriminator_field.clone()),
+            _ => {}
+        }
+        branch_shapes.insert(discriminator_value.clone(), fields.clone());
+    }
+    Some(MirUnionShape {
+        discriminator: discriminator?,
+        branches: branch_shapes,
+    })
 }
 
 fn literal_type(literal: &LiteralIr) -> TypeRefIr {
@@ -6536,6 +6708,7 @@ mod tests {
             source_map: file_ir.source_map.clone(),
             type_table: file_ir.type_table.clone(),
             package_type_records: BTreeMap::new(),
+            package_type_unions: BTreeMap::new(),
             link_targets: file_ir.link_targets.clone(),
             remote_interface_refs: vec![ServiceCallRef {
                 service_requirement_slot: 3,
@@ -6934,6 +7107,7 @@ mod tests {
             source_map: file_ir.source_map.clone(),
             type_table: file_ir.type_table.clone(),
             package_type_records: BTreeMap::new(),
+            package_type_unions: BTreeMap::new(),
             link_targets: file_ir.link_targets.clone(),
             remote_interface_refs: Vec::new(),
             constants: Vec::new(),
@@ -7139,6 +7313,7 @@ mod tests {
             source_map: file_ir.source_map.clone(),
             type_table: file_ir.type_table.clone(),
             package_type_records: BTreeMap::new(),
+            package_type_unions: BTreeMap::new(),
             link_targets: file_ir.link_targets.clone(),
             remote_interface_refs: Vec::new(),
             constants: Vec::new(),
@@ -7283,6 +7458,7 @@ mod tests {
             source_map: file_ir.source_map.clone(),
             type_table: file_ir.type_table.clone(),
             package_type_records: BTreeMap::new(),
+            package_type_unions: BTreeMap::new(),
             link_targets: file_ir.link_targets.clone(),
             remote_interface_refs: Vec::new(),
             constants: Vec::new(),
@@ -7324,6 +7500,504 @@ mod tests {
                 },
             },
             "the runtime tag must be the nominal leaf, not the union context"
+        );
+    }
+
+    /// A discriminator `.tag` read on a named (discriminated) union resolves
+    /// the canonical union layout: every branch field present, with the
+    /// discriminator typed as `string`. The emitted `GetDenseField` must use
+    /// that shape so the runtime ordinal matches the physical dense layout of
+    /// every branch.
+    #[test]
+    fn tagged_union_tag_read_emits_canonical_layout_get_dense_field() {
+        let union_ty = TypeRefIr::LocalType { type_index: 0 };
+        let start_fields = BTreeMap::from([
+            ("id".to_string(), TypeRefIr::builtin("string")),
+            ("model".to_string(), TypeRefIr::builtin("string")),
+            (
+                "tag".to_string(),
+                TypeRefIr::Literal {
+                    value: LiteralIr::String {
+                        value: "start".to_string(),
+                    },
+                },
+            ),
+        ]);
+        let finish_fields = BTreeMap::from([
+            ("id".to_string(), TypeRefIr::builtin("string")),
+            ("reason".to_string(), TypeRefIr::builtin("string")),
+            (
+                "tag".to_string(),
+                TypeRefIr::Literal {
+                    value: LiteralIr::String {
+                        value: "finish".to_string(),
+                    },
+                },
+            ),
+        ]);
+        let tag_type = TypeRefIr::Union {
+            items: vec![
+                TypeRefIr::Literal {
+                    value: LiteralIr::String {
+                        value: "start".to_string(),
+                    },
+                },
+                TypeRefIr::Literal {
+                    value: LiteralIr::String {
+                        value: "finish".to_string(),
+                    },
+                },
+            ],
+        };
+        let mut function = MirFunction {
+            executable_index: 0,
+            origin: skiff_artifact_model::PackageExecutableCoordinate {
+                file_ir_identity: "file:main".to_string(),
+                module_path: "main".to_string(),
+                executable_index: 0,
+            },
+            symbol: "main.run".to_string(),
+            kind: MirExecutableKind::Function,
+            native: false,
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: TypeRefIr::builtin("void"),
+            self_type: None,
+            receiver: None,
+            slots: vec![MirSlot {
+                slot: 0,
+                name: "event".to_string(),
+                kind: MirSlotKind::Local,
+                writable_local: false,
+                ty: Some(union_ty.clone()),
+            }],
+            index_accesses: BTreeMap::new(),
+            expression_blocks: BTreeMap::new(),
+            expressions: vec![
+                MirExpression {
+                    index: 0,
+                    expression: ExprIr::LoadSlot { slot: 0 },
+                    ty: union_ty.clone(),
+                    writable: None,
+                    direct_call: None,
+                    stream_result: None,
+                    remote_interface: None,
+                },
+                MirExpression {
+                    index: 1,
+                    expression: ExprIr::Field {
+                        object: ExprRefIr { expression: 0 },
+                        field: "tag".to_string(),
+                    },
+                    ty: tag_type,
+                    writable: None,
+                    direct_call: None,
+                    stream_result: None,
+                    remote_interface: None,
+                },
+                MirExpression {
+                    index: 2,
+                    expression: ExprIr::Literal {
+                        value: LiteralIr::String {
+                            value: "start".to_string(),
+                        },
+                    },
+                    ty: TypeRefIr::Literal {
+                        value: LiteralIr::String {
+                            value: "start".to_string(),
+                        },
+                    },
+                    writable: None,
+                    direct_call: None,
+                    stream_result: None,
+                    remote_interface: None,
+                },
+                MirExpression {
+                    index: 3,
+                    expression: ExprIr::Binary {
+                        op: BinaryOpIr::Equal,
+                        left: ExprRefIr { expression: 1 },
+                        right: ExprRefIr { expression: 2 },
+                    },
+                    ty: TypeRefIr::builtin("bool"),
+                    writable: None,
+                    direct_call: None,
+                    stream_result: None,
+                    remote_interface: None,
+                },
+            ],
+            blocks: vec![MirBlock {
+                id: 0,
+                label: "entry".to_string(),
+                statements: vec![MirStmt {
+                    statement_index: 0,
+                    span: None,
+                    kind: MirStmtKind::Expr {
+                        value: ExprRefIr { expression: 3 },
+                    },
+                }],
+                successors: Vec::new(),
+            }],
+            regions: Vec::new(),
+            statements: vec![MirStatementEntry {
+                statement_index: 0,
+                span: None,
+            }],
+            stream_result: None,
+            liveness: MirLiveness::default(),
+            effect_summary_ref: PackageCallableId::new("callable:main:run".to_string()),
+            effect_summary: CallableEffectSummary::analysis_pending(),
+            source_span: None,
+            source_event_plan: MirSourceEventPlan::unavailable(
+                MirSourceEventUnavailableReason::SourceFactsNotProvided,
+            ),
+        };
+        function.liveness = compute_liveness(&function).expect("test liveness computes");
+
+        let mut file_ir = FileIrUnit::empty("main", "source-hash");
+        file_ir.file_ir_identity = "file:main".to_string();
+        file_ir.type_table.push(skiff_artifact_model::TypeDeclIr {
+            name: "LlmEvent".to_string(),
+            descriptor: skiff_artifact_model::TypeDescriptorIr::Union {
+                branches: vec![
+                    skiff_artifact_model::NamedUnionBranchIr::SyntheticDiscriminator {
+                        payload_type: TypeRefIr::Record {
+                            fields: start_fields,
+                        },
+                        discriminator_field: "tag".to_string(),
+                        discriminator_value: "start".to_string(),
+                    },
+                    skiff_artifact_model::NamedUnionBranchIr::SyntheticDiscriminator {
+                        payload_type: TypeRefIr::Record {
+                            fields: finish_fields,
+                        },
+                        discriminator_field: "tag".to_string(),
+                        discriminator_value: "finish".to_string(),
+                    },
+                ],
+            },
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        });
+        let bundle = ConstEvaluator::new(Bounds::default())
+            .evaluate_unit(&file_ir)
+            .expect("test bundle evaluates");
+        let unit = MirUnit {
+            file_ir_identity: file_ir.file_ir_identity.clone(),
+            package_id: "test.package".to_string(),
+            module_path: file_ir.module_path.clone(),
+            actor_declarations: file_ir.actor_declarations.clone(),
+            external_refs: file_ir.external_refs.clone(),
+            source_map: file_ir.source_map.clone(),
+            type_table: file_ir.type_table.clone(),
+            package_type_records: BTreeMap::new(),
+            package_type_unions: BTreeMap::new(),
+            link_targets: file_ir.link_targets.clone(),
+            remote_interface_refs: Vec::new(),
+            constants: Vec::new(),
+            functions: vec![function],
+        };
+        let plans = derive_test_bytecode_value_transfer_plans(std::slice::from_ref(&unit))
+            .expect("the source classifier covers the test MIR");
+        let artifact =
+            crate::bytecode::emitter::emit_bytecode_artifact_unchecked(&[unit], &[bundle], &plans)
+                .expect("tagged-union tag read emission succeeds");
+        let canonical_shape = artifact
+            .image
+            .pools
+            .shapes
+            .iter()
+            .filter_map(|entry| match entry {
+                skiff_artifact_model::BytecodePoolEntry::ShapeRef { shape } => Some(shape),
+                _ => None,
+            })
+            .find(|shape| {
+                shape.fields.len() == 4
+                    && shape
+                        .fields
+                        .iter()
+                        .map(|field| field.name.as_str())
+                        .collect::<Vec<_>>()
+                        == ["id", "model", "reason", "tag"]
+            })
+            .expect("the canonical union shape is interned");
+        let tag_ordinal = canonical_shape
+            .fields
+            .iter()
+            .position(|field| field.name == "tag")
+            .expect("the canonical shape carries the discriminator");
+        let tag_type =
+            &artifact.image.pools.types[canonical_shape.fields[tag_ordinal].type_ref as usize];
+        let skiff_artifact_model::BytecodePoolEntry::TypeRef { ty, .. } = tag_type else {
+            panic!("canonical tag field type row is not a type ref");
+        };
+        assert_eq!(
+            ty,
+            &TypeRefIr::builtin("string"),
+            "the canonical discriminator field is typed as string"
+        );
+        let decoded = skiff_artifact_model::bytecode::decode::BoundedDecoder::new()
+            .decode_function(&artifact.image.functions["main::run"].words)
+            .expect("the union tag-read function remains decodable");
+        let dense_fields = decoded
+            .instructions
+            .iter()
+            .filter(|instruction| instruction.descriptor.kind == Opcode::GetDenseField)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            dense_fields.len(),
+            1,
+            "the union tag read emits exactly one GetDenseField"
+        );
+        let shape_ref = dense_fields[0].operand(0);
+        let ordinal = dense_fields[0].operand(1);
+        let skiff_artifact_model::BytecodePoolEntry::ShapeRef { shape } =
+            &artifact.image.pools.shapes[shape_ref as usize]
+        else {
+            panic!("the tag-read GetDenseField must reference a shape row");
+        };
+        assert_eq!(
+            shape
+                .fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            ["id", "model", "reason", "tag"],
+            "the tag read resolves the canonical union shape"
+        );
+        assert_eq!(
+            ordinal, tag_ordinal as u32,
+            "the tag read uses the canonical discriminator ordinal"
+        );
+    }
+
+    /// After `event.tag == "start"` narrows a discriminated-union binding, a
+    /// later branch field read (`event.model`) resolves the same canonical
+    /// union shape: the branch field occupies one ordinal-exact slot shared by
+    /// every branch's dense layout, so the runtime resolves it by name no
+    /// matter which branch the value physically carries.
+    #[test]
+    fn narrowed_union_branch_field_read_emits_canonical_layout_get_dense_field() {
+        let union_ty = TypeRefIr::LocalType { type_index: 0 };
+        let start_fields = BTreeMap::from([
+            ("id".to_string(), TypeRefIr::builtin("string")),
+            ("model".to_string(), TypeRefIr::builtin("string")),
+            (
+                "tag".to_string(),
+                TypeRefIr::Literal {
+                    value: LiteralIr::String {
+                        value: "start".to_string(),
+                    },
+                },
+            ),
+        ]);
+        let finish_fields = BTreeMap::from([
+            ("id".to_string(), TypeRefIr::builtin("string")),
+            ("reason".to_string(), TypeRefIr::builtin("string")),
+            (
+                "tag".to_string(),
+                TypeRefIr::Literal {
+                    value: LiteralIr::String {
+                        value: "finish".to_string(),
+                    },
+                },
+            ),
+        ]);
+        let start_branch = TypeRefIr::Record {
+            fields: start_fields.clone(),
+        };
+        let mut function = MirFunction {
+            executable_index: 0,
+            origin: skiff_artifact_model::PackageExecutableCoordinate {
+                file_ir_identity: "file:main".to_string(),
+                module_path: "main".to_string(),
+                executable_index: 0,
+            },
+            symbol: "main.run".to_string(),
+            kind: MirExecutableKind::Function,
+            native: false,
+            type_params: Vec::new(),
+            params: Vec::new(),
+            return_type: TypeRefIr::builtin("void"),
+            self_type: None,
+            receiver: None,
+            slots: vec![MirSlot {
+                slot: 0,
+                name: "event".to_string(),
+                kind: MirSlotKind::Local,
+                writable_local: false,
+                ty: Some(union_ty.clone()),
+            }],
+            index_accesses: BTreeMap::new(),
+            expression_blocks: BTreeMap::new(),
+            expressions: vec![
+                MirExpression {
+                    index: 0,
+                    expression: ExprIr::LoadSlot { slot: 0 },
+                    ty: union_ty.clone(),
+                    writable: None,
+                    direct_call: None,
+                    stream_result: None,
+                    remote_interface: None,
+                },
+                // The tag-equality narrowed reload: the load keeps the physical
+                // slot but is retyped as the matching branch record.
+                MirExpression {
+                    index: 1,
+                    expression: ExprIr::LoadSlot { slot: 0 },
+                    ty: start_branch.clone(),
+                    writable: None,
+                    direct_call: None,
+                    stream_result: None,
+                    remote_interface: None,
+                },
+                MirExpression {
+                    index: 2,
+                    expression: ExprIr::Field {
+                        object: ExprRefIr { expression: 1 },
+                        field: "model".to_string(),
+                    },
+                    ty: TypeRefIr::builtin("string"),
+                    writable: None,
+                    direct_call: None,
+                    stream_result: None,
+                    remote_interface: None,
+                },
+            ],
+            blocks: vec![MirBlock {
+                id: 0,
+                label: "entry".to_string(),
+                statements: vec![MirStmt {
+                    statement_index: 0,
+                    span: None,
+                    kind: MirStmtKind::Expr {
+                        value: ExprRefIr { expression: 2 },
+                    },
+                }],
+                successors: Vec::new(),
+            }],
+            regions: Vec::new(),
+            statements: vec![MirStatementEntry {
+                statement_index: 0,
+                span: None,
+            }],
+            stream_result: None,
+            liveness: MirLiveness::default(),
+            effect_summary_ref: PackageCallableId::new("callable:main:run".to_string()),
+            effect_summary: CallableEffectSummary::analysis_pending(),
+            source_span: None,
+            source_event_plan: MirSourceEventPlan::unavailable(
+                MirSourceEventUnavailableReason::SourceFactsNotProvided,
+            ),
+        };
+        function.liveness = compute_liveness(&function).expect("test liveness computes");
+
+        let mut file_ir = FileIrUnit::empty("main", "source-hash");
+        file_ir.file_ir_identity = "file:main".to_string();
+        file_ir.type_table.push(skiff_artifact_model::TypeDeclIr {
+            name: "LlmEvent".to_string(),
+            descriptor: skiff_artifact_model::TypeDescriptorIr::Union {
+                branches: vec![
+                    skiff_artifact_model::NamedUnionBranchIr::SyntheticDiscriminator {
+                        payload_type: TypeRefIr::Record {
+                            fields: start_fields,
+                        },
+                        discriminator_field: "tag".to_string(),
+                        discriminator_value: "start".to_string(),
+                    },
+                    skiff_artifact_model::NamedUnionBranchIr::SyntheticDiscriminator {
+                        payload_type: TypeRefIr::Record {
+                            fields: finish_fields,
+                        },
+                        discriminator_field: "tag".to_string(),
+                        discriminator_value: "finish".to_string(),
+                    },
+                ],
+            },
+            type_params: Vec::new(),
+            implements: Vec::new(),
+            source_span: None,
+        });
+        let bundle = ConstEvaluator::new(Bounds::default())
+            .evaluate_unit(&file_ir)
+            .expect("test bundle evaluates");
+        let unit = MirUnit {
+            file_ir_identity: file_ir.file_ir_identity.clone(),
+            package_id: "test.package".to_string(),
+            module_path: file_ir.module_path.clone(),
+            actor_declarations: file_ir.actor_declarations.clone(),
+            external_refs: file_ir.external_refs.clone(),
+            source_map: file_ir.source_map.clone(),
+            type_table: file_ir.type_table.clone(),
+            package_type_records: BTreeMap::new(),
+            package_type_unions: BTreeMap::new(),
+            link_targets: file_ir.link_targets.clone(),
+            remote_interface_refs: Vec::new(),
+            constants: Vec::new(),
+            functions: vec![function],
+        };
+        let plans = derive_test_bytecode_value_transfer_plans(std::slice::from_ref(&unit))
+            .expect("the source classifier covers the test MIR");
+        let artifact =
+            crate::bytecode::emitter::emit_bytecode_artifact_unchecked(&[unit], &[bundle], &plans)
+                .expect("narrowed union branch field read emission succeeds");
+        let canonical_shape = artifact
+            .image
+            .pools
+            .shapes
+            .iter()
+            .filter_map(|entry| match entry {
+                skiff_artifact_model::BytecodePoolEntry::ShapeRef { shape } => Some(shape),
+                _ => None,
+            })
+            .find(|shape| {
+                shape.fields.len() == 4
+                    && shape
+                        .fields
+                        .iter()
+                        .map(|field| field.name.as_str())
+                        .collect::<Vec<_>>()
+                        == ["id", "model", "reason", "tag"]
+            })
+            .expect("the canonical union shape is interned");
+        let model_ordinal = canonical_shape
+            .fields
+            .iter()
+            .position(|field| field.name == "model")
+            .expect("the canonical shape carries the branch field");
+        let decoded = skiff_artifact_model::bytecode::decode::BoundedDecoder::new()
+            .decode_function(&artifact.image.functions["main::run"].words)
+            .expect("the narrowed branch-read function remains decodable");
+        let dense_fields = decoded
+            .instructions
+            .iter()
+            .filter(|instruction| instruction.descriptor.kind == Opcode::GetDenseField)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            dense_fields.len(),
+            1,
+            "the narrowed branch field read emits exactly one GetDenseField"
+        );
+        let shape_ref = dense_fields[0].operand(0);
+        let ordinal = dense_fields[0].operand(1);
+        let skiff_artifact_model::BytecodePoolEntry::ShapeRef { shape } =
+            &artifact.image.pools.shapes[shape_ref as usize]
+        else {
+            panic!("the branch-read GetDenseField must reference a shape row");
+        };
+        assert_eq!(
+            shape
+                .fields
+                .iter()
+                .map(|field| field.name.as_str())
+                .collect::<Vec<_>>(),
+            ["id", "model", "reason", "tag"],
+            "the narrowed branch read resolves the canonical union shape"
+        );
+        assert_eq!(
+            ordinal, model_ordinal as u32,
+            "the narrowed branch read uses the canonical field ordinal"
         );
     }
 
@@ -7447,6 +8121,7 @@ mod tests {
             source_map: file_ir.source_map.clone(),
             type_table: file_ir.type_table.clone(),
             package_type_records: BTreeMap::new(),
+            package_type_unions: BTreeMap::new(),
             link_targets: file_ir.link_targets.clone(),
             remote_interface_refs: Vec::new(),
             constants: Vec::new(),

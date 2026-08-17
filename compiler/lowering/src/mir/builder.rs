@@ -26,7 +26,7 @@ use super::{
     MirMatchArmIr, MirParam, MirParamMode, MirRegion, MirRemoteInterfaceFacts,
     MirRemoteInterfaceMethodFacts, MirSlot, MirSlotKind, MirSourceEventPlan,
     MirSourceEventUnavailableReason, MirSourceFacts, MirStatementEntry, MirStmt, MirStmtKind,
-    MirStreamResultFacts, MirUnit,
+    MirStreamResultFacts, MirUnionShape, MirUnit,
 };
 
 mod actor_authority;
@@ -101,6 +101,7 @@ pub fn build_mir_units_with_source_facts(
         resolved_call_targets,
         source_facts,
         BTreeMap::new(),
+        BTreeMap::new(),
     )
 }
 
@@ -111,6 +112,7 @@ pub fn build_mir_units_with_source_facts_and_package_records(
     resolved_call_targets: &ResolvedCallTargetFacts,
     source_facts: &MirSourceFacts,
     package_type_records: BTreeMap<(String, String), BTreeMap<String, TypeRefIr>>,
+    package_type_unions: BTreeMap<(String, String), MirUnionShape>,
 ) -> Result<Vec<MirUnit>, MirBuildError> {
     let source_fact_owners = source_facts
         .owners()
@@ -156,6 +158,7 @@ pub fn build_mir_units_with_source_facts_and_package_records(
                 &catalog,
                 source_facts,
                 &package_type_records,
+                &package_type_unions,
             )
         })
         .collect::<Result<Vec<_>, MirBuildError>>()?;
@@ -221,6 +224,7 @@ pub(crate) fn build_mir_unit_with_effect_map(
         &catalog,
         &MirSourceFacts::new(),
         &BTreeMap::new(),
+        &BTreeMap::new(),
     )
 }
 
@@ -236,6 +240,7 @@ fn build_mir_unit_with_catalog(
     catalog: &MirPackageCatalog<'_>,
     source_facts: &MirSourceFacts,
     package_type_records: &BTreeMap<(String, String), BTreeMap<String, TypeRefIr>>,
+    package_type_unions: &BTreeMap<(String, String), MirUnionShape>,
 ) -> Result<MirUnit, MirBuildError> {
     if u32::try_from(unit.executables.len()).is_err() {
         return Err(MirBuildError::ExecutableIndexOverflow {
@@ -312,6 +317,7 @@ fn build_mir_unit_with_catalog(
         source_map: unit.source_map.clone(),
         type_table: unit.type_table.clone(),
         package_type_records: package_type_authority.package_type_records,
+        package_type_unions: package_type_unions.clone(),
         link_targets: unit.link_targets.clone(),
         constants,
         functions,

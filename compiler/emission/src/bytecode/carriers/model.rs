@@ -344,6 +344,12 @@ pub(super) struct Analyzer<'a> {
     pub(super) function_by_coordinate: BTreeMap<(String, u32), usize>,
     pub(super) shapes: Vec<ShapeNodes>,
     pub(super) equalities: Vec<(usize, usize, String)>,
+    /// Load-slot edges whose physical carrier is inherited from the slot
+    /// without demanding exact semantic equality. A tag-discriminator
+    /// narrowed load retypes the binding as its branch record while the value
+    /// keeps the slot's (union) carrier; the final semantic acceptance check
+    /// admits exactly that narrowing.
+    pub(super) load_equalities: Vec<(usize, usize, String)>,
     pub(super) shape_equalities: BTreeSet<(usize, usize)>,
     pub(super) array_equalities: BTreeSet<(usize, usize)>,
     pub(super) field_projections: BTreeSet<(usize, usize)>,

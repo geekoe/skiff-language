@@ -1385,7 +1385,10 @@ pub fn admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_
                 }
             }
             if !matches!(declaration.descriptor, TypeDescriptorIr::Record { .. }) {
-                if !matches!(declaration.descriptor, TypeDescriptorIr::Interface) {
+                if !matches!(
+                    declaration.descriptor,
+                    TypeDescriptorIr::Interface | TypeDescriptorIr::Union { .. }
+                ) {
                     return Err(rejected(
                         unit,
                         None,
@@ -2091,11 +2094,19 @@ fn admit_effects_with_authority(
     let interface_call_conservative_effects = host_effects.has_interface_calls()
         && (effects.escapes_caller_value || effects.invokes_unknown_target);
     let has_actor_task_submit = host_effects.has_actor_task_submit();
+    // A stream producer legitimately forwards derived caller values into its
+    // output stream (the stream is the function's boundary), so
+    // `escapes_caller_value` alone is not a rejection for such functions.
+    let stream_escape_admitted = stream_pending;
     if effects.requires_same_heap_identity
         || (interface_call_conservative_effects && !host_effects.has_interface_calls())
         || (!host_effects.has_interface_calls()
             && !has_actor_task_submit
-            && (effects.escapes_caller_value || effects.invokes_unknown_target))
+            && effects.invokes_unknown_target)
+        || (!host_effects.has_interface_calls()
+            && !has_actor_task_submit
+            && !stream_escape_admitted
+            && effects.escapes_caller_value)
     {
         return Err(rejected_function(
             unit,
@@ -2504,6 +2515,93 @@ fn is_catch_result_narrowed_load(slot_type: &TypeRefIr, load_type: &TypeRefIr) -
             .is_some_and(|tag| is_string_literal_type(tag) || is_string_literal_union(tag))
 }
 
+/// Recognizes a tag-discriminator narrowed load of a named (discriminated)
+/// union binding: after `slot.tag == "x"` the expression model retypes later
+/// loads of the binding as the matching branch record. The slot's frame type
+/// stays the union; this admission accepts exactly that narrowed shape and
+/// rejects any other slot/load drift.
+fn is_narrowed_union_load(
+    units: &[MirUnit],
+    unit: &MirUnit,
+    slot_type: &TypeRefIr,
+    load_type: &TypeRefIr,
+) -> bool {
+    let branches = union_branch_records(units, unit, slot_type);
+    branches.iter().any(|branch| branch == load_type)
+}
+
+fn union_branch_records(units: &[MirUnit], unit: &MirUnit, ty: &TypeRefIr) -> Vec<TypeRefIr> {
+    let mut branches = Vec::new();
+    match ty {
+        TypeRefIr::Union { items } => {
+            branches.extend(items.iter().cloned());
+        }
+        TypeRefIr::PackageSymbol { symbol } => {
+            let lookup_key = match &symbol.package {
+                skiff_artifact_model::PackageRefIr::Dependency { dependency_ref } => {
+                    (dependency_ref.clone(), symbol.symbol_path.clone())
+                }
+                skiff_artifact_model::PackageRefIr::PackageId { package_id } => {
+                    (package_id.clone(), symbol.symbol_path.clone())
+                }
+            };
+            if let Some(shape) = unit.package_type_unions.get(&lookup_key) {
+                branches.extend(shape.branches.values().map(|fields| TypeRefIr::Record {
+                    fields: fields.clone(),
+                }));
+            }
+        }
+        TypeRefIr::LocalType { type_index } => {
+            let declaration = unit.type_table.get(*type_index as usize).or_else(|| {
+                units
+                    .iter()
+                    .find(|candidate| &candidate.module_path == &unit.module_path)
+                    .and_then(|candidate| candidate.type_table.get(*type_index as usize))
+            });
+            if let Some(skiff_artifact_model::TypeDescriptorIr::Union { branches: declared }) =
+                declaration.map(|declaration| &declaration.descriptor)
+            {
+                for branch in declared {
+                    if let skiff_artifact_model::NamedUnionBranchIr::SyntheticDiscriminator {
+                        payload_type,
+                        ..
+                    } = branch
+                    {
+                        branches.push(payload_type.clone());
+                    }
+                }
+            }
+        }
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => {
+            if let Some(owning) = units
+                .iter()
+                .find(|candidate| &candidate.module_path == module_path)
+            {
+                if let Some(declaration) = owning.type_table.get(*type_index as usize) {
+                    if let skiff_artifact_model::TypeDescriptorIr::Union { branches: declared } =
+                        &declaration.descriptor
+                    {
+                        for branch in declared {
+                            if let skiff_artifact_model::NamedUnionBranchIr::SyntheticDiscriminator {
+                                payload_type,
+                                ..
+                            } = branch
+                            {
+                                branches.push(payload_type.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    branches
+}
+
 #[cfg(test)]
 fn admit_expression(
     units: &[MirUnit],
@@ -2767,6 +2865,7 @@ fn admit_expression_with_host_effects(
             let slot_type = function.slot_type(*slot)?;
             if slot_type != &expression.ty
                 && !is_catch_result_narrowed_load(slot_type, &expression.ty)
+                && !is_narrowed_union_load(units, unit, slot_type, &expression.ty)
                 && !may_share_scalar_machine_carrier(slot_type, &expression.ty)
             {
                 return Err(fact_mismatch(
@@ -4429,6 +4528,14 @@ fn admit_type_nested(
             }
             Ok(())
         }
+        TypeRefIr::Nullable { inner } => admit_type_nested(
+            context,
+            unit,
+            inner,
+            false,
+            &format!("{location} nullable inner"),
+            nested,
+        ),
         TypeRefIr::Builtin { name, args } if name == "CatchResult" && args.len() == 2 => {
             admit_type_nested(
                 context,
@@ -4867,6 +4974,7 @@ mod tests {
             source_map: file_ir.source_map,
             type_table: file_ir.type_table,
             package_type_records: BTreeMap::new(),
+            package_type_unions: BTreeMap::new(),
             link_targets: file_ir.link_targets,
             remote_interface_refs: Vec::new(),
             constants: Vec::new(),

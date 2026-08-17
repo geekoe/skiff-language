@@ -46,6 +46,7 @@ impl<'a> Analyzer<'a> {
             function_by_coordinate: BTreeMap::new(),
             shapes: Vec::new(),
             equalities: Vec::new(),
+            load_equalities: Vec::new(),
             shape_equalities: BTreeSet::new(),
             array_equalities: BTreeSet::new(),
             field_projections: BTreeSet::new(),
@@ -266,7 +267,7 @@ impl<'a> Analyzer<'a> {
                 }
                 ExprIr::LoadSlot { slot } => {
                     let slot = self.slot_node(function_index, *slot)?;
-                    self.equal(output, slot, "LoadSlot")
+                    self.equal_load(output, slot, "LoadSlot")
                 }
                 ExprIr::ActorSelfField { field, field_type } => {
                     let receiver = function.receiver.as_ref().ok_or_else(|| {

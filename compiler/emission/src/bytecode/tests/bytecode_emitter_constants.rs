@@ -56,6 +56,7 @@ mod tests {
             source_map: file_ir.source_map.clone(),
             type_table: file_ir.type_table.clone(),
             package_type_records: BTreeMap::new(),
+            package_type_unions: BTreeMap::new(),
             link_targets: file_ir.link_targets.clone(),
             remote_interface_refs: Vec::new(),
             constants: file_ir

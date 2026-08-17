@@ -8,13 +8,22 @@ use super::{
         MachineWritableStepFact, Node, PackageMachineCarrierFacts, WritablePathNodes,
         WritableStepNodes,
     },
-    policy::{carrier_error, semantic_accepts_carrier},
+    policy::{carrier_error, semantic_accepts_carrier_with_units},
 };
 use crate::bytecode::BytecodeEmissionError;
 
 impl Analyzer<'_> {
     pub(super) fn equal(&mut self, left: usize, right: usize, cause: impl Into<String>) {
         self.equalities.push((left, right, cause.into()));
+    }
+
+    /// Load-slot edge that inherits the slot's physical carrier without
+    /// requiring exact semantic equality. A narrowed union load is retyped as
+    /// its branch record while the physical value keeps the slot's (union)
+    /// carrier; shape and array-element closure still propagate so the load
+    /// shares the slot's layout facts.
+    pub(super) fn equal_load(&mut self, output: usize, slot: usize, cause: impl Into<String>) {
+        self.load_equalities.push((output, slot, cause.into()));
     }
 
     pub(super) fn assign(
@@ -53,7 +62,8 @@ impl Analyzer<'_> {
         self.propagate()?;
         for node in &self.nodes {
             let carrier = node.value.as_ref().expect("all carrier nodes resolved");
-            if !semantic_accepts_carrier(&node.semantic, carrier, node.role) {
+            if !semantic_accepts_carrier_with_units(&node.semantic, carrier, node.role, self.units)
+            {
                 return Err(carrier_error(
                     &node.function_key,
                     format!(
@@ -93,6 +103,29 @@ impl Analyzer<'_> {
                     }
                     (Some(ty), None) => changed |= self.assign(right, ty, &cause)?,
                     (None, Some(ty)) => changed |= self.assign(left, ty, &cause)?,
+                    _ => {}
+                }
+            }
+            for index in 0..self.load_equalities.len() {
+                let (output, slot, cause) = self.load_equalities[index].clone();
+                changed |= self.close_equal_shapes(output, slot, &cause)?;
+                changed |= self.close_equal_array_elements(output, slot, &cause)?;
+                // The load inherits the slot's physical carrier when the slot
+                // resolves; the load's own semantic (possibly a narrowed
+                // branch record) is validated by the final acceptance pass.
+                // The output may already carry a placeholder from the
+                // unconstrained semantic pass, so a conflicting output carrier
+                // is overridden by the slot's authoritative physical carrier.
+                match (
+                    self.nodes[slot].value.clone(),
+                    self.nodes[output].value.clone(),
+                ) {
+                    (Some(slot_ty), Some(output_ty)) if slot_ty != output_ty => {
+                        self.nodes[output].value = Some(slot_ty);
+                        changed = true;
+                    }
+                    (Some(ty), None) => changed |= self.assign(output, ty, &cause)?,
+                    (None, Some(ty)) => changed |= self.assign(slot, ty, &cause)?,
                     _ => {}
                 }
             }

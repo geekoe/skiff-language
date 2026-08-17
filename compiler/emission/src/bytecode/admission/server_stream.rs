@@ -433,11 +433,15 @@ impl ServerStreamAdmissions {
             let handler = authority
                 .handler()
                 .ok_or_else(|| "gateway authority lacks an exact handler".to_string())?;
-            let root = unit
+            // A cross-module gateway root is admitted in its own unit; this
+            // helper only serves local helpers in the current module.
+            let Some(root) = unit
                 .functions
                 .iter()
                 .find(|candidate| &candidate.effect_summary_ref == handler)
-                .ok_or_else(|| format!("gateway handler {handler} is absent from its MIR unit"))?;
+            else {
+                continue;
+            };
             if !local_call_closure(unit, root)?.contains(&function.executable_index) {
                 continue;
             }
@@ -465,13 +469,16 @@ impl ServerStreamAdmissions {
         }
         for authority in child_transported {
             let handler = authority.callable_id();
-            let root = unit
+            // A cross-module stream producer is admitted in its own unit; this
+            // helper can only serve functions in its own module, so an absent
+            // root is a foreign boundary, not an admission error.
+            let Some(root) = unit
                 .functions
                 .iter()
                 .find(|candidate| &candidate.effect_summary_ref == handler)
-                .ok_or_else(|| {
-                    format!("child stream callable {handler} is absent from its MIR unit")
-                })?;
+            else {
+                continue;
+            };
             if !local_call_closure(unit, root)?.contains(&function.executable_index) {
                 continue;
             }

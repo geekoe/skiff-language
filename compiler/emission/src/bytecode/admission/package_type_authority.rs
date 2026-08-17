@@ -731,6 +731,7 @@ mod tests {
             },
             type_table: Vec::new(),
             package_type_records,
+            package_type_unions: BTreeMap::new(),
             link_targets: FileLinkTargets::default(),
             remote_interface_refs: Vec::new(),
             constants: Vec::new(),

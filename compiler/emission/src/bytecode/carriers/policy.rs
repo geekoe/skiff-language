@@ -64,6 +64,15 @@ pub(super) fn semantic_accepts_carrier(
     carrier: &TypeRefIr,
     role: SemanticRole,
 ) -> bool {
+    semantic_accepts_carrier_with_units(semantic, carrier, role, &[])
+}
+
+pub(super) fn semantic_accepts_carrier_with_units(
+    semantic: &TypeRefIr,
+    carrier: &TypeRefIr,
+    role: SemanticRole,
+    units: &[MirUnit],
+) -> bool {
     if semantic == carrier {
         return true;
     }
@@ -83,7 +92,12 @@ pub(super) fn semantic_accepts_carrier(
             name == carrier_name
                 && args.len() == carrier_args.len()
                 && args.iter().zip(carrier_args).all(|(semantic, carrier)| {
-                    semantic_accepts_carrier(semantic, carrier, SemanticRole::Position)
+                    semantic_accepts_carrier_with_units(
+                        semantic,
+                        carrier,
+                        SemanticRole::Position,
+                        units,
+                    )
                 })
         }
         TypeRefIr::Record { fields } => {
@@ -110,6 +124,14 @@ pub(super) fn semantic_accepts_carrier(
                 // only authority for this structural source expression.
                 return true;
             }
+            // A tag-discriminator narrowed load retypes a union binding as its
+            // matching branch record while the slot keeps the union carrier.
+            if union_branch_records(units, carrier)
+                .iter()
+                .any(|branch| branch == semantic)
+            {
+                return true;
+            }
             let TypeRefIr::Record {
                 fields: carrier_fields,
             } = carrier
@@ -119,7 +141,12 @@ pub(super) fn semantic_accepts_carrier(
             fields.len() == carrier_fields.len()
                 && fields.iter().all(|(name, semantic)| {
                     carrier_fields.get(name).is_some_and(|carrier| {
-                        semantic_accepts_carrier(semantic, carrier, SemanticRole::Position)
+                        semantic_accepts_carrier_with_units(
+                            semantic,
+                            carrier,
+                            SemanticRole::Position,
+                            units,
+                        )
                     })
                 })
         }
@@ -153,11 +180,82 @@ pub(super) fn semantic_accepts_carrier(
             // positions do not take this path and remain fail closed without
             // an explicit representation fact.
             carrier == &TypeRefIr::builtin("null")
-                || semantic_accepts_carrier(inner, carrier, SemanticRole::Position)
+                || semantic_accepts_carrier_with_units(
+                    inner,
+                    carrier,
+                    SemanticRole::Position,
+                    units,
+                )
         }
         // Nullable/nominal/representation identity is never implicitly
         // replaced by a concrete branch or payload.
         _ => false,
+    }
+}
+
+/// Resolves the full branch record types of a named (discriminated) union
+/// type reference for the narrowed-load carrier check.
+fn union_branch_records(units: &[MirUnit], ty: &TypeRefIr) -> Vec<TypeRefIr> {
+    let mut branches = Vec::new();
+    match ty {
+        TypeRefIr::Union { items } => branches.extend(items.iter().cloned()),
+        TypeRefIr::LocalType { type_index } => {
+            if let Some(unit) = units.first() {
+                if let Some(declaration) = unit.type_table.get(*type_index as usize) {
+                    union_branch_records_from_descriptor(declaration, &mut branches);
+                }
+            }
+        }
+        TypeRefIr::PublicationType {
+            module_path,
+            type_index,
+        } => {
+            if let Some(unit) = units
+                .iter()
+                .find(|candidate| &candidate.module_path == module_path)
+            {
+                if let Some(declaration) = unit.type_table.get(*type_index as usize) {
+                    union_branch_records_from_descriptor(declaration, &mut branches);
+                }
+            }
+        }
+        TypeRefIr::PackageSymbol { symbol } => {
+            let lookup_key = match &symbol.package {
+                skiff_artifact_model::PackageRefIr::Dependency { dependency_ref } => {
+                    (dependency_ref.clone(), symbol.symbol_path.clone())
+                }
+                skiff_artifact_model::PackageRefIr::PackageId { package_id } => {
+                    (package_id.clone(), symbol.symbol_path.clone())
+                }
+            };
+            if let Some(unit) = units.first() {
+                if let Some(shape) = unit.package_type_unions.get(&lookup_key) {
+                    branches.extend(shape.branches.values().map(|fields| TypeRefIr::Record {
+                        fields: fields.clone(),
+                    }));
+                }
+            }
+        }
+        _ => {}
+    }
+    branches
+}
+
+fn union_branch_records_from_descriptor(
+    declaration: &skiff_artifact_model::TypeDeclIr,
+    branches: &mut Vec<TypeRefIr>,
+) {
+    let TypeDescriptorIr::Union { branches: declared } = &declaration.descriptor else {
+        return;
+    };
+    for branch in declared {
+        if let skiff_artifact_model::NamedUnionBranchIr::SyntheticDiscriminator {
+            payload_type,
+            ..
+        } = branch
+        {
+            branches.push(payload_type.clone());
+        }
     }
 }
 

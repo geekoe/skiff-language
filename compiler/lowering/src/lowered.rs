@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::storage_projection::CompiledPackageStorageProjection;
 use super::{
     callable_return_types::{extend_callable_return_types_for_source, CallableReturnType},
+    mir::MirUnionShape,
     publication_local_refs::rewrite_publication_local_refs_with_mir_facts,
     source_file_lowering::{
         compile_package_source_file_ir_unit_with_mir_facts, finalize_actor_identities,
@@ -220,6 +221,44 @@ impl LoweredPackage {
             })
             .flatten()
             .collect::<BTreeMap<_, _>>();
+        let package_type_unions = model
+            .dependency_analysis()
+            .package_schema_records()
+            .filter_map(|(alias, symbol_path, record)| {
+                let ContractTypeDescriptor::DiscriminatedUnion {
+                    discriminator_field,
+                    branches,
+                } = &record.canonical_descriptor.descriptor
+                else {
+                    return None;
+                };
+                if branches.is_empty() {
+                    return None;
+                }
+                let branches = branches
+                    .iter()
+                    .map(|branch| {
+                        let fields = contract_record_fields(&branch.branch_type)?;
+                        Some((branch.tag.clone(), fields))
+                    })
+                    .collect::<Option<BTreeMap<_, _>>>()?;
+                let shape = MirUnionShape {
+                    discriminator: discriminator_field.clone(),
+                    branches,
+                };
+                let package_id = record.package_id.clone();
+                let alias = alias.to_string();
+                let symbol_path = symbol_path.to_string();
+                let stable = record.stable_schema_key.clone();
+                Some([
+                    ((alias.clone(), symbol_path.clone()), shape.clone()),
+                    ((alias, stable.clone()), shape.clone()),
+                    ((package_id.clone(), symbol_path), shape.clone()),
+                    ((package_id, stable), shape),
+                ])
+            })
+            .flatten()
+            .collect::<BTreeMap<_, _>>();
         let mut package_type_records = package_type_records;
         for declaration in prelude_registry().declared_types() {
             let Some(fields) = crate::type_lowering::prelude_record_fields(declaration) else {
@@ -239,6 +278,7 @@ impl LoweredPackage {
             model.resolved_call_targets(),
             &mir_source_facts,
             package_type_records,
+            package_type_unions,
         )
         .map_err(|error| PublicationError::ContractValidation {
             message: format!("MIR build failed: {error}"),
@@ -444,6 +484,23 @@ impl SyntheticEntrypointExecutableKind {
             ExecutableKind::Function => Self::Function,
             ExecutableKind::ImplMethod => Self::ImplMethod,
         }
+    }
+}
+
+/// Projects one `ContractTypeRef` to the full record field map used by MIR
+/// union-branch authority. Only exact record shapes are accepted; any other
+/// branch shape fails closed (returns `None`).
+fn contract_record_fields(
+    ty: &skiff_artifact_model::ContractTypeRef,
+) -> Option<BTreeMap<String, skiff_artifact_model::TypeRefIr>> {
+    match ty {
+        skiff_artifact_model::ContractTypeRef::Record { fields } => Some(
+            fields
+                .iter()
+                .map(|(name, ty)| (name.clone(), contract_type_ref_to_ir(ty)))
+                .collect(),
+        ),
+        _ => None,
     }
 }
 

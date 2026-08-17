@@ -2860,13 +2860,24 @@ impl VmFiber {
                 opcode: Opcode::GetDenseField,
             });
         }
+        // Dense field reads are resolved by the field NAME declared by the
+        // shape operand, not by a raw ordinal against the value's own fields.
+        // Ordinary records store their fields in the same name-sorted order as
+        // the shape, so name and ordinal resolution agree exactly. A
+        // discriminated-union value is physically one of its branch records
+        // (missing branch fields absent), so reading a canonical union field
+        // (e.g. the discriminator, or a branch field shared at a different
+        // ordinal) must resolve by name to stay ordinal-exact across branches.
+        // An unknown field name fails closed instead of reading a foreign
+        // slot.
+        let field_name = shape.fields()[field_ordinal].name().to_string();
         let (reservation, operands) =
             self.reserve_operand_consume(function, instruction, Opcode::GetDenseField, 1, 1)?;
         let record = operands[0];
         let field_plan = self.reserved_result_plan(&reservation, 0).clone();
         let value = executor
             .heap()
-            .get_dense_field(&record, field_ordinal)
+            .record_field(&record, &field_name)
             .map_err(VmError::Heap)?;
         let shared = executor
             .share(&value, &field_plan)

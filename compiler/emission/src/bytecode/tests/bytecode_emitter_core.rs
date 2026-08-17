@@ -87,6 +87,7 @@ mod tests {
             source_map: file_ir.source_map.clone(),
             type_table: file_ir.type_table.clone(),
             package_type_records: BTreeMap::new(),
+            package_type_unions: BTreeMap::new(),
             link_targets: file_ir.link_targets.clone(),
             remote_interface_refs: Vec::new(),
             constants: Vec::new(),
@@ -1834,15 +1835,14 @@ mod tests {
         .expect("stream producer plans derive");
 
         let error = emit_bytecode_artifact(&[unit], &[bundle], &plans)
-            .expect_err("non-Construct Emit must not invent a dense layout fact");
+            .expect_err("hand-built non-Construct Emit must fail closed");
         assert!(matches!(
             error,
             crate::BytecodeEmissionError::UnsupportedConstruct {
                 function_key,
-                construct: "EmitStream item shape",
-                location,
+                construct: "EmitStream source attribution",
+                ..
             } if function_key == "streams::produceNonConstruct"
-                && location.contains("not an exact record construction")
         ));
     }
 
