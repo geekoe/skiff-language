@@ -172,7 +172,7 @@ impl PublishedFixture {
             .expect("read admitted carrier bytecode")
     }
 
-    pub fn link(&self) -> Arc<DeploymentExecutionImage> {
+    pub(super) fn link(&self) -> Arc<DeploymentExecutionImage> {
         let hydrated = self.link_input();
         Arc::new(
             link_deployment_execution_image(hydrated, &production_link_limits())
@@ -180,7 +180,7 @@ impl PublishedFixture {
         )
     }
 
-    pub fn link_input(&self) -> HydratedDeploymentBytecode {
+    pub(super) fn link_input(&self) -> HydratedDeploymentBytecode {
         let store = self.store();
         load_deployment_bytecode_from_store(&store, &self.deployment)
             .expect("hydrate admitted carrier through production loader")
