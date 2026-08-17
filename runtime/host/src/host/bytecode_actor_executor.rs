@@ -599,6 +599,7 @@ impl BytecodeActorExecutor for ProductionBytecodeActorExecutor {
                 ));
             }
         };
+        drop(guard);
         let method_entry = match image.function_entry(target.function()) {
             Ok(entry) => entry,
             Err(error) => {
