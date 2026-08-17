@@ -75,7 +75,10 @@ const PHASE7_GC_CAPABILITIES = Object.freeze(['request-GC', 'Actor-compaction'])
 // P7R-2 epoch: four Phase 1-3 inherited specs gained Phase 5/6 收尾 tests
 // (phase_5_*/phase_6_* carrier, record-array and resource-carrier tests) that
 // all pass on the candidate; the exact counts below were re-verified against
-// the P7-E0 evidence stdout and updated to the executed totals. This change
+// the P7-E0 evidence stdout and updated to the executed totals. After the
+// scheduler compile repair, two scheduler adapter counts were re-verified
+// against the P7-E0 evidence stdout and aligned to the executed totals
+// (k4-scheduler-park-resume: 5, k3-scheduler-resume-throw: 11). This change
 // opens a new evidence epoch (P7-E0 evidence is no longer reusable).
 const PHASE7_INHERITED_EFFECTIVE_COUNTS = Object.freeze({
   'a5-affine-take-opcode': 1,
@@ -95,7 +98,7 @@ const PHASE7_INHERITED_EFFECTIVE_COUNTS = Object.freeze({
   'k5-scheduler-phase-5-ownership': 18,
   'phase-4-regression-c4-emission-host-effect-admission': 9,
   'phase-4-regression-k4-scheduler-duplicate-wake': 2,
-  'phase-4-regression-k4-scheduler-park-resume': 4,
+  'phase-4-regression-k4-scheduler-park-resume': 5,
   'phase-4-regression-k4-scheduler-pending-publish-claim': 2,
   'phase-4-regression-k4-scheduler-terminal-race': 1,
   'phase-4-regression-phase-3-regression-c3-emission-throw-admission': 10,
@@ -103,7 +106,7 @@ const PHASE7_INHERITED_EFFECTIVE_COUNTS = Object.freeze({
   'phase-4-regression-phase-3-regression-k3-linker-throw-admission': 2,
   'phase-4-regression-phase-3-regression-k3-model-service-error-envelope': 18,
   'phase-4-regression-phase-3-regression-k3-request-user-error': 1,
-  'phase-4-regression-phase-3-regression-k3-scheduler-resume-throw': 9,
+  'phase-4-regression-phase-3-regression-k3-scheduler-resume-throw': 11,
   'phase-4-regression-phase-3-regression-k3-vm-throw-unwind': 5,
   'phase-4-regression-phase-3-regression-phase-1-regression-gate-self-tests': 63,
   'phase-4-regression-phase-3-regression-phase-1-regression-k0a-compiler-admission': 8,
