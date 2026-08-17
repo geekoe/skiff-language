@@ -391,8 +391,13 @@ cross-request 1/1、phase-6 102/102、router p7 5/5、fmt/diff PASS。
 空数组 `[]`（两次独立运行确认；数字物化正常，callback 8.0 正常）。rejoin 断言真实 exact body `[]` 并注明为 X6/I6C
 owner 的 pin。待用户授权后路由 X6/I6C reopen 或降级观察。
 
+P7-BLK-03（C07 interface-remote）已修复关闭：`26ce0947c`（X6/I6C，`json_value_from_slot` 增 string carrier 投影 arm；
+根因是字符串物理为 `HeapNode::Array` carrier cell 但无 array_slots 侧车，JSON 投影回落空数组）。P7P 覆盖扩展
+`959325eef`（C04 server-stream 3 行 + C14 memory ledger 2 行 + C02 identity 5 行）；P7P rejoin `52e2d2aba`
+（C07 翻转 `"remote-ok"`，host 33/33 全绿，actor 1/1、phase-6 102/102、router p7 5/5、fmt/diff PASS）。
+
 基线既存失败（与 P7 写集无关，@8d492b819 双向复现确认，未动）：host lib 全量 3 个 `phase_5_bytecode_http_*`
 stream registry 泄漏（共享 registry 污染）；`runtime/request` `callback_provider_boundary_type_resolves_to_the_linked_signature_row`。
-正式 Gate 前需按 §7 路由其原始 owner 或记录为 accepted 基线残余。
+正式 Gate 前需按 §7 路由其原始 owner（Phase 5 stream / Phase 6 callback lane）或记录为 accepted 基线残余。
 
 后续：merged preflight → freeze F1 → P7S 并行 review cohort → 正式 Gate epoch（P7A）。
