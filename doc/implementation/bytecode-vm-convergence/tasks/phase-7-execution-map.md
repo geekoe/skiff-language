@@ -350,3 +350,23 @@ seam, stale binary dependency, second authority or hand-built proof need causes 
 amendment. A small cross-owner write required for a real seam may be completed and reported in the task handoff as part of
 the actual write set; the integrator verifies it and records the ownership adjustment in the next MAP amendment. Amendments
 never authorize local compatibility code.
+
+## 12. P7R dispatch amendment（integrator 记录，P7-E0 rolling）
+
+P7P 首交付（`8d492b819`）在真实链上发现两个确定性 blocker，已 deduplicated 后 seal 成 blocker ledger，按 §7 路由给
+精确原始 owner，作为 P7-E0 rolling 的 P7R 修复批。两者写集互不重叠，并行派发（Cargo 经共享 lease 串行）。
+
+| finding id | head/tree | Contract row | path/symbol/evidence | severity | original owner | exact fix write set |
+| --- | --- | --- | --- | --- | --- | --- |
+| P7-BLK-01 | `8d492b819` | C05/C07/C08 | `runtime/host/src/host/request_entry/assembly.rs` `send_service_unary_stream`/`unary_response_start` 在 unary 请求成功后切 stream 响应形态，router 该请求为 Unary pending，`on_start`/`on_chunk` 只接受 Stream pending → 确定性 502 `InvalidHttpResponse`；P7P expected-red 断言固化 | blocker | Phase 6 X6（+I6C interface child） | X6 写集内 service response seam 子集（`request_entry/assembly.rs`、`bytecode_children/service.rs`）+ I6C `bytecode_children/interface.rs`；Phase 5 router dispatcher 为被测 consumer，不改 |
+| P7-BLK-02 | `8d492b819` | C09 | 同一 actor key 的第二次 HTTP 请求挂起（单独复现两次，5 分钟不返回）；actor 跨请求复活/租约状态机问题 | blocker | Phase 6 A6（+K6 arena 若涉及） | A6 写集内 actor 激活/复活/租约子集（`host/bytecode_actor_owner.rs`、`bytecode_actor_executor.rs`、`capability_context/actor*.rs`、`transport/actor_lifecycle/**` 等） |
+
+P7R worktrees（基于 P7P HEAD `8d492b819`，non-overlapping 写集，各自单写入者）：
+
+| lane | branch | worktree |
+| --- | --- | --- |
+| P7R-1 (X6 seam) | `codex/bcvm-p7-p7r1-x6-seam` | `/Users/geek/workspace/skiff-bcvm-p7-p7r1-x6-seam` |
+| P7R-2 (A6 actor) | `codex/bcvm-p7-p7r1-a6-actor` | `/Users/geek/workspace/skiff-bcvm-p7-p7r1-a6-actor` |
+
+修复完成后的 rejoin 顺序：P7P 将 C05/C07/C08 expected-red 更新为 positive 断言并全绿 → merged preflight → 正式 Gate
+epoch（MAP7 §5.1 Cargo 独占）。本 ledger 在 final freeze 前持续可追加，Acceptance 前必须为空。
