@@ -474,3 +474,33 @@ P7A 首轮（F2 candidate `e0798742`，evidence `/Users/geek/workspace/.skiff-bc
 P7A 重跑：p7a worktree 更新到 F3，正式 Gate（新 evidence 目录）+ 独立复核。PASS 后 → P7I → merge → chat-smoke/host-tools → cleanup。
 
 后续：merged preflight → freeze F1 → P7S 并行 review cohort → 正式 Gate epoch（P7A）。
+
+## 18. P7I closeout、main merge、post-acceptance 修复与 chat-smoke 结论（integrator 记录）
+
+P7A 在 F3 重跑 **PASS**（Gate 6，evidence `/Users/geek/workspace/.skiff-bcvm-p7-e6-acceptance`，131/131、754/754、
+checker 一致，独立复核 chain/closure/identities/counts/P7P 整链 33/1/5 全通过）。P7I 写 `results/phase-7.md` +
+status-only edits；fast-forward merge 到 main（`a2d6d8797`，tree 与 closeout tip 一致）并 push。
+
+**post-acceptance 修复（用户授权，cross-owner write 收编）**：`9497d7e51`（`feat(emit): support tagged-union
+field read`）——emitter 对 tagged-union（discriminator）field read（`.tag` 判别 + branch 字段读取）的支持，17 文件跨
+emitter/lowering/carriers/admission/VM（`fiber.rs` `GetDenseField` 按 shape 字段名解析）。emission 131/131、
+phase-5/6/7 回归全绿。已在 main 上重跑 **Gate 7（evidence `/Users/geek/workspace/.skiff-bcvm-p7-e7`）PASS**：
+131/131、754/754、failures NONE，manifest `786df311a5c63ec7d469686f0ff064f2d0bd8bb3d599ef19a8f9a965d5ee51e5`，
+epoch **P7-E4**。main 已 push（`9497d7e51`）。
+
+**chat-smoke / host-tools 结论（不可执行，Phase 7 之外的真实架构边界）**：
+- merge 后按 AGENTS.md 规范路径尝试：build router/runtime → restart → `npm run e2e:chat-smoke`。dev 栈 release
+  pointer 为空（watch LaunchAgent 未运行），启动 watch 后 agine 依赖的 `internals/packages/llm-api/decode.skiff`
+  编译失败：先是 `std.http.HttpSseEvent`（tagged-union）field read 不被 emitter 支持（已由 `9497d7e51` 修复），
+  随后暴露根因：**普通函数不能返回 `string`/`Nullable<string>`**——实测 `function f() -> string` 编译被
+  `Phase 1 admission rejected ValueShape ... at return type`；`bool`/`number`/record/stream 均可返回。string 在
+  bytecode-only 里仅为特定能力路径（server-stream/throw/DB/actor-registry）的 scalar carrier 特例，不作为普通
+  value shape（Phase 1 起设计，`LiteralIr::String => ValueShape`）。
+- 因此 agine service（prompt/JSON/SSE 文本大量用 string）无法在 bytecode-only 编译器上编译/运行，chat-smoke 与
+  host-tools 的 pre-condition（agine service 可用）不满足，**不可执行**。这是 Phase 6 de facto 验证从未触达 agine
+  的体现（Phase 6 只验证 host/router/scheduler 测试，未编译 agine）。支持 string 作为普通 value 属跨 Phase 的
+  value-shape 门禁放宽 + value model 扩展，不在 Phase 7 写集，留作后续。
+- Phase 7 的 runtime/router 层验证以 P7P 整链证明测试 + Gate（P7-E4）为准。
+
+**P7C cleanup（MAP7 §10）**：清理 P7 worktrees/branches（P7P/P7G/P7R×6/P7S×3/P7A/plan），保留证据目录
+（e2/e3/e5/e6-acceptance/e7）与 MAP 记录；最终状态 PROJECT_CLOSED。
