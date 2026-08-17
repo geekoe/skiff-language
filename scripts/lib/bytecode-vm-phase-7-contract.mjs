@@ -179,7 +179,7 @@ export function phase7ScenarioSpecs(root) {
       '--test',
       '--test-reporter=tap',
       'scripts/tests/bytecode-vm-phase-7-gate-*.test.mjs',
-    ], 'node-tap', ['P7G', 'C18'], 43),
+    ], 'node-tap', ['P7G', 'C18'], 44),
     phase7Spec(root, 'phase-7-catalog-binding', 'node', [
       '--input-type=module',
       '-e',
