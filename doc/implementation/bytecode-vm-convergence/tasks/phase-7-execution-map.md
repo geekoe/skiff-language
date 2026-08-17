@@ -404,4 +404,21 @@ stream registry 泄漏（共享 registry 污染）；`runtime/request` `callback
 整链测试已证明相关能力端到端正常（C04 stream 3 行、C08 callback 8.0 绿），两失败属测试隔离/ABI 断言层面的历史遗留，
 不影响 P7 closure 结论。Gate 结果中如出现，按已知残余行记录，不新增 blocker。
 
+## 14. P7-E0 首次 Gate 结果与 P7R-2 修复批（integrator 记录）
+
+候选 `75f7d980e` 上首跑 Gate：**verdict=FAIL**，128 commands 115 pass / 22 fail，checker 与 manifest 一致（非 checker 误报）。
+manifest SHA-256 `dafeeb633...`，evidence 目录 `/Users/geek/workspace/.skiff-bcvm-p7-e0`。22 个失败分类（均非 P7 引入，
+为 Phase 4/5/6 历史遗留的继承 spec 问题，Phase 6 完整 Gate 因用户授权跳过从未暴露）：
+
+| 类 | 数量 | 根因 | 修复 owner / 写集 |
+| --- | --- | --- | --- |
+| scheduler lib tests 编译 | 6 | `BytecodeSchedulerPorts` 新增 `child_stream_supervisors`（Phase 6 stream-child 收尾）未更新旧测试构造点（E0063，~scheduler tests 4048 行），一处修复解 6 个 spec | P7R-4（Phase 4/6 scheduler lane） |
+| clippy 全 workspace | 3 | `skiff-runtime-linker` 543/534 行函数超限（too_many_lines deny 无白名单）+ `skiff-compiler-source` 缺 `SourceDependencyAnalysisInput::empty`（E0599，Phase 5 编译器改动未更新测试），两处修复解 3 个 spec | P7R-5（Phase 5/6 对应 lane） |
+| execution-image hard-cut | 1 | P7P `fixture.rs` 公开返回 owned `DeploymentExecutionImage`，image-owned 值必须经完整 image 通道 | P7R-6（P7P 写集） |
+| phase-5 sentinel/整链/结构 | 3 | `s1-source-to-admission` 与 `router-full-chain-vcp` 断言失败；`structural-no-bypass` 报 illegal public Stream path leak（待诊断具体 leak） | P7R-7（Phase 5 lane，待进一步定位） |
+| adapter test-count 漂移 | 8 | adapter 表用早期 reviewed count（Phase 5 evidence `31a33c49e`），未计入 Phase 6 收尾新增测试（如 `containment_cross_service_behavior_envelope_rejected`、`phase_6_*` carrier 测试），且新增测试全部通过 | P7G adapter 表更新（从 evidence stdout 提取实际数，新 evidence epoch） |
+
+P7R-2 批派发：`codex/bcvm-p7-p7r2-*` 系列 worktree（从候选 `75f7d980e` 检出），修完逐一 rejoin 到候选；adapter 表更新为 P7G
+写集，直接改 P7G worktree。全部绿后重跑 Gate（新 evidence 目录，新 epoch）→ freeze F1。
+
 后续：merged preflight → freeze F1 → P7S 并行 review cohort → 正式 Gate epoch（P7A）。
