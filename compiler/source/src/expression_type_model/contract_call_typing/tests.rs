@@ -84,7 +84,7 @@ fn contract_number_accepts_source_integer_immediate() {
         name: "number".to_string(),
         arguments: Vec::new(),
     };
-    let dependency_analysis = SourceDependencyAnalysisInput::empty();
+    let dependency_analysis = SourceDependencyAnalysisInput::default();
     assert!(package_type_target_assignable(
         &actual,
         &expected,

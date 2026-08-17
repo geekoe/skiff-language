@@ -71,6 +71,12 @@ const PHASE7_GC_CAPABILITIES = Object.freeze(['request-GC', 'Actor-compaction'])
 // command identities (Phase 5 result records 107/107 commands and 500/500
 // tests). Keyed by the Phase 5 source id carried in the provenance origin
 // chain; never derived from ID prefix parsing.
+//
+// P7R-2 epoch: four Phase 1-3 inherited specs gained Phase 5/6 收尾 tests
+// (phase_5_*/phase_6_* carrier, record-array and resource-carrier tests) that
+// all pass on the candidate; the exact counts below were re-verified against
+// the P7-E0 evidence stdout and updated to the executed totals. This change
+// opens a new evidence epoch (P7-E0 evidence is no longer reusable).
 const PHASE7_INHERITED_EFFECTIVE_COUNTS = Object.freeze({
   'a5-affine-take-opcode': 1,
   'a5-exact-executor-registry': 2,
@@ -93,7 +99,7 @@ const PHASE7_INHERITED_EFFECTIVE_COUNTS = Object.freeze({
   'phase-4-regression-k4-scheduler-pending-publish-claim': 2,
   'phase-4-regression-k4-scheduler-terminal-race': 1,
   'phase-4-regression-phase-3-regression-c3-emission-throw-admission': 10,
-  'phase-4-regression-phase-3-regression-c3-emission-throw-emission': 8,
+  'phase-4-regression-phase-3-regression-c3-emission-throw-emission': 10,
   'phase-4-regression-phase-3-regression-k3-linker-throw-admission': 2,
   'phase-4-regression-phase-3-regression-k3-model-service-error-envelope': 18,
   'phase-4-regression-phase-3-regression-k3-request-user-error': 1,
@@ -101,7 +107,7 @@ const PHASE7_INHERITED_EFFECTIVE_COUNTS = Object.freeze({
   'phase-4-regression-phase-3-regression-k3-vm-throw-unwind': 5,
   'phase-4-regression-phase-3-regression-phase-1-regression-gate-self-tests': 63,
   'phase-4-regression-phase-3-regression-phase-1-regression-k0a-compiler-admission': 8,
-  'phase-4-regression-phase-3-regression-phase-1-regression-k0a-emission-admission': 6,
+  'phase-4-regression-phase-3-regression-phase-1-regression-k0a-emission-admission': 7,
   'phase-4-regression-phase-3-regression-phase-1-regression-k0b-tc-production-contract': 6,
   'phase-4-regression-phase-3-regression-phase-1-regression-k0c-request-containment': 1,
   'phase-4-regression-phase-3-regression-phase-1-regression-k2-deep-local-call-frame-fuel': 4,
@@ -114,9 +120,9 @@ const PHASE7_INHERITED_EFFECTIVE_COUNTS = Object.freeze({
   'phase-4-regression-phase-3-regression-phase-2-regression-c2-emission-exact-plan': 2,
   'phase-4-regression-phase-3-regression-phase-2-regression-c2-pipeline-exact-facts': 5,
   'phase-4-regression-phase-3-regression-phase-2-regression-k2-lifecycle-executor': 8,
-  'phase-4-regression-phase-3-regression-phase-2-regression-k2-linker-record-array-admission': 8,
+  'phase-4-regression-phase-3-regression-phase-2-regression-k2-linker-record-array-admission': 12,
   'phase-4-regression-phase-3-regression-phase-2-regression-k2-model-writable-path': 15,
-  'phase-4-regression-phase-3-regression-phase-2-regression-k2-request-heap-cow': 25,
+  'phase-4-regression-phase-3-regression-phase-2-regression-k2-request-heap-cow': 32,
   'phase-4-regression-phase-3-regression-phase-2-regression-phase-2-gate-self-tests': 24,
   'phase-4-regression-phase-3-regression-phase-2-regression-phase-2-missing-plan-negative': 1,
   'phase-4-regression-phase-3-regression-phase-2-regression-phase-2-vcp-production-composition': 1,

@@ -3026,498 +3026,46 @@ impl DeploymentLinker<'_> {
                     let location = self.function_location(package, function);
                     match relocation {
                         BytecodeRelocation::TaskSubmitRef { task } => {
-                            let specialization = self.specialization_for_function_key(
+                            self.link_task_submit_relocation(
                                 package,
-                                &function.function_key,
-                                indices,
-                            )?;
-                            let (key, actor_method) = match &task.target {
-                                skiff_artifact_model::bytecode::dto::TaskSubmitTargetRef::Function {
-                                    function_key,
-                                } => (self.key_for_task_function(package, function_key)?, None),
-                                skiff_artifact_model::bytecode::dto::TaskSubmitTargetRef::ActorMethod {
-                                    actor,
-                                    actor_abi_identity,
-                                    actor_implementation_identity,
-                                    method_identity,
-                                } => {
-                                    let key = self.key_for_actor_method(
-                                        package,
-                                        actor,
-                                        actor_abi_identity,
-                                        actor_implementation_identity,
-                                        method_identity,
-                                        type_linker,
-                                    )?;
-                                    let actor_method_row = actor_methods
-                                        .iter()
-                                        .find(|row| {
-                                            row.owner_package_build_id()
-                                                == &package.reference().package_build_id
-                                                && row.actor() == actor
-                                                && row.actor_abi_identity() == actor_abi_identity
-                                                && row.actor_implementation_identity()
-                                                    == actor_implementation_identity
-                                                && row.method_identity() == method_identity
-                                        })
-                                        .ok_or_else(|| {
-                                            unsatisfied(
-                                                BytecodeLinkObligation::ConcreteTargetTables,
-                                                location.clone(),
-                                                "task actor method row is absent from the dispatch table"
-                                                    .to_string(),
-                                            )
-                                        })?;
-                                    let actor_method_index = actor_method_row.index();
-                                    (
-                                        key,
-                                        Some((
-                                            actor_method_index,
-                                            actor.clone(),
-                                            actor_abi_identity.clone(),
-                                            actor_implementation_identity.clone(),
-                                            method_identity.clone(),
-                                            actor_method_row.function(),
-                                        )),
-                                    )
-                                }
-                            };
-                            let function_index = indices.get(&key).copied().ok_or_else(|| {
-                                unsatisfied(
-                                    BytecodeLinkObligation::ConcreteTargetTables,
-                                    location.clone(),
-                                    "task submit target function is absent from the closure"
-                                        .to_string(),
-                                )
-                            })?;
-                            let frame =
-                                frames.get(function_index.get() as usize).ok_or_else(|| {
-                                    BytecodeLinkError::ImplementationUnavailable {
-                                        obligation:
-                                            BytecodeLinkObligation::FrameAndValueTransferPlan,
-                                        location: location.clone(),
-                                    }
-                                })?;
-                            let effects = exact_actor_effects(
-                                package
-                                    .artifact()
-                                    .callable_semantic_facts
-                                    .get(key.template_function_key()),
-                                location.clone(),
-                            )?;
-                            let full_signature = frame_signature(frame, effects, location.clone())?;
-                            let (target_signature, task_actor_method) = match actor_method {
-                                Some((
-                                    actor_method_index,
-                                    actor,
-                                    actor_abi_identity,
-                                    actor_implementation_identity,
-                                    method_identity,
-                                    expected_function,
-                                )) => {
-                                    if function_index != expected_function {
-                                        return Err(unsatisfied(
-                                            BytecodeLinkObligation::ConcreteTargetTables,
-                                            location.clone(),
-                                            "task actor method function disagrees with the linked actor table"
-                                                .to_string(),
-                                        ));
-                                    }
-                                    if full_signature.parameter_types().is_empty() {
-                                        return Err(unsatisfied(
-                                            BytecodeLinkObligation::FrameAndValueTransferPlan,
-                                            location.clone(),
-                                            "task actor method target has no self parameter"
-                                                .to_string(),
-                                        ));
-                                    }
-                                    let signature = LinkedCallableSignature::new(
-                                        full_signature.parameter_types()[1..]
-                                            .to_vec()
-                                            .into_boxed_slice(),
-                                        full_signature.parameter_modes()[1..]
-                                            .to_vec()
-                                            .into_boxed_slice(),
-                                        full_signature.parameter_plans()[1..]
-                                            .to_vec()
-                                            .into_boxed_slice(),
-                                        Box::new([]),
-                                        Box::new([]),
-                                        full_signature.effect_summary().clone(),
-                                    )
-                                    .map_err(|error| {
-                                        unsatisfied(
-                                            BytecodeLinkObligation::FrameAndValueTransferPlan,
-                                            location.clone(),
-                                            error.to_string(),
-                                        )
-                                    })?;
-                                    (
-                                        signature,
-                                        Some(LinkedTaskActorMethodTarget::new(
-                                            actor_method_index,
-                                            actor,
-                                            actor_abi_identity,
-                                            actor_implementation_identity,
-                                            method_identity,
-                                        )),
-                                    )
-                                }
-                                None => (full_signature.clone(), None),
-                            };
-                            let task_ref_index = type_linker.intern_concrete_type(
-                                package,
-                                specialization,
-                                &TypeRefIr::builtin("TaskRef"),
-                                &BTreeMap::new(),
-                                location.clone(),
-                            )?;
-                            let task_ref_plan = type_linker
-                                .linked_type_plan(task_ref_index)
-                                .cloned()
-                                .ok_or_else(|| {
-                                    unsatisfied(
-                                        BytecodeLinkObligation::FrameAndValueTransferPlan,
-                                        location.clone(),
-                                        format!(
-                                            "task submit result type {} has no linked plan",
-                                            task_ref_index.get()
-                                        ),
-                                    )
-                                })?;
-                            let task_effects = CallableMayEffects {
-                                escapes_caller_value: false,
-                                requires_same_heap_identity: false,
-                                invokes_unknown_target: false,
-                                may_pending: true,
-                                pending_effect_categories: vec![PendingEffectCategory::NativeCall],
-                                inout_path_effects: Vec::new(),
-                            };
-                            let (native_param_types, native_param_modes, native_param_plans) =
-                                if task_actor_method.is_some() {
-                                    let mut types = vec![full_signature.parameter_types()[0]];
-                                    types.extend_from_slice(target_signature.parameter_types());
-                                    let mut modes = vec![full_signature.parameter_modes()[0]];
-                                    modes.extend_from_slice(target_signature.parameter_modes());
-                                    let mut plans =
-                                        vec![full_signature.parameter_plans()[0].clone()];
-                                    plans.extend_from_slice(target_signature.parameter_plans());
-                                    (
-                                        types.into_boxed_slice(),
-                                        modes.into_boxed_slice(),
-                                        plans.into_boxed_slice(),
-                                    )
-                                } else {
-                                    (
-                                        target_signature
-                                            .parameter_types()
-                                            .to_vec()
-                                            .into_boxed_slice(),
-                                        target_signature
-                                            .parameter_modes()
-                                            .to_vec()
-                                            .into_boxed_slice(),
-                                        target_signature
-                                            .parameter_plans()
-                                            .to_vec()
-                                            .into_boxed_slice(),
-                                    )
-                                };
-                            let native_signature = LinkedNativeCallableSignature::new(
-                                native_param_types,
-                                native_param_modes,
-                                native_param_plans,
-                                vec![task_ref_index].into_boxed_slice(),
-                                vec![task_ref_plan].into_boxed_slice(),
-                                task_effects,
-                            )
-                            .map_err(|error| {
-                                unsatisfied(
-                                    BytecodeLinkObligation::FrameAndValueTransferPlan,
-                                    location.clone(),
-                                    error.to_string(),
-                                )
-                            })?;
-                            let task_key = (
-                                package.reference().package_build_id.clone(),
-                                task.target_identity.clone(),
-                            );
-                            if !seen_task_submit.insert(task_key.clone()) {
-                                continue;
-                            }
-                            let payload_plan = link_task_payload_plan(
+                                function,
                                 task,
-                                package,
-                                &key,
+                                indices,
+                                frames,
                                 type_linker,
-                                &target_signature,
-                                location.clone(),
+                                actor_methods,
+                                &location,
+                                &mut seen_task_submit,
+                                &mut task_submit_indices,
+                                &mut intrinsics,
                             )?;
-                            let task_timing = match task.timing {
-                                skiff_artifact_model::bytecode::dto::TaskSubmitTimingRef::Immediate => {
-                                    LinkedTaskTiming::Immediate
-                                }
-                                skiff_artifact_model::bytecode::dto::TaskSubmitTimingRef::After {
-                                    expression,
-                                } => LinkedTaskTiming::After { expression },
-                                skiff_artifact_model::bytecode::dto::TaskSubmitTimingRef::At {
-                                    expression,
-                                } => LinkedTaskTiming::At { expression },
-                            };
-                            let task_target = match task_actor_method {
-                                Some(actor_method) => LinkedTaskTarget::new_actor_method(
-                                    TaskTargetIndex::new(task_submit_indices.len() as u32),
-                                    task.target_identity.clone(),
-                                    function_index,
-                                    target_signature,
-                                    task_timing,
-                                    actor_method,
-                                ),
-                                None => LinkedTaskTarget::new(
-                                    TaskTargetIndex::new(task_submit_indices.len() as u32),
-                                    task.target_identity.clone(),
-                                    function_index,
-                                    target_signature,
-                                    task_timing,
-                                ),
-                            }
-                            .and_then(|target| target.with_payload_plan(payload_plan))
-                            .map_err(|error| {
-                                unsatisfied(
-                                    BytecodeLinkObligation::ConcreteTargetTables,
-                                    location.clone(),
-                                    error.to_string(),
-                                )
-                            })?;
-                            let intrinsic_index =
-                                skiff_runtime_linked_bytecode::IntrinsicIndex::new(
-                                    intrinsics.len() as u32,
-                                );
-                            let kind = skiff_runtime_linked_bytecode::LinkedIntrinsicKind::Static(
-                                skiff_runtime_linked_bytecode::LinkedStaticIntrinsicTarget::new(
-                                    skiff_runtime_linked_bytecode::LinkedIntrinsicCanonicalKey::parse(
-                                        "std.task.submit",
-                                    )
-                                    .map_err(|error| {
-                                        unsatisfied(
-                                            BytecodeLinkObligation::ConcreteTargetTables,
-                                            location.clone(),
-                                            error.to_string(),
-                                        )
-                                    })?,
-                                    1,
-                                )
-                                .map_err(|error| {
-                                    unsatisfied(
-                                        BytecodeLinkObligation::ConcreteTargetTables,
-                                        location.clone(),
-                                        error.to_string(),
-                                    )
-                                })?,
-                            );
-                            task_submit_indices.insert(task_key, intrinsic_index);
-                            intrinsics.push(
-                                skiff_runtime_linked_bytecode::LinkedIntrinsicTarget::new(
-                                    intrinsic_index,
-                                    kind,
-                                    native_signature,
-                                )
-                                .with_task_target(task_target),
-                            );
                         }
                         BytecodeRelocation::HostEffectRef(effect) => {
-                            let specialization = self.specialization_for_function_key(
+                            self.link_host_effect_relocation(
                                 package,
-                                &function.function_key,
+                                function,
+                                effect,
                                 indices,
-                            )?;
-                            // The registry authenticates the exact executable ABI;
-                            // compiler-owned concrete plans remain in the artifact.
-                            let entry = validate_host_effect_authority(effect, &location)?;
-                            let executor_identity = executable_identity_for(entry, &location)?;
-                            let signature = native_signature(
-                                package,
-                                specialization,
-                                &effect.signature,
                                 type_linker,
                                 &location,
+                                &mut seen_host,
+                                &mut host,
                             )?;
-                            require_executor_representation_carrier(
-                                executor_identity,
-                                &signature,
-                                type_linker,
-                                &location,
-                            )?;
-                            let binding_key = entry.binding_key.as_str();
-                            if !seen_host.insert(binding_key.to_string()) {
-                                continue;
-                            }
-                            host.push(
-                                LinkedHostEffectAdapterTarget::new(
-                                    skiff_runtime_linked_bytecode::HostEffectAdapterIndex::new(
-                                        host.len() as u32,
-                                    ),
-                                    executor_identity,
-                                    effect.target.namespace.clone(),
-                                    effect.target.symbol.clone(),
-                                    skiff_runtime_linked_bytecode::LinkedHostBindingKey::parse(
-                                        binding_key,
-                                    )
-                                    .map_err(|error| {
-                                        unsatisfied(
-                                            BytecodeLinkObligation::ConcreteTargetTables,
-                                            location.clone(),
-                                            error.to_string(),
-                                        )
-                                    })?,
-                                    effect.target.metadata.clone(),
-                                    signature,
-                                )
-                                .map_err(|error| {
-                                    unsatisfied(
-                                        BytecodeLinkObligation::ConcreteTargetTables,
-                                        location.clone(),
-                                        error.to_string(),
-                                    )
-                                })?,
-                            );
                         }
                         BytecodeRelocation::IntrinsicRef { intrinsic } => {
-                            let specialization = self.specialization_for_function_key(
+                            self.link_intrinsic_relocation(
                                 package,
-                                &function.function_key,
+                                function,
+                                relocation_index,
+                                intrinsic,
                                 indices,
-                            )?;
-                            let db_operation = intrinsic
-                                .db_operation
-                                .as_ref()
-                                .map(|operation| {
-                                    self.link_db_operation(
-                                        package,
-                                        specialization,
-                                        operation,
-                                        &intrinsic.signature,
-                                        type_linker,
-                                        &location,
-                                    )
-                                })
-                                .transpose()?;
-                            // The F6 local-interface lane emits this exact
-                            // static string.length row before the shared
-                            // intrinsic registry admits receiver string ops.
-                            // The VM still fails closed at dispatch.
-                            let local_interface_string_length = matches!(
-                                &intrinsic.target,
-                                BytecodeIntrinsicRef::Static { canonical_key, .. }
-                                    if canonical_key == "std.string.length"
-                            );
-                            if db_operation.is_none() && !local_interface_string_length {
-                                let mut resolver =
-                                    DeploymentLifecycleResolver::new(self.deployment, package);
-                                let mut budget = ValueLifecyclePolicyBudget::new(
-                                    1_000, 1_000_000, 64,
-                                )
-                                .map_err(|error| {
-                                    unsatisfied(
-                                        BytecodeLinkObligation::ConcreteTargetTables,
-                                        location.clone(),
-                                        error.to_string(),
-                                    )
-                                })?;
-                                skiff_artifact_model::intrinsic_registry()
-                                    .match_reference(intrinsic, &mut resolver, &mut budget)
-                                    .map_err(|error| {
-                                        unsatisfied(
-                                            BytecodeLinkObligation::ConcreteTargetTables,
-                                            location.clone(),
-                                            format!(
-                                                "intrinsic registry rejected target: {error:?}"
-                                            ),
-                                        )
-                                    })?;
-                            }
-                            let signature = native_signature(
-                                package,
-                                specialization,
-                                &intrinsic.signature,
                                 type_linker,
                                 &location,
+                                &mut seen_intrinsics,
+                                &mut seen_intrinsic_indices,
+                                &mut intrinsic_relocation_indices,
+                                &mut intrinsics,
                             )?;
-                            let kind = match &intrinsic.target {
-                                BytecodeIntrinsicRef::Static { canonical_key, signature_version } => skiff_runtime_linked_bytecode::LinkedIntrinsicKind::Static(
-                                    skiff_runtime_linked_bytecode::LinkedStaticIntrinsicTarget::new(
-                                        skiff_runtime_linked_bytecode::LinkedIntrinsicCanonicalKey::parse(canonical_key.clone())
-                                            .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))?,
-                                        *signature_version,
-                                    )
-                                    .map_err(|error| unsatisfied(BytecodeLinkObligation::ConcreteTargetTables, location.clone(), error.to_string()))?,
-                                ),
-                                BytecodeIntrinsicRef::Receiver { op } => skiff_runtime_linked_bytecode::LinkedIntrinsicKind::Receiver(*op),
-                            };
-                            let intrinsic_key = match &kind {
-                                skiff_runtime_linked_bytecode::LinkedIntrinsicKind::Static(
-                                    target,
-                                ) => format!(
-                                    "static:{}@{}",
-                                    target.canonical_key().as_str(),
-                                    target.signature_version()
-                                ),
-                                skiff_runtime_linked_bytecode::LinkedIntrinsicKind::Receiver(
-                                    op,
-                                ) => {
-                                    format!("receiver:{}", op.canonical_key)
-                                }
-                            };
-                            let intrinsic_key = db_operation.as_ref().map_or_else(
-                                || intrinsic_key.clone(),
-                                |operation| {
-                                    format!(
-                                        "{intrinsic_key}:{}:{}:{}:{}",
-                                        operation
-                                            .target_id()
-                                            .map(|target| target
-                                                .package_artifact_ref()
-                                                .package_id
-                                                .as_str())
-                                            .unwrap_or("db.transaction"),
-                                        operation
-                                            .target_id()
-                                            .map(|target| target
-                                                .file_ir_ref()
-                                                .file_ir_identity
-                                                .as_str())
-                                            .unwrap_or("transaction"),
-                                        operation
-                                            .target_id()
-                                            .map(|target| target.type_index().to_string())
-                                            .unwrap_or_else(|| "control".to_string()),
-                                        format!("{:?}", operation.op()),
-                                    )
-                                },
-                            );
-                            if seen_intrinsics.insert(intrinsic_key.clone()) {
-                                let index = skiff_runtime_linked_bytecode::IntrinsicIndex::new(
-                                    intrinsics.len() as u32,
-                                );
-                                seen_intrinsic_indices.insert(intrinsic_key.clone(), index);
-                                let mut linked =
-                                    skiff_runtime_linked_bytecode::LinkedIntrinsicTarget::new(
-                                        index, kind, signature,
-                                    );
-                                if let Some(db_operation) = db_operation {
-                                    linked = linked.with_db_operation(db_operation);
-                                }
-                                intrinsics.push(linked);
-                            }
-                            let index = seen_intrinsic_indices[&intrinsic_key];
-                            intrinsic_relocation_indices.insert(
-                                (
-                                    package.reference().package_build_id.clone(),
-                                    function.function_key.clone(),
-                                    relocation_index as u32,
-                                ),
-                                index,
-                            );
                         }
                         _ => {}
                     }
@@ -3530,6 +3078,529 @@ impl DeploymentLinker<'_> {
             task_submit_indices,
             intrinsic_relocation_indices,
         ))
+    }
+
+    fn link_task_submit_relocation(
+        &self,
+        package: &HydratedBytecodePackage,
+        function: &skiff_artifact_model::ValidatedFunction,
+        task: &skiff_artifact_model::bytecode::dto::TaskSubmitReference,
+        indices: &BTreeMap<SpecializationKey, FunctionIndex>,
+        frames: &[LinkedFrameLayout],
+        type_linker: &mut TypeLinker<'_>,
+        actor_methods: &[LinkedActorMethodTarget],
+        location: &BytecodeLinkLocation,
+        seen_task_submit: &mut BTreeSet<(PackageBuildId, String)>,
+        task_submit_indices: &mut BTreeMap<
+            (PackageBuildId, String),
+            skiff_runtime_linked_bytecode::IntrinsicIndex,
+        >,
+        intrinsics: &mut Vec<skiff_runtime_linked_bytecode::LinkedIntrinsicTarget>,
+    ) -> Result<(), BytecodeLinkError> {
+        let specialization =
+            self.specialization_for_function_key(package, &function.function_key, indices)?;
+        let (key, actor_method) = match &task.target {
+            skiff_artifact_model::bytecode::dto::TaskSubmitTargetRef::Function { function_key } => {
+                (self.key_for_task_function(package, function_key)?, None)
+            }
+            skiff_artifact_model::bytecode::dto::TaskSubmitTargetRef::ActorMethod {
+                actor,
+                actor_abi_identity,
+                actor_implementation_identity,
+                method_identity,
+            } => {
+                let key = self.key_for_actor_method(
+                    package,
+                    actor,
+                    actor_abi_identity,
+                    actor_implementation_identity,
+                    method_identity,
+                    type_linker,
+                )?;
+                let actor_method_row = actor_methods
+                    .iter()
+                    .find(|row| {
+                        row.owner_package_build_id() == &package.reference().package_build_id
+                            && row.actor() == actor
+                            && row.actor_abi_identity() == actor_abi_identity
+                            && row.actor_implementation_identity() == actor_implementation_identity
+                            && row.method_identity() == method_identity
+                    })
+                    .ok_or_else(|| {
+                        unsatisfied(
+                            BytecodeLinkObligation::ConcreteTargetTables,
+                            location.clone(),
+                            "task actor method row is absent from the dispatch table".to_string(),
+                        )
+                    })?;
+                let actor_method_index = actor_method_row.index();
+                (
+                    key,
+                    Some((
+                        actor_method_index,
+                        actor.clone(),
+                        actor_abi_identity.clone(),
+                        actor_implementation_identity.clone(),
+                        method_identity.clone(),
+                        actor_method_row.function(),
+                    )),
+                )
+            }
+        };
+        let function_index = indices.get(&key).copied().ok_or_else(|| {
+            unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                "task submit target function is absent from the closure".to_string(),
+            )
+        })?;
+        let frame = frames.get(function_index.get() as usize).ok_or_else(|| {
+            BytecodeLinkError::ImplementationUnavailable {
+                obligation: BytecodeLinkObligation::FrameAndValueTransferPlan,
+                location: location.clone(),
+            }
+        })?;
+        let effects = exact_actor_effects(
+            package
+                .artifact()
+                .callable_semantic_facts
+                .get(key.template_function_key()),
+            location.clone(),
+        )?;
+        let full_signature = frame_signature(frame, effects, location.clone())?;
+        let (target_signature, task_actor_method) = match actor_method {
+            Some((
+                actor_method_index,
+                actor,
+                actor_abi_identity,
+                actor_implementation_identity,
+                method_identity,
+                expected_function,
+            )) => {
+                if function_index != expected_function {
+                    return Err(unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        location.clone(),
+                        "task actor method function disagrees with the linked actor table"
+                            .to_string(),
+                    ));
+                }
+                if full_signature.parameter_types().is_empty() {
+                    return Err(unsatisfied(
+                        BytecodeLinkObligation::FrameAndValueTransferPlan,
+                        location.clone(),
+                        "task actor method target has no self parameter".to_string(),
+                    ));
+                }
+                let signature = LinkedCallableSignature::new(
+                    full_signature.parameter_types()[1..]
+                        .to_vec()
+                        .into_boxed_slice(),
+                    full_signature.parameter_modes()[1..]
+                        .to_vec()
+                        .into_boxed_slice(),
+                    full_signature.parameter_plans()[1..]
+                        .to_vec()
+                        .into_boxed_slice(),
+                    Box::new([]),
+                    Box::new([]),
+                    full_signature.effect_summary().clone(),
+                )
+                .map_err(|error| {
+                    unsatisfied(
+                        BytecodeLinkObligation::FrameAndValueTransferPlan,
+                        location.clone(),
+                        error.to_string(),
+                    )
+                })?;
+                (
+                    signature,
+                    Some(LinkedTaskActorMethodTarget::new(
+                        actor_method_index,
+                        actor,
+                        actor_abi_identity,
+                        actor_implementation_identity,
+                        method_identity,
+                    )),
+                )
+            }
+            None => (full_signature.clone(), None),
+        };
+        let task_ref_index = type_linker.intern_concrete_type(
+            package,
+            specialization,
+            &TypeRefIr::builtin("TaskRef"),
+            &BTreeMap::new(),
+            location.clone(),
+        )?;
+        let task_ref_plan = type_linker
+            .linked_type_plan(task_ref_index)
+            .cloned()
+            .ok_or_else(|| {
+                unsatisfied(
+                    BytecodeLinkObligation::FrameAndValueTransferPlan,
+                    location.clone(),
+                    format!(
+                        "task submit result type {} has no linked plan",
+                        task_ref_index.get()
+                    ),
+                )
+            })?;
+        let task_effects = CallableMayEffects {
+            escapes_caller_value: false,
+            requires_same_heap_identity: false,
+            invokes_unknown_target: false,
+            may_pending: true,
+            pending_effect_categories: vec![PendingEffectCategory::NativeCall],
+            inout_path_effects: Vec::new(),
+        };
+        let (native_param_types, native_param_modes, native_param_plans) =
+            if task_actor_method.is_some() {
+                let mut types = vec![full_signature.parameter_types()[0]];
+                types.extend_from_slice(target_signature.parameter_types());
+                let mut modes = vec![full_signature.parameter_modes()[0]];
+                modes.extend_from_slice(target_signature.parameter_modes());
+                let mut plans = vec![full_signature.parameter_plans()[0].clone()];
+                plans.extend_from_slice(target_signature.parameter_plans());
+                (
+                    types.into_boxed_slice(),
+                    modes.into_boxed_slice(),
+                    plans.into_boxed_slice(),
+                )
+            } else {
+                (
+                    target_signature
+                        .parameter_types()
+                        .to_vec()
+                        .into_boxed_slice(),
+                    target_signature
+                        .parameter_modes()
+                        .to_vec()
+                        .into_boxed_slice(),
+                    target_signature
+                        .parameter_plans()
+                        .to_vec()
+                        .into_boxed_slice(),
+                )
+            };
+        let native_signature = LinkedNativeCallableSignature::new(
+            native_param_types,
+            native_param_modes,
+            native_param_plans,
+            vec![task_ref_index].into_boxed_slice(),
+            vec![task_ref_plan].into_boxed_slice(),
+            task_effects,
+        )
+        .map_err(|error| {
+            unsatisfied(
+                BytecodeLinkObligation::FrameAndValueTransferPlan,
+                location.clone(),
+                error.to_string(),
+            )
+        })?;
+        let task_key = (
+            package.reference().package_build_id.clone(),
+            task.target_identity.clone(),
+        );
+        if !seen_task_submit.insert(task_key.clone()) {
+            return Ok(());
+        }
+        let payload_plan = link_task_payload_plan(
+            task,
+            package,
+            &key,
+            type_linker,
+            &target_signature,
+            location.clone(),
+        )?;
+        let task_timing = match task.timing {
+            skiff_artifact_model::bytecode::dto::TaskSubmitTimingRef::Immediate => {
+                LinkedTaskTiming::Immediate
+            }
+            skiff_artifact_model::bytecode::dto::TaskSubmitTimingRef::After { expression } => {
+                LinkedTaskTiming::After { expression }
+            }
+            skiff_artifact_model::bytecode::dto::TaskSubmitTimingRef::At { expression } => {
+                LinkedTaskTiming::At { expression }
+            }
+        };
+        let task_target = match task_actor_method {
+            Some(actor_method) => LinkedTaskTarget::new_actor_method(
+                TaskTargetIndex::new(task_submit_indices.len() as u32),
+                task.target_identity.clone(),
+                function_index,
+                target_signature,
+                task_timing,
+                actor_method,
+            ),
+            None => LinkedTaskTarget::new(
+                TaskTargetIndex::new(task_submit_indices.len() as u32),
+                task.target_identity.clone(),
+                function_index,
+                target_signature,
+                task_timing,
+            ),
+        }
+        .and_then(|target| target.with_payload_plan(payload_plan))
+        .map_err(|error| {
+            unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                error.to_string(),
+            )
+        })?;
+        let intrinsic_index =
+            skiff_runtime_linked_bytecode::IntrinsicIndex::new(intrinsics.len() as u32);
+        let kind = skiff_runtime_linked_bytecode::LinkedIntrinsicKind::Static(
+            skiff_runtime_linked_bytecode::LinkedStaticIntrinsicTarget::new(
+                skiff_runtime_linked_bytecode::LinkedIntrinsicCanonicalKey::parse(
+                    "std.task.submit",
+                )
+                .map_err(|error| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        location.clone(),
+                        error.to_string(),
+                    )
+                })?,
+                1,
+            )
+            .map_err(|error| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    error.to_string(),
+                )
+            })?,
+        );
+        task_submit_indices.insert(task_key, intrinsic_index);
+        intrinsics.push(
+            skiff_runtime_linked_bytecode::LinkedIntrinsicTarget::new(
+                intrinsic_index,
+                kind,
+                native_signature,
+            )
+            .with_task_target(task_target),
+        );
+        Ok(())
+    }
+
+    fn link_host_effect_relocation(
+        &self,
+        package: &HydratedBytecodePackage,
+        function: &skiff_artifact_model::ValidatedFunction,
+        effect: &skiff_artifact_model::HostEffectReference,
+        indices: &BTreeMap<SpecializationKey, FunctionIndex>,
+        type_linker: &mut TypeLinker<'_>,
+        location: &BytecodeLinkLocation,
+        seen_host: &mut BTreeSet<String>,
+        host: &mut Vec<LinkedHostEffectAdapterTarget>,
+    ) -> Result<(), BytecodeLinkError> {
+        let specialization =
+            self.specialization_for_function_key(package, &function.function_key, indices)?;
+        // The registry authenticates the exact executable ABI;
+        // compiler-owned concrete plans remain in the artifact.
+        let entry = validate_host_effect_authority(effect, &location)?;
+        let executor_identity = executable_identity_for(entry, &location)?;
+        let signature = native_signature(
+            package,
+            specialization,
+            &effect.signature,
+            type_linker,
+            &location,
+        )?;
+        require_executor_representation_carrier(
+            executor_identity,
+            &signature,
+            type_linker,
+            &location,
+        )?;
+        let binding_key = entry.binding_key.as_str();
+        if !seen_host.insert(binding_key.to_string()) {
+            return Ok(());
+        }
+        host.push(
+            LinkedHostEffectAdapterTarget::new(
+                skiff_runtime_linked_bytecode::HostEffectAdapterIndex::new(host.len() as u32),
+                executor_identity,
+                effect.target.namespace.clone(),
+                effect.target.symbol.clone(),
+                skiff_runtime_linked_bytecode::LinkedHostBindingKey::parse(binding_key).map_err(
+                    |error| {
+                        unsatisfied(
+                            BytecodeLinkObligation::ConcreteTargetTables,
+                            location.clone(),
+                            error.to_string(),
+                        )
+                    },
+                )?,
+                effect.target.metadata.clone(),
+                signature,
+            )
+            .map_err(|error| {
+                unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    error.to_string(),
+                )
+            })?,
+        );
+        Ok(())
+    }
+
+    fn link_intrinsic_relocation(
+        &self,
+        package: &HydratedBytecodePackage,
+        function: &skiff_artifact_model::ValidatedFunction,
+        relocation_index: usize,
+        intrinsic: &skiff_artifact_model::IntrinsicReference,
+        indices: &BTreeMap<SpecializationKey, FunctionIndex>,
+        type_linker: &mut TypeLinker<'_>,
+        location: &BytecodeLinkLocation,
+        seen_intrinsics: &mut BTreeSet<String>,
+        seen_intrinsic_indices: &mut BTreeMap<
+            String,
+            skiff_runtime_linked_bytecode::IntrinsicIndex,
+        >,
+        intrinsic_relocation_indices: &mut BTreeMap<
+            (PackageBuildId, String, u32),
+            skiff_runtime_linked_bytecode::IntrinsicIndex,
+        >,
+        intrinsics: &mut Vec<skiff_runtime_linked_bytecode::LinkedIntrinsicTarget>,
+    ) -> Result<(), BytecodeLinkError> {
+        let specialization =
+            self.specialization_for_function_key(package, &function.function_key, indices)?;
+        let db_operation = intrinsic
+            .db_operation
+            .as_ref()
+            .map(|operation| {
+                self.link_db_operation(
+                    package,
+                    specialization,
+                    operation,
+                    &intrinsic.signature,
+                    type_linker,
+                    &location,
+                )
+            })
+            .transpose()?;
+        // The F6 local-interface lane emits this exact
+        // static string.length row before the shared
+        // intrinsic registry admits receiver string ops.
+        // The VM still fails closed at dispatch.
+        let local_interface_string_length = matches!(
+            &intrinsic.target,
+            BytecodeIntrinsicRef::Static { canonical_key, .. }
+                if canonical_key == "std.string.length"
+        );
+        if db_operation.is_none() && !local_interface_string_length {
+            let mut resolver = DeploymentLifecycleResolver::new(self.deployment, package);
+            let mut budget =
+                ValueLifecyclePolicyBudget::new(1_000, 1_000_000, 64).map_err(|error| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        location.clone(),
+                        error.to_string(),
+                    )
+                })?;
+            skiff_artifact_model::intrinsic_registry()
+                .match_reference(intrinsic, &mut resolver, &mut budget)
+                .map_err(|error| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        location.clone(),
+                        format!("intrinsic registry rejected target: {error:?}"),
+                    )
+                })?;
+        }
+        let signature = native_signature(
+            package,
+            specialization,
+            &intrinsic.signature,
+            type_linker,
+            &location,
+        )?;
+        let kind = match &intrinsic.target {
+            BytecodeIntrinsicRef::Static {
+                canonical_key,
+                signature_version,
+            } => skiff_runtime_linked_bytecode::LinkedIntrinsicKind::Static(
+                skiff_runtime_linked_bytecode::LinkedStaticIntrinsicTarget::new(
+                    skiff_runtime_linked_bytecode::LinkedIntrinsicCanonicalKey::parse(
+                        canonical_key.clone(),
+                    )
+                    .map_err(|error| {
+                        unsatisfied(
+                            BytecodeLinkObligation::ConcreteTargetTables,
+                            location.clone(),
+                            error.to_string(),
+                        )
+                    })?,
+                    *signature_version,
+                )
+                .map_err(|error| {
+                    unsatisfied(
+                        BytecodeLinkObligation::ConcreteTargetTables,
+                        location.clone(),
+                        error.to_string(),
+                    )
+                })?,
+            ),
+            BytecodeIntrinsicRef::Receiver { op } => {
+                skiff_runtime_linked_bytecode::LinkedIntrinsicKind::Receiver(*op)
+            }
+        };
+        let intrinsic_key = match &kind {
+            skiff_runtime_linked_bytecode::LinkedIntrinsicKind::Static(target) => format!(
+                "static:{}@{}",
+                target.canonical_key().as_str(),
+                target.signature_version()
+            ),
+            skiff_runtime_linked_bytecode::LinkedIntrinsicKind::Receiver(op) => {
+                format!("receiver:{}", op.canonical_key)
+            }
+        };
+        let intrinsic_key = db_operation.as_ref().map_or_else(
+            || intrinsic_key.clone(),
+            |operation| {
+                format!(
+                    "{intrinsic_key}:{}:{}:{}:{}",
+                    operation
+                        .target_id()
+                        .map(|target| target.package_artifact_ref().package_id.as_str())
+                        .unwrap_or("db.transaction"),
+                    operation
+                        .target_id()
+                        .map(|target| target.file_ir_ref().file_ir_identity.as_str())
+                        .unwrap_or("transaction"),
+                    operation
+                        .target_id()
+                        .map(|target| target.type_index().to_string())
+                        .unwrap_or_else(|| "control".to_string()),
+                    format!("{:?}", operation.op()),
+                )
+            },
+        );
+        if seen_intrinsics.insert(intrinsic_key.clone()) {
+            let index = skiff_runtime_linked_bytecode::IntrinsicIndex::new(intrinsics.len() as u32);
+            seen_intrinsic_indices.insert(intrinsic_key.clone(), index);
+            let mut linked =
+                skiff_runtime_linked_bytecode::LinkedIntrinsicTarget::new(index, kind, signature);
+            if let Some(db_operation) = db_operation {
+                linked = linked.with_db_operation(db_operation);
+            }
+            intrinsics.push(linked);
+        }
+        let index = seen_intrinsic_indices[&intrinsic_key];
+        intrinsic_relocation_indices.insert(
+            (
+                package.reference().package_build_id.clone(),
+                function.function_key.clone(),
+                relocation_index as u32,
+            ),
+            index,
+        );
+        Ok(())
     }
 
     fn link_db_operation(

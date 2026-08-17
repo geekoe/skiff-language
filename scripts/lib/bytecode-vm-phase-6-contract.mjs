@@ -62,14 +62,24 @@ export const PHASE6_REQUIRED_LANES = Object.freeze([
   'phase-5-regression',
 ]);
 
-const SERVICE_HOST_TESTS = 10;
+// Exact expected-red counts for the Phase 6 host/router matrix suites. These
+// are the reviewed Phase 6 closeout totals.
+//
+// P7R-2 epoch: the Phase 6 收尾 (stream-child) added one test to each of the
+// service/callback/db/task-host/task-router matrix surfaces
+// (e.g. containment_cross_service_behavior_envelope_rejected,
+// containment_cross_runtime_callback_rejected, actor_db_only_transaction_round_trip
+// and the durable task/route tests); all pass on the candidate. The counts below
+// were re-verified against the Phase 7 P7-E0 evidence stdout and updated to the
+// executed totals. This change opens a new evidence epoch.
+const SERVICE_HOST_TESTS = 11;
 const INTERFACE_LOCAL_HOST_TESTS = 12;
 const INTERFACE_REMOTE_HOST_TESTS = 10;
-const CALLBACK_MATRIX_TESTS = 11;
+const CALLBACK_MATRIX_TESTS = 12;
 const RECOVERABLE_MATRIX_TESTS = 10;
-const DB_MATRIX_TESTS = 10;
-const TASK_HOST_TESTS = 13;
-const ROUTER_TASK_TESTS = 9;
+const DB_MATRIX_TESTS = 11;
+const TASK_HOST_TESTS = 14;
+const ROUTER_TASK_TESTS = 10;
 const ACTOR_HOST_TESTS = 12;
 const ROUTER_ACTOR_TESTS = 8;
 const CONTAINMENT_TESTS = 8;

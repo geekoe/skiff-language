@@ -3786,6 +3786,7 @@ mod tests {
             stream_supervisor: Some(
                 supervisor.clone() as Arc<dyn BytecodeStreamSupervisor<TestUnit>>
             ),
+            child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
         };
         let scheduler = BytecodeScheduler::new_with_child_heap(
             TestUnit {
@@ -3853,6 +3854,7 @@ mod tests {
             stream_supervisor: Some(
                 supervisor.clone() as Arc<dyn BytecodeStreamSupervisor<ResumeThenChildUnit>>
             ),
+            child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
         };
         let mut context = RequestExecutionContext::create(ports);
         let registry = PendingRegistry::<usize, ResumeThenChildSuspended, TestResumeOutcome>::new(
@@ -4050,6 +4052,7 @@ mod tests {
             stream_supervisor: Some(
                 supervisor.clone() as Arc<dyn BytecodeStreamSupervisor<TestUnit>>
             ),
+            child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
         };
 
         let outcome = BytecodeScheduler::new(TestUnit::emit(7, 99), ports, child_registration())
