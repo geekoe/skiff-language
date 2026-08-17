@@ -398,6 +398,10 @@ P7-BLK-03（C07 interface-remote）已修复关闭：`26ce0947c`（X6/I6C，`jso
 
 基线既存失败（与 P7 写集无关，@8d492b819 双向复现确认，未动）：host lib 全量 3 个 `phase_5_bytecode_http_*`
 stream registry 泄漏（共享 registry 污染）；`runtime/request` `callback_provider_boundary_type_resolves_to_the_linked_signature_row`。
-正式 Gate 前需按 §7 路由其原始 owner（Phase 5 stream / Phase 6 callback lane）或记录为 accepted 基线残余。
+**integrator 决策（用户确认"不修"）：记录为 accepted 基线残余。** 依据：正式 Gate workload 只覆盖 host
+`bytecode_vm_phase_6/5` test target 的精确 filter、artifact-model/emission/compiler 带 filter lib 测试、node self-tests
+与 fmt/clippy/build/dag，不包含 host lib 全量或 `runtime/request` crate 全量测试；P7 场景 specs 为纯 Node 命令。P7P
+整链测试已证明相关能力端到端正常（C04 stream 3 行、C08 callback 8.0 绿），两失败属测试隔离/ABI 断言层面的历史遗留，
+不影响 P7 closure 结论。Gate 结果中如出现，按已知残余行记录，不新增 blocker。
 
 后续：merged preflight → freeze F1 → P7S 并行 review cohort → 正式 Gate epoch（P7A）。
