@@ -6,7 +6,7 @@ use skiff_runtime_request::{
     self as request_runner, BinaryHttpRequest, BinaryHttpRequestMetadata, BoundaryResponse,
     BytecodeRequestExecutionHandles, BytecodeRequestExecutionInput, HttpAdapterKind, HttpNameValue,
     HttpResponseMetadata, RequestEnvelope, RequestError, RequestExecutionOwnerInventorySnapshot,
-    ResponseEnd, ResponseEvent, ResponseStreamEvent, RouterWriterMessage,
+    ResponseEnd, ResponseEvent, RouterWriterMessage,
 };
 use skiff_runtime_transport::{
     protocol::{
@@ -14,7 +14,7 @@ use skiff_runtime_transport::{
         BytecodeWebSocketConnectRequestStartFrameHeader,
         BytecodeWebSocketConnectionClosedRequestStartFrameHeader,
     },
-    response_mapper::{response_stream_event_into_frame, OrdinaryResponseEvent},
+    response_mapper::OrdinaryResponseEvent,
 };
 use tokio::sync::mpsc;
 use tracing::error;
@@ -131,7 +131,6 @@ impl RuntimeHost {
                 &self.base_runtime_id,
             ),
         );
-        let child_composition_probe = child_composition.clone();
         tokio::spawn(async move {
             let request_runner::DrivenBytecodeRequest {
                 result,
@@ -153,7 +152,6 @@ impl RuntimeHost {
             )
             .await;
             let owner_inventory = owner_inventory.into_snapshot();
-            let unary_response_start = child_composition_probe.unary_response_started();
             let cleanup_permit = host
                 .finish_http_gateway_request(
                     &supervised_request,
@@ -161,7 +159,6 @@ impl RuntimeHost {
                     result,
                     owner_inventory,
                     http_response_max_bytes,
-                    unary_response_start,
                     typed_json_unary,
                     &response_sink,
                 )
@@ -501,7 +498,6 @@ impl RuntimeHost {
         result: request_runner::RequestResult<BoundaryResponse>,
         owner_inventory: RequestExecutionOwnerInventorySnapshot,
         http_response_max_bytes: usize,
-        unary_response_start: bool,
         typed_json_unary: bool,
         response_sink: &HostHttpGatewayResponseSink,
     ) -> Option<CleanupPermit> {
@@ -534,14 +530,10 @@ impl RuntimeHost {
                     return permit;
                 }
 
-                let unary_http_response = if !unary_response_start {
-                    unary_http_response_parts(
-                        &response,
-                        typed_json_unary.then(typed_json_unary_metadata),
-                    )
-                } else {
-                    None
-                };
+                let unary_http_response = unary_http_response_parts(
+                    &response,
+                    typed_json_unary.then(typed_json_unary_metadata),
+                );
                 if let Some(Err(response_error)) = unary_http_response.as_ref() {
                     let response_event = OrdinaryResponseEvent::try_error(response_error)
                         .expect("unary HTTP metadata failure is ordinary");
@@ -578,12 +570,6 @@ impl RuntimeHost {
                 if let Some(Ok((metadata, payload))) = unary_http_response {
                     response_sink.send_unary_http_response(request_id, metadata, payload);
                     return permit;
-                }
-                if unary_response_start {
-                    if let Some((metadata, payload)) = unary_response_parts(&response) {
-                        response_sink.send_service_unary_stream(request_id, metadata, payload);
-                        return permit;
-                    }
                 }
                 match response_into_transport_message(request_id.to_string(), response) {
                     Ok(Some(message)) => {
@@ -1165,53 +1151,6 @@ impl HostHttpGatewayResponseSink {
     fn cancel_without_response(&self) {
         self.terminal.settle_without_response();
     }
-
-    fn send_service_unary_stream(
-        &self,
-        request_id: &str,
-        metadata: HttpResponseMetadata,
-        payload: Vec<u8>,
-    ) {
-        self.send_response_start(request_id, metadata);
-        self.send_response_chunk(request_id, payload);
-        self.send_response_end(request_id);
-    }
-
-    fn send_response_start(&self, request_id: &str, metadata: HttpResponseMetadata) {
-        let event = ResponseStreamEvent::Start {
-            http_response: metadata,
-        };
-        if let Ok(frame) = response_stream_event_into_frame(request_id, event) {
-            let _ = self.sender.send(RouterWriterMessage::Binary(frame));
-        }
-    }
-
-    fn send_response_chunk(&self, request_id: &str, payload: Vec<u8>) {
-        let event = ResponseStreamEvent::Chunk { seq: 0, payload };
-        if let Ok(frame) = response_stream_event_into_frame(request_id, event) {
-            let _ = self.sender.send(RouterWriterMessage::Binary(frame));
-        }
-    }
-
-    fn send_response_end(&self, request_id: &str) {
-        if let Ok(frame) = response_stream_event_into_frame(request_id, ResponseStreamEvent::End) {
-            self.send_encoded_terminal(RouterWriterMessage::Binary(frame));
-        }
-    }
-}
-
-fn unary_response_parts(response: &BoundaryResponse) -> Option<(HttpResponseMetadata, Vec<u8>)> {
-    match response {
-        BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Payload(payload))) => {
-            Some((HttpResponseMetadata::new(200, Vec::new()), payload.clone()))
-        }
-        BoundaryResponse::Event(ResponseEvent::End(ResponseEnd::Http { payload, metadata })) => {
-            Some((metadata.clone(), payload.clone()))
-        }
-        BoundaryResponse::Event(ResponseEvent::FixedServiceFailure(_))
-        | BoundaryResponse::Event(ResponseEvent::Error(_))
-        | BoundaryResponse::StreamSent => None,
-    }
 }
 
 fn typed_json_unary_metadata() -> HttpResponseMetadata {
@@ -1249,63 +1188,10 @@ fn unary_http_response_parts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skiff_runtime_transport::protocol::{
-        decode_response_chunk_frame, decode_response_end_frame, decode_response_start_frame,
-        ResponseEndFrameMetadata,
-    };
-
-    #[tokio::test]
-    async fn service_unary_sink_emits_start_chunk_end_in_order() {
-        let (sender, mut receiver) = mpsc::unbounded_channel();
-        let sink =
-            HostHttpGatewayResponseSink::new(sender, Arc::new(HttpGatewayTerminalArbiter::new()));
-
-        sink.send_service_unary_stream(
-            "phase-6-service-request",
-            HttpResponseMetadata::new(200, Vec::new()),
-            b"7".to_vec(),
-        );
-
-        let RouterWriterMessage::Binary(frame) = receiver
-            .recv()
-            .await
-            .expect("service unary sink emits response.start first")
-        else {
-            panic!("service unary start must be a binary Router frame");
-        };
-        let start = decode_response_start_frame(&frame).expect("canonical response.start");
-        assert_eq!(start.request_id, "phase-6-service-request");
-        assert_eq!(start.http_response.status, 200);
-
-        let RouterWriterMessage::Binary(frame) = receiver
-            .recv()
-            .await
-            .expect("service unary sink emits response.chunk before response.end")
-        else {
-            panic!("service unary chunk must be a binary Router frame");
-        };
-        let (chunk, payload) =
-            decode_response_chunk_frame(&frame).expect("canonical response.chunk");
-        assert_eq!(chunk.request_id, "phase-6-service-request");
-        assert_eq!(chunk.seq, 0);
-        assert_eq!(payload, b"7");
-
-        let RouterWriterMessage::Binary(frame) = receiver
-            .recv()
-            .await
-            .expect("service unary sink emits response.end last")
-        else {
-            panic!("service unary end must be a binary Router frame");
-        };
-        let (end, end_payload) = decode_response_end_frame(&frame).expect("canonical response.end");
-        assert_eq!(end.request_id, "phase-6-service-request");
-        assert!(!end.payload_present);
-        assert!(end_payload.is_empty());
-        assert_eq!(end.metadata, ResponseEndFrameMetadata::None);
-    }
+    use skiff_runtime_transport::protocol::{decode_response_end_frame, ResponseEndFrameMetadata};
 
     #[test]
-    fn typed_json_unary_payload_gets_canonical_http_metadata() {
+    fn unary_http_response_parts_gets_canonical_http_metadata() {
         let response = BoundaryResponse::payload(b"7".to_vec());
         let parts = unary_http_response_parts(&response, Some(typed_json_unary_metadata()))
             .expect("typedJson payload is a unary HTTP end candidate")
@@ -1392,6 +1278,40 @@ mod tests {
         assert!(
             receiver.try_recv().is_err(),
             "typedJson unary sink must emit exactly one terminal frame"
+        );
+    }
+
+    #[tokio::test]
+    async fn unary_response_after_child_completion_keeps_single_response_end() {
+        let response = BoundaryResponse::payload(b"7".to_vec());
+        let parts = unary_http_response_parts(&response, Some(typed_json_unary_metadata()))
+            .expect("typedJson payload is a unary HTTP end candidate")
+            .expect("typedJson payload must receive canonical metadata");
+        let (metadata, payload) = parts;
+
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let sink =
+            HostHttpGatewayResponseSink::new(sender, Arc::new(HttpGatewayTerminalArbiter::new()));
+        sink.send_unary_http_response("phase-7-child-request", metadata, payload);
+
+        let RouterWriterMessage::Binary(frame) = receiver
+            .recv()
+            .await
+            .expect("unary child completion emits a single response.end")
+        else {
+            panic!("unary child completion end must be a binary Router frame");
+        };
+        let (end, end_payload) = decode_response_end_frame(&frame).expect("canonical response.end");
+        assert_eq!(end.request_id, "phase-7-child-request");
+        assert!(end.payload_present);
+        assert_eq!(end_payload, b"7");
+        assert!(
+            matches!(end.metadata, ResponseEndFrameMetadata::Http(_)),
+            "unary child completion response.end must carry HTTP metadata"
+        );
+        assert!(
+            receiver.try_recv().is_err(),
+            "unary child completion must not switch to a start/chunk/end stream terminal"
         );
     }
 }

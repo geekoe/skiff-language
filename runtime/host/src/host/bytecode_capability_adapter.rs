@@ -1189,7 +1189,6 @@ fn bytecode_request_child_composition_with_parts(
         child_heap_factory: None,
         heap_limits: limits,
         throw_materializer: Arc::new(CrossImageServiceChildThrowMaterializer),
-        unary_response_start: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         callback_hooks: Some(Arc::new(callback_hooks.clone())),
         callback_child: BytecodeCallbackChildComposition {
             runtime_replica_id: host.base_runtime_id.clone(),

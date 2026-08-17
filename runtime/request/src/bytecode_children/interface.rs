@@ -4,10 +4,7 @@
 //! as service. Remote method rows are dispatched through the exact linked
 //! service operation/build; callback tables remain fail-closed.
 
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+use std::sync::Arc;
 
 use skiff_artifact_model::Opcode;
 use skiff_runtime_boundary::vm_materialize::{
@@ -370,7 +367,6 @@ fn execute_local_interface_child(
     let finish = LocalInterfaceChildFinish {
         signature,
         opcode: Opcode::CallInterface,
-        unary_response_start: Arc::clone(&composition.unary_response_start),
     };
     Ok(BytecodeChildHandoff::Ready(BytecodeChildStart {
         unit: fiber,
@@ -704,7 +700,6 @@ fn execute_remote_interface_child(
     let finish = RemoteInterfaceChildFinish {
         boundary_plan: boundary_plan.clone(),
         throw_materializer: Arc::clone(&composition.throw_materializer),
-        unary_response_start: Arc::clone(&composition.unary_response_start),
     };
     if is_stream {
         let Some(stream_plan) = boundary_plan.stream_item().cloned() else {
@@ -830,7 +825,6 @@ fn remote_service_error(error: BytecodeServiceChildError) -> BytecodeSchedulerEr
 struct RemoteInterfaceChildFinish {
     boundary_plan: skiff_runtime_linked_bytecode::LinkedServiceBoundaryPlan,
     throw_materializer: Arc<dyn ServiceChildThrowMaterializer>,
-    unary_response_start: Arc<AtomicBool>,
 }
 
 impl ChildFinish<VmFiber, VmResumeToken> for RemoteInterfaceChildFinish {
@@ -911,7 +905,6 @@ impl ChildFinish<VmFiber, VmResumeToken> for RemoteInterfaceChildFinish {
                     if let Err(error) = child_escrow.release_all(child_heap.heap_mut()) {
                         return Err(ChildFinishError::failure(BytecodeSchedulerError::Vm(error)));
                     }
-                    self.unary_response_start.store(true, Ordering::Release);
                     return Ok(ResumeOutcome::Values(caller_values_owned));
                 }
                 if !self.boundary_plan.results().is_empty() {
@@ -922,7 +915,6 @@ impl ChildFinish<VmFiber, VmResumeToken> for RemoteInterfaceChildFinish {
                 let _ = child_values
                     .into_terminal_escrow()
                     .release_all(child_heap.heap_mut());
-                self.unary_response_start.store(true, Ordering::Release);
                 ResumeOutcome::Empty
             }
             other => other,
@@ -937,7 +929,6 @@ impl ChildFinish<VmFiber, VmResumeToken> for RemoteInterfaceChildFinish {
 struct LocalInterfaceChildFinish {
     signature: LinkedCallableSignature,
     opcode: Opcode,
-    unary_response_start: Arc<AtomicBool>,
 }
 
 impl ChildFinish<VmFiber, VmResumeToken> for LocalInterfaceChildFinish {
@@ -1030,7 +1021,6 @@ impl ChildFinish<VmFiber, VmResumeToken> for LocalInterfaceChildFinish {
                 if let Err(error) = child_escrow.release_all(child_heap.heap_mut()) {
                     return Err(ChildFinishError::failure(BytecodeSchedulerError::Vm(error)));
                 }
-                self.unary_response_start.store(true, Ordering::Release);
                 ResumeOutcome::Values(caller_owned)
             }
             other => other,
