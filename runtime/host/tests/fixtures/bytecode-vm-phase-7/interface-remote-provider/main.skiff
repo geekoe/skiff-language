@@ -1,0 +1,15 @@
+interface Reader {
+  function label(self: Self, seed: number) -> string
+}
+
+type ReaderImpl implements Reader {
+  value: string,
+}
+
+impl ReaderImpl {
+  function label(seed: number) -> string {
+    return self.value
+  }
+}
+
+const reader: ReaderImpl = ReaderImpl { value: "remote-ok" }

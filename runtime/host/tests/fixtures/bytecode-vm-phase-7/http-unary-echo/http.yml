@@ -1,0 +1,8 @@
+run:
+  method: POST
+  path: /phase-7/unary
+  kind: typedJson
+  handler: main.echo
+  adapterArgs:
+    - param: seed
+      source: { kind: http.body }

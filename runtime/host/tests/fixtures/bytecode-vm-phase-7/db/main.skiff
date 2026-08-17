@@ -1,0 +1,15 @@
+type Doc {
+  id: string,
+  value: string,
+}
+
+db object Doc {
+  primary key(id)
+}
+
+function run(seed: number) -> number {
+  db transaction {
+    db insert Doc { id = "phase7-db" value = "ok" }
+  }
+  return seed
+}

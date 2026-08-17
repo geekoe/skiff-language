@@ -1,0 +1,6 @@
+id: test.skiff/bytecode-vm-phase-7-service-child
+version: 1.0.0
+services:
+  - id: example.com/p7-payments
+    version: 1.0.0
+    alias: payments

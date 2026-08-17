@@ -1,0 +1,4 @@
+function run(seed: number) -> number {
+  payments/fail()
+  return seed
+}

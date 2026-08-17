@@ -1,0 +1,3 @@
+function echo(seed: number) -> number {
+  return seed + 1
+}

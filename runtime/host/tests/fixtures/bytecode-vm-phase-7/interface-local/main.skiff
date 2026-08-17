@@ -1,0 +1,23 @@
+interface Reader {
+  function first(self: Self) -> string
+  function second(self: Self) -> string
+}
+
+type Impl implements Reader {
+  value: string,
+}
+
+impl Impl {
+  function first() -> string {
+    return self.value
+  }
+
+  function second() -> string {
+    return self.value
+  }
+}
+
+function run(seed: number) -> number {
+  final reader = Impl { value: "interface-ok" } as Reader
+  return reader.second().length()
+}

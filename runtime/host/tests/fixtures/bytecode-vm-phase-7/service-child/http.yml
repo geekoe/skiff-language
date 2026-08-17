@@ -1,0 +1,8 @@
+run:
+  method: POST
+  path: /phase-7/service-child
+  kind: typedJson
+  handler: main.run
+  adapterArgs:
+    - param: seed
+      source: { kind: http.body }

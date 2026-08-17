@@ -2590,6 +2590,7 @@ dependencies = [
  "skiff-artifact-identity",
  "skiff-artifact-model",
  "skiff-canonical-json",
+ "skiff-compiler",
  "skiff-deployment",
  "skiff-profiling",
  "skiff-runtime-config-snapshot",

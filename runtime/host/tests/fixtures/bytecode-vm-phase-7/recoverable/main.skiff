@@ -1,0 +1,15 @@
+type RecoverableDoc {
+  id: string,
+  value: string,
+}
+
+db object RecoverableDoc {
+  primary key(id)
+}
+
+function run(seed: number) -> number {
+  db transaction {
+    db insert RecoverableDoc { id = "phase7-recoverable" value = "ok" }
+  }
+  return seed
+}

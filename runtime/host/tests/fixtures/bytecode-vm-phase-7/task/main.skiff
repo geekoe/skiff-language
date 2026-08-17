@@ -1,0 +1,8 @@
+function work(value: number) -> void {
+  return
+}
+
+function run(seed: number) -> number {
+  dispatch work(seed)
+  return seed
+}

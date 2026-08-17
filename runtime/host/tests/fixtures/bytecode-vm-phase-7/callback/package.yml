@@ -1,0 +1,6 @@
+id: test.skiff/bytecode-vm-phase-7-callback
+version: 1.0.0
+services:
+  - id: example.com/p7-callback-provider
+    version: 1.0.0
+    alias: payments

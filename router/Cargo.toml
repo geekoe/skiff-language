@@ -45,3 +45,7 @@ unsafe-libyaml = "0.2"
 # Golden corpus consumer tests and process-listener probes.
 regex = "1"
 serde = { version = "1.0", features = ["derive"] }
+# P7P whole-system proof: the Router-side carrier compiles the same real
+# `.skiff` fixtures through the production compiler to seed a real artifact
+# root for the real `RouterSupervisor` composition (no hand-built deployment).
+skiff-compiler = { path = "../compiler" }

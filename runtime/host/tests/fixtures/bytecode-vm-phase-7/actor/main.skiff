@@ -1,0 +1,29 @@
+import std
+
+type Counter {
+  id: string,
+  count: number,
+}
+
+actor Counter {
+  key(id)
+  create()
+}
+
+impl Counter {
+  function create() -> void {
+    std.time.sleep(Duration.milliseconds(0))
+    self.count = 0
+  }
+
+  function increment() -> number {
+    self.count = self.count + 1
+    return self.count
+  }
+}
+
+function run(seed: number) -> number {
+  final counter = std.actor.get<Counter>("phase7")
+  final value = counter.increment()
+  return value
+}

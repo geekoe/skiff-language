@@ -1,0 +1,6 @@
+import std
+
+function run(seed: number) -> number {
+  std.time.sleep(Duration.milliseconds(2000))
+  return seed
+}
