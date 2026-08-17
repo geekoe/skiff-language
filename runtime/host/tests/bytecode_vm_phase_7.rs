@@ -692,10 +692,9 @@ mod tests {
     // HTTP -> Router -> Runtime chain. The Router dispatcher must be balanced
     // and the runtime session must stay registered.
     //
-    // Note: the C07 remote-interface row returns a string from the provider
-    // boundary; that string currently materializes as an empty array at the
-    // caller, so the row pins the exact current projection `[]` (observed and
-    // deterministic) rather than the nominal string value.
+    // The C07 remote-interface row returns a string from the provider
+    // boundary; bytecode ingress projects string carrier cells as exact JSON
+    // strings, so the row asserts the nominal `"remote-ok"` value.
     // ---------------------------------------------------------------------
 
     #[tokio::test(flavor = "multi_thread")]
@@ -731,11 +730,10 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&response.body)
             .expect("interface-remote response must be deterministic JSON");
         assert_eq!(
-            value.as_array(),
-            Some(&vec![]),
-            "interface-remote must terminate with the exact current boundary projection; \
-             the remote-interface string return materializes as an empty array body \
-             (deterministic pin for the X6/I6C owner): {value}"
+            value.as_str(),
+            Some("remote-ok"),
+            "interface-remote must terminate with the exact string returned by the \
+             remote provider through the real HTTP -> Router -> Runtime chain: {value}"
         );
     }
 
