@@ -34,6 +34,7 @@ export const PHASE7_EPOCH = 'P7-E0';
 
 export const PHASE7_REQUIRED_LANES = Object.freeze([
   'P7G',
+  'P7P',
   'C01',
   'C13',
   'C15',
@@ -200,6 +201,33 @@ export function phase7ScenarioSpecs(root) {
       dependsOn: Object.freeze(['phase-7-whole-system-producer']),
       requiredArtifacts: Object.freeze(['phase-7-whole-system-composition']),
     }),
+    phase7Spec(root, 'phase-7-p7p-host-whole-system', 'cargo', [
+      'test',
+      '--no-fail-fast',
+      '--manifest-path',
+      'runtime/host/Cargo.toml',
+      '--test',
+      'bytecode_vm_phase_7',
+    ], 'rust-suite', [
+      'P7G', 'P7P', 'C02', 'C03', 'C04', 'C05', 'C06', 'C07', 'C08',
+      'C09', 'C10', 'C11', 'C12', 'C14',
+    ], 33),
+    phase7Spec(root, 'phase-7-p7p-actor-cross-request', 'cargo', [
+      'test',
+      '--no-fail-fast',
+      '--manifest-path',
+      'runtime/host/Cargo.toml',
+      '--test',
+      'bytecode_vm_phase_7_actor_cross_request',
+    ], 'rust-suite', ['P7G', 'P7P', 'C09', 'C12'], 1),
+    phase7Spec(root, 'phase-7-p7p-router-whole-system', 'cargo', [
+      'test',
+      '--no-fail-fast',
+      '--manifest-path',
+      'router/Cargo.toml',
+      '--test',
+      'bytecode_vm_phase_7',
+    ], 'rust-suite', ['P7G', 'P7P', 'C03', 'C11', 'C16'], 5),
   ]);
 }
 
@@ -333,26 +361,57 @@ export function phase7CoverageMap(root) {
   const regression = (suffix) => resolveSpecId(root, `phase-5-${suffix}`);
   const coverage = {
     C01: [...inherited, 'phase-7-whole-system-consumer'],
-    C02: ['phase-7-identity-probe', 'phase-7-catalog-binding'],
-    C03: [finalId('p6-service-matrix')],
-    C04: [regression('deterministic-tcp-upstream')],
-    C05: [finalId('p6-service-matrix')],
+    C02: ['phase-7-identity-probe', 'phase-7-catalog-binding', 'phase-7-p7p-host-whole-system'],
+    C03: [finalId('p6-service-matrix'), 'phase-7-p7p-host-whole-system', 'phase-7-p7p-router-whole-system'],
+    C04: [regression('deterministic-tcp-upstream'), 'phase-7-p7p-host-whole-system'],
+    C05: [finalId('p6-service-matrix'), 'phase-7-p7p-host-whole-system'],
     C06: [
       finalId('p6-task-host-matrix'),
       finalId('p6-task-router-matrix'),
       finalId('p6-actor-host-matrix'),
       finalId('p6-actor-router-matrix'),
+      'phase-7-p7p-host-whole-system',
     ],
-    C07: [finalId('p6-interface-local-matrix'), finalId('p6-interface-remote-matrix')],
-    C08: [finalId('p6-callback-matrix')],
-    C09: [finalId('p6-actor-host-matrix'), finalId('p6-actor-router-matrix')],
-    C10: [finalId('p6-recoverable-matrix'), finalId('p6-db-matrix')],
-    C11: phase4Negatives,
-    C12: [finalId('p6-kernel-focused'), finalId('p6-containment-matrix')],
+    C07: [
+      finalId('p6-interface-local-matrix'),
+      finalId('p6-interface-remote-matrix'),
+      'phase-7-p7p-host-whole-system',
+    ],
+    C08: [finalId('p6-callback-matrix'), 'phase-7-p7p-host-whole-system'],
+    C09: [
+      finalId('p6-actor-host-matrix'),
+      finalId('p6-actor-router-matrix'),
+      'phase-7-p7p-host-whole-system',
+      'phase-7-p7p-actor-cross-request',
+    ],
+    C10: [
+      finalId('p6-recoverable-matrix'),
+      finalId('p6-db-matrix'),
+      'phase-7-p7p-host-whole-system',
+    ],
+    C11: [
+      ...phase4Negatives,
+      'phase-7-p7p-host-whole-system',
+      'phase-7-p7p-router-whole-system',
+    ],
+    C12: [
+      finalId('p6-kernel-focused'),
+      finalId('p6-containment-matrix'),
+      'phase-7-p7p-host-whole-system',
+      'phase-7-p7p-actor-cross-request',
+    ],
     C13: [...new Set(boundedWork['p1-dispatch-fuel'].map((id) => resolvePhase6Id(root, id)))],
-    C14: [finalId('p6-kernel-focused'), finalId('p6-containment-matrix')],
+    C14: [
+      finalId('p6-kernel-focused'),
+      finalId('p6-containment-matrix'),
+      'phase-7-p7p-host-whole-system',
+    ],
     C15: [...new Set(boundedWorkIds)].sort(),
-    C16: ['phase-7-catalog-binding', 'phase-7-identity-probe'],
+    C16: [
+      'phase-7-catalog-binding',
+      'phase-7-identity-probe',
+      'phase-7-p7p-router-whole-system',
+    ],
     C17: ['phase-7-identity-probe', finalId('p6-no-verifier-structural')],
     C18: ['phase-7-gate-self-tests', 'phase-7-whole-system-consumer'],
   };

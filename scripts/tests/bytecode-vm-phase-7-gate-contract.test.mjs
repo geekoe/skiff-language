@@ -60,9 +60,9 @@ test('catalog is the Phase 7 scenarios plus exactly one Phase 6 cumulative impor
   const scenarios = phase7ScenarioSpecs(ROOT);
   const workloads = phase7WorkloadSpecs(ROOT);
   const phase6 = phase6WorkloadSpecs(ROOT);
-  assert.equal(scenarios.length, 5);
+  assert.equal(scenarios.length, 8);
   assert.equal(phase6.length, 111);
-  assert.equal(workloads.length, 111 + 5);
+  assert.equal(workloads.length, 111 + 8);
   const ids = workloads.map(({ id }) => id);
   assert.equal(new Set(ids).size, ids.length);
   const imported = workloads.filter(({ id }) => id.startsWith('phase-7-regression-'));
@@ -184,6 +184,52 @@ test('coverage and capability companions cover every row and ledger key exactly'
   }
 });
 
+test('P7P whole-system proof tests are bound into the Gate workload (P7S-C F1)', () => {
+  const workloads = phase7WorkloadSpecs(ROOT);
+  const byId = new Map(workloads.map((entry) => [entry.id, entry]));
+  const host = byId.get('phase-7-p7p-host-whole-system');
+  const actor = byId.get('phase-7-p7p-actor-cross-request');
+  const router = byId.get('phase-7-p7p-router-whole-system');
+  assert.ok(host && actor && router, 'the three P7P proof specs must exist');
+  for (const spec of [host, actor, router]) {
+    assert.equal(spec.sourcePhase, 7);
+    assert.equal(spec.command, 'cargo');
+    assert.equal(spec.args[0], 'test');
+    assert.equal(spec.args.filter((arg) => arg === '--no-fail-fast').length, 1, spec.id);
+    assert.equal(spec.testFormat, 'rust-suite');
+    assert.equal(spec.lanes.includes('P7P'), true, `${spec.id} must carry the P7P lane`);
+  }
+  assert.deepEqual(host.args, [
+    'test', '--no-fail-fast', '--manifest-path', 'runtime/host/Cargo.toml',
+    '--test', 'bytecode_vm_phase_7',
+  ]);
+  assert.deepEqual(actor.args, [
+    'test', '--no-fail-fast', '--manifest-path', 'runtime/host/Cargo.toml',
+    '--test', 'bytecode_vm_phase_7_actor_cross_request',
+  ]);
+  assert.deepEqual(router.args, [
+    'test', '--no-fail-fast', '--manifest-path', 'router/Cargo.toml',
+    '--test', 'bytecode_vm_phase_7',
+  ]);
+  assert.equal(host.expectedTests, 33);
+  assert.equal(actor.expectedTests, 1);
+  assert.equal(router.expectedTests, 5);
+  const coverage = phase7CoverageMap(ROOT);
+  for (const row of ['C02', 'C03', 'C04', 'C05', 'C06', 'C07', 'C08', 'C09',
+    'C10', 'C11', 'C12', 'C14']) {
+    assert.equal(coverage[row].includes('phase-7-p7p-host-whole-system'), true, `${row} host P7P`);
+  }
+  assert.equal(coverage.C09.includes('phase-7-p7p-actor-cross-request'), true);
+  assert.equal(coverage.C12.includes('phase-7-p7p-actor-cross-request'), true);
+  for (const row of ['C03', 'C11', 'C16']) {
+    assert.equal(coverage[row].includes('phase-7-p7p-router-whole-system'), true, `${row} router P7P`);
+  }
+  for (const row of PHASE7_COVERAGE_ROWS) {
+    assert.equal(coverage[row].length > 0, true, `${row} must stay non-empty`);
+  }
+  assert.doesNotThrow(() => assertPhase7Catalog(ROOT));
+});
+
 test('dependency graph is acyclic and orders the consumer after its producer', () => {
   const order = assertPhase7DependencyGraph(phase7WorkloadSpecs(ROOT));
   assert.equal(order.length, phase7WorkloadSpecs(ROOT).length);
@@ -199,7 +245,7 @@ test('dependency graph is acyclic and orders the consumer after its producer', (
   assert.deepEqual(execution.slice(0, 3),
     ['preflight-head', 'preflight-tree', 'preflight-status']);
   assert.deepEqual(execution.slice(-3), ['fresh-head', 'fresh-tree', 'fresh-status']);
-  assert.equal(execution.length, 128);
+  assert.equal(execution.length, 131);
 });
 
 test('catalog digest is deterministic and binds the full catalog', () => {
@@ -248,7 +294,7 @@ test('public verify selector reaches the exclusive Phase 7 r1 Gate runner', asyn
     exclusive: true,
     slots: 1,
   }]);
-  assert.equal(phase7CandidateSpecs(ROOT).length + phase7WorkloadSpecs(ROOT).length, 128);
+  assert.equal(phase7CandidateSpecs(ROOT).length + phase7WorkloadSpecs(ROOT).length, 131);
 });
 
 test('no-verifier structural checker accepts the clean Phase 7 candidate', async () => {
