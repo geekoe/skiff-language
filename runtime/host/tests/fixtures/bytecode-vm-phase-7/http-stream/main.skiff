@@ -1,0 +1,16 @@
+import std
+
+function openHeaders() -> Array<std.http.HttpHeader> {
+  final content: std.http.HttpHeader = std.http.HttpHeader { name: "content-type", value: "text/plain" }
+  final marker: std.http.HttpHeader = std.http.HttpHeader { name: "x-p7-stream", value: "open" }
+  return [content, marker]
+}
+
+function run(request: std.http.HttpRequest) -> Stream<std.http.HttpResponseStreamEvent> {
+  emit({ tag: "start", status: 200, headers: openHeaders() })
+  emit({ tag: "chunk", value: bytes.fromUtf8("one:") })
+  emit({ tag: "chunk", value: bytes.fromUtf8("two:") })
+  emit({ tag: "chunk", value: bytes.fromUtf8("three") })
+  emit({ tag: "end" })
+  return null
+}

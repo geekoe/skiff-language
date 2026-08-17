@@ -109,6 +109,98 @@ impl WholeSystem {
         (status, headers, bytes)
     }
 
+    /// Opens one POST through the real Router without buffering the response,
+    /// so a server-stream consumer can read ordered frames and observe
+    /// disconnect/cancel semantics before the terminal.
+    pub async fn open_stream(&self, path: &str, body: &[u8]) -> reqwest::Response {
+        let client = reqwest::Client::new();
+        client
+            .post(format!("http://{}{path}", self.public_addr))
+            .header(
+                "X-Skiff-Service",
+                self.fixture.deployment.service_id.as_str(),
+            )
+            .header(
+                "X-Skiff-Version",
+                self.fixture.deployment.contract_version.as_str(),
+            )
+            .body(body.to_vec())
+            .send()
+            .await
+            .expect("HTTP stream request through production Router")
+    }
+
+    /// The latest runtime health counters the Router observed from the
+    /// production RuntimeHost session (host request/stream ledger projection;
+    /// never a test-side fake).
+    pub fn runtime_health_counters(
+        &self,
+    ) -> Option<skiff_runtime_transport::protocol::RuntimeHealthCountersFrameHeader> {
+        self.supervisor
+            .components()
+            .session
+            .health()
+            .observations_snapshot()
+            .values()
+            .next()
+            .map(|header| header.counters.clone())
+    }
+
+    /// Waits until the observed runtime health ledger reports a counter value
+    /// matching `predicate` (for example a pending request under pressure).
+    pub async fn wait_for_runtime_counter(
+        &self,
+        timeout: Duration,
+        predicate: impl Fn(&skiff_runtime_transport::protocol::RuntimeHealthCountersFrameHeader) -> bool,
+    ) -> skiff_runtime_transport::protocol::RuntimeHealthCountersFrameHeader {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if let Some(counters) = self.runtime_health_counters() {
+                if predicate(&counters) {
+                    return counters;
+                }
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "runtime health ledger never reached the expected counter state"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Waits until the whole-system composition returned to a quiescent state:
+    /// the Router dispatcher is empty, no dispatch permit is held and the
+    /// observed runtime health ledger reports every request-owned counter at
+    /// zero (the request owner, buffers, stream leases and pending children
+    /// all released after the terminal).
+    pub async fn wait_for_quiescent(&self, timeout: Duration) {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let counters = self.runtime_health_counters();
+            let balanced = self.supervisor.components().dispatcher.pending_count() == 0
+                && self
+                    .supervisor
+                    .components()
+                    .dispatcher
+                    .health()
+                    .admission
+                    .permits_held
+                    == 0;
+            if balanced
+                && counters
+                    .as_ref()
+                    .is_some_and(|counters| runtime_health_counters_all_zero(counters))
+            {
+                return;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "whole-system resources did not reach quiescence: counters={counters:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     pub async fn shutdown(self) {
         self.listeners.shutdown().await.expect("listeners shutdown");
         self.supervisor.shutdown().await;
@@ -211,6 +303,19 @@ pub struct WholeSystemResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+}
+
+/// The observable zero point of the runtime request-owned ledger: every
+/// counter the production RuntimeHost reports must return to zero after a
+/// terminal so no request owner, buffer, stream lease or pending child leaks.
+fn runtime_health_counters_all_zero(
+    counters: &skiff_runtime_transport::protocol::RuntimeHealthCountersFrameHeader,
+) -> bool {
+    counters.outbound_requests_pending == 0
+        && counters.outbound_stream_leases_active == 0
+        && counters.stream_runtime_streams_active == 0
+        && counters.flag_backed_cancel_waiters_active == 0
+        && counters.task_requests_active == 0
 }
 
 fn router_config(fixture: &PublishedFixture, request_timeout_ms: u64) -> RouterConfig {

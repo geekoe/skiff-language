@@ -21,6 +21,8 @@ use whole_system::WholeSystem;
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     // ---------------------------------------------------------------------
@@ -65,6 +67,476 @@ mod tests {
     fn unary_s4_atomic_image_constructs() {
         let image = stages::linked_image(Capability::Unary, "unary-s4");
         assert!(!image.functions().is_empty());
+    }
+
+    // ---------------------------------------------------------------------
+    // C02 extended: candidate schema/ISA/artifact/deployment/image identity
+    // agreement across the real source -> compiler publication -> admission ->
+    // atomic link chain, plus fail-closed rows for a missing, replaced or
+    // corrupted carrier on the same production loader/admission seam.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn unary_s5_image_owner_identity_matches_deployment() {
+        let fixture = stages::published_positive(Capability::Unary, "unary-s5");
+        let image = fixture.link();
+        assert_eq!(
+            image.owner().deployment(),
+            &fixture.deployment,
+            "the atomic DeploymentExecutionImage must be owned by the exact published deployment"
+        );
+        assert_eq!(
+            image.owner().build_id(),
+            &fixture.deployment.deployment_artifact_identity,
+            "the atomic image build identity must equal the exact published deployment artifact identity"
+        );
+        assert_eq!(
+            fixture.deployment_artifact().deployment_artifact_identity,
+            fixture.deployment.deployment_artifact_identity,
+            "the published deployment record must agree on its exact artifact identity"
+        );
+    }
+
+    #[test]
+    fn unary_s6_package_provenance_matches_admitted_bytecode() {
+        let fixture = stages::published_positive(Capability::Unary, "unary-s6");
+        let image = fixture.link();
+        let provenance = image.packages();
+        assert_eq!(
+            provenance.len(),
+            1,
+            "the unary carrier must link exactly one package"
+        );
+        let bytecode = fixture.bytecode();
+        let package = fixture.package_artifact();
+        let bytecode_ref = package
+            .bytecode
+            .as_ref()
+            .expect("admitted carrier package has bytecode");
+        assert_eq!(
+            provenance[0].artifact_ref(),
+            bytecode_ref,
+            "linked provenance must retain the exact published bytecode artifact reference"
+        );
+        assert_eq!(
+            provenance[0].declared_bytecode_identity(),
+            bytecode.view().bytecode_identity(),
+            "linked provenance must retain the exact admitted bytecode identity"
+        );
+        assert_eq!(
+            provenance[0].magic(),
+            bytecode.artifact().magic.as_str(),
+            "candidate schema magic must agree with the admitted artifact"
+        );
+        assert_eq!(
+            provenance[0].schema_version(),
+            bytecode.view().schema_version(),
+            "candidate schema version must agree with the admitted artifact"
+        );
+        assert_eq!(
+            provenance[0].isa_version(),
+            bytecode.view().isa_version(),
+            "candidate ISA version must agree with the admitted artifact"
+        );
+        assert_eq!(
+            provenance[0].opcode_table_fingerprint(),
+            bytecode.view().opcode_table_fingerprint(),
+            "candidate opcode table fingerprint must agree with the admitted artifact"
+        );
+        assert_eq!(
+            bytecode_ref.bytecode_identity,
+            bytecode.view().bytecode_identity(),
+            "the published package bytecode reference must equal the admitted bytecode identity"
+        );
+    }
+
+    #[test]
+    fn unary_s7_missing_bytecode_record_fails_closed() {
+        let fixture = stages::published_positive(Capability::Unary, "unary-s7");
+        let store = fixture.store();
+        let package = fixture.package_artifact();
+        let bytecode_ref = package
+            .bytecode
+            .as_ref()
+            .expect("admitted carrier package has bytecode");
+        let record =
+            skiff_artifact_identity::PackageBytecodeRecordPath::new(&fixture.package, bytecode_ref)
+                .expect("bytecode record path");
+        let host_path = store.root().join(record.as_relative_path().as_path());
+        assert!(host_path.exists(), "published bytecode record must exist");
+        std::fs::remove_file(&host_path).expect("remove bytecode record");
+        assert!(
+            store
+                .read_package_bytecode(&fixture.package, bytecode_ref)
+                .is_err(),
+            "a missing bytecode record must fail closed on admission"
+        );
+        assert!(
+            skiff_runtime_loader::load_deployment_bytecode_from_store(&store, &fixture.deployment)
+                .is_err(),
+            "a missing bytecode record must fail closed on the production loader"
+        );
+    }
+
+    #[test]
+    fn unary_s8_replaced_bytecode_content_fails_identity_admission() {
+        let fixture = stages::published_positive(Capability::Unary, "unary-s8");
+        let store = fixture.store();
+        let package = fixture.package_artifact();
+        let bytecode_ref = package
+            .bytecode
+            .as_ref()
+            .expect("admitted carrier package has bytecode");
+        let record =
+            skiff_artifact_identity::PackageBytecodeRecordPath::new(&fixture.package, bytecode_ref)
+                .expect("bytecode record path");
+        let host_path = store.root().join(record.as_relative_path().as_path());
+        let original = std::fs::read(&host_path).expect("read bytecode record");
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&original).expect("bytecode record must be JSON");
+        value["image"]["functions"] = serde_json::json!({});
+        let tampered =
+            skiff_canonical_json::canonical_json_bytes(&value).expect("canonical tampered bytes");
+        assert_ne!(
+            tampered, original,
+            "the tampered canonical record must differ from the published one"
+        );
+        std::fs::write(&host_path, &tampered).expect("overwrite bytecode record");
+        assert!(
+            store
+                .read_package_bytecode(&fixture.package, bytecode_ref)
+                .is_err(),
+            "a replaced bytecode record must fail closed on admission"
+        );
+        let artifact: skiff_artifact_model::BytecodeArtifact =
+            serde_json::from_value(value).expect("tampered record must stay typed");
+        assert!(
+            skiff_artifact_identity::ValidatedBytecodeArtifact::admit(artifact).is_err(),
+            "replaced bytecode content must fail the exact C9 identity recomputation"
+        );
+        assert!(
+            skiff_runtime_loader::load_deployment_bytecode_from_store(&store, &fixture.deployment)
+                .is_err(),
+            "a replaced bytecode record must fail closed on the production loader"
+        );
+    }
+
+    #[test]
+    fn unary_s9_corrupted_bytecode_record_fails_closed() {
+        let fixture = stages::published_positive(Capability::Unary, "unary-s9");
+        let store = fixture.store();
+        let package = fixture.package_artifact();
+        let bytecode_ref = package
+            .bytecode
+            .as_ref()
+            .expect("admitted carrier package has bytecode");
+        let record =
+            skiff_artifact_identity::PackageBytecodeRecordPath::new(&fixture.package, bytecode_ref)
+                .expect("bytecode record path");
+        let host_path = store.root().join(record.as_relative_path().as_path());
+        std::fs::write(&host_path, b"not-json-bytecode-record").expect("corrupt bytecode record");
+        assert!(
+            store
+                .read_package_bytecode(&fixture.package, bytecode_ref)
+                .is_err(),
+            "a corrupted bytecode record must fail closed on admission"
+        );
+        assert!(
+            skiff_runtime_loader::load_deployment_bytecode_from_store(&store, &fixture.deployment)
+                .is_err(),
+            "a corrupted bytecode record must fail closed on the production loader"
+        );
+    }
+
+    #[test]
+    fn unary_s10_replaced_deployment_identity_fails_closed() {
+        let fixture = stages::published_positive(Capability::Unary, "unary-s10");
+        let store = fixture.store();
+        let record = skiff_artifact_identity::ServiceDeploymentRecordPath::new(&fixture.deployment)
+            .expect("deployment record path");
+        let host_path = store.root().join(record.as_relative_path().as_path());
+        let original = std::fs::read(&host_path).expect("read deployment record");
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&original).expect("deployment record must be JSON");
+        value["contract"]["serviceId"] =
+            serde_json::json!("test.skiff/bytecode-vm-phase-7-replaced");
+        let tampered =
+            skiff_canonical_json::canonical_json_bytes(&value).expect("canonical tampered bytes");
+        std::fs::write(&host_path, &tampered).expect("overwrite deployment record");
+        assert!(
+            store.read_service_deployment(&fixture.deployment).is_err(),
+            "a replaced deployment identity must fail closed on the store"
+        );
+        assert!(
+            skiff_runtime_loader::load_deployment_bytecode_from_store(&store, &fixture.deployment)
+                .is_err(),
+            "a replaced deployment identity must fail closed on the production loader"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // C04 HTTP server-stream whole-system rows: real HTTP stream consumer ->
+    // Router WS-to-HTTP writer -> host stream -> provider. Headers precede the
+    // ordered bounded chunks and the end; cancel/disconnect releases the
+    // pending owner and buffers; termination leaves the ledger at zero.
+    // ---------------------------------------------------------------------
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn whole_system_http_stream_ordered_chunks_and_exact_terminal() {
+        let system = WholeSystem::start(Capability::HttpStream, "http-stream").await;
+        let mut response = system.open_stream("/phase-7/http-stream", b"7").await;
+        let status = response.status().as_u16();
+        assert_eq!(status, 200, "server-stream must start with status 200");
+        let headers: Vec<(String, String)> = response
+            .headers()
+            .iter()
+            .map(|(name, value)| {
+                (
+                    name.to_string(),
+                    value.to_str().expect("stream header is UTF-8").to_string(),
+                )
+            })
+            .collect();
+        assert!(
+            headers
+                .iter()
+                .any(|(name, value)| name.eq_ignore_ascii_case("x-p7-stream") && value == "open"),
+            "server-stream headers must precede the body and carry the exact fixture header: {headers:?}"
+        );
+        assert!(
+            headers.iter().any(|(name, value)| {
+                name.eq_ignore_ascii_case("content-type") && value == "text/plain"
+            }),
+            "server-stream must carry the exact rawHttp content-type: {headers:?}"
+        );
+
+        let mut chunks = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .expect("server-stream chunk read must not error")
+        {
+            chunks.push(chunk.to_vec());
+        }
+        let expected: Vec<&[u8]> = vec![b"one:", b"two:", b"three"];
+        assert_eq!(
+            chunks, expected,
+            "server-stream must deliver the exact ordered bounded chunks then end"
+        );
+        assert_eq!(
+            chunks.concat(),
+            b"one:two:three".to_vec(),
+            "server-stream chunk order must be exact"
+        );
+
+        let health = system.supervisor.components().dispatcher.health();
+        assert_eq!(health.pending.stream, 0, "no pending stream after terminal");
+        assert_eq!(health.pending.unary, 0, "no pending unary after terminal");
+        assert_eq!(
+            health.admission.permits_held, 0,
+            "no held dispatch permits after stream terminal"
+        );
+        assert_eq!(
+            health
+                .terminal
+                .by_source
+                .get(&skiff_router::dispatch::TerminalSource::RuntimeResponseEnd),
+            Some(&1),
+            "the stream must terminate exactly once with a runtime response end"
+        );
+        system.wait_for_quiescent(Duration::from_secs(10)).await;
+        system.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn whole_system_http_stream_slow_terminal_exact_under_runtime_pressure() {
+        let system = WholeSystem::start(Capability::HttpStreamSlow, "http-stream-slow").await;
+        let mut response = system.open_stream("/phase-7/http-stream-slow", b"7").await;
+        let status = response.status().as_u16();
+        assert_eq!(status, 200, "slow server-stream must start with status 200");
+        let headers: Vec<(String, String)> = response
+            .headers()
+            .iter()
+            .map(|(name, value)| {
+                (
+                    name.to_string(),
+                    value.to_str().expect("stream header is UTF-8").to_string(),
+                )
+            })
+            .collect();
+        assert!(
+            headers
+                .iter()
+                .any(|(name, value)| name.eq_ignore_ascii_case("x-p7-stream") && value == "open"),
+            "slow server-stream headers must precede the body and carry the exact fixture header: {headers:?}"
+        );
+
+        let under_pressure = system
+            .wait_for_runtime_counter(Duration::from_secs(10), |counters| {
+                counters.task_requests_active >= 1
+            })
+            .await;
+        assert!(
+            under_pressure.task_requests_active >= 1,
+            "the in-flight stream must hold a live request owner while streaming"
+        );
+
+        let mut chunks = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .expect("slow server-stream chunk read must not error")
+        {
+            chunks.push(chunk.to_vec());
+        }
+        let expected: Vec<&[u8]> = vec![b"slow-1", b"slow-2", b"slow-3"];
+        assert_eq!(
+            chunks, expected,
+            "slow server-stream must deliver the exact ordered bounded chunks then end"
+        );
+        let health = system.supervisor.components().dispatcher.health();
+        assert_eq!(
+            health.pending.stream, 0,
+            "no pending stream after slow terminal"
+        );
+        assert_eq!(
+            health.admission.permits_held, 0,
+            "no held dispatch permits after slow stream terminal"
+        );
+        assert_eq!(
+            health
+                .terminal
+                .by_source
+                .get(&skiff_router::dispatch::TerminalSource::RuntimeResponseEnd),
+            Some(&1),
+            "the slow stream must terminate exactly once with a runtime response end"
+        );
+        system.wait_for_quiescent(Duration::from_secs(10)).await;
+        system.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn whole_system_http_stream_cancel_disconnect_releases_and_recovers() {
+        let system = WholeSystem::start(Capability::HttpStreamSlow, "http-stream-cancel").await;
+
+        let mut response = system.open_stream("/phase-7/http-stream-slow", b"7").await;
+        let status = response.status().as_u16();
+        assert_eq!(
+            status, 200,
+            "cancellable server-stream must start with status 200"
+        );
+        let first = response
+            .chunk()
+            .await
+            .expect("first stream chunk read")
+            .expect("stream must deliver the first chunk before the client disconnects");
+        assert_eq!(first.as_ref(), b"slow-1", "first chunk must be exact");
+        drop(response);
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let health = system.supervisor.components().dispatcher.health();
+            if health.pending.stream == 0
+                && health.pending.unary == 0
+                && health.admission.permits_held == 0
+                && health
+                    .terminal
+                    .by_source
+                    .get(&skiff_router::dispatch::TerminalSource::ClientDisconnect)
+                    .copied()
+                    .unwrap_or(0)
+                    >= 1
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "client disconnect must settle the pending stream and record the exact terminal: {health:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        system.wait_for_quiescent(Duration::from_secs(10)).await;
+
+        let mut second = system.open_stream("/phase-7/http-stream-slow", b"7").await;
+        let status = second.status().as_u16();
+        assert_eq!(
+            status, 200,
+            "a follow-up request must recover through the same host after the disconnect"
+        );
+        let mut chunks = Vec::new();
+        while let Some(chunk) = second
+            .chunk()
+            .await
+            .expect("recovery stream chunk read must not error")
+        {
+            chunks.push(chunk.to_vec());
+        }
+        assert_eq!(
+            chunks,
+            vec![b"slow-1".to_vec(), b"slow-2".to_vec(), b"slow-3".to_vec()],
+            "the follow-up request must stream every ordered chunk to completion"
+        );
+        let health = system.supervisor.components().dispatcher.health();
+        assert_eq!(
+            health.pending.stream, 0,
+            "no pending stream after recovery terminal"
+        );
+        assert_eq!(health.pending.unary, 0, "no pending unary after recovery");
+        system.wait_for_quiescent(Duration::from_secs(10)).await;
+        system.shutdown().await;
+    }
+
+    // ---------------------------------------------------------------------
+    // C14 request-owned memory ledger observation rows: the production
+    // RuntimeHost health ledger projected through the Router session reports a
+    // live owner under Pending/stream pressure and returns every counter to
+    // zero after a terminal. request-GC / Actor-compaction stay disabled (the
+    // fail-closed negatives above already pin that outcome).
+    // ---------------------------------------------------------------------
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn whole_system_runtime_ledger_pending_pressure_returns_to_zero() {
+        let system =
+            WholeSystem::start_with_request_timeout(Capability::Slow, "ledger-slow", 30_000).await;
+        let addr = system.public_addr;
+        let service = system.fixture.deployment.service_id.clone();
+        let version = system.fixture.deployment.contract_version.clone();
+        let request = tokio::spawn(async move {
+            let client = reqwest::Client::new();
+            let response = client
+                .post(format!("http://{addr}/phase-7/slow"))
+                .header("X-Skiff-Service", service.as_str())
+                .header("X-Skiff-Version", version.as_str())
+                .body(b"7".to_vec())
+                .send()
+                .await
+                .expect("pending-pressure HTTP request");
+            let status = response.status().as_u16();
+            let body = response.bytes().await.expect("response body").to_vec();
+            (status, body)
+        });
+
+        let under_pressure = system
+            .wait_for_runtime_counter(Duration::from_secs(10), |counters| {
+                counters.task_requests_active >= 1
+            })
+            .await;
+        assert!(
+            under_pressure.task_requests_active >= 1,
+            "the slow request must hold a live request owner while pending"
+        );
+
+        let (status, body) = request.await.expect("pending-pressure request task");
+        assert_eq!(status, 200, "pending-pressure terminal: {body:?}");
+        let value: serde_json::Value =
+            serde_json::from_slice(&body).expect("pending-pressure response must be JSON");
+        assert_eq!(
+            value.as_f64(),
+            Some(7.0),
+            "the slow handler must return the exact seed through the whole-system chain"
+        );
+        system.wait_for_quiescent(Duration::from_secs(10)).await;
+        system.shutdown().await;
     }
 
     // ---------------------------------------------------------------------
