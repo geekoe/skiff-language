@@ -23,7 +23,7 @@ import {
 test('checker accepts the all-green control bundle', async () => {
   await withPhase7EvidenceBundle({}, async (bundle) => {
     assert.equal(bundle.manifest.verdict, 'PASS');
-    assert.deepEqual(bundle.manifest.counts.commands, { total: 128, passed: 128, failed: 0 });
+    assert.deepEqual(bundle.manifest.counts.commands, { total: 131, passed: 131, failed: 0 });
     assert.equal(bundle.manifest.counts.tests.declared > 0, true);
     assert.equal(bundle.manifest.failures.length, 0);
     assert.equal((await check(bundle)).verdict, 'PASS');

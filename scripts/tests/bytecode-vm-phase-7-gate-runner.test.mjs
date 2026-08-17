@@ -112,17 +112,17 @@ test('runner receipts every command and freezes the Phase 6 provenance chain', a
     });
     assert.equal(result.manifest.verdict, 'PASS');
     assert.equal(result.checkerError, null);
-    assert.deepEqual(result.manifest.counts.commands, { total: 128, passed: 128, failed: 0 });
-    assert.equal(observed.length, 128);
+    assert.deepEqual(result.manifest.counts.commands, { total: 131, passed: 131, failed: 0 });
+    assert.equal(observed.length, 131);
     assert.equal(observed.every((value) => value === 'before'), true);
-    assert.equal(result.manifest.chain.receipts.length, 129);
+    assert.equal(result.manifest.chain.receipts.length, 132);
     assert.equal(/^[a-f0-9]{64}$/.test(result.manifest.chain.head), true);
     assert.equal(/^[a-f0-9]{64}$/.test(result.manifestSha256), true);
     const inherited = result.manifest.commands.filter(({ sourcePhase }) => sourcePhase < 7);
     assert.equal(inherited.length, 111);
     assert.equal(
       result.manifest.commands.filter(({ status }) => status === 'PASS').length,
-      128,
+      131,
     );
     const receipt = JSON.parse(await readFile(
       join(outputDir, 'commands', '1-preflight-head.receipt.json'),
@@ -152,7 +152,7 @@ test('runner receipts every command and freezes the Phase 6 provenance chain', a
       }),
     );
     const provenance = phase7WorkloadProvenance(repoRoot);
-    assert.equal(provenance.length, 116);
+    assert.equal(provenance.length, 119);
     assert.equal(
       result.manifest.commands.find(({ id }) => id === CONSUMER_ID)?.blockedBy,
       null,
@@ -192,8 +192,8 @@ test('one early red workload does not truncate later commands or the fresh probe
     });
     assert.equal(result.manifest.verdict, 'FAIL');
     assert.equal(result.checkerError, null);
-    assert.deepEqual(result.manifest.counts.commands, { total: 128, passed: 127, failed: 1 });
-    assert.equal(observed.length, 128, 'one red workload must not truncate the Gate matrix');
+    assert.deepEqual(result.manifest.counts.commands, { total: 131, passed: 130, failed: 1 });
+    assert.equal(observed.length, 131, 'one red workload must not truncate the Gate matrix');
     const failed = result.manifest.commands.find(({ id }) => id === 'phase-7-catalog-binding');
     assert.equal(failed.status, 'FAIL');
     const later = result.manifest.commands.find(({ id }) => id === CONSUMER_ID);
