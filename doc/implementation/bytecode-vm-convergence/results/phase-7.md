@@ -70,3 +70,22 @@
 
 - Main merge/push identity and cleanup inventory: recorded in MAP7 §10 closeout
   steps by the integration owner after this result commit.
+
+## 6. Post-acceptance fix and chat-smoke boundary
+
+- Post-acceptance, user-authorized compiler extension `9497d7e51`
+  (`feat(emit): support tagged-union field read for discriminator and branch
+  access`) was merged to main. It enables `std.http.HttpSseEvent`-style
+  tagged-union consumption (`.tag` discrimination + branch field reads) and
+  was re-verified on main: Gate 7 PASS (evidence
+  `/Users/geek/workspace/.skiff-bcvm-p7-e7`, 131/131 commands, 754/754 tests,
+  manifest `786df311...`, epoch P7-E4).
+- `e2e:chat-smoke` / `e2e:host-tools` are **not executable**: they require the
+  `agine.ai/api` service, which cannot compile on the bytecode-only compiler
+  because ordinary functions cannot return `string`/`Nullable<string>`
+  (ValueShape admission; `bool`/`number`/record/stream return types compile).
+  String exists only as a scalar carrier for the server-stream/throw/DB/
+  actor-registry capability paths. Supporting string as an ordinary value
+  shape is a cross-phase value-model extension outside Phase 7. Runtime/router
+  verification therefore rests on the P7P whole-system proof tests and the
+  Gate (P7-E4).
