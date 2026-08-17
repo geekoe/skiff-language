@@ -839,7 +839,7 @@ fn receiver_mutates_receiver(op: BuiltinReceiverOp) -> bool {
 fn detached_contract_callee(operation: &BoundaryOperationDescriptor) -> Option<CallableState> {
     let contract = &operation.contract;
     let guarantee = contract.effect_guarantee;
-    if !matches!(contract.stream, BoundaryStreamContract::Unary)
+    if matches!(contract.stream, BoundaryStreamContract::Unsupported { .. })
         || matches!(
             contract.callbacks,
             BoundaryCallbackContract::Unsupported { .. }

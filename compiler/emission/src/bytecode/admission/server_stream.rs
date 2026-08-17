@@ -64,9 +64,51 @@ impl ServerStreamGatewayAuthority {
     }
 }
 
+/// Compiler-owned authority for a stream-returning callable admitted through a
+/// service, remote-interface or callback boundary.
+///
+/// This is the non-HTTP complement of [`ServerStreamGatewayAuthority`]. The
+/// boundary projection already carries the exact operation contract; this row
+/// pins the exact implementation callable and its all-and-only `Emit` facts so
+/// admission cannot grant a stream capability to an arbitrary package-local
+/// function.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChildStreamProducerAuthority {
+    callable_id: PackageCallableId,
+    stream_item_type: TypeRefIr,
+    emit_facts: Vec<ServerStreamEmitFact>,
+}
+
+impl ChildStreamProducerAuthority {
+    pub fn new(
+        callable_id: PackageCallableId,
+        stream_item_type: TypeRefIr,
+        emit_facts: Vec<ServerStreamEmitFact>,
+    ) -> Self {
+        Self {
+            callable_id,
+            stream_item_type,
+            emit_facts,
+        }
+    }
+
+    pub const fn callable_id(&self) -> &PackageCallableId {
+        &self.callable_id
+    }
+
+    pub const fn stream_item_type(&self) -> &TypeRefIr {
+        &self.stream_item_type
+    }
+
+    pub fn emit_facts(&self) -> &[ServerStreamEmitFact] {
+        &self.emit_facts
+    }
+}
+
 pub(super) fn validate_authority_coverage(
     units: &[MirUnit],
     transported: &[ServerStreamGatewayAuthority],
+    child_transported: &[ChildStreamProducerAuthority],
 ) -> Result<(), String> {
     let mut handlers = BTreeMap::<&PackageCallableId, usize>::new();
     for unit in units {
@@ -90,6 +132,19 @@ pub(super) fn validate_authority_coverage(
             ));
         }
     }
+    for authority in child_transported {
+        let handler = authority.callable_id();
+        if !transported_handlers.insert(handler) {
+            return Err(format!(
+                "multiple child stream authorities name callable {handler}"
+            ));
+        }
+        if handlers.get(handler) != Some(&1) {
+            return Err(format!(
+                "child stream callable {handler} does not name exactly one MIR function"
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -100,6 +155,7 @@ enum ServerStreamValueRole {
     RequestBodyUtf8,
     ResponseBranch(String),
     ResponseField { tag: String, field: String },
+    ChildValue,
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +174,7 @@ pub(super) struct ServerStreamAdmissions {
     construct_types: BTreeMap<u32, TypeRefIr>,
     receiver_calls: BTreeSet<u32>,
     emit_statements: BTreeMap<u32, u32>,
+    child_boundary: bool,
 }
 
 impl ServerStreamAdmissions {
@@ -125,16 +182,39 @@ impl ServerStreamAdmissions {
         unit: &MirUnit,
         function: &MirFunction,
         transported: &[ServerStreamGatewayAuthority],
+        child_transported: &[ChildStreamProducerAuthority],
     ) -> Result<Self, String> {
         let mut matches = transported
             .iter()
             .filter(|authority| authority.handler() == Some(&function.effect_summary_ref));
-        let Some(authority) = matches.next() else {
-            return Self::analyze_local_helper(unit, function, transported);
+        let mut child_matches = child_transported
+            .iter()
+            .filter(|authority| authority.callable_id() == &function.effect_summary_ref);
+        let Some(gateway) = matches.next() else {
+            let Some(child) = child_matches.next() else {
+                return Self::analyze_local_helper(unit, function, transported, child_transported);
+            };
+            if child_matches.next().is_some() {
+                return Err("multiple child stream authorities name the same callable".to_string());
+            }
+            return Self::analyze_child_boundary(unit, function, child);
         };
         if matches.next().is_some() {
             return Err("multiple gateway authorities name the same callable".to_string());
         }
+        if child_matches.next().is_some() {
+            return Err(
+                "gateway and child stream authorities cannot name the same callable".to_string(),
+            );
+        }
+        Self::analyze_gateway(unit, function, gateway)
+    }
+
+    fn analyze_gateway(
+        unit: &MirUnit,
+        function: &MirFunction,
+        authority: &ServerStreamGatewayAuthority,
+    ) -> Result<Self, String> {
         validate_gateway_entry(&authority.entry)?;
 
         let stream = function
@@ -202,6 +282,7 @@ impl ServerStreamAdmissions {
             result_type: Some(authority.stream_item_type.clone()),
             closure_abi: Some(abi.clone()),
             closure_carriers,
+            child_boundary: false,
             ..Self::default()
         };
         admissions
@@ -256,10 +337,95 @@ impl ServerStreamAdmissions {
         Ok(admissions)
     }
 
+    fn analyze_child_boundary(
+        unit: &MirUnit,
+        function: &MirFunction,
+        authority: &ChildStreamProducerAuthority,
+    ) -> Result<Self, String> {
+        let stream = function
+            .stream_result
+            .as_ref()
+            .ok_or_else(|| "child stream authority names a non-stream function".to_string())?;
+        let expected_return = TypeRefIr::Builtin {
+            name: "Stream".to_string(),
+            args: vec![authority.stream_item_type.clone()],
+        };
+        if stream.item_type != authority.stream_item_type || function.return_type != expected_return
+        {
+            return Err("child stream item differs from producer-owned MIR facts".to_string());
+        }
+
+        let actual_emits = function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.statements)
+            .filter_map(|statement| match &statement.kind {
+                MirStmtKind::Emit { operation, value } if operation.is_empty() => Some(
+                    ServerStreamEmitFact::new(statement.statement_index, value.expression),
+                ),
+                MirStmtKind::Emit { .. } => None,
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let transported_emits = authority
+            .emit_facts()
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if transported_emits.len() != authority.emit_facts().len()
+            || actual_emits != transported_emits
+        {
+            return Err("child stream Emit facts are missing, duplicated, or extra".to_string());
+        }
+
+        let mut admissions = Self {
+            result_type: Some(authority.stream_item_type.clone()),
+            closure_abi: Some("child-boundary".to_string()),
+            child_boundary: true,
+            ..Self::default()
+        };
+        for parameter in &function.params {
+            admissions
+                .slots
+                .insert(parameter.slot, parameter.ty.clone());
+        }
+        for slot in &function.slots {
+            if let Some(ty) = &slot.ty {
+                admissions.slots.insert(slot.slot, ty.clone());
+            }
+        }
+        for fact in &actual_emits {
+            admissions
+                .emit_statements
+                .insert(fact.statement_index, fact.value_expression);
+            admissions.insert_child_value(function, fact.value_expression)?;
+        }
+        Ok(admissions)
+    }
+
+    fn insert_child_value(
+        &mut self,
+        function: &MirFunction,
+        expression_index: u32,
+    ) -> Result<(), String> {
+        let expression = function
+            .expression(skiff_artifact_model::ExprRefIr {
+                expression: expression_index,
+            })
+            .map_err(|error| format!("child stream Emit value is absent: {error}"))?;
+        self.insert_expression(
+            expression_index,
+            ServerStreamValueRole::ChildValue,
+            expression.ty.clone(),
+        );
+        Ok(())
+    }
+
     fn analyze_local_helper(
         unit: &MirUnit,
         function: &MirFunction,
         transported: &[ServerStreamGatewayAuthority],
+        child_transported: &[ChildStreamProducerAuthority],
     ) -> Result<Self, String> {
         let mut closure_abi = None;
         let mut closure_carriers = Vec::new();
@@ -275,7 +441,12 @@ impl ServerStreamAdmissions {
             if !local_call_closure(unit, root)?.contains(&function.executable_index) {
                 continue;
             }
-            let root_admissions = Self::analyze(unit, root, std::slice::from_ref(authority))?;
+            let root_admissions = Self::analyze(
+                unit,
+                root,
+                std::slice::from_ref(authority),
+                child_transported,
+            )?;
             if let Some(existing) = &closure_abi {
                 if Some(existing) != root_admissions.closure_abi.as_ref() {
                     return Err(
@@ -292,9 +463,39 @@ impl ServerStreamAdmissions {
                 }
             }
         }
+        for authority in child_transported {
+            let handler = authority.callable_id();
+            let root = unit
+                .functions
+                .iter()
+                .find(|candidate| &candidate.effect_summary_ref == handler)
+                .ok_or_else(|| {
+                    format!("child stream callable {handler} is absent from its MIR unit")
+                })?;
+            if !local_call_closure(unit, root)?.contains(&function.executable_index) {
+                continue;
+            }
+            let root_admissions = Self::analyze(unit, root, &[], std::slice::from_ref(authority))?;
+            if let Some(existing) = &closure_abi {
+                if Some(existing) != root_admissions.closure_abi.as_ref() {
+                    return Err(
+                        "local helper is reached by child stream roots with different carrier ABIs"
+                            .to_string(),
+                    );
+                }
+            } else {
+                closure_abi = root_admissions.closure_abi;
+            }
+            for carrier in root_admissions.closure_carriers {
+                if !closure_carriers.contains(&carrier) {
+                    closure_carriers.push(carrier);
+                }
+            }
+        }
         Ok(Self {
             closure_abi,
             closure_carriers,
+            child_boundary: false,
             ..Self::default()
         })
     }
@@ -315,6 +516,15 @@ impl ServerStreamAdmissions {
         self.expressions
             .get(&expression)
             .is_some_and(|authorities| authorities.iter().any(|authority| &authority.ty == ty))
+            || (self.child_boundary
+                && self
+                    .result_type
+                    .as_ref()
+                    .is_some_and(|item| is_stream_type_with_item(ty, item)))
+    }
+
+    pub(super) fn admits_stream_expression(&self, ty: &TypeRefIr, item: &TypeRefIr) -> bool {
+        self.closure_abi.is_some() && is_stream_type_with_item(ty, item)
     }
 
     pub(super) fn admits_construct(&self, expression: u32, ty: &TypeRefIr) -> bool {
@@ -326,7 +536,7 @@ impl ServerStreamAdmissions {
     }
 
     pub(super) fn admits_scalar_carrier(&self, ty: &TypeRefIr) -> bool {
-        self.closure_abi.is_some()
+        (self.closure_abi.is_some()
             && (matches!(
                 ty,
                 TypeRefIr::Builtin { name, args }
@@ -336,11 +546,24 @@ impl ServerStreamAdmissions {
                 TypeRefIr::Literal {
                     value: LiteralIr::String { .. }
                 }
-            ))
+            )))
+            || (self.child_boundary
+                && matches!(
+                    ty,
+                    TypeRefIr::Builtin { args, .. } if args.is_empty()
+                ))
     }
 
     pub(super) fn admits_closure_carrier(&self, ty: &TypeRefIr) -> bool {
         self.closure_carriers.iter().any(|carrier| carrier == ty)
+    }
+
+    pub(super) fn admits_stream_endpoint(&self, ty: &TypeRefIr) -> bool {
+        self.closure_abi.is_some()
+            && matches!(
+                ty,
+                TypeRefIr::Builtin { name, args } if name == "Stream" && args.len() == 1
+            )
     }
 
     pub(super) fn admits_intrinsic_call(
@@ -441,6 +664,19 @@ impl ServerStreamAdmissions {
                         }
                     )
                 )
+            })
+    }
+
+    pub(super) fn admits_stream_return(
+        &self,
+        function: &MirFunction,
+        value: skiff_artifact_model::ExprRefIr,
+    ) -> bool {
+        self.child_boundary
+            && self.result_type.as_ref().is_some_and(|item| {
+                function
+                    .expression(value)
+                    .is_ok_and(|expression| is_stream_type_with_item(&expression.ty, item))
             })
     }
 
@@ -560,6 +796,14 @@ fn is_string_carrier(ty: &TypeRefIr) -> bool {
                 value: LiteralIr::String { .. }
             }
         )
+}
+
+fn is_stream_type_with_item(ty: &TypeRefIr, item: &TypeRefIr) -> bool {
+    matches!(
+        ty,
+        TypeRefIr::Builtin { name, args }
+            if name == "Stream" && args.as_slice() == [item.clone()]
+    )
 }
 
 fn local_call_closure(unit: &MirUnit, root: &MirFunction) -> Result<BTreeSet<u32>, String> {

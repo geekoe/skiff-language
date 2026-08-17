@@ -138,7 +138,7 @@ fn normalize_descriptor(
                                 &format!("{path}.operations[{name}].parameters[{index}]"),
                             )?;
                         }
-                        operation.return_type = normalize_contract_type_ref(
+                        operation.return_type = normalize_callback_operation_return(
                             operation.return_type,
                             &format!("{path}.operations[{name}].returnType"),
                         )?;
@@ -148,6 +148,25 @@ fn normalize_descriptor(
             })
         }
     }
+}
+
+fn normalize_callback_operation_return(ty: ContractTypeRef, path: &str) -> Result<ContractTypeRef> {
+    let ContractTypeRef::Builtin { name, arguments } = ty else {
+        return normalize_contract_type_ref(ty, path);
+    };
+    if name != "Stream" {
+        return normalize_contract_type_ref(ContractTypeRef::Builtin { name, arguments }, path);
+    }
+    let [item] = arguments.as_slice() else {
+        return invalid_contract(format!(
+            "{path}: callback Stream must have exactly one item"
+        ));
+    };
+    let item = normalize_contract_type_ref(item.clone(), &format!("{path}.arguments[0]"))?;
+    Ok(ContractTypeRef::Builtin {
+        name: "Stream".to_string(),
+        arguments: vec![item],
+    })
 }
 
 fn normalize_builtin(
@@ -164,12 +183,13 @@ fn normalize_builtin(
         "std.date.Date" => "Date",
         "std.time.Duration" => "Duration",
         "string" | "number" | "integer" | "bool" | "null" | "void" | "bytes" | "Date"
-        | "Duration" | "Json" | "JsonObject" | "Array" | "Map" => name.as_str(),
+        | "Duration" | "Json" | "JsonObject" | "Array" | "Map" | "Stream" => name.as_str(),
         _ => return invalid_contract(format!("{path}: unknown contract builtin `{name}`")),
     };
     let expected_arity = match canonical_name {
         "Array" => 1,
         "Map" => 2,
+        "Stream" => 1,
         _ => 0,
     };
     if arguments.len() != expected_arity {

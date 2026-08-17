@@ -205,6 +205,7 @@ mod tests {
         let ports = BytecodeSchedulerPorts {
             child_executor: Some(Arc::clone(&executor) as Arc<dyn BytecodeChildExecutor<ChainUnit>>),
             stream_supervisor: None,
+            child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
         };
         let root = ChainUnit::new(0, DEPTH, Arc::clone(&resumes));
 
@@ -226,6 +227,7 @@ mod tests {
         let ports = BytecodeSchedulerPorts {
             child_executor: Some(Arc::clone(&executor) as Arc<dyn BytecodeChildExecutor<ChainUnit>>),
             stream_supervisor: None,
+            child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
         };
         let mut context = RequestExecutionContext::create(ports);
         context.install_root(ChainUnit::new(0, 1, Arc::clone(&resumes)));
@@ -350,7 +352,8 @@ mod tests {
             &self,
             item: usize,
             _depth: usize,
-            _heap: &mut dyn VmHeap,
+            _producer_heap: &mut dyn VmHeap,
+            _consumer_heap: Option<&mut dyn VmHeap>,
             _budget: &mut dyn VmBudget,
         ) -> Result<BytecodeStreamHandoff<StreamUnit>, BytecodePortFailure<usize, usize>> {
             self.emitted.lock().unwrap().push(item);
@@ -398,6 +401,7 @@ mod tests {
         let ports = BytecodeSchedulerPorts {
             child_executor: None,
             stream_supervisor: Some(stream.clone() as Arc<dyn BytecodeStreamSupervisor<StreamUnit>>),
+            child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
         };
 
         let mut context = RequestExecutionContext::create(ports);
@@ -422,6 +426,7 @@ mod tests {
         let ports = BytecodeSchedulerPorts {
             child_executor: None,
             stream_supervisor: Some(stream.clone() as Arc<dyn BytecodeStreamSupervisor<StreamUnit>>),
+            child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
         };
 
         let mut context = RequestExecutionContext::create(ports);
@@ -645,7 +650,8 @@ mod tests {
             &self,
             item: DropProbe,
             _depth: usize,
-            _heap: &mut dyn VmHeap,
+            _producer_heap: &mut dyn VmHeap,
+            _consumer_heap: Option<&mut dyn VmHeap>,
             _budget: &mut dyn VmBudget,
         ) -> Result<BytecodeStreamHandoff<OwnerProbeUnit>, BytecodePortFailure<DropProbe, DropProbe>>
         {
@@ -704,6 +710,7 @@ mod tests {
             ProbeAction::Adapter | ProbeAction::StreamNext => BytecodeSchedulerPorts {
                 child_executor: Some(Arc::new(ProbeExecutor(disposition))),
                 stream_supervisor: None,
+                child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
             },
             ProbeAction::Emit => BytecodeSchedulerPorts {
                 child_executor: None,
@@ -983,6 +990,7 @@ mod tests {
         BytecodeSchedulerPorts {
             child_executor: Some(executor.clone() as Arc<dyn BytecodeChildExecutor<NextUnit>>),
             stream_supervisor: None,
+            child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
         }
     }
 

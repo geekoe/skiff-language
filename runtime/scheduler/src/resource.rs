@@ -489,7 +489,7 @@ impl RequestResourceHandle {
         VmHandle::new(self.0)
     }
 
-    fn from_vm_handle(route: VmHandle) -> Option<Self> {
+    pub(crate) fn from_vm_handle(route: VmHandle) -> Option<Self> {
         let handle = Self(route.get());
         handle.unpack().map(|_| handle)
     }
@@ -1765,6 +1765,29 @@ mod tests {
             Err(RequestResourceLookupError::StaleGeneration)
         );
         assert!(table.validate(&current).is_ok());
+
+        table.close_all(RequestResourceTermination::RequestCompleted);
+        assert_eq!(freeze.freeze().resource.current, 0);
+    }
+
+    #[test]
+    fn stale_child_stream_relay_route_fails_closed_after_slot_reuse() {
+        let (table, freeze) = table();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let stale = table.register(resource(&events)).unwrap();
+        assert_eq!(
+            table.release(&stale).unwrap(),
+            RequestResourceRelease::Released
+        );
+        let current = table.register(resource(&events)).unwrap();
+
+        assert_ne!(stale.vm_handle(), current.vm_handle());
+        assert!(matches!(
+            table.validate_vm_route(stale.vm_handle()),
+            Err(RequestResourceLookupError::StaleGeneration)
+                | Err(RequestResourceLookupError::UnknownSlot)
+        ));
+        assert!(table.validate_vm_route(current.vm_handle()).is_ok());
 
         table.close_all(RequestResourceTermination::RequestCompleted);
         assert_eq!(freeze.freeze().resource.current, 0);

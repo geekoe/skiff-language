@@ -1972,11 +1972,8 @@ fn validate_service_boundary_plan(
         validate_boundary_value_fact(value, &format!("{location}.results[{index}]"))?;
     }
     validate_boundary_error_plan(&plan.error, &format!("{location}.error"))?;
-    if let Some(_stream_item) = &plan.stream_item {
-        return Err(table_error(
-            "",
-            format!("{location}.streamItem is disabled in the first service boundary lane"),
-        ));
+    if let Some(stream_item) = &plan.stream_item {
+        validate_boundary_value_fact(stream_item, &format!("{location}.streamItem"))?;
     }
     if matches!(plan.callbacks, ServiceCallbackPlan::Unsupported { .. }) {
         return Err(table_error(

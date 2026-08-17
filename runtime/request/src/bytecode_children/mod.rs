@@ -7,6 +7,7 @@
 
 mod actor;
 mod callback;
+mod child_stream;
 mod db;
 mod db_intrinsic;
 mod interface;
@@ -14,9 +15,10 @@ mod provider_receiver;
 mod service;
 mod task;
 
+use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 
 use skiff_artifact_model::{ContractOperationId, Opcode, ServiceProtocolIdentity};
@@ -32,7 +34,7 @@ use skiff_runtime_model::{
 use skiff_runtime_scheduler::{
     BoundaryOwnerRegistration, BytecodeChildHandoff, BytecodePortFailure, BytecodeSchedulerError,
     ChildFinishError, ChildHeapCarrier, ChildHeapOwnerRegistration, OwnerCreationError,
-    RequestResourceTable,
+    RequestResourceHandle, RequestResourceTable,
 };
 use skiff_runtime_vm::{
     ChildInvocation, ChildTarget, ResumeOutcome, VmBudget, VmCompletion, VmFiber, VmLifecycleSite,
@@ -64,6 +66,11 @@ pub(crate) use task::{
 pub use task::{
     BytecodeTaskChildComposition, BytecodeTaskSubmitError, BytecodeTaskSubmitter,
     FailClosedTaskSubmitter,
+};
+
+pub use child_stream::{
+    child_stream_next, provider_stream_item, ChildStreamCore, ChildStreamFinish, ChildStreamState,
+    ChildStreamSupervisor,
 };
 
 /// Routing decision for one VM child target. This is the single X6-owned
@@ -405,6 +412,10 @@ pub struct BytecodeRequestChildComposition {
     /// heaps: the parent dispatches a fresh request through the same task
     /// control-plane writer and remains independent of the task attempt.
     pub task_child: BytecodeTaskChildComposition,
+    /// Child stream state registry shared by the request ingress and boundary
+    /// child executors. `StreamNext` fails closed when the exact handle is
+    /// absent from this registry.
+    pub child_streams: Arc<Mutex<HashMap<RequestResourceHandle, ChildStreamState>>>,
 }
 
 impl Default for BytecodeRequestChildComposition {
@@ -422,6 +433,7 @@ impl Default for BytecodeRequestChildComposition {
             actor_child: BytecodeActorChildComposition::default(),
             db_child: BytecodeDbChildComposition::default(),
             task_child: BytecodeTaskChildComposition::default(),
+            child_streams: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }

@@ -414,6 +414,7 @@ fn phase_5_absent_stream_supervisor_release_failure_reaches_terminal_retry_escro
         // The request passed the real server-stream admission above. Omitting
         // only this port drives the production absent-supervisor rejection.
         stream_supervisor: None,
+        child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
     });
     let BytecodeStart {
         fiber,

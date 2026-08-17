@@ -531,6 +531,11 @@ mod tests {
         .await;
         assert_eq!(response.status, 200);
         assert!(!response.chunks.is_empty());
+        assert_eq!(
+            String::from_utf8(response.chunks.concat())
+                .expect("callback stream chunks must be UTF-8"),
+            "callback-stream-1callback-stream-2"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

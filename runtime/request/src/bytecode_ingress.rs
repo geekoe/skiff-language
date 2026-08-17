@@ -59,12 +59,13 @@ use skiff_runtime_vm::{
 
 use crate::{
     bytecode_children::{
-        db_argument_runtime_value, db_key_from_runtime, encode_durable_task_payload,
-        execute_actor_child, execute_interface_child, execute_service_child, is_task_request,
-        linked_db_target, materialize_db_result_to_vm, require_db_operation, task_arguments,
-        task_submit_message_from_composition, task_target_by_dispatch_index, task_timing_control,
-        BytecodeChildHeapFactory, BytecodeChildLane, BytecodeRequestChildComposition,
-        DbPendingCarrier, DbPendingRoots, DbTransactionSession, RequestChildHeapFactory,
+        child_stream_next, db_argument_runtime_value, db_key_from_runtime,
+        encode_durable_task_payload, execute_actor_child, execute_interface_child,
+        execute_service_child, is_task_request, linked_db_target, materialize_db_result_to_vm,
+        require_db_operation, task_arguments, task_submit_message_from_composition,
+        task_target_by_dispatch_index, task_timing_control, BytecodeChildHeapFactory,
+        BytecodeChildLane, BytecodeRequestChildComposition, DbPendingCarrier, DbPendingRoots,
+        DbTransactionSession, RequestChildHeapFactory,
     },
     bytecode_host_effects::{
         BytecodeHttpFailure, BytecodeHttpRequest, BytecodeHttpResponse,
@@ -474,6 +475,7 @@ pub fn drive_runtime_bytecode_request_controlled(
             observer,
         })),
         stream_supervisor,
+        child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
     });
 
     let BytecodeStart {
@@ -1956,6 +1958,52 @@ impl BytecodeChildExecutor<VmFiber> for BytecodeHostExecutor {
                 ));
             }
         };
+        let mut streams = self
+            .child_composition
+            .child_streams
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(state) = streams.get_mut(&handle) {
+            let expected = match stream_next_item_type_any(invocation.resume()) {
+                Ok(expected) => expected,
+                Err(reason) => return Err(BytecodePortFailure::input(reason, invocation)),
+            };
+            let relay = *state
+                .relay
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let (_target, arguments, _endpoint, resume) = invocation.into_parts();
+            debug_assert!(arguments.is_empty());
+            let result = if let Some(relay_route) = relay {
+                let relay_handle = match self.runtime.resources.validate_vm_route(relay_route) {
+                    Ok(handle) => handle,
+                    Err(error) => {
+                        return Err(BytecodePortFailure::continuation(
+                            BytecodeSchedulerError::Port(error.to_string()),
+                            resume,
+                        ));
+                    }
+                };
+                let Some(relay_state) = streams.get(&relay_handle) else {
+                    return Err(BytecodePortFailure::continuation(
+                        BytecodeSchedulerError::Port(
+                            "child stream relay endpoint is absent".to_string(),
+                        ),
+                        resume,
+                    ));
+                };
+                child_stream_next(relay_state, resume, expected, heap)
+            } else {
+                child_stream_next(state, resume, expected, heap)
+            };
+            return match result {
+                Ok((outcome, resume)) => Ok(BytecodeStreamHandoff::Ready(BytecodeHandoff {
+                    resume,
+                    outcome,
+                })),
+                Err((error, resume)) => Err(BytecodePortFailure::continuation(error, resume)),
+            };
+        }
         let item_type = match stream_next_item_type(invocation.resume()) {
             Ok(item_type) => item_type,
             Err(reason) => return Err(BytecodePortFailure::input(reason, invocation)),
@@ -2441,6 +2489,28 @@ fn stream_next_item_type(resume: &VmResumeToken) -> Result<TypeIndex, BytecodeSc
         ));
     };
     validate_builtin_type(resume.image(), *item_type, "bytes")?;
+    Ok(*item_type)
+}
+
+fn stream_next_item_type_any(resume: &VmResumeToken) -> Result<TypeIndex, BytecodeSchedulerError> {
+    let resume_site = resume
+        .image()
+        .resume_sites()
+        .get(resume.resume_site())
+        .filter(|resume_site| {
+            resume_site.function() == resume.function()
+                && resume_site.site() == resume.instruction()
+        })
+        .ok_or_else(|| {
+            BytecodeSchedulerError::Port(
+                "StreamNext resume token has no matching linked resume site".to_string(),
+            )
+        })?;
+    let [item_type] = resume_site.result_types() else {
+        return Err(BytecodeSchedulerError::Port(
+            "StreamNext linked resume site does not carry exactly one item type".to_string(),
+        ));
+    };
     Ok(*item_type)
 }
 

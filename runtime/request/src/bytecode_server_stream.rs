@@ -496,7 +496,8 @@ impl BytecodeStreamSupervisor<VmFiber> for BytecodeServerStreamSupervisor {
         &self,
         item: StreamItem,
         depth: usize,
-        heap: &mut dyn VmHeap,
+        producer_heap: &mut dyn VmHeap,
+        _consumer_heap: Option<&mut dyn VmHeap>,
         _budget: &mut dyn VmBudget,
     ) -> Result<BytecodeStreamHandoff<VmFiber>, BytecodePortFailure<StreamItem, VmResumeToken>>
     {
@@ -512,13 +513,13 @@ impl BytecodeStreamSupervisor<VmFiber> for BytecodeServerStreamSupervisor {
                 item.item_type(),
                 item.item_shape(),
                 item.item().values(),
-                heap,
+                producer_heap,
             )
         });
         // This is the sole ownership exit for every decode result. The
         // transport future below can therefore retain only its owned,
         // heap-free frame; pending root escrow stays empty.
-        let (decoded, resume) = release_stream_item_after_decode(prepared, item, heap)?;
+        let (decoded, resume) = release_stream_item_after_decode(prepared, item, producer_heap)?;
         let reservation = match self
             .runtime
             .resources

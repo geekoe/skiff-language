@@ -1082,7 +1082,23 @@ fn validate_service_plan_against_contract(
             ));
         }
     }
-    let expected_result_count = if contract.return_value.ty == ContractTypeRef::builtin("void") {
+    let stream_item_contract = match &contract.stream {
+        skiff_artifact_model::BoundaryStreamContract::Unary => None,
+        skiff_artifact_model::BoundaryStreamContract::ServerStream {
+            item_type,
+            item_value_plan,
+        } => Some((item_type, item_value_plan)),
+        skiff_artifact_model::BoundaryStreamContract::Unsupported { .. } => {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                "unsupported service stream boundary surface".to_string(),
+            ));
+        }
+    };
+    let expected_result_count = if stream_item_contract.is_some() {
+        1
+    } else if contract.return_value.ty == ContractTypeRef::builtin("void") {
         0
     } else {
         1
@@ -1094,7 +1110,33 @@ fn validate_service_plan_against_contract(
             "service boundary result count drifts from the hydrated contract".to_string(),
         ));
     }
-    if let Some(result) = plan.results.first() {
+    if let Some((item_type, _)) = stream_item_contract {
+        let Some(result) = plan.results.first() else {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                "service stream boundary result is absent".to_string(),
+            ));
+        };
+        let expected_stream_type = ContractTypeRef::Builtin {
+            name: "Stream".to_string(),
+            arguments: vec![item_type.clone()],
+        };
+        let expected_stream_plan = skiff_artifact_model::BoundaryValuePlan::Linkable {
+            carrier: skiff_artifact_model::BoundaryValueCarrier::DetachedValueGraph,
+            encoding: skiff_artifact_model::BoundaryValueEncoding::CanonicalValue,
+            owner: skiff_artifact_model::BoundaryValueOwner::Provider,
+            lifetime: skiff_artifact_model::BoundaryValueLifetime::Stream,
+        };
+        if result.contract_type != expected_stream_type || result.value_plan != expected_stream_plan
+        {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                "service stream boundary result drifts from the hydrated contract".to_string(),
+            ));
+        }
+    } else if let Some(result) = plan.results.first() {
         if result.contract_type != contract.return_value.ty
             || result.value_plan != contract.return_value.value_plan
         {
@@ -1105,16 +1147,27 @@ fn validate_service_plan_against_contract(
             ));
         }
     }
-    if !matches!(
-        contract.stream,
-        skiff_artifact_model::BoundaryStreamContract::Unary
-    ) || plan.stream_item.is_some()
-    {
-        return Err(unsatisfied(
-            BytecodeLinkObligation::ConcreteTargetTables,
-            location.clone(),
-            "unsupported stream or callback service boundary surface".to_string(),
-        ));
+    match (stream_item_contract, plan.stream_item.as_deref()) {
+        (None, None) => {}
+        (Some((item_type, item_value_plan)), Some(stream_item))
+            if stream_item.contract_type == *item_type
+                && stream_item.value_plan == *item_value_plan =>
+        {
+            if plan.results.len() != 1 {
+                return Err(unsatisfied(
+                    BytecodeLinkObligation::ConcreteTargetTables,
+                    location.clone(),
+                    "service stream boundary results must carry exactly one endpoint".to_string(),
+                ));
+            }
+        }
+        _ => {
+            return Err(unsatisfied(
+                BytecodeLinkObligation::ConcreteTargetTables,
+                location.clone(),
+                "service stream boundary plan drifts from the hydrated contract".to_string(),
+            ));
+        }
     }
     match (&plan.callbacks, &contract.callbacks) {
         (ServiceCallbackPlan::None, skiff_artifact_model::BoundaryCallbackContract::None) => {}

@@ -34,8 +34,9 @@ use skiff_runtime_vm::{
 
 use super::provider_receiver::provider_receiver_plan;
 use super::{
-    execute_callback_child, BytecodeChildHeapFactory, BytecodeRequestChildComposition,
-    BytecodeServiceChildError, ServiceChildThrowMaterializer,
+    child_stream::CHILD_STREAM_CAPACITY, execute_callback_child, BytecodeChildHeapFactory,
+    BytecodeRequestChildComposition, BytecodeServiceChildError, ChildStreamCore, ChildStreamFinish,
+    ChildStreamSupervisor, ServiceChildThrowMaterializer,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -531,10 +532,11 @@ fn execute_remote_interface_child(
     };
     let provider_signature = provider_entry.signature().clone();
     let boundary_plan = operation.boundary_plan().clone();
+    let provider_result_count = provider_signature.result_types().len();
     let receiver_plan = match provider_receiver_plan(
         &provider_signature,
         boundary_plan.arguments().len(),
-        boundary_plan.results().len(),
+        provider_result_count,
         provider_entry.receiver(),
     ) {
         Ok(facts) => facts,
@@ -568,7 +570,7 @@ fn execute_remote_interface_child(
     let mut child_heap = match child_heap_factory.create_child_heap(
         provider_image.owner(),
         composition.heap_limits.clone(),
-        resources,
+        resources.clone(),
         Arc::clone(&composition.memory_ledger),
     ) {
         Ok(heap) => heap,
@@ -698,11 +700,52 @@ fn execute_remote_interface_child(
             ));
         }
     };
+    let is_stream = boundary_plan.stream_item().is_some();
     let finish = RemoteInterfaceChildFinish {
-        boundary_plan,
+        boundary_plan: boundary_plan.clone(),
         throw_materializer: Arc::clone(&composition.throw_materializer),
         unary_response_start: Arc::clone(&composition.unary_response_start),
     };
+    if is_stream {
+        let Some(stream_plan) = boundary_plan.stream_item().cloned() else {
+            return Err(BytecodePortFailure::continuation(
+                BytecodeSchedulerError::Port(
+                    "remote child stream boundary plan lacks its exact stream item".to_string(),
+                ),
+                resume,
+            ));
+        };
+        let item_type = stream_plan.caller_type();
+        let item_plan = stream_plan.clone();
+        let core = Arc::new(std::sync::Mutex::new(ChildStreamCore::new(
+            CHILD_STREAM_CAPACITY,
+        )));
+        let supervisor = Arc::new(ChildStreamSupervisor::new(
+            Arc::clone(&core),
+            item_type,
+            item_plan.clone(),
+            Arc::clone(resume.image()),
+        ));
+        let finish = ChildStreamFinish::new(
+            core,
+            Arc::clone(&supervisor),
+            item_type,
+            stream_plan.linked_type_ref().clone(),
+            item_plan,
+            Arc::clone(resume.image()),
+            Arc::clone(&composition.child_streams),
+            resources.clone(),
+        );
+        return Ok(BytecodeChildHandoff::ReadyWithStream {
+            start: BytecodeChildStart {
+                unit: fiber,
+                resume,
+                child_heap,
+                finish: Box::new(finish),
+            },
+            supervisor,
+        });
+    }
     Ok(BytecodeChildHandoff::Ready(BytecodeChildStart {
         unit: fiber,
         resume,

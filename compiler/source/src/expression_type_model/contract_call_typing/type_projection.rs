@@ -207,6 +207,13 @@ pub(super) fn package_type_assignable(actual: &PackageTypeRef, expected: &Packag
                 arguments: expected_arguments,
             },
         ) => {
+            if actual_name == "integer"
+                && actual_arguments.is_empty()
+                && expected_name == "number"
+                && expected_arguments.is_empty()
+            {
+                return true;
+            }
             actual_name == expected_name
                 && actual_arguments.len() == expected_arguments.len()
                 && actual_arguments
@@ -564,6 +571,13 @@ fn local_ir_target_assignable(actual: &TypeRefIr, expected: &TypeRefIr) -> bool 
                 args: expected_args,
             },
         ) => {
+            if actual_name == BuiltinShape::Integer.name()
+                && actual_args.is_empty()
+                && expected_name == BuiltinShape::Number.name()
+                && expected_args.is_empty()
+            {
+                return true;
+            }
             actual_name == expected_name
                 && actual_args.len() == expected_args.len()
                 && actual_args

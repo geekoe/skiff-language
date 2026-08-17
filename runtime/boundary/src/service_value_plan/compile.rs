@@ -177,8 +177,16 @@ impl<'schema> ServiceValuePlanCompiler<'schema> {
                     value: Box::new(value),
                 }
             }
-            "Array" | "Map" => {
-                let expected = usize::from(name == "Array") + usize::from(name == "Map") * 2;
+            "Stream" if arguments.len() == 1 => {
+                RuntimeTypeNode::Stream(Box::new(self.compile(&arguments[0])?))
+            }
+            "Array" | "Map" | "Stream" => {
+                let expected = match name {
+                    "Array" => 1,
+                    "Map" => 2,
+                    "Stream" => 1,
+                    _ => unreachable!(),
+                };
                 return invalid_contract_plan(format!(
                     "builtin {name} expects {expected} argument(s), got {}",
                     arguments.len()

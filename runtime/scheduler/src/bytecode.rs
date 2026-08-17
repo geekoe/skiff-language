@@ -1,6 +1,9 @@
 //! Flat scheduler driver over one or more bytecode execution units.
 
-use std::{fmt, sync::Arc};
+use std::{
+    fmt,
+    sync::{Arc, Mutex},
+};
 
 use skiff_runtime_model::vm_heap::{VmHeap, VmHeapError};
 use skiff_runtime_model::vm_root::{VmRootSource, VmRootVisitor};
@@ -15,7 +18,7 @@ use crate::{
     owner_inventory::{ChildOwnerRegistration, OwnerCreationError},
     pending::{MappedPendingWakeGuard, PendingResumeFailure},
     ChildHeapCarrier, ClaimedPendingWakeGuard, EnterChildError, FlatTrampoline, PendingOwnerDraft,
-    PendingWake, RequestResourceRootPin, SuspendedTrampoline, TrampolineCompletion,
+    PendingWake, RequestResourceRootPin, StreamHeaps, SuspendedTrampoline, TrampolineCompletion,
 };
 
 /// Failure modes owned by the bytecode scheduler.
@@ -619,6 +622,11 @@ impl<U: BytecodeUnit> fmt::Debug for BytecodeChildStart<U> {
 /// One completed child-executor handoff.
 pub enum BytecodeChildHandoff<U: BytecodeUnit> {
     Ready(BytecodeChildStart<U>),
+    ReadyWithStream {
+        start: BytecodeChildStart<U>,
+        supervisor: Arc<dyn BytecodeStreamSupervisor<U>>,
+    },
+    ReadyImmediate(BytecodeHandoff<U>),
     Pending(U::PendingOperation),
 }
 
@@ -626,6 +634,8 @@ impl<U: BytecodeUnit> fmt::Debug for BytecodeChildHandoff<U> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Ready(_) => formatter.write_str("Ready(..)"),
+            Self::ReadyWithStream { .. } => formatter.write_str("ReadyWithStream(..)"),
+            Self::ReadyImmediate(_) => formatter.write_str("ReadyImmediate(..)"),
             Self::Pending(_) => formatter.write_str("Pending(..)"),
         }
     }
@@ -841,10 +851,11 @@ pub trait BytecodeStreamSupervisor<U: BytecodeUnit>: Send + Sync + 'static {
         &self,
         item: U::StreamItem,
         _depth: usize,
-        heap: &mut dyn VmHeap,
+        producer_heap: &mut dyn VmHeap,
+        consumer_heap: Option<&mut dyn VmHeap>,
         budget: &mut dyn VmBudget,
     ) -> Result<BytecodeStreamHandoff<U>, BytecodePortFailure<U::StreamItem, U::ResumeToken>> {
-        let _ = (heap, budget);
+        let _ = (producer_heap, consumer_heap, budget);
         Err(BytecodePortFailure::input(
             BytecodeSchedulerError::UnsupportedStream,
             item,
@@ -880,6 +891,13 @@ pub trait BytecodeStreamSupervisor<U: BytecodeUnit>: Send + Sync + 'static {
 pub struct BytecodeSchedulerPorts<U: BytecodeUnit> {
     pub child_executor: Option<Arc<dyn BytecodeChildExecutor<U>>>,
     pub stream_supervisor: Option<Arc<dyn BytecodeStreamSupervisor<U>>>,
+    /// Stream supervisors installed by `ReadyWithStream` child handoffs.
+    ///
+    /// The stack is kept in the ports carrier so actual-Pending parking and
+    /// wake restoration retain the exact child supervisors for the suspended
+    /// trampoline. The innermost installed child supervisor owns the active
+    /// producer's `EmitStream` events.
+    pub child_stream_supervisors: Arc<Mutex<Vec<(usize, Arc<dyn BytecodeStreamSupervisor<U>>)>>>,
 }
 
 impl<U: BytecodeUnit> Clone for BytecodeSchedulerPorts<U> {
@@ -887,6 +905,7 @@ impl<U: BytecodeUnit> Clone for BytecodeSchedulerPorts<U> {
         Self {
             child_executor: self.child_executor.clone(),
             stream_supervisor: self.stream_supervisor.clone(),
+            child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -896,6 +915,7 @@ impl<U: BytecodeUnit> Default for BytecodeSchedulerPorts<U> {
         Self {
             child_executor: None,
             stream_supervisor: None,
+            child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -1569,6 +1589,27 @@ where
                 BytecodeControl::Complete(result) => {
                     let depth = self.trampoline.blocked_depth();
                     if depth != 0 {
+                        let child_supervisor = self
+                            .ports
+                            .child_stream_supervisors
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .last()
+                            .filter(|(entry_depth, _)| *entry_depth == depth)
+                            .map(|(_, supervisor)| Arc::clone(supervisor));
+                        if let Some(supervisor) = child_supervisor {
+                            if let Err(reason) = supervisor.finish_stream(depth, &result) {
+                                return Err(self.with_retained_failure(
+                                    reason,
+                                    BytecodeSchedulerRetainedOwner::Complete(result),
+                                ));
+                            }
+                            self.ports
+                                .child_stream_supervisors
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .pop();
+                        }
                         let Self {
                             trampoline,
                             ports,
@@ -1661,6 +1702,48 @@ where
                                     ));
                                 }
                             }
+                            BytecodeChildHandoff::ReadyWithStream { start, supervisor } => {
+                                let depth = self.trampoline.blocked_depth() + 1;
+                                self.ports
+                                    .child_stream_supervisors
+                                    .lock()
+                                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                    .push((depth, supervisor));
+                                if let Err(error) = self.trampoline.enter_child_with_finish(
+                                    start.unit,
+                                    start.resume,
+                                    start.child_heap,
+                                    start.finish,
+                                ) {
+                                    let (error, unit, resume, child_heap, finish) =
+                                        error.into_parts();
+                                    self.ports
+                                        .child_stream_supervisors
+                                        .lock()
+                                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                        .pop();
+                                    return Err(self.with_retained_failure(
+                                        error.into(),
+                                        BytecodeSchedulerRetainedOwner::ChildStart(
+                                            BytecodeChildStart {
+                                                unit,
+                                                resume,
+                                                child_heap,
+                                                finish,
+                                            },
+                                        ),
+                                    ));
+                                }
+                            }
+                            BytecodeChildHandoff::ReadyImmediate(handoff) => {
+                                if let Err(failure) = self
+                                    .trampoline
+                                    .active_mut()
+                                    .resume(handoff.resume, handoff.outcome)
+                                {
+                                    return Err(self.with_resume_failure(failure));
+                                }
+                            }
                             BytecodeChildHandoff::Pending(operation) => {
                                 let (request, ports, resource_roots) =
                                     self.into_park_parts(operation);
@@ -1732,7 +1815,15 @@ where
                     }
                 }
                 BytecodeControl::EmitStream(item) => {
-                    let Some(supervisor) = self.ports.stream_supervisor.clone() else {
+                    let supervisor = self
+                        .ports
+                        .child_stream_supervisors
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .last()
+                        .map(|(_, supervisor)| Arc::clone(supervisor))
+                        .or_else(|| self.ports.stream_supervisor.clone());
+                    let Some(supervisor) = supervisor else {
                         return match U::release_rejected_stream_item(item, heap) {
                             Ok(()) => Err(BytecodeSchedulerFailure::scheduler(
                                 BytecodeSchedulerError::UnsupportedStream,
@@ -1747,7 +1838,14 @@ where
                         };
                     };
                     let depth = self.trampoline.blocked_depth();
-                    let handoff = match supervisor.emit_stream_handoff(item, depth, heap, budget) {
+                    let handoff = match self.trampoline.stream_heaps_mut(heap) {
+                        StreamHeaps::Root(root) => {
+                            supervisor.emit_stream_handoff(item, depth, root, None, budget)
+                        }
+                        StreamHeaps::Child { producer, consumer } => supervisor
+                            .emit_stream_handoff(item, depth, producer, Some(consumer), budget),
+                    };
+                    let handoff = match handoff {
                         Ok(handoff) => handoff,
                         Err(failure) => return Err(self.with_stream_port_failure(failure)),
                     };
@@ -2698,7 +2796,8 @@ mod tests {
             &self,
             item: usize,
             _depth: usize,
-            _heap: &mut dyn VmHeap,
+            _producer_heap: &mut dyn VmHeap,
+            _consumer_heap: Option<&mut dyn VmHeap>,
             _budget: &mut dyn VmBudget,
         ) -> Result<BytecodeStreamHandoff<TestUnit>, BytecodePortFailure<usize, usize>> {
             self.emitted.lock().unwrap().push(item);
@@ -3358,6 +3457,7 @@ mod tests {
             stream_supervisor: Some(
                 supervisor.clone() as Arc<dyn BytecodeStreamSupervisor<TestUnit>>
             ),
+            child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
         };
 
         let outcome = BytecodeScheduler::new(TestUnit::parked(7), ports, child_registration())
@@ -3420,6 +3520,7 @@ mod tests {
         let ports = BytecodeSchedulerPorts {
             child_executor: Some(executor.clone() as Arc<dyn BytecodeChildExecutor<TestUnit>>),
             stream_supervisor: None,
+            child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
         };
         let scheduler = BytecodeScheduler::new_with_child_heap(
             TestUnit {
@@ -3461,6 +3562,7 @@ mod tests {
         let ports = BytecodeSchedulerPorts {
             child_executor: Some(executor.clone() as Arc<dyn BytecodeChildExecutor<TestUnit>>),
             stream_supervisor: None,
+            child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
         };
         let scheduler = BytecodeScheduler::new_with_child_heap(
             TestUnit {
@@ -3499,6 +3601,7 @@ mod tests {
         let ports = BytecodeSchedulerPorts {
             child_executor: Some(executor.clone() as Arc<dyn BytecodeChildExecutor<TestUnit>>),
             stream_supervisor: None,
+            child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
         };
         let scheduler = BytecodeScheduler::new_with_child_heap(
             TestUnit {
@@ -3573,6 +3676,7 @@ mod tests {
             stream_supervisor: Some(
                 supervisor.clone() as Arc<dyn BytecodeStreamSupervisor<TestUnit>>
             ),
+            child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
         };
         let scheduler = BytecodeScheduler::new_with_child_heap(
             TestUnit {
@@ -3787,6 +3891,7 @@ mod tests {
                     executor.clone() as Arc<dyn BytecodeChildExecutor<ResumeThenChildUnit>>
                 ),
                 stream_supervisor: None,
+                child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
             },
         )
         .unwrap();
@@ -3816,6 +3921,7 @@ mod tests {
                 executor.clone() as Arc<dyn BytecodeChildExecutor<PendingStreamNextUnit>>
             ),
             stream_supervisor: None,
+            child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
         };
         let mut context = RequestExecutionContext::create(ports);
         let registry = PendingRegistry::<usize, PendingStreamSuspended, PendingStreamOutcome>::new(
@@ -3854,6 +3960,7 @@ mod tests {
                     executor as Arc<dyn BytecodeChildExecutor<PendingStreamNextUnit>>,
                 ),
                 stream_supervisor: None,
+                child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
             },
         )
         .unwrap();
@@ -3876,6 +3983,7 @@ mod tests {
                 executor.clone() as Arc<dyn BytecodeChildExecutor<PendingStreamNextUnit>>
             ),
             stream_supervisor: None,
+            child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
         };
         let scheduler = BytecodeScheduler::new_with_child_heap(
             PendingStreamNextUnit {
@@ -4036,6 +4144,7 @@ mod tests {
         let ports = BytecodeSchedulerPorts {
             child_executor: Some(executor.clone() as Arc<dyn BytecodeChildExecutor<TestUnit>>),
             stream_supervisor: None,
+            child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
         };
         let outcome = BytecodeScheduler::new(
             TestUnit {
@@ -4077,6 +4186,7 @@ mod tests {
             BytecodeSchedulerPorts {
                 child_executor: Some(executor.clone() as Arc<dyn BytecodeChildExecutor<TestUnit>>),
                 stream_supervisor: None,
+                child_stream_supervisors: Arc::new(Mutex::new(Vec::new())),
             },
         )
         .unwrap();

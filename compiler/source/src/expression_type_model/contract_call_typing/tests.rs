@@ -75,6 +75,31 @@ fn stream_and_container_refs_preserve_package_schema_identity() {
 }
 
 #[test]
+fn contract_number_accepts_source_integer_immediate() {
+    let actual = PackageTypeRef::Container {
+        name: "integer".to_string(),
+        arguments: Vec::new(),
+    };
+    let expected = PackageTypeRef::Container {
+        name: "number".to_string(),
+        arguments: Vec::new(),
+    };
+    let dependency_analysis = SourceDependencyAnalysisInput::empty();
+    assert!(package_type_target_assignable(
+        &actual,
+        &expected,
+        &dependency_analysis
+    ));
+    assert!(package_type_target_assignable(
+        &PackageTypeRef::Local {
+            local_type: TypeRefIr::builtin("integer"),
+        },
+        &expected,
+        &dependency_analysis
+    ));
+}
+
+#[test]
 fn package_nominal_target_typing_accepts_only_its_exact_representation() {
     let expected = package_type("example.types", "Role", "type:role");
     let dependency_analysis = dependency_analysis_with_alias(

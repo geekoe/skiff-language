@@ -33,7 +33,9 @@ pub(crate) use representation_carrier::RepresentationCarrierFact;
 use server_stream::ServerStreamAdmissions;
 
 pub use gateway_parameter::GatewayParameterAuthority;
-pub use server_stream::{ServerStreamEmitFact, ServerStreamGatewayAuthority};
+pub use server_stream::{
+    ChildStreamProducerAuthority, ServerStreamEmitFact, ServerStreamGatewayAuthority,
+};
 
 const TASK_SUBMIT_METADATA_KEY: &str = "dispatchSubmit";
 
@@ -1263,6 +1265,24 @@ pub fn admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_
     service_boundary_plans: &BTreeMap<ServiceCallRef, ServiceBoundaryPlan>,
     provider_public_instances: &ProviderPublicInstanceFacts,
 ) -> Result<AdmittedPhase1BytecodeMir, BytecodeEmissionError> {
+    admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_plans_and_provider_public_instances_and_child_stream_authorities(
+        units,
+        gateway_parameter_authorities,
+        server_stream_authorities,
+        &[],
+        service_boundary_plans,
+        provider_public_instances,
+    )
+}
+
+pub fn admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_plans_and_provider_public_instances_and_child_stream_authorities(
+    units: &[MirUnit],
+    gateway_parameter_authorities: &[GatewayParameterAuthority],
+    server_stream_authorities: &[ServerStreamGatewayAuthority],
+    child_stream_authorities: &[server_stream::ChildStreamProducerAuthority],
+    service_boundary_plans: &BTreeMap<ServiceCallRef, ServiceBoundaryPlan>,
+    provider_public_instances: &ProviderPublicInstanceFacts,
+) -> Result<AdmittedPhase1BytecodeMir, BytecodeEmissionError> {
     let units =
         package_type_authority::normalize_package_type_authorities(units).map_err(|error| {
             rejected(
@@ -1283,7 +1303,12 @@ pub fn admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_
                 location: format!("rawHttp gateway parameter authority: {detail}"),
             }
         })?;
-    server_stream::validate_authority_coverage(&units, server_stream_authorities).map_err(
+    server_stream::validate_authority_coverage(
+        &units,
+        server_stream_authorities,
+        child_stream_authorities,
+    )
+    .map_err(
         |detail| BytecodeEmissionError::UnsupportedPhase1Capability {
             capability: Phase1UnsupportedCapability::Stream,
             module_path: units
@@ -1379,6 +1404,7 @@ pub fn admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_
                 function,
                 &dense_parameter_materializations,
                 server_stream_authorities,
+                child_stream_authorities,
                 &local_interface_tables,
                 &local_interface_method_functions,
                 &actor_facts,
@@ -1475,16 +1501,13 @@ fn validate_service_boundary_plan_coverage(
                 service_call: format!("{service_call:?}"),
             }
         })?;
-        if plan.stream_item.is_some()
-            || matches!(
-                plan.callbacks,
-                skiff_artifact_model::ServiceCallbackPlan::Unsupported { .. }
-            )
-        {
+        if matches!(
+            plan.callbacks,
+            skiff_artifact_model::ServiceCallbackPlan::Unsupported { .. }
+        ) {
             return Err(BytecodeEmissionError::UnsupportedServiceBoundaryPlan {
                 location: format!("service call {service_call:?}"),
-                detail: "stream item and callback surfaces are disabled in the first service lane"
-                    .to_string(),
+                detail: "callback surfaces are disabled in the service boundary lane".to_string(),
             });
         }
     }
@@ -1505,6 +1528,7 @@ fn admit_function(
     function: &MirFunction,
     dense_parameter_materializations: &BTreeMap<String, DenseParameterMaterializationFact>,
     server_stream_authorities: &[ServerStreamGatewayAuthority],
+    child_stream_authorities: &[server_stream::ChildStreamProducerAuthority],
     local_interface_tables: &LocalInterfaceFacts,
     local_interface_method_functions: &BTreeSet<u32>,
     actor_facts: &ActorFacts,
@@ -1619,15 +1643,20 @@ fn admit_function(
                     ),
                 )
             })?;
-    let server_stream = ServerStreamAdmissions::analyze(unit, function, server_stream_authorities)
-        .map_err(|detail| {
-            rejected_function(
-                unit,
-                function_key,
-                Phase1UnsupportedCapability::Stream,
-                &format!("exact server-stream admission: {detail}"),
-            )
-        })?;
+    let server_stream = ServerStreamAdmissions::analyze(
+        unit,
+        function,
+        server_stream_authorities,
+        child_stream_authorities,
+    )
+    .map_err(|detail| {
+        rejected_function(
+            unit,
+            function_key,
+            Phase1UnsupportedCapability::Stream,
+            &format!("exact server-stream admission: {detail}"),
+        )
+    })?;
     let dense_parameter_materialization = dense_parameter_materializations.get(function_key);
     if let Some(stream) = &function.stream_result {
         let TypeRefIr::Builtin { name, args } = &function.return_type else {
@@ -1714,6 +1743,7 @@ fn admit_function(
             && !server_stream.admits_slot(parameter.slot, &parameter.ty)
             && !server_stream.admits_scalar_carrier(&parameter.ty)
             && !server_stream.admits_closure_carrier(&parameter.ty)
+            && !server_stream.admits_stream_endpoint(&parameter.ty)
             && !actor_facts.is_actor_handle(&parameter.ty)
         {
             admit_type_with_registry_authority(
@@ -1780,6 +1810,7 @@ fn admit_function(
             && !server_stream.admits_slot(slot.slot, ty)
             && !server_stream.admits_scalar_carrier(ty)
             && !server_stream.admits_closure_carrier(ty)
+            && !server_stream.admits_stream_endpoint(ty)
             && !actor_facts.is_actor_handle(ty)
         {
             admit_type_with_registry_authority(
@@ -2126,7 +2157,10 @@ fn admit_statement_with_authority(
         MirStmtKind::Expr { .. } | MirStmtKind::If { .. } => None,
         MirStmtKind::Return { value } => {
             if function.stream_result.is_some()
-                && value.is_some_and(|value| !server_stream.admits_null_return(function, value))
+                && value.is_some_and(|value| {
+                    !server_stream.admits_null_return(function, value)
+                        && !server_stream.admits_stream_return(function, value)
+                })
             {
                 return Err(rejected_function(
                     unit,
@@ -2250,14 +2284,16 @@ fn admit_statement_with_authority(
             None
         }
         MirStmtKind::StreamNext { .. }
-            if host_effects.admits_stream_next(statement.statement_index) =>
+            if host_effects.admits_stream_next(statement.statement_index)
+                || server_stream.has_exact_authority() =>
         {
             None
         }
         MirStmtKind::StreamNext { .. } => Some(Phase1UnsupportedCapability::Stream),
         MirStmtKind::TestEffectRegister { .. } => Some(Phase1UnsupportedCapability::HostTarget),
         MirStmtKind::ForIn { .. }
-            if host_effects.admits_stream_for_in(statement.statement_index) =>
+            if host_effects.admits_stream_for_in(statement.statement_index)
+                || server_stream.has_exact_authority() =>
         {
             None
         }
@@ -2595,6 +2631,7 @@ fn admit_expression_with_host_effects(
     if !server_stream.admits_expression(expression.index, &expression.ty)
         && !server_stream.admits_scalar_carrier(&expression.ty)
         && !server_stream.admits_closure_carrier(&expression.ty)
+        && !server_stream.admits_stream_endpoint(&expression.ty)
         && !registry_authorities
             .iter()
             .any(|authority| authority.admits(&expression.ty))
@@ -2641,7 +2678,8 @@ fn admit_expression_with_host_effects(
                     TypeRefIr::Builtin { name, args }
                         if name == "Stream" && args.as_slice() == [stream.item_type.clone()]
                 )
-        });
+        }) || server_stream
+            .admits_stream_expression(&expression.ty, &stream.item_type);
         if !exact_stream_authority {
             return Err(rejected_function(
                 unit,

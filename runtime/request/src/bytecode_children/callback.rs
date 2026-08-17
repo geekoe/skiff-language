@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use skiff_artifact_model::Opcode;
+use skiff_artifact_model::{Opcode, TypeRefIr};
 use skiff_runtime_linked_bytecode::{
     LinkedCallableSignature, LinkedInterfaceTable, LinkedInterfaceTableKind,
     LinkedServiceBoundaryValue, TypeIndex,
@@ -31,7 +31,10 @@ use skiff_runtime_vm::{
 };
 use tokio::sync::Mutex;
 
-use super::{BytecodeChildHeapFactory, BytecodeRequestChildComposition};
+use super::{
+    child_stream::CHILD_STREAM_CAPACITY, provider_stream_item, BytecodeChildHeapFactory,
+    BytecodeRequestChildComposition, ChildStreamCore, ChildStreamFinish, ChildStreamSupervisor,
+};
 
 /// Request-owned callback child registration. It stays fail-closed until the
 /// host installs an exact same-Runtime resolver and the F6 linked callback
@@ -302,9 +305,13 @@ pub(crate) fn execute_callback_child(
     };
     let provider_signature = provider_entry.signature().clone();
     let provider_image = Arc::clone(provider_entry.image());
+    let provider_entry_function = provider_entry.function();
+    let provider_is_stream =
+        provider_stream_item(&provider_image, provider_entry_function).is_some();
     if provider_signature.parameter_types().len() != caller_signature.parameter_types().len()
-        || provider_signature.result_types().len() != caller_signature.result_types().len()
-        || provider_signature.result_plans() != caller_signature.result_plans()
+        || (!provider_is_stream
+            && (provider_signature.result_types().len() != caller_signature.result_types().len()
+                || provider_signature.result_plans() != caller_signature.result_plans()))
     {
         return Err(BytecodePortFailure::input(
             BytecodeSchedulerError::Port(
@@ -313,7 +320,37 @@ pub(crate) fn execute_callback_child(
             invocation,
         ));
     }
+    let callback_caller_item_type = if provider_is_stream {
+        let stream_result_type = match caller_signature.result_types().first().copied() {
+            Some(stream_result_type) => stream_result_type,
+            None => {
+                return Err(BytecodePortFailure::input(
+                    BytecodeSchedulerError::Port(
+                        "callback stream method signature has no Stream result type".to_string(),
+                    ),
+                    invocation,
+                ));
+            }
+        };
+        let caller_item_type =
+            match caller_stream_item_type(invocation.resume().image(), stream_result_type) {
+                Some(caller_item_type) => caller_item_type,
+                None => {
+                    return Err(BytecodePortFailure::input(
+                        BytecodeSchedulerError::Port(
+                            "callback stream method signature lacks an exact Stream<T> item type"
+                                .to_string(),
+                        ),
+                        invocation,
+                    ));
+                }
+            };
+        Some(caller_item_type)
+    } else {
+        None
+    };
 
+    let stream_resources = resources.clone();
     let mut child_heap = match child_heap_factory.create_child_heap(
         provider_image.owner(),
         request_composition.heap_limits.clone(),
@@ -441,9 +478,53 @@ pub(crate) fn execute_callback_child(
             ));
         }
     };
+    if let Some((_item_type, item_plan)) =
+        provider_stream_item(&provider_image, provider_entry_function)
+    {
+        let caller_item_type = callback_caller_item_type
+            .expect("callback stream caller item type was validated before child startup");
+        let caller_item_plan = LinkedServiceBoundaryValue::new(
+            item_plan.contract_type().clone(),
+            item_plan.value_plan().clone(),
+            item_plan.transfer(),
+            item_plan.drop().clone(),
+            item_plan.source().clone(),
+            caller_item_type,
+            item_plan.linked_type_ref().clone(),
+        );
+        let core = Arc::new(std::sync::Mutex::new(ChildStreamCore::new(
+            CHILD_STREAM_CAPACITY,
+        )));
+        let supervisor = Arc::new(ChildStreamSupervisor::new(
+            Arc::clone(&core),
+            caller_item_type,
+            caller_item_plan.clone(),
+            Arc::clone(resume.image()),
+        ));
+        let finish = ChildStreamFinish::new(
+            core,
+            Arc::clone(&supervisor),
+            caller_item_type,
+            caller_item_plan.linked_type_ref().clone(),
+            caller_item_plan,
+            Arc::clone(resume.image()),
+            Arc::clone(&request_composition.child_streams),
+            stream_resources,
+        );
+        return Ok(BytecodeChildHandoff::ReadyWithStream {
+            start: BytecodeChildStart {
+                unit: fiber,
+                resume,
+                child_heap,
+                finish: Box::new(finish),
+            },
+            supervisor,
+        });
+    }
     let finish = CallbackChildFinish {
         signature: caller_signature,
         opcode: Opcode::InvokeCallback,
+        stream: false,
     };
     Ok(BytecodeChildHandoff::Ready(BytecodeChildStart {
         unit: fiber,
@@ -453,9 +534,32 @@ pub(crate) fn execute_callback_child(
     }))
 }
 
+fn caller_stream_item_type(
+    image: &DeploymentExecutionImage,
+    stream_type: TypeIndex,
+) -> Option<TypeIndex> {
+    let entry = image
+        .types()
+        .get(usize::try_from(stream_type.get()).ok()?)
+        .filter(|entry| entry.index() == stream_type)?;
+    let TypeRefIr::Builtin { name, args } = entry.type_ref() else {
+        return None;
+    };
+    if name != "Stream" || args.len() != 1 {
+        return None;
+    }
+    let item_ref = args.first()?;
+    image
+        .types()
+        .iter()
+        .find(|entry| entry.type_ref() == item_ref)
+        .map(|entry| entry.index())
+}
+
 struct CallbackChildFinish {
     signature: LinkedCallableSignature,
     opcode: Opcode,
+    stream: bool,
 }
 
 impl ChildFinish<VmFiber, VmResumeToken> for CallbackChildFinish {
@@ -478,6 +582,31 @@ impl ChildFinish<VmFiber, VmResumeToken> for CallbackChildFinish {
                 )));
             }
         };
+        if self.stream {
+            let outcome = match outcome {
+                ResumeOutcome::Values(values) => {
+                    let mut escrow = values.into_terminal_escrow();
+                    escrow.release_all(child_heap.heap_mut()).map_err(|error| {
+                        ChildFinishError::failure(BytecodeSchedulerError::Vm(error))
+                    })?;
+                    ResumeOutcome::Empty
+                }
+                ResumeOutcome::Empty | ResumeOutcome::StreamEnd => ResumeOutcome::Empty,
+                ResumeOutcome::Failure(error) => {
+                    return Err(ChildFinishError::failure(BytecodeSchedulerError::Vm(error)))
+                }
+                ResumeOutcome::Throw(_) | ResumeOutcome::InternalTerminal(_) => {
+                    return Err(ChildFinishError::failure(BytecodeSchedulerError::Port(
+                        "callback stream child returned an unsupported terminal outcome"
+                            .to_string(),
+                    )));
+                }
+            };
+            residual
+                .release_all(child_heap.heap_mut())
+                .map_err(|error| ChildFinishError::failure(BytecodeSchedulerError::Vm(error)))?;
+            return Ok(outcome);
+        }
         let outcome = match outcome {
             ResumeOutcome::Values(child_values) => {
                 if child_values.values().len() != self.signature.result_types().len() {

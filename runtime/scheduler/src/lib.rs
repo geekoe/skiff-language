@@ -68,6 +68,6 @@ pub use stream::{
 };
 pub use trampoline::{
     BlockedUnit, ChildHeapCarrier, ChildHeapCleanupError, ChildHeapState, ContinuedChild,
-    EnterChildError, EnterChildWithFinishError, FlatTrampoline, ParentResume, SuspendedTrampoline,
-    TrampolineCompletion,
+    EnterChildError, EnterChildWithFinishError, FlatTrampoline, ParentResume, StreamHeaps,
+    SuspendedTrampoline, TrampolineCompletion,
 };

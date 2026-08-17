@@ -27,11 +27,12 @@ pub use admission::{
     admit_phase_1_bytecode_mir, admit_phase_1_bytecode_mir_with_gateway_authorities,
     admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_plans,
     admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_plans_and_provider_public_instances,
+    admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_plans_and_provider_public_instances_and_child_stream_authorities,
     admit_phase_1_bytecode_mir_with_server_stream_authorities,
     admit_phase_1_bytecode_mir_with_server_stream_authorities_and_service_boundary_plans,
-    AdmittedPhase1BytecodeMir, GatewayParameterAuthority, ProviderPublicInstanceFacts,
-    ProviderPublicInstanceInterface, ProviderPublicInstanceMethod, ProviderPublicInstanceRoot,
-    ServerStreamEmitFact, ServerStreamGatewayAuthority,
+    AdmittedPhase1BytecodeMir, ChildStreamProducerAuthority, GatewayParameterAuthority,
+    ProviderPublicInstanceFacts, ProviderPublicInstanceInterface, ProviderPublicInstanceMethod,
+    ProviderPublicInstanceRoot, ServerStreamEmitFact, ServerStreamGatewayAuthority,
 };
 pub use emitter::emit_bytecode_artifact;
 pub use error::{BytecodeEmissionError, Phase1MirFactMismatch, Phase1UnsupportedCapability};

@@ -203,7 +203,7 @@ fn is_package_schema_descriptor(
                 && callback_method_parameters(method).iter().all(|param| {
                     is_package_schema_ref(&param.ty, definitions, source_to_public, visiting)
                 })
-                && is_package_schema_ref(
+                && is_package_schema_interface_return_ref(
                     &method.return_type,
                     definitions,
                     source_to_public,
@@ -211,6 +211,22 @@ fn is_package_schema_descriptor(
                 )
         }),
     }
+}
+
+fn is_package_schema_interface_return_ref(
+    ty: &TypeRefIr,
+    definitions: &BTreeMap<String, (TypeDescriptorIr, Vec<String>, Vec<InterfaceMethodSignature>)>,
+    source_to_public: &BTreeMap<(String, String), String>,
+    visiting: &mut BTreeSet<String>,
+) -> bool {
+    if let TypeRefIr::Builtin { name, args } = ty {
+        if name == "Stream" && args.len() == 1 {
+            return args
+                .iter()
+                .all(|arg| is_package_schema_ref(arg, definitions, source_to_public, visiting));
+        }
+    }
+    is_package_schema_ref(ty, definitions, source_to_public, visiting)
 }
 
 fn is_package_schema_ref(

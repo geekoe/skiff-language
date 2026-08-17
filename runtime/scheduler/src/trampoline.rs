@@ -450,6 +450,14 @@ pub struct FlatTrampoline<U: BytecodeUnit, R> {
     child_owners: ChildOwnerRegistration,
 }
 
+pub enum StreamHeaps<'a> {
+    Root(&'a mut dyn VmHeap),
+    Child {
+        producer: &'a mut dyn VmHeap,
+        consumer: &'a mut dyn VmHeap,
+    },
+}
+
 impl<U: BytecodeUnit, R> FlatTrampoline<U, R> {
     pub fn new(root: U, child_owners: ChildOwnerRegistration) -> Self {
         Self {
@@ -492,6 +500,28 @@ impl<U: BytecodeUnit, R> FlatTrampoline<U, R> {
 
     pub fn active_heap_mut(&mut self) -> Option<&mut ChildHeapCarrier> {
         self.active_heap.as_mut()
+    }
+
+    pub fn parent_heap_mut<'a>(&'a mut self, fallback: &'a mut dyn VmHeap) -> &'a mut dyn VmHeap {
+        self.blocked
+            .last_mut()
+            .and_then(|blocked| blocked.parent_heap.as_mut())
+            .map(ChildHeapCarrier::heap_mut)
+            .unwrap_or(fallback)
+    }
+
+    pub fn stream_heaps_mut<'a>(&'a mut self, fallback: &'a mut dyn VmHeap) -> StreamHeaps<'a> {
+        let Some(active) = self.active_heap.as_mut() else {
+            return StreamHeaps::Root(fallback);
+        };
+        let producer = active.heap_mut();
+        let consumer = self
+            .blocked
+            .last_mut()
+            .and_then(|blocked| blocked.parent_heap.as_mut())
+            .map(ChildHeapCarrier::heap_mut)
+            .unwrap_or(fallback);
+        StreamHeaps::Child { producer, consumer }
     }
 
     pub fn blocked_depth(&self) -> usize {

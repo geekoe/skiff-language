@@ -23,10 +23,11 @@ use skiff_compiler_compiled::{
 };
 use skiff_compiler_contract::ServicePublicInstanceOperationFacts;
 use skiff_compiler_emission::bytecode::{
-    admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_plans_and_provider_public_instances,
-    derive_bytecode_value_transfer_plans, emit_bytecode_artifact, GatewayParameterAuthority,
-    ProviderPublicInstanceFacts, ProviderPublicInstanceInterface, ProviderPublicInstanceMethod,
-    ProviderPublicInstanceRoot, ServerStreamEmitFact, ServerStreamGatewayAuthority,
+    admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_plans_and_provider_public_instances_and_child_stream_authorities,
+    derive_bytecode_value_transfer_plans, emit_bytecode_artifact, ChildStreamProducerAuthority,
+    GatewayParameterAuthority, ProviderPublicInstanceFacts, ProviderPublicInstanceInterface,
+    ProviderPublicInstanceMethod, ProviderPublicInstanceRoot, ServerStreamEmitFact,
+    ServerStreamGatewayAuthority,
 };
 use skiff_compiler_emission::package_artifact::PublishedPackageArtifact;
 use skiff_compiler_lowering::{
@@ -186,11 +187,18 @@ fn emit_enabled_bytecode(
     let gateway_parameter_authorities = gateway_parameter_authorities(projected_gateway);
     let service_boundary_plans = service_boundary_plans(compiled)?;
     let provider_public_instances = provider_public_instance_facts(compiled)?;
+    let child_stream_authorities = child_stream_producer_authorities(
+        unattached_package,
+        units,
+        &provider_public_instances,
+        &server_stream_authorities,
+    )?;
     let admitted =
-        admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_plans_and_provider_public_instances(
+        admit_phase_1_bytecode_mir_with_gateway_authorities_and_service_boundary_plans_and_provider_public_instances_and_child_stream_authorities(
             units,
             &gateway_parameter_authorities,
             &server_stream_authorities,
+            &child_stream_authorities,
             &service_boundary_plans,
             &provider_public_instances,
         )?;
@@ -599,15 +607,6 @@ fn compile_service_boundary_plan(
     contract: &skiff_artifact_model::BoundaryOperationContract,
     fallback_contract_type: &ContractTypeRef,
 ) -> Result<ServiceBoundaryPlan, PackageCompileError> {
-    if !matches!(
-        contract.stream,
-        skiff_artifact_model::BoundaryStreamContract::Unary
-    ) {
-        return Err(PackageCompileError::ContractValidation {
-            message: "service stream boundary plans are disabled in the first service lane"
-                .to_string(),
-        });
-    }
     if matches!(
         contract.callbacks,
         BoundaryCallbackContract::Unsupported { .. }
@@ -644,7 +643,42 @@ fn compile_service_boundary_plan(
             },
         })
         .collect::<Vec<_>>();
-    let results = if contract.return_value.ty == ContractTypeRef::builtin("void") {
+    let stream_item = match &contract.stream {
+        skiff_artifact_model::BoundaryStreamContract::Unary => None,
+        skiff_artifact_model::BoundaryStreamContract::ServerStream {
+            item_type,
+            item_value_plan,
+        } => Some(Box::new(BoundaryValueFact {
+            contract_type: item_type.clone(),
+            value_plan: item_value_plan.clone(),
+            transfer: BoundaryTransfer::Move,
+            drop: BoundaryDropPlan::SnapshotRelease,
+            source: ValueProvenance::Fresh,
+        })),
+        skiff_artifact_model::BoundaryStreamContract::Unsupported { .. } => {
+            return Err(PackageCompileError::ContractValidation {
+                message: "unsupported service stream boundary contract".to_string(),
+            });
+        }
+    };
+    let results = if let Some(stream_item) = &stream_item {
+        let item_type = stream_item.contract_type.clone();
+        vec![BoundaryValueFact {
+            contract_type: ContractTypeRef::Builtin {
+                name: "Stream".to_string(),
+                arguments: vec![item_type],
+            },
+            value_plan: BoundaryValuePlan::Linkable {
+                carrier: BoundaryValueCarrier::DetachedValueGraph,
+                encoding: BoundaryValueEncoding::CanonicalValue,
+                owner: BoundaryValueOwner::Provider,
+                lifetime: BoundaryValueLifetime::Stream,
+            },
+            transfer: BoundaryTransfer::Move,
+            drop: BoundaryDropPlan::SnapshotRelease,
+            source: ValueProvenance::Fresh,
+        }]
+    } else if contract.return_value.ty == ContractTypeRef::builtin("void") {
         Vec::new()
     } else {
         vec![BoundaryValueFact {
@@ -674,7 +708,7 @@ fn compile_service_boundary_plan(
             drop: BoundaryDropPlan::SnapshotRelease,
             source: ValueProvenance::Fresh,
         },
-        stream_item: None,
+        stream_item,
         callbacks,
         effects: CallableEffectSummary::Analyzed {
             effects: CallableMayEffects {
@@ -786,6 +820,220 @@ fn server_stream_gateway_authorities(
     Ok(authorities)
 }
 
+fn child_stream_producer_authorities(
+    implementation: &PackageArtifact,
+    units: &[MirUnit],
+    provider_public_instances: &ProviderPublicInstanceFacts,
+    server_stream_authorities: &[ServerStreamGatewayAuthority],
+) -> Result<Vec<ChildStreamProducerAuthority>, PackageCompileError> {
+    let mut authorities = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for (callable_id, projection) in &implementation.boundary_projections {
+        let skiff_artifact_model::BoundaryCallableProjection::Available {
+            operation_contract, ..
+        } = projection
+        else {
+            continue;
+        };
+        let skiff_artifact_model::BoundaryStreamContract::ServerStream { item_type, .. } =
+            &operation_contract.stream
+        else {
+            continue;
+        };
+        let item_type = lifecycle_type_from_contract(item_type).ok_or_else(|| {
+            PackageCompileError::ContractValidation {
+                message: format!(
+                    "child stream authority {callable_id} cannot project its exact item type"
+                ),
+            }
+        })?;
+        let functions = units
+            .iter()
+            .flat_map(|unit| &unit.functions)
+            .filter(|function| &function.effect_summary_ref == callable_id)
+            .collect::<Vec<_>>();
+        let [function] = functions.as_slice() else {
+            if functions.is_empty() {
+                continue;
+            }
+            return Err(PackageCompileError::ContractValidation {
+                message: format!(
+                    "child stream callable {callable_id} lacks one exact MIR implementation"
+                ),
+            });
+        };
+        if server_stream_authorities
+            .iter()
+            .any(|authority| authority.handler() == Some(callable_id))
+        {
+            continue;
+        }
+        if function
+            .stream_result
+            .as_ref()
+            .map(|stream| &stream.item_type)
+            != Some(&item_type)
+        {
+            return Err(PackageCompileError::ContractValidation {
+                message: format!(
+                    "child stream callable {callable_id} MIR item type drifts from its boundary contract"
+                ),
+            });
+        }
+        let TypeRefIr::Builtin { name, args } = &function.return_type else {
+            return Err(PackageCompileError::ContractValidation {
+                message: format!(
+                    "child stream callable {callable_id} does not return an exact Stream<T> type"
+                ),
+            });
+        };
+        if name != "Stream" || args.as_slice() != [item_type.clone()] {
+            return Err(PackageCompileError::ContractValidation {
+                message: format!(
+                    "child stream callable {callable_id} return type drifts from its boundary contract"
+                ),
+            });
+        }
+        if !seen.insert(callable_id) {
+            return Err(PackageCompileError::ContractValidation {
+                message: format!(
+                    "child stream callable {callable_id} has more than one boundary projection"
+                ),
+            });
+        }
+        let emit_facts = function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.statements)
+            .filter_map(|statement| match &statement.kind {
+                MirStmtKind::Emit { value, .. } => Some(ServerStreamEmitFact::new(
+                    statement.statement_index,
+                    value.expression,
+                )),
+                _ => None,
+            })
+            .collect();
+        authorities.push(ChildStreamProducerAuthority::new(
+            callable_id.clone(),
+            item_type,
+            emit_facts,
+        ));
+    }
+    for root in &provider_public_instances.roots {
+        for interface in &root.interfaces {
+            for method in &interface.methods {
+                let functions = units
+                    .iter()
+                    .flat_map(|unit| &unit.functions)
+                    .filter(|function| function.executable_index == method.executable_index)
+                    .collect::<Vec<_>>();
+                let [function] = functions.as_slice() else {
+                    return Err(PackageCompileError::ContractValidation {
+                        message: format!(
+                            "provider public instance method {} lacks one exact MIR implementation",
+                            method.method_abi_id
+                        ),
+                    });
+                };
+                let Some(stream) = &function.stream_result else {
+                    continue;
+                };
+                if server_stream_authorities
+                    .iter()
+                    .any(|authority| authority.handler() == Some(&function.effect_summary_ref))
+                {
+                    continue;
+                }
+                if !seen.insert(&function.effect_summary_ref) {
+                    return Err(PackageCompileError::ContractValidation {
+                        message: format!(
+                            "provider public instance stream method {} duplicates another child stream authority",
+                            method.method_abi_id
+                        ),
+                    });
+                }
+                let emit_facts = function
+                    .blocks
+                    .iter()
+                    .flat_map(|block| &block.statements)
+                    .filter_map(|statement| match &statement.kind {
+                        MirStmtKind::Emit { value, .. } => Some(ServerStreamEmitFact::new(
+                            statement.statement_index,
+                            value.expression,
+                        )),
+                        _ => None,
+                    })
+                    .collect();
+                authorities.push(ChildStreamProducerAuthority::new(
+                    function.effect_summary_ref.clone(),
+                    stream.item_type.clone(),
+                    emit_facts,
+                ));
+            }
+        }
+    }
+    for symbol in implementation
+        .package_local_abi
+        .public_symbols
+        .values()
+        .chain(
+            implementation
+                .package_local_abi
+                .implementation_symbols
+                .values(),
+        )
+    {
+        let skiff_artifact_model::PackageLocalAbiSymbol::Callable {
+            callable_id,
+            signature,
+        } = symbol
+        else {
+            continue;
+        };
+        if exact_mir_stream_item(&signature.return_type).is_none() {
+            continue;
+        }
+        let functions = units
+            .iter()
+            .flat_map(|unit| &unit.functions)
+            .filter(|function| &function.effect_summary_ref == callable_id)
+            .collect::<Vec<_>>();
+        let [function] = functions.as_slice() else {
+            continue;
+        };
+        if server_stream_authorities
+            .iter()
+            .any(|authority| authority.handler() == Some(callable_id))
+        {
+            continue;
+        }
+        if !seen.insert(callable_id) {
+            continue;
+        }
+        let Some(stream) = &function.stream_result else {
+            continue;
+        };
+        let emit_facts = function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.statements)
+            .filter_map(|statement| match &statement.kind {
+                MirStmtKind::Emit { value, .. } => Some(ServerStreamEmitFact::new(
+                    statement.statement_index,
+                    value.expression,
+                )),
+                _ => None,
+            })
+            .collect();
+        authorities.push(ChildStreamProducerAuthority::new(
+            callable_id.clone(),
+            stream.item_type.clone(),
+            emit_facts,
+        ));
+    }
+    Ok(authorities)
+}
+
 fn exact_mir_stream_item(return_type: &PackageTypeRef) -> Option<TypeRefIr> {
     match return_type {
         PackageTypeRef::Local {
@@ -797,11 +1045,28 @@ fn exact_mir_stream_item(return_type: &PackageTypeRef) -> Option<TypeRefIr> {
             Some(item.clone())
         }
         PackageTypeRef::Container { name, arguments } if name == "Stream" => {
-            let [PackageTypeRef::Local { local_type }] = arguments.as_slice() else {
+            let [item] = arguments.as_slice() else {
                 return None;
             };
-            Some(local_type.clone())
+            package_type_to_type_ref(item)
         }
+        _ => None,
+    }
+}
+
+fn package_type_to_type_ref(ty: &PackageTypeRef) -> Option<TypeRefIr> {
+    match ty {
+        PackageTypeRef::Local { local_type } => Some(local_type.clone()),
+        PackageTypeRef::Container { name, arguments } => Some(TypeRefIr::Builtin {
+            name: name.clone(),
+            args: arguments
+                .iter()
+                .map(package_type_to_type_ref)
+                .collect::<Option<Vec<_>>>()?,
+        }),
+        PackageTypeRef::Nullable { inner } => Some(TypeRefIr::Nullable {
+            inner: Box::new(package_type_to_type_ref(inner)?),
+        }),
         _ => None,
     }
 }

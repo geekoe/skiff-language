@@ -425,7 +425,11 @@ fn resume_value_matches(
                         | LinkedValueTransferPlan::MoveOnly { .. }
                 )
         }
-        ValueKind::ConstRef | ValueKind::ResourceRef | ValueKind::CallbackClosureRef => false,
+        ValueKind::ResourceRef => {
+            runtime_tag_matches(value, expected)
+                && matches!(plan, LinkedValueTransferPlan::AffineResource { .. })
+        }
+        ValueKind::ConstRef | ValueKind::CallbackClosureRef => false,
     }
 }
 

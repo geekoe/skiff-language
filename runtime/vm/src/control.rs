@@ -1060,6 +1060,10 @@ impl StreamItem {
         self.item_shape
     }
 
+    pub fn into_parts(self) -> (VmOwnedValues, VmResumeToken) {
+        (self.item, self.resume)
+    }
+
     /// Releases the emitted owner through its exact linked lifecycle plan on
     /// the request heap thread, then returns the unique zero-result resume.
     /// No VM value crosses an actual-Pending writer flush.

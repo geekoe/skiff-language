@@ -144,6 +144,7 @@ struct PendingResume {
     result_materialization: Option<ResumeResultMaterialization>,
     emit_stream_item_shape_ref: Option<u32>,
     end_block: Option<u32>,
+    end_instruction: Option<usize>,
 }
 
 struct PendingExceptionRegion {
@@ -1143,8 +1144,12 @@ impl<'a> FunctionEmitter<'a> {
             }
             MirStmtKind::Expr { value } | MirStmtKind::Dispatch { call: value } => {
                 let expression = self.function.expression(*value)?;
-                self.emit_expression(*value)?;
-                if !is_void(&expression.ty) {
+                if self.is_callback_stream_expression(&expression) {
+                    self.emit_callback_stream_relay(*value)?;
+                } else {
+                    self.emit_expression(*value)?;
+                }
+                if !is_void(&expression.ty) && !self.is_callback_stream_expression(&expression) {
                     self.emit_op(Opcode::Pop, Vec::new())?;
                 }
             }
@@ -1190,11 +1195,17 @@ impl<'a> FunctionEmitter<'a> {
             MirStmtKind::Return { value } => {
                 if self.function.stream_result.is_some() {
                     if let Some(value) = value {
-                        self.emit_expression(*value)?;
-                        if !self
-                            .instructions
-                            .last()
-                            .is_some_and(|instruction| instruction.opcode == Opcode::Trap)
+                        let expression = self.function.expression(*value)?;
+                        if self.is_callback_stream_expression(&expression) {
+                            self.emit_callback_stream_relay(*value)?;
+                        } else {
+                            self.emit_expression(*value)?;
+                        }
+                        if !self.is_callback_stream_expression(&expression)
+                            && !self
+                                .instructions
+                                .last()
+                                .is_some_and(|instruction| instruction.opcode == Opcode::Trap)
                         {
                             self.emit_op(Opcode::Pop, Vec::new())?;
                         }
@@ -1908,10 +1919,189 @@ impl<'a> FunctionEmitter<'a> {
                 result_materialization,
                 emit_stream_item_shape_ref: None,
                 end_block: None,
+                end_instruction: None,
             });
         }
         self.map_call_event(expression.index);
         Ok(())
+    }
+
+    fn is_callback_stream_expression(&self, expression: &MirExpression) -> bool {
+        expression.stream_result.is_some()
+            && matches!(
+                &expression.expression,
+                ExprIr::Call { call }
+                    if matches!(&call.target, CallTargetIr::CallbackMethod { .. })
+            )
+    }
+
+    fn emit_callback_stream_relay(
+        &mut self,
+        value: ExprRefIr,
+    ) -> Result<(), BytecodeEmissionError> {
+        let expression = self.function.expression(value)?;
+        if !self.is_callback_stream_expression(&expression) {
+            return Err(unsupported(
+                &self.key,
+                "callback stream relay",
+                "relay expression is not an exact callback Stream<T> call",
+            ));
+        }
+        let stream = self
+            .function
+            .stream_result
+            .as_ref()
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "callback stream relay",
+                    "relay requires an enclosing stream producer",
+                )
+            })?
+            .clone();
+        let item_type = stream.item_type;
+        let stream_type = TypeRefIr::Builtin {
+            name: "Stream".to_string(),
+            args: vec![item_type.clone()],
+        };
+        let endpoint_slot = self.push_generated_slot(&stream_type, "$callbackRelayStream")?;
+        let item_slot = self.push_generated_slot(&item_type, "$callbackRelayItem")?;
+        self.generated_slots
+            .last_mut()
+            .expect("relay item slot was just pushed")
+            .writable_local = true;
+
+        self.emit_expression(value)?;
+        self.emit_op(Opcode::StoreSlot, vec![endpoint_slot])?;
+
+        let next_generated = self
+            .events
+            .iter()
+            .filter_map(|event| match event.attribution_id {
+                StatementAttributionId::Generated { ordinal } => Some(ordinal),
+                _ => None,
+            })
+            .max()
+            .map_or(0, |ordinal| ordinal + 1);
+        let event_index = self.events.len();
+        self.events.push(MirSourceEvent {
+            attribution_id: StatementAttributionId::Generated {
+                ordinal: next_generated,
+            },
+            site: InstructionSourceSite::Synthetic {
+                reason: SyntheticInstructionSiteReason::CompilerDesugaring,
+            },
+            anchor: MirEmissionAnchor::GeneratedStatement {
+                statement_index: expression.index,
+                placement: MirStatementPlacement::BeforeStatement,
+            },
+        });
+        self.event_mapping.push(None);
+        let header_instruction = self.emit_op(Opcode::BudgetCheckpoint, Vec::new())?;
+        self.event_mapping[event_index] = Some(header_instruction);
+
+        let next_event_index = self.events.len();
+        self.events.push(MirSourceEvent {
+            attribution_id: StatementAttributionId::Generated {
+                ordinal: next_generated
+                    .checked_add(1)
+                    .ok_or_else(|| arithmetic(&self.key, "generated relay event ordinal"))?,
+            },
+            site: InstructionSourceSite::Synthetic {
+                reason: SyntheticInstructionSiteReason::CompilerDesugaring,
+            },
+            anchor: MirEmissionAnchor::GeneratedStatement {
+                statement_index: expression.index,
+                placement: MirStatementPlacement::BeforeStatement,
+            },
+        });
+        self.event_mapping.push(None);
+        let stream_next_instruction = self.instructions.len();
+        self.emit_stream_next(None, endpoint_slot, &item_type, None)?;
+        self.event_mapping[next_event_index] = Some(stream_next_instruction);
+        self.emit_op(Opcode::StoreSlot, vec![item_slot])?;
+
+        let site = InstructionSourceSite::Synthetic {
+            reason: SyntheticInstructionSiteReason::CompilerDesugaring,
+        };
+        let emit_instruction = self.emit_stream_slot(item_slot, site)?;
+        self.emit_jump_to_instruction(header_instruction)?;
+        let exit_instruction = self.instructions.len();
+        let pending = self
+            .pending_resumes
+            .iter_mut()
+            .find(|pending| pending.instruction == stream_next_instruction)
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "callback stream relay",
+                    "generated StreamNext resume is absent",
+                )
+            })?;
+        pending.end_instruction = Some(exit_instruction);
+        let _ = emit_instruction;
+        Ok(())
+    }
+
+    fn emit_stream_slot(
+        &mut self,
+        item_slot: u32,
+        site: InstructionSourceSite,
+    ) -> Result<usize, BytecodeEmissionError> {
+        let item_type = self
+            .function
+            .stream_result
+            .as_ref()
+            .ok_or_else(|| {
+                unsupported(
+                    &self.key,
+                    "EmitStream",
+                    "function has no exact Stream<T> result facts",
+                )
+            })?
+            .item_type
+            .clone();
+        let slot_type = self.emitted_slot_carrier(item_slot)?;
+        if slot_type != item_type {
+            return Err(unsupported(
+                &self.key,
+                "EmitStream relay item",
+                &format!(
+                    "relay item slot type `{slot_type:?}` drifts from stream item `{item_type:?}`"
+                ),
+            ));
+        }
+        let fields = match self.record_shape_fields(&item_type, "callback stream relay item shape")
+        {
+            Ok(fields) => fields,
+            Err(_) => BTreeMap::new(),
+        };
+        let emit_stream_item_shape_ref = self.image.intern_shape(
+            self.unit.module_path.as_str(),
+            &item_type,
+            &fields,
+            &format!("callback stream relay item shape in `{}`", self.key),
+        )?;
+        self.emit_op(Opcode::LoadSlot, vec![item_slot])?;
+        let expected_stack_height_before_result = self
+            .operand_depth
+            .checked_sub(1)
+            .ok_or_else(|| unsupported(&self.key, "EmitStream", "stream item operand is absent"))?;
+        let instruction = self.emit_op(Opcode::EmitStream, vec![0])?;
+        self.pending_resumes.push(PendingResume {
+            instruction,
+            operand: 0,
+            expected_stack_height_before_result: u32::try_from(expected_stack_height_before_result)
+                .map_err(|_| arithmetic(&self.key, "EmitStream stack height conversion"))?,
+            result_ty: None,
+            result_expression: None,
+            result_materialization: None,
+            emit_stream_item_shape_ref: Some(emit_stream_item_shape_ref),
+            end_block: None,
+            end_instruction: None,
+        });
+        self.stream_source_sites.push((instruction, site));
+        Ok(instruction)
     }
 
     fn host_result_materialization(
@@ -2291,13 +2481,7 @@ impl<'a> FunctionEmitter<'a> {
         let value_expression = self.function.expression(value)?;
         let (construct_type, construct_fields) = match &value_expression.expression {
             ExprIr::Construct { type_ref, fields } => (type_ref.clone(), fields.clone()),
-            _ => {
-                return Err(unsupported(
-                    &self.key,
-                    "EmitStream item shape",
-                    "stream item is not an exact record construction",
-                ));
-            }
+            _ => (stream_item_type.clone(), BTreeMap::new()),
         };
         let admitted_nominal_branch = matches!(
             self.source_attribution,
@@ -2316,12 +2500,16 @@ impl<'a> FunctionEmitter<'a> {
                 ),
             ));
         }
-        let carriers = self.record_construct_carrier_fields(
-            value_expression.index,
-            &construct_type,
-            &construct_fields,
-            "EmitStream item shape",
-        )?;
+        let carriers = if construct_fields.is_empty() {
+            BTreeMap::new()
+        } else {
+            self.record_construct_carrier_fields(
+                value_expression.index,
+                &construct_type,
+                &construct_fields,
+                "EmitStream item shape",
+            )?
+        };
         let emit_stream_item_shape_ref = self.image.intern_shape(
             self.unit.module_path.as_str(),
             &construct_type,
@@ -2344,6 +2532,7 @@ impl<'a> FunctionEmitter<'a> {
             result_materialization: None,
             emit_stream_item_shape_ref: Some(emit_stream_item_shape_ref),
             end_block: None,
+            end_instruction: None,
         });
         Ok(instruction)
     }
@@ -2428,6 +2617,7 @@ impl<'a> FunctionEmitter<'a> {
             result_materialization: None,
             emit_stream_item_shape_ref: None,
             end_block,
+            end_instruction: None,
         });
         Ok(())
     }
@@ -4884,11 +5074,12 @@ impl<'a> FunctionEmitter<'a> {
                 .result_ty
                 .iter()
                 .map(|ty| {
-                    self.image.type_index(
+                    let index = self.image.type_index(
                         self.unit.module_path.as_str(),
                         ty,
                         &format!("resume result type in `{}`", self.key),
-                    )
+                    )?;
+                    Ok(index)
                 })
                 .collect::<Result<Vec<_>, BytecodeEmissionError>>()?;
             let mut result_plans = Vec::with_capacity(usize::from(pending.result_ty.is_some()));
@@ -4936,7 +5127,15 @@ impl<'a> FunctionEmitter<'a> {
                         ));
                     }
                 };
-            let end_resume_pc = if let Some(end_block) = pending.end_block {
+            let end_resume_pc = if let Some(end_instruction) = pending.end_instruction {
+                Some(*pcs.get(end_instruction).ok_or_else(|| {
+                    unsupported(
+                        &self.key,
+                        "resume end instruction",
+                        "end instruction is absent",
+                    )
+                })?)
+            } else if let Some(end_block) = pending.end_block {
                 let ordinal = usize::try_from(end_block)
                     .map_err(|_| arithmetic(&self.key, "resume end block ordinal"))?;
                 let start = self
@@ -5450,6 +5649,7 @@ impl<'a> FunctionEmitter<'a> {
             .function
             .slots
             .iter()
+            .chain(&self.generated_slots)
             .filter(|slot| slot.writable_local && slot.kind == MirSlotKind::Local)
             .map(|slot| slot.slot)
             .collect();

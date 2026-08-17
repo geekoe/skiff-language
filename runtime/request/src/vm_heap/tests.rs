@@ -53,6 +53,18 @@ fn resource_ref(handle: u64) -> ValueSlot {
 }
 
 #[test]
+fn release_resource_rejects_number_before_resource_lookup() {
+    let mut heap = heap();
+    assert!(matches!(
+        heap.release_resource(&ValueSlot::number(1.0)),
+        Err(VmHeapError::OperationKindMismatch {
+            operation: VmHeapOperation::ReleaseResource,
+            kind: ValueKind::Number
+        })
+    ));
+}
+
+#[test]
 fn actor_state_ref_round_trips_and_release_keeps_logical_identity() {
     let mut heap = heap();
     let actor_ref = ActorRef::new(

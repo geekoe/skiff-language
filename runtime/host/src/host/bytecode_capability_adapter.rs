@@ -1203,6 +1203,7 @@ fn bytecode_request_child_composition_with_parts(
         actor_child: BytecodeActorChildComposition::default(),
         db_child,
         task_child,
+        child_streams: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     }
 }
 
