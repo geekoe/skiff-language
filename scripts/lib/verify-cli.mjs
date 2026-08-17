@@ -126,8 +126,11 @@ quality and focused selectors:
   bytecode-vm-phase-0-gate     Phase 0 exact-candidate closure gate
   bytecode-vm-phase-1-gate     Phase 1 trusted synchronous core gate
   bytecode-vm-phase-2-gate     Phase 2 value-lifecycle gate (Phase 1 full regression)
+  bytecode-vm-phase-3-gate     Phase 3 exception/unwind lifecycle gate
+  bytecode-vm-phase-4-gate     Phase 4 request/Pending/cancel/deadline gate
   bytecode-vm-phase-5-gate     Phase 5 r1 typed host/resource/stream full-chain gate
   bytecode-vm-phase-6-gate     Phase 6 r1 cross-owner expected-red Gate baseline
+  bytecode-vm-phase-7-gate     Phase 7 whole-system closure Gate
   type-check                   scripts and VS Code static checks
   checks                       repository architecture and policy checks
   scripts  vscode              focused tooling tests
@@ -176,6 +179,22 @@ It checks the Phase 2 VCP/missing-plan/K2/C2 scenario matrix plus the Phase 1 fu
 regression selector, and never selects its own candidate or evidence directory.`);
 
   console.log(`
+The bytecode-vm-phase-3-gate selector requires:
+  SKIFF_BYTECODE_VM_PHASE3_CANDIDATE_COMMIT   literal 40-hex commit from the freeze receipt
+  SKIFF_BYTECODE_VM_PHASE3_CANDIDATE_TREE     literal 40-hex tree from the freeze receipt
+  SKIFF_BYTECODE_VM_PHASE3_EVIDENCE_DIR       caller-chosen canonical absolute absent path
+It checks the Phase 3 exception/unwind VCP/negative/K3/C3 matrix plus the Phase 1/2
+regression, and never selects its own candidate or evidence directory.`);
+
+  console.log(`
+The bytecode-vm-phase-4-gate selector requires:
+  SKIFF_BYTECODE_VM_PHASE4_CANDIDATE_COMMIT   literal 40-hex commit from the freeze receipt
+  SKIFF_BYTECODE_VM_PHASE4_CANDIDATE_TREE     literal 40-hex tree from the freeze receipt
+  SKIFF_BYTECODE_VM_PHASE4_EVIDENCE_DIR       caller-chosen canonical absolute absent path
+It checks the Phase 4 VCP/sentinel/negative/K4/V4/C4 matrix plus the Phase 1/2/3
+regression, and never selects its own candidate or evidence directory.`);
+
+  console.log(`
 The bytecode-vm-phase-5-gate selector is the independent recovery epoch r1 and requires:
   SKIFF_BYTECODE_VM_PHASE5_CANDIDATE_COMMIT   literal 40-hex commit from the freeze receipt
   SKIFF_BYTECODE_VM_PHASE5_CANDIDATE_TREE     literal 40-hex tree from the freeze receipt
@@ -190,6 +209,15 @@ The bytecode-vm-phase-6-gate selector is the independent expected-red epoch r1 a
   SKIFF_BYTECODE_VM_PHASE6_EVIDENCE_DIR       caller-chosen canonical absolute absent path
 It executes G6 plus the complete accepted Phase 1-5 regression under the exclusive
 /tmp/skiff-bcvm-p6-r1-cargo.lockdir lease, records every command, and continues after reds.`);
+
+  console.log(`
+The bytecode-vm-phase-7-gate selector is the whole-system closure epoch and requires:
+  SKIFF_BYTECODE_VM_PHASE7_CANDIDATE_COMMIT   literal 40-hex commit from the freeze receipt
+  SKIFF_BYTECODE_VM_PHASE7_CANDIDATE_TREE     literal 40-hex tree from the freeze receipt
+  SKIFF_BYTECODE_VM_PHASE7_EVIDENCE_DIR       caller-chosen canonical absolute absent path
+It executes G7 plus the exactly-one Phase 6 cumulative import under the exclusive
+/tmp/skiff-bcvm-p7-r1-cargo.lockdir lease, binds a deterministic receipt hash chain, and
+never reuses an evidence directory or re-derives provenance from ID prefixes.`);
 }
 
 function splitSelectors(value) {
