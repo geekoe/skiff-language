@@ -207,29 +207,6 @@ pub fn assert_balanced(system: &WholeSystem) {
     );
 }
 
-/// Drives an accepted-capability whole-system row that currently terminates
-/// fail-closed with a deterministic protocol error (expected-red evidence for
-/// the exact original owner). The assertion documents the genuine seam break:
-/// the request terminates exactly once, the Router dispatcher is balanced and
-/// the runtime session stays registered — no hang, leak or partial response.
-pub async fn drive_fail_closed(capability: Capability, prefix: &str, surface: &str) {
-    let system = WholeSystem::start(capability, prefix).await;
-    let (status, _, body) = system.post(capability.ingress_path(), b"7").await;
-    assert_eq!(
-        status, 502,
-        "{surface} whole-system row must currently terminate with the deterministic \
-         protocol-error terminal: status={status} body={body:?}"
-    );
-    let json: serde_json::Value = serde_json::from_slice(&body)
-        .unwrap_or_else(|_| panic!("{surface} fail-closed body must be platform JSON: {body:?}"));
-    assert_eq!(
-        json["error"]["code"], "InvalidHttpResponse",
-        "{surface} fail-closed terminal must carry the exact Router protocol-error code: {json}"
-    );
-    assert_balanced(&system);
-    system.shutdown().await;
-}
-
 pub struct WholeSystemResponse {
     pub status: u16,
     pub headers: Vec<(String, String)>,
